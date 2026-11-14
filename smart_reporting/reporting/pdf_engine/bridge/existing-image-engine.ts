@@ -240,6 +240,28 @@ export async function renderExistingImageBgra(bytes:Uint8Array,pageIndex:number,
   }finally{m._FPDF_ClosePage(page)}
  })})
 }
+/** Render a display-space page clip after removing one resolved source image in memory. */
+export async function renderPageBackgroundBgra(bytes:Uint8Array,pageIndex:number,rect:Rect,clip:{x:number;y:number;width:number;height:number},pxWidth:number):Promise<{width:number;height:number;bgra:Uint8Array}>{
+ return chainPdfium(async()=>{const m=await loadPdfium();return withDocument(m,bytes,async doc=>{
+  const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page')
+  try{
+   const target=await resolveImage(m,page,rect)
+   if(!m._FPDFPage_RemoveObject(page,target.obj))throw Error('could not remove preview image')
+   m._FPDFPageObj_Destroy(target.obj)
+   const pageWidth=m._FPDF_GetPageWidthF(page),pageHeight=m._FPDF_GetPageHeightF(page),{x,y,width:clipWidth,height:clipHeight}=clip
+   if(![pageWidth,pageHeight,x,y,clipWidth,clipHeight,pxWidth].every(Number.isFinite)||pageWidth<=0||pageHeight<=0||x<0||y<0||clipWidth<=0||clipHeight<=0||x+clipWidth>pageWidth+.01||y+clipHeight>pageHeight+.01)throw Error('background patch clip is outside the display page')
+   const k=pxWidth/clipWidth,w=Math.max(1,Math.round(pxWidth)),h=Math.max(1,Math.round(clipHeight*pxWidth/clipWidth))
+   if(Math.max(w,h)>2400||w*h>5_760_000)throw Error('background patch raster size is too large')
+   const buffer=m._malloc(w*h*4),bitmap=m._FPDFBitmap_CreateEx(w,h,FPDF_BITMAP_BGRA,buffer,w*4)
+   if(!bitmap){m._free(buffer);throw Error('could not create background patch bitmap')}
+   try{
+    m._FPDFBitmap_FillRect(bitmap,0,0,w,h,0xffffffff)
+    m._FPDF_RenderPageBitmap(bitmap,page,Math.round(-x*k),Math.round(-y*k),Math.round(pageWidth*k),Math.round(pageHeight*k),0,0)
+    return {width:w,height:h,bgra:new Uint8Array(m.HEAPU8.subarray(buffer,buffer+w*h*4))}
+   }finally{m._FPDFBitmap_Destroy(bitmap);m._free(buffer)}
+  }finally{m._FPDF_ClosePage(page)}
+ })})
+}
 /** Pinned replaceImage: swap the object's pixels (matrix untouched, so z-order and any original rotation stay), then the shared geometry pass. */
 export async function applyExistingImageReplace(bytes:Uint8Array,pageIndex:number,oldRect:Rect,rect:Rect,image:string):Promise<Uint8Array>{
  return applyExistingImageReplaceBgra(bytes,pageIndex,oldRect,rect,decodePngBgra(image))

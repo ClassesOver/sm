@@ -3,7 +3,7 @@
  * 动画窗格的移动/删除/计时、“无”、动作路径与“按段”都落到同一份整页序列；
  * `source` 条目引用来源文件中已有的动画（原样保留，含无法建模的预设 XML），其余为新增。
  */
-export type SequenceEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath'
+export type SequenceEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath' | 'mediaPlay' | 'mediaPause' | 'mediaStop'
 export type SequenceTrigger = 'onClick' | 'withPrev' | 'afterPrev'
 export type SequenceDirection = 'top' | 'bottom' | 'left' | 'right'
 export interface SourceAnimation { spid?: number; elementId: string; effect: string; trigger: string; durationMs?: number; delayMs?: number; direction?: string; motionPath?: string; paragraph?: number; presetXml?: string }
@@ -20,7 +20,7 @@ export const MOTION_PATHS: Record<string, string> = {
   motionPathCircle: 'M 0 0 C 0.069 0 0.125 0.056 0.125 0.125 C 0.125 0.194 0.069 0.25 0 0.25 C -0.069 0.25 -0.125 0.194 -0.125 0.125 C -0.125 0.056 -0.069 0 0 0 Z',
   motionPathZigzag: 'M 0 0 L 0.12 -0.12 L 0.24 0.12 L 0.36 0',
 }
-export const SEQUENCE_EFFECTS: readonly SequenceEffect[] = ['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'motionPath']
+export const SEQUENCE_EFFECTS: readonly SequenceEffect[] = ['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'motionPath', 'mediaPlay', 'mediaPause', 'mediaStop']
 const TRIGGERS: readonly string[] = ['onClick', 'withPrev', 'afterPrev']
 const DIRECTIONAL: readonly string[] = ['flyIn', 'flyOut', 'wipe', 'wipeOut']
 export const EFFECT_LABELS: Record<string, string> = {
@@ -32,7 +32,7 @@ export const TRIGGER_LABELS: Record<string, string> = { onClick: '单击时', wi
 
 /** 固定源 animDefaultDur。 */
 export function defaultAnimationDuration(effect: string): number {
-  return effect === 'appear' || effect === 'disappear' ? 0 : ['spin', 'grow', 'bounce', 'motionPath'].includes(effect) ? 2000 : effect === 'pulse' || effect === 'teeter' ? 1000 : 500
+  return effect === 'appear' || effect === 'disappear' || effect.startsWith('media') ? 0 : ['spin', 'grow', 'bounce', 'motionPath'].includes(effect) ? 2000 : effect === 'pulse' || effect === 'teeter' ? 1000 : 500
 }
 
 export const isSourceItem = (item: SequenceItem): item is SequenceSourceItem => 'source' in item
@@ -118,7 +118,7 @@ export function motionPathAnimation(elementId: string, control: string, trigger:
 }
 
 /** 草稿恢复与保存前校验：与桥接 animationSequences 的拒绝条件一致。 */
-export function validateSequence(items: unknown, source: SourceAnimation[], elements: { id: string; type: string; paragraphs: number }[]): SequenceItem[] {
+export function validateSequence(items: unknown, source: SourceAnimation[], elements: { id: string; type: string; mediaKind?:string; paragraphs: number }[]): SequenceItem[] {
   if (!Array.isArray(items) || items.length > 500) throw new Error('动画序列无效')
   const used = new Set<number>()
   const timing = (value: Record<string, unknown>) => (value.trigger === undefined || TRIGGERS.includes(String(value.trigger)))
@@ -139,7 +139,7 @@ export function validateSequence(items: unknown, source: SourceAnimation[], elem
       || !SEQUENCE_EFFECTS.includes(item.effect as SequenceEffect) || item.trigger === undefined || item.durationMs === undefined || item.delayMs === undefined || !timing(item)
       || (item.direction !== undefined && (!['top', 'bottom', 'left', 'right'].includes(String(item.direction)) || !DIRECTIONAL.includes(String(item.effect))))
       || ((item.effect === 'motionPath') !== (item.motionPath !== undefined)) || (item.motionPath !== undefined && !Object.values(MOTION_PATHS).includes(String(item.motionPath)))
-      || !element || !['text', 'shape'].includes(element.type)
+      || !element || (String(item.effect).startsWith('media') ? !element.mediaKind : !['text', 'shape'].includes(element.type))
       || (item.paragraph !== undefined && (!Number.isInteger(item.paragraph) || (item.paragraph as number) < 0 || (item.paragraph as number) >= element.paragraphs || item.effect === 'motionPath'))) throw new Error('动画序列条目无效')
   }
   return items as SequenceItem[]

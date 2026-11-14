@@ -1,0 +1,19 @@
+.pdf-layout > .pdf-compare-sidebar { flex:none;box-sizing:border-box;min-width:0;width:var(--pdf-sidebar-width,150px);overflow:auto;background:var(--office-sidebar);border-right:1px solid var(--office-border-strong);font-size:13px;line-height:1.5;scrollbar-width:thin; }
+.pdf-compare-sidebar[hidden] { display:none; }
+.pdf-compare-sidebar > header { position:sticky;top:0;z-index:1;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px;background:var(--office-sidebar);border-bottom:1px solid var(--office-border-soft); }
+.pdf-compare { display:flex;flex-direction:column;gap:8px;padding:8px; }
+.pdf-compare :is(button,.pdf-modal-hint),.pdf-compare-notice,.pdf-compare-identity { overflow-wrap:anywhere;white-space:normal;max-width:100%; }
+.pdf-compare-pick,.pdf-compare-swap { align-self:flex-start; }
+.pdf-compare-sidebar button { min-height:30px;cursor:pointer;font:inherit;color:inherit; }
+.pdf-compare-sidebar button:disabled { cursor:default;opacity:.65; }
+.pdf-compare-other,.pdf-compare-notice,.pdf-compare-identity { color:var(--office-muted); }
+.pdf-compare-notice,.pdf-compare-identity { margin:8px; }
+.pdf-compare-sidebar > button { margin:8px; }
+.pdf-compare-list { list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px; }
+.pdf-compare-row { display:flex;flex-wrap:wrap;align-items:center;gap:8px;width:100%;border:0;background:transparent;padding:4px 6px;border-radius:6px;text-align:start; }
+.pdf-compare-row:hover { background:var(--office-hover); }
+.pdf-compare-added { color:#16823b; }
+.pdf-compare-removed { color:#b42318; }
+.pdf-compare-truncated { color:#8a5700; }
+.pdf-compare-sidebar :is(button,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+.pdf-compare-sidebar :is(button,[tabindex]) { scroll-margin:48px 4px 8px; }

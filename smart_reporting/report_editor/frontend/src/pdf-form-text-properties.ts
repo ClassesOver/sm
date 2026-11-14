@@ -1,3 +1,4 @@
+import {createPdfFormSettingsPanel} from './pdf-form-settings-panel'
 import type {NativeDraft,NativeOperation} from './native-draft'
 import type {PdfDesignWidget} from './pdf-form-design'
 import type {PdfFormWidgetTarget} from './pdf-form-create'
@@ -34,15 +35,13 @@ export function validateRestoredPdfFormTextProperties(model:PdfFormTextPropertie
  stagePdfFormTextProperties(model,[],target,properties)
 }
 export function bindPdfFormTextPropertiesPanel(options:{root:HTMLElement;draft:NativeDraft;model:()=>PdfFormTextPropertiesModel;unavailable:()=>string|null;refresh:()=>Promise<void>}){
- const doc=options.root.ownerDocument,panel=doc.createElement('section');panel.className='pdf-form-text-properties-panel';panel.hidden=true;panel.setAttribute('aria-label','文本字段属性')
- const heading=doc.createElement('h3');heading.textContent='文本字段属性';const help=doc.createElement('p');help.textContent='编辑安全的独立文本控件；保留原值，可选择 Helvetica/Times/Courier 的标准常规与粗斜体字型。每次单独保存，长度不能小于现有内容。当前不支持自定义字体、中文字体、只读或动作字段。'
- const close=doc.createElement('button');close.type='button';close.textContent='关闭文本属性';close.onclick=()=>{panel.hidden=true}
- const body=doc.createElement('div'),status=doc.createElement('p');status.setAttribute('role','status');panel.append(heading,help,close,status,body);options.root.append(panel)
+ const ui=createPdfFormSettingsPanel(options.root,'pdf-form-text-properties-panel','文本字段属性','编辑安全的独立文本控件；保留原值，可选择 Helvetica/Times/Courier 的标准常规与粗斜体字型。每次单独保存，长度不能小于现有内容。当前不支持自定义字体、中文字体、只读或动作字段。','关闭文本属性'),{panel,body,status}=ui,doc=options.root.ownerDocument
  let disposed=false,renderedKey=''
  const key=()=>JSON.stringify([options.draft.operations,options.draft.closed,options.draft.saving,options.unavailable(),options.model()])
  function input(label:string,type:string){const wrapper=doc.createElement('label'),control=doc.createElement('input');wrapper.textContent=label;control.type=type;control.setAttribute('aria-label',label);wrapper.append(control);body.append(wrapper);return control}
  function select(label:string){const wrapper=doc.createElement('label'),control=doc.createElement('select');wrapper.textContent=label;control.setAttribute('aria-label',label);wrapper.append(control);body.append(wrapper);return control}
- function render(){if(disposed)return;renderedKey=key();body.replaceChildren();const model=options.model(),widgets=(model.formDesignWidgets??[]).filter(eligible),field=select('文本字段')
+ function render(){if(disposed)return;ui.render(()=>{renderBody();body.disabled=!!options.unavailable()||options.draft.closed||options.draft.saving||options.draft.dirty||options.model().capabilities?.editFormTextProperties!==true||!body.querySelector<HTMLSelectElement>('select')?.options.length})}
+ function renderBody(){if(disposed)return;renderedKey=key();body.replaceChildren();const model=options.model(),widgets=(model.formDesignWidgets??[]).filter(eligible),field=select('文本字段')
   for(const w of widgets){const item=doc.createElement('option');item.value=w.widgetIdentity;item.textContent=w.fieldName+'（'+w.textProperties!.fontName+'）';field.append(item)}
   const multiLine=input('多行文本','checkbox'),maxLen=input('最大长度（0为不限）','number'),alignment=select('文字对齐'),fontName=select('字体'),fontSize=input('字号','number');maxLen.min='0';maxLen.max='4000';maxLen.step='1';fontSize.min='6';fontSize.max='72';fontSize.step='any'
   for(const[value,label]of [['left','左对齐'],['center','居中'],['right','右对齐']]){const item=doc.createElement('option');item.value=value;item.textContent=label;alignment.append(item)}
@@ -58,7 +57,7 @@ export function bindPdfFormTextPropertiesPanel(options:{root:HTMLElement;draft:N
   const model=options.model();if(model.sourceSha256!==options.draft.identity.sourceSha256)throw Error('PDF 来源已变化，请重新打开修订')
   const w=model.formDesignWidgets?.find(w=>w.widgetIdentity===identity);if(!w)throw Error('文本字段身份已变化')
   const target=Object.fromEntries(identityKeys.map(k=>[k,w[k]])) as unknown as PdfFormWidgetTarget
-  options.draft.setOperations(stagePdfFormTextProperties(model,options.draft.operations,target,properties));staged=true;await options.refresh();if(!disposed){render();status.textContent='文本属性已加入草稿，请核对实际 PDF 预览后保存'}
- }catch(error){if(!disposed){render();status.textContent=(staged?'文本属性已加入草稿，草稿已保留；':'')+(error instanceof Error?error.message:String(error))}}}
- return {element:panel,open(){if(!disposed){panel.hidden=false;render()}},refresh(){if(!panel.hidden&&renderedKey!==key())render()},dispose(){disposed=true;panel.remove()}}
+  options.draft.setOperations(stagePdfFormTextProperties(model,options.draft.operations,target,properties));staged=true;render();await options.refresh();if(!disposed){render();status.textContent='文本属性已加入草稿，请核对实际 PDF 预览后保存'}
+ }catch(error){if(!disposed){if(staged||renderedKey!==key())render();status.textContent=(staged?'文本属性已加入草稿，草稿已保留；':'')+(error instanceof Error?error.message:String(error))}}}
+ return {element:panel,open(){if(!disposed){ui.open();render()}},refresh(){if(!panel.hidden&&renderedKey!==key())render()},dispose(){disposed=true;ui.dispose()}}
 }

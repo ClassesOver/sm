@@ -1,8 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { flushSync } from 'react-dom'
 import { Editor, Extension, Mark, Node } from '@tiptap/core'
+import { NativeDocxCustomList } from './docx-custom-list'
+import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions'
 import { createDocxRibbon } from './docx-ribbon'
+import { createDocxTableGridlines } from './docx-gridlines'
 import { docxOperations, type DocxAnchor } from './docx-operations'
+import { readFileSync } from 'node:fs'
 
 const Doc = Node.create({ name: 'doc', topNode: true, content: 'block+', renderHTML: () => ['div', 0] })
 const Paragraph = Node.create({ name: 'docParagraph', group: 'block', content: 'text*', addAttributes: () => ({ docxIndex: { default: 0 }, align: { default: null }, bidi: { default: false }, indentLeft: { default: null }, indentRight: { default: null }, spaceBefore: { default: null }, spaceAfter: { default: null }, lineSpacing: { default: null }, lineRule: { default: null }, lineRawTwips: { default: null } }), renderHTML: () => ['p', 0] })
@@ -21,11 +25,313 @@ const TextStyle = Mark.create({
 
 afterEach(() => { document.body.replaceChildren() })
 
+function setupTabNavigation() {
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Protected, Text], content: { type: 'doc', content: [
+    { type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }, { type: 'docProtected', attrs: { blockType: 'image' } },
+  ] } })
+  const ribbon = createDocxRibbon(editor, true); document.body.append(ribbon)
+  const tab = (id: string) => ribbon.querySelector<HTMLButtonElement>(`[data-tab-id="${id}"]`)!
+  return { editor, ribbon, tab }
+}
+
+it.each(['ArrowLeft', 'ArrowRight', 'Home', 'End'].flatMap(key => ['composition', 'legacy', 'consumed'].map(protection => [key, protection])))('preserves Word tab state for protected %s/%s navigation', (key, protection) => {
+  const f = setupTabNavigation()
+  try {
+    const current = f.tab(key === 'Home' ? 'view' : 'home'); current.click(); current.focus()
+    const panel = f.ribbon.querySelector('[role=tabpanel]')!, before = panel.getAttribute('aria-label')
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, isComposing: protection === 'composition', keyCode: protection === 'legacy' ? 229 : 0 })
+    if (protection === 'consumed') current.addEventListener('keydown', event => event.preventDefault(), { once: true, capture: true })
+    current.dispatchEvent(event)
+    expect(current.getAttribute('aria-selected')).toBe('true')
+    expect(current.tabIndex).toBe(0); expect(document.activeElement).toBe(current)
+    expect(panel.getAttribute('aria-label')).toBe(before)
+    expect(event.defaultPrevented).toBe(protection === 'consumed')
+  } finally { f.editor.destroy() }
+})
+
+it('connects Table Layout gridlines to the screen-only table grid controller', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const Table = Node.create({ name: 'docTable', group: 'block', content: 'docParagraph+', renderHTML: () => ['table', 0] })
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Table, Text], content: { type: 'doc', content: [{ type: 'docTable', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] }] } })
+  editor.commands.setTextSelection(2)
+  const root = document.createElement('div'), tableGridlines = createDocxTableGridlines({ editor, root })
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, tableGridlines)
+  document.body.append(ribbon)
+  ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
+  const button = ribbon.querySelector<HTMLButtonElement>('[data-action="table-view-gridlines"]')!
+  expect(button.disabled).toBe(false)
+  expect(button.dataset.sourceAction).toBe('onToggleTableGridlines')
+  expect(button.getAttribute('aria-pressed')).toBe('false')
+  button.click()
+  expect(root.classList.contains('show-table-gridlines')).toBe(true)
+  expect(button.getAttribute('aria-pressed')).toBe('true')
+  expect(editor.getText()).toContain('body')
+  tableGridlines.dispose(); editor.destroy()
+})
+
+it('routes Review batch commands only for the controller validated supported-body scope', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
+  const applyAll = vi.fn(), open = vi.fn()
+  let unavailable: string | null = '没有待处理的受支持正文修订'
+  const commands = { open, applyAll, batchReason: () => unavailable }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], commands)
+  document.body.append(ribbon)
+  ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+  const accept = ribbon.querySelector<HTMLButtonElement>('[data-action="text-revision-accept-supported"]')!
+  const reject = ribbon.querySelector<HTMLButtonElement>('[data-action="text-revision-reject-supported"]')!
+  const revisionItems = ribbon.querySelector('[aria-label="受支持正文修订"] > .ribbon-group-items.docx-review-revisions-items')!
+  expect(revisionItems).not.toBeNull()
+  expect(accept.parentElement).toBe(revisionItems)
+  expect(reject.parentElement).toBe(revisionItems)
+  expect(revisionItems.querySelectorAll(':scope > button')).toHaveLength(5)
+  expect(accept.textContent).toBe('接受支持的正文修订')
+  expect(reject.textContent).toBe('拒绝支持的正文修订')
+  expect(accept.disabled).toBe(true)
+  expect(accept.title).toBe(unavailable)
+  accept.click(); expect(applyAll).not.toHaveBeenCalled()
+  const before = editor.getJSON()
+  unavailable = null
+  editor.view.dispatch(editor.state.tr.setMeta('refresh-review-controls', true))
+  expect(accept.disabled).toBe(false)
+  accept.click()
+  expect(applyAll).toHaveBeenCalledOnce()
+  expect(applyAll).toHaveBeenCalledWith('accept')
+  expect(editor.getJSON()).toEqual(before)
+  editor.setEditable(false)
+  unavailable = '当前文档只读'
+  editor.view.dispatch(editor.state.tr.setMeta('refresh-review-controls', true))
+  expect(accept.disabled).toBe(true)
+  expect(accept.title).toBe(unavailable)
+  accept.click(); expect(applyAll).toHaveBeenCalledOnce()
+  editor.destroy()
+})
+
+it.each([0, 1, 3])('keeps compact Review controls accessible with %i authors', count => {
+  const style = document.body.appendChild(document.createElement('style')); style.textContent = readFileSync('src/docx.css', 'utf8')
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
+  const authors = ['Alice', 'Bob', 'Carol'].slice(0, count)
+  const commands = { open: vi.fn(), applyAll: vi.fn(), batchReason: () => null, toggleTracking: vi.fn(), view: {
+    state: () => ({ mode: 'all' as const, insDel: true, format: true, hiddenAuthors: authors }), authors: () => authors, setMode: vi.fn(), setFilter: vi.fn(),
+  } }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], commands)
+  const scope = document.body.appendChild(document.createElement('div')); scope.className = 'docx-native'; scope.append(ribbon); ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+  try {
+    expect(Array.from(ribbon.querySelectorAll('.docx-review-revisions-items > button'), button => (button as HTMLButtonElement).dataset.action)).toEqual([
+      'track-changes-toggle', 'text-revision-previous', 'text-revision-next', 'text-revision-list', 'text-revision-accept-supported', 'text-revision-reject-supported',
+    ])
+    const people = ribbon.querySelector<HTMLSelectElement>('.docx-review-authors > [data-action="revision-filter-authors"]')!
+    expect(people.multiple).toBe(true)
+    expect(people.disabled).toBe(count === 0)
+    expect(people.size).toBe(Math.max(1, count))
+    expect(Array.from(people.selectedOptions, option => option.value)).toEqual(authors)
+    for (const action of ['revision-balloons-unavailable', 'track-changes-options-unavailable']) {
+      const button = ribbon.querySelector<HTMLButtonElement>(`.docx-review-display-items > [data-action="${action}"]`)!
+      expect(button.disabled).toBe(true)
+      expect(button.title).toContain('尚未在本地编辑器接通')
+      expect(button.getAttribute('aria-label')).toContain(button.title)
+      expect(getComputedStyle(button).gridRow).toBe(action === 'revision-balloons-unavailable' ? '1' : '2')
+    }
+  } finally { editor.destroy() }
+})
+
+it('routes Review revision display and Show Markup filters to the view controller',()=>{
+ const host=document.body.appendChild(document.createElement('div'))
+ const editor=new Editor({element:host,extensions:[Doc,Paragraph,Text],content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'body'}]}]}})
+ let state:import('./docx-review-view').DocxReviewViewState={mode:'all',insDel:true,format:true,hiddenAuthors:[]}
+ const setMode=vi.fn((mode:import('./docx-review-view').DocxReviewViewState['mode'])=>{state={...state,mode}}),setFilter=vi.fn((filter:import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/revision-filters').RevisionFilter)=>{state={...state,...filter}})
+ let authors=['Alice','Bob']
+ const view={state:()=>state,authors:()=>authors,setMode,setFilter}
+ const reviewCommands={open:vi.fn(),applyAll:vi.fn(),batchReason:()=>null,view}
+ const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,[],undefined,undefined,undefined,undefined,undefined,undefined,[],reviewCommands)
+ document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+ const mode=ribbon.querySelector<HTMLSelectElement>('[data-action="revision-display"]')!
+ mode.value='original';mode.dispatchEvent(new Event('change',{bubbles:true}));expect(setMode).toHaveBeenCalledWith('original')
+ const kinds=ribbon.querySelector<HTMLInputElement>('[data-action="revision-filter-insdel"]')!
+ kinds.checked=false;kinds.dispatchEvent(new Event('change',{bubbles:true}));expect(setFilter).toHaveBeenLastCalledWith({mode:'original',insDel:false,format:true,hiddenAuthors:[]})
+ const people=ribbon.querySelector<HTMLSelectElement>('[data-action="revision-filter-authors"]')!
+ const displayItems=ribbon.querySelector('[aria-label="修订显示"] > .ribbon-group-items.docx-review-display-items')!
+ expect(displayItems).not.toBeNull()
+ expect(mode.parentElement?.parentElement).toBe(displayItems)
+ expect(people.parentElement?.parentElement).toBe(displayItems)
+ expect(people.parentElement?.classList.contains('docx-review-authors')).toBe(true)
+ expect(displayItems.children).toHaveLength(6)
+ expect(people.multiple).toBe(true)
+ people.options[1]!.selected=true;people.dispatchEvent(new Event('change',{bubbles:true}));expect(setFilter).toHaveBeenLastCalledWith({mode:'original',insDel:false,format:true,hiddenAuthors:['Bob']})
+ authors=['Alice','Carol'];editor.commands.insertContent('!')
+ expect(Array.from(ribbon.querySelector<HTMLSelectElement>('[data-action="revision-filter-authors"]')!.options,option=>option.value)).toEqual(['Alice','Carol'])
+ expect(ribbon.querySelector<HTMLSelectElement>('[data-action="revision-filter-authors"]')!.selectedOptions.length).toBe(0)
+ expect(ribbon.querySelector<HTMLButtonElement>('[data-action="revision-balloons-unavailable"]')?.disabled).toBe(true)
+ expect(ribbon.querySelector<HTMLButtonElement>('[data-action="track-changes-options-unavailable"]')?.disabled).toBe(true)
+ editor.destroy()
+})
+
+it('routes Review Show Comments through its view toggle rather than always opening the editor', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
+  const open = vi.fn(), toggle = vi.fn(), commentCommands = { open, toggle }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, commentCommands)
+  document.body.append(ribbon)
+  ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+  const button = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-text-list"]')!
+  button.click(); button.click()
+  expect(toggle).toHaveBeenCalledTimes(2)
+  expect(open).not.toHaveBeenCalled()
+  editor.setEditable(false)
+  expect(button.disabled).toBe(false)
+  button.click()
+  expect(toggle).toHaveBeenCalledTimes(3)
+  editor.destroy()
+})
+
+it('routes previous/next comment navigation for trusted targets and keeps it available readonly', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
+  const navigate = vi.fn((_direction: 1 | -1, _event?: { currentTarget: EventTarget | null }) => true)
+  let unavailable: string | null = '当前没有可定位的可信未解决批注'
+  const commentCommands = { open: vi.fn(), navigate, navigationReason: () => unavailable }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, commentCommands)
+  document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+  const previous = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-previous"]')!, next = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-next"]')!
+  expect(previous.disabled).toBe(true);expect(previous.title).toBe(unavailable)
+  unavailable = null;editor.view.dispatch(editor.state.tr.setMeta('refresh-comment-navigation',true))
+  expect(previous.disabled).toBe(false);expect(next.disabled).toBe(false)
+  editor.setEditable(false);previous.click();next.click()
+  expect(navigate.mock.calls.map(([direction]) => direction)).toEqual([-1,1])
+  expect(editor.getText()).toBe('body')
+  editor.destroy()
+})
+
+it('routes only current-comment deletion and disables it without a trusted editable target', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
+  const deleteCurrent = vi.fn(() => true)
+  let unavailable: string | null = '当前没有可删除的可信批注'
+  const commentCommands = { open: vi.fn(), deleteCurrent, deleteReason: () => unavailable }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, commentCommands)
+  document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+  const button = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-delete-current"]')!
+  expect(button.textContent).toBe('删除批注')
+  expect(button.querySelector('svg')).not.toBeNull()
+  expect(button.disabled).toBe(true);expect(button.title).toBe(unavailable)
+  button.click();expect(deleteCurrent).not.toHaveBeenCalled()
+  unavailable = null;editor.view.dispatch(editor.state.tr.setMeta('refresh-current-comment-delete', true))
+  expect(button.disabled).toBe(false)
+  button.click();expect(deleteCurrent).toHaveBeenCalledOnce()
+  editor.setEditable(false);unavailable = '当前文档不可编辑或正在保存'
+  editor.view.dispatch(editor.state.tr.setMeta('refresh-current-comment-delete', true))
+  expect(button.disabled).toBe(true);expect(button.title).toBe(unavailable)
+  button.click();expect(deleteCurrent).toHaveBeenCalledOnce()
+  editor.destroy()
+})
+
+it('routes resolved and all comment deletion through the trusted batch controller', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
+  const deleteAll = vi.fn((_resolvedOnly: boolean) => true)
+  let resolvedReason: string | null = '当前没有可删除的可信已解决批注', allReason: string | null = '当前没有可删除的可信批注'
+  const commentCommands = { open: vi.fn(), deleteAll, deleteAllReason: (resolvedOnly: boolean) => resolvedOnly ? resolvedReason : allReason }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, commentCommands)
+  document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+  const resolved = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-delete-resolved"]')!, all = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-delete-all"]')!
+  expect(resolved.disabled).toBe(true);expect(resolved.title).toBe(resolvedReason);expect(all.disabled).toBe(true);expect(all.title).toBe(allReason)
+  resolvedReason = null;allReason = null;editor.view.dispatch(editor.state.tr.setMeta('refresh-comment-delete-batch', true))
+  expect(resolved.disabled).toBe(false);expect(all.disabled).toBe(false)
+  resolved.click();all.click();expect(deleteAll.mock.calls.map(([only]) => only)).toEqual([true,false])
+  editor.destroy()
+})
+
+it('routes previous/next supported body revision navigation without conflating comments', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
+  const navigateRevision = vi.fn((_direction: 1 | -1) => true)
+  let unavailable: string | null = '没有可导航的受支持正文修订'
+  const reviewCommands = { open: vi.fn(), applyAll: vi.fn(), batchReason: () => null, navigateRevision, navigationReason: () => unavailable }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], reviewCommands)
+  document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+  const previous = ribbon.querySelector<HTMLButtonElement>('[data-action="text-revision-previous"]')!, next = ribbon.querySelector<HTMLButtonElement>('[data-action="text-revision-next"]')!
+  expect(previous.textContent).toBe('上一条受支持正文修订');expect(next.disabled).toBe(true);expect(next.title).toBe(unavailable)
+  unavailable = null;editor.view.dispatch(editor.state.tr.setMeta('refresh-supported-revisions',true))
+  expect(previous.disabled).toBe(false);expect(next.disabled).toBe(false)
+  editor.setEditable(false);previous.click();next.click()
+  expect(navigateRevision.mock.calls.map(([direction]) => direction)).toEqual([-1,1])
+  expect(editor.getText()).toBe('body')
+  editor.destroy()
+})
+
+it('shows native spellcheck toggle in Review proofing and keeps its pressed state', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
+  const spellcheck = document.createElement('button');spellcheck.dataset.action = 'spellcheck';spellcheck.setAttribute('aria-pressed','true')
+  const reviewCommands = { open: vi.fn(), applyAll: vi.fn(), batchReason: () => null, spellcheck: { element: spellcheck, refresh: vi.fn() } }
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], reviewCommands)
+  document.body.append(ribbon)
+  expect(ribbon.querySelector('[data-action="spellcheck"]')).toBeNull()
+  ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+  expect(ribbon.querySelector('[data-action="spellcheck"]')).toBe(spellcheck)
+  expect(spellcheck.closest('[aria-label="校对"]')).not.toBeNull()
+  editor.destroy()
+})
+
+it('toggles native DOCX track changes and reflects readonly availability',()=>{
+ const host=document.body.appendChild(document.createElement('div'))
+ const editor=new Editor({element:host,extensions:[Doc,Paragraph,Text],content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'body'}]}]}})
+ let enabled=false,reason:string|null=null
+ const commands={open:vi.fn(),applyAll:vi.fn(),batchReason:()=>null,trackingEnabled:()=>enabled,trackingReason:()=>reason,toggleTracking:vi.fn(()=>{enabled=!enabled})}
+ const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,[],undefined,undefined,undefined,undefined,undefined,undefined,[],commands)
+ document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
+ const toggle=ribbon.querySelector<HTMLButtonElement>('[data-review-track-changes]')!
+ expect(toggle.disabled).toBe(false);expect(toggle.getAttribute('aria-pressed')).toBe('false');expect(toggle.getAttribute('aria-label')).toBe('跟踪修订')
+ toggle.click()
+ expect(commands.toggleTracking).toHaveBeenCalledOnce();expect(toggle.getAttribute('aria-pressed')).toBe('true');expect(toggle.getAttribute('aria-label')).toBe('停止跟踪')
+ reason='当前文档只读';editor.view.dispatch(editor.state.tr.setMeta('refresh-review-controls',true))
+ expect(toggle.disabled).toBe(true);expect(toggle.getAttribute('aria-description')).toBe(reason)
+ toggle.click();expect(commands.toggleTracking).toHaveBeenCalledOnce()
+ editor.destroy()
+})
+
+it.each(['active-context', 'inactive-context', 'other-tab', 'editor', 'outside'])('recovers only disappearing Word contextual-tab focus for %s', focus => {
+  const f = setupTabNavigation()
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    const contextual = f.tab('pictureFormat'); contextual.click()
+    if (focus === 'inactive-context') f.tab('view').click()
+    const outside = document.body.appendChild(document.createElement('button'))
+    const target = focus === 'other-tab' ? f.tab('view') : focus === 'editor' ? f.editor.view.dom : focus === 'outside' ? outside : contextual
+    target.focus(); f.editor.commands.setTextSelection(1)
+    expect(contextual.hidden).toBe(true)
+    expect(document.activeElement).toBe(focus === 'active-context' ? f.tab('home') : focus === 'inactive-context' ? f.tab('view') : target)
+    const selected = f.ribbon.querySelector<HTMLButtonElement>('[role=tab][aria-selected=true]')!
+    expect(selected.hidden).toBe(false); expect(selected.tabIndex).toBe(0)
+    expect(f.ribbon.querySelectorAll('[role=tab][tabindex="0"]')).toHaveLength(1)
+  } finally { f.editor.destroy() }
+})
+
+it('skips disabled Word tabs and keeps ordinary navigation available during a readonly lock', () => {
+  const f = setupTabNavigation()
+  try {
+    const original = f.editor.getJSON()
+    f.tab('insert').disabled = true; f.tab('home').focus()
+    f.tab('home').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    expect(document.activeElement).toBe(f.tab('draw'))
+    f.editor.setEditable(false)
+    f.tab('draw').dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
+    expect(document.activeElement).toBe(f.tab('view'))
+    f.tab('view').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }))
+    expect(document.activeElement).toBe(f.tab('file'))
+    f.tab('file').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }))
+    expect(document.activeElement).toBe(f.tab('view'))
+    expect(f.editor.getJSON()).toEqual(original)
+  } finally { f.editor.destroy() }
+})
+
 it('routes navigation and outline view controls while readonly and reflects their pressed state', () => {
   const host = document.createElement('div'); document.body.append(host)
   const editor = new Editor({element:host,extensions:[Doc,Paragraph,Text],editable:false,content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'原文'}]}]}})
-  let navigation = false, mode = 'page'
-  const commands = {reason: () => null, active: (label:string) => label === '导航窗格' ? navigation : label === '大纲' ? mode === 'outline' : mode === 'page', run: (label:string) => {if(label === '导航窗格')navigation = !navigation;else mode = label === '大纲' ? 'outline' : 'page'}}
+  let navigation = false, mode = 'page', navigationOpener: Element | null = null
+  const commands = {reason: () => null, active: (label:string) => label === '导航窗格' ? navigation : label === '大纲' ? mode === 'outline' : mode === 'page', run: (label:string) => {if(label === '导航窗格'){navigationOpener = document.activeElement; navigation = !navigation}else mode = label === '大纲' ? 'outline' : 'page'}}
   const ribbon = createDocxRibbon(editor,false,undefined,undefined,undefined,[],undefined,commands)
   document.body.append(ribbon)
   try {
@@ -36,6 +342,7 @@ it('routes navigation and outline view controls while readonly and reflects thei
     const down = new MouseEvent('mousedown',{cancelable:true}); navigationButton.dispatchEvent(down)
     expect(down.defaultPrevented).toBe(true)
     navigationButton.click(); expect(navigationButton.getAttribute('aria-pressed')).toBe('true')
+    expect(navigationOpener).toBe(navigationButton)
     const outlineButton = ribbon.querySelector<HTMLButtonElement>('[data-action="view-outline"]')!
     outlineButton.click(); expect(outlineButton.getAttribute('aria-pressed')).toBe('true')
     ribbon.querySelector<HTMLButtonElement>('[data-action="view-page"]')!.click()
@@ -101,16 +408,20 @@ it('offers source-bound Home formatting and leaves unsupported Ribbon commands d
   expect(ribbon.querySelector<HTMLButtonElement>('[data-action="delete-paragraph"]')?.disabled).toBe(false)
   expect(ribbon.querySelector<HTMLButtonElement>('[data-action="bullets"]')?.disabled).toBe(false)
   for (const [id, reason] of [
-    ['list-bullets-gallery', '项目符号库预设、清除列表和自定义项目符号写回尚未接入'],
-    ['list-numbering-gallery', '编号样式库、自定义编号及其重新开始配置写回尚未接入'],
-    ['list-multilevel-gallery', '多级样式库、自定义层级及级间重新开始规则写回尚未接入'],
-    ['list-numbering-set-value', '起始编号、重新开始和继续列表写回尚未接入'],
+    ['list-numbering-set-value', '来源身份缺失'],
   ]) {
     const control = ribbon.querySelector<HTMLButtonElement>(`[data-source-action="${id}"]`)
     expect(control?.disabled).toBe(true)
     expect(control?.title).toContain(reason)
     expect(control?.getAttribute('aria-label')).toContain(reason)
   }
+  for (const kind of ['bullets', 'numbering']) {
+    const library = ribbon.querySelector<HTMLButtonElement>(`[data-source-action="list-${kind}-gallery"]`)!
+    expect(library.disabled).toBe(true); expect(library.title).toContain('来源身份缺失')
+  }
+  const multilevel = ribbon.querySelector<HTMLButtonElement>('[data-source-action="list-multilevel-gallery"]')!
+  expect(multilevel.disabled).toBe(true)
+  expect(multilevel.title).toContain('来源身份缺失')
   expect(ribbon.querySelector<HTMLButtonElement>('[data-action="grow-font"]')?.disabled).toBe(false)
   expect(ribbon.querySelector<HTMLButtonElement>('[data-action="shrink-font"]')?.disabled).toBe(false)
 
@@ -181,8 +492,12 @@ it('routes source paragraph line-spacing presets and before/after toggles throug
     { kind: 'setParagraphSpacing', blockId: 'block-0', expectedObjectSha256: 'hash', spaceBefore: 240, spaceAfter: 240, lineSpacing: 2 },
   ])
   const options = ribbon.querySelector<HTMLButtonElement>('[data-source-action="line-spacing-options"]')!
-  expect(options.disabled).toBe(true)
-  expect(options.title).toContain('精确行距、段落对话框与其他行距单位尚未接入')
+  expect(options.disabled).toBe(false)
+  const beforeDialog = editor.getJSON()
+  flushSync(() => options.click())
+  expect(ribbon.querySelector('[role="dialog"][aria-label="段落行距"]')).not.toBeNull()
+  flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="cancel"]')!.click())
+  expect(editor.getJSON()).toEqual(beforeDialog)
   ribbon.querySelector<HTMLButtonElement>('[data-tab-label="布局"]')!.click()
   for (const action of ['space-before-value', 'space-after-value']) {
     const field = ribbon.querySelector<HTMLInputElement>(`[data-action="${action}"]`)
@@ -386,7 +701,7 @@ it('steps paragraph indentation and only enables list levels present in the sour
   editor.view.dispatch(editor.state.tr.setMeta('numbering-update', true))
   const levelPicker = ribbon.querySelector<HTMLSelectElement>('[data-source-action="list-change-level"]')!
   expect(levelPicker.disabled).toBe(false)
-  expect(levelPicker.querySelector<HTMLOptionElement>('option[value="2"]')?.disabled).toBe(true)
+  expect(levelPicker.querySelector<HTMLOptionElement>('option[value="2"]')?.disabled).toBe(false)
   levelPicker.value = '1'
   levelPicker.dispatchEvent(new Event('change', { bubbles: true }))
   expect(docxOperations(listOriginal, editor.getJSON() as any, [anchor])).toEqual([
@@ -401,6 +716,11 @@ it('steps paragraph indentation and only enables list levels present in the sour
   ])
   decrease.click()
   expect(docxOperations(listOriginal, editor.getJSON() as any, [anchor])).toEqual([])
+  levelPicker.value = '2'
+  levelPicker.dispatchEvent(new Event('change', { bubbles: true }))
+  expect(docxOperations(listOriginal, editor.getJSON() as any, [anchor])).toEqual([
+    { kind: 'setParagraphListLevel', blockId: 'block-0', expectedObjectSha256: 'source-block-hash', ilvl: 2, listKind: 'ordered' },
+  ])
   editor.destroy()
 })
 
@@ -462,7 +782,7 @@ it('routes font-size step controls through the DOCX formatting operation', () =>
   editor.destroy()
 })
 
-it('inserts an upstream palette symbol as an anchored text operation and disables structural insert commands', () => {
+it('inserts an upstream palette symbol and exposes the supported equation command', () => {
   const editor = new Editor({
     extensions: [Doc, Paragraph, Text],
     content: { type: 'doc', content: [{ type: 'docParagraph', attrs: { docxIndex: 0 }, content: [{ type: 'text', text: '经营收入' }] }] },
@@ -476,11 +796,9 @@ it('inserts an upstream palette symbol as an anchored text operation and disable
   expect(ribbon.querySelector('.docx-source-insert')).not.toBeNull()
   const insert = ribbon.querySelector<HTMLButtonElement>('[data-action="insert-symbol"]')
   expect(insert?.disabled).toBe(false)
-  for (const action of ['insert-link', 'insert-equation']) {
-    const button = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)
-    expect(button?.disabled).toBe(true)
-    expect(button?.getAttribute('aria-description')).toMatch(/写回/)
-  }
+  expect(ribbon.querySelector<HTMLButtonElement>('[data-action="insert-equation"]')?.disabled).toBe(false)
+  // 无链接注册/文字选区仍禁用链接；不再把原生公式误标为未接入写回。
+  expect(ribbon.querySelector<HTMLButtonElement>('[data-action="insert-link"]')?.disabled).toBe(true)
   // 插入表格已接通 insertTable；此测试 schema 无 docTable，按钮以位置原因禁用而非"未接入写回"。
   expect(ribbon.querySelector<HTMLButtonElement>('[data-action="insert-table"]')?.getAttribute('aria-description')).not.toMatch(/写回/)
   flushSync(() => { insert!.click() })
@@ -517,15 +835,15 @@ it.each(['left', 'center', 'right', 'justify'])('routes upstream %s alignment in
 })
 
 it.each([['bullets', 'bullet'], ['numbering', 'ordered']])('routes Home %s through an anchored list toggle and clear', (action, kind) => {
-  const editor = new Editor({ extensions: [Doc, Paragraph, ListItem, Text], content: { type: 'doc', content: [{ type: 'docParagraph', attrs: { docxIndex: 0 }, content: [{ type: 'text', text: '列表正文' }] }] } })
+  const editor = new Editor({ extensions: [...editorExtensions, NativeDocxCustomList], content: { type: 'doc', content: [{ type: 'docParagraph', attrs: { docxIndex: 0 }, content: [{ type: 'text', text: '列表正文' }] }] } })
   const original = editor.getJSON() as any
   const anchor: DocxAnchor = { docxIndex: 0, blockId: 'block-0', expectedObjectSha256: 'hash', editable: true }
-  const ribbon = createDocxRibbon(editor, true)
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [anchor])
   document.body.append(ribbon)
   const button = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!
   expect(button.dataset.sourceAction).toBe(kind === 'bullet' ? 'list-bullets-toggle' : 'list-numbering-toggle')
   button.click()
-  expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([{ kind: 'setParagraphList', blockId: 'block-0', expectedObjectSha256: 'hash', list: kind }])
+  expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([{ kind: 'setParagraphNumberingValue', blockId: 'block-0', expectedObjectSha256: 'hash', binding: editor.getJSON().content![0]!.attrs!.nativeNumberingBinding, ilvl: 0, listKind: kind }])
   expect(button.getAttribute('aria-pressed')).toBe('true')
   button.click()
   expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([])
@@ -549,17 +867,10 @@ it('wires the Word Home clipboard group: paste split menu, cut/copy and the form
   for (const action of ['paste', 'paste-menu', 'cut', 'copy', 'format-painter']) {
     expect(ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)?.disabled).toBe(false)
   }
-  // 分体菜单：源真实模式，富文本两项禁用并给出真实原因，仅保留文本可用
+  // 分体菜单提供完整模式和选择性粘贴/默认设置入口。
   flushSync(() => ribbon.querySelector<HTMLButtonElement>('[data-action="paste-menu"]')!.click())
-  for (const [action, reason] of [
-    ['paste-source', '无法精确映射到 DOCX 保存协议'],
-    ['paste-merge', '无法精确映射到 DOCX 保存协议'],
-    ['paste-special', '尚未接入'],
-    ['paste-defaults', '尚未接入'],
-  ] as const) {
-    const item = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!
-    expect(item.disabled).toBe(true)
-    expect(item.title).toContain(reason)
+  for (const action of ['paste-source','paste-merge','paste-special','paste-defaults']) {
+    expect(ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.disabled).toBe(false)
   }
   const textItem = ribbon.querySelector<HTMLButtonElement>('[data-action="paste-text"]')!
   expect(textItem.disabled).toBe(false)

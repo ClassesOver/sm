@@ -1,3 +1,4 @@
+import type { ExportFormat } from './delivery-format'
 import type { DesignDocument, DesignPreview, DesignTemplate, ReportDesign } from './design-types'
 
 /** 与 PDF/Word、静态图共用的服务端主题令牌。 */
@@ -9,7 +10,11 @@ export interface ReportVisualTheme {
   chartPalette: string[]
 }
 
+export type DeliveryFormat = 'document' | 'pdf' | 'docx' | 'md' | 'xlsx' | 'pptx'
+export interface ExportArtifact { downloadUrl: string; path?: string; size?: number }
+
 export interface ReportDocument {
+  deliveryFormat?: DeliveryFormat
   path: string
   markdown: string
   sha256: string
@@ -33,13 +38,17 @@ export interface ReportDocument {
 }
 
 export interface ExportResult {
+  deliveryFormat?: DeliveryFormat
   reportId?: string
   revision: number
   requestId?: string
-  pdf?: { downloadUrl: string; path?: string; size?: number }
-  word?: { downloadUrl: string; path?: string; size?: number }
+  pdf?: ExportArtifact
+  word?: ExportArtifact
+  md?: ExportArtifact
+  xlsx?: ExportArtifact
+  pptx?: ExportArtifact
   editor?: { openUrl: string }
-  validation?: { ok: boolean; issues: { code?: string; message?: string }[] }
+  validation?: { ok: boolean; issues: { code?: string; message?: string }[]; readback?: unknown; layoutProvenance?: unknown }
 }
 
 export interface ShareResult { openUrl: string; expiresAt: string }
@@ -136,6 +145,10 @@ export interface DataRefreshTask {
   result: { issueCodes: string[] } | null
   execution: { runId: string | null; status: string; issueCodes: string[] }
 }
+export interface RefreshDeliveryRecovery {
+  taskId: string; reportId: string; status: 'unavailable'; inputVerified: false
+  errorCode: 'refresh_task_input_unverified' | 'policy_adoption_task_input_unverified'
+}
 export interface ReportIssueSubmission {
   issueId: string; objectRefs: string[]
   category: 'calculation' | 'policy' | 'data' | 'citation' | 'interpretation'
@@ -165,8 +178,7 @@ export interface PolicyRecovery {
   taskId: string; recoveryId: string; status: string
   deliveryStatus: 'pending' | 'completed' | 'failed'; issueCodes: string[]
 }
-export type RefreshDelivery = Omit<ExportResult, 'revision'> & { revision: number;
-  pptx?: { downloadUrl: string }; xlsx?: { downloadUrl: string } }
+export type RefreshDelivery = ExportResult
 
 export interface TraceSources {
   dataRefresh?: { available: boolean; parentRevision: number }
@@ -779,7 +791,7 @@ export class ReportEditorClient {
     return this.request(`/api/recalculation-requests/${encodeURIComponent(requestId)}`)
   }
 
-  dataRefreshDelivery(taskId: string): Promise<{ task: Omit<DataRefreshTask, 'execution'>; delivery: RefreshDelivery }> {
+  dataRefreshDelivery(taskId: string): Promise<{ task: Omit<DataRefreshTask, 'execution'> | RefreshDeliveryRecovery; delivery: RefreshDelivery }> {
     return this.request(`/api/recalculations/${encodeURIComponent(taskId)}/delivery`)
   }
 
@@ -1035,7 +1047,7 @@ export class ReportEditorClient {
   async reportEvent(payload: {
     event: string
     durationMs?: number
-    format?: 'pdf' | 'word'
+    format?: ExportFormat
     errorCode?: string
     surface?: 'chart' | 'table'
     source?: 'start' | 'dialog' | 'refine' | 'free'

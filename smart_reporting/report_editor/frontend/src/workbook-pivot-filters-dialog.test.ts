@@ -81,3 +81,27 @@ it('creates and reopens an actual native slicer through the dialog apply contrac
  expect(await readPivotControls(bytes)).toEqual([])
  dialog.dispose();root.remove()
 })
+
+it('names the member and native control groups and exposes pending application without losing its selection',async()=>{
+ const source=await applyCellEdits(await createBlankWorkbook(),[['地区','收入'],['华东_长成员名称',10],['华西',20]].flatMap((row,r)=>row.map((value,c)=>({sheetName:'Sheet1',row:r,column:c,writeValue:true,cell:{value}}))))
+ const config={name:'经营收入',sourceSheetName:'Sheet1',sourceRange:'A1:B3',targetSheetName:'Sheet1',targetCell:'E1',rowFields:['地区'],columnFields:[],values:[{field:'收入',agg:'sum' as const}]}
+ const bytes=await applyWorkbookOperations(source,(await createPivotPlan(source,config)).operations),root=document.body.appendChild(document.createElement('div'))
+ let reject!:(reason:Error)=>void
+ const apply=vi.fn(()=>new Promise<void>((_,failure)=>{reject=failure})),dialog=createPivotFilterDialog(root,apply)
+ try{
+  await dialog.open({bytes,pivots:await readWorkbookPivots(bytes),mode:'slicer'})
+  expect(root.querySelector('[data-selection] legend')?.textContent).toBe('成员筛选')
+  const members=root.querySelector<HTMLElement>('[data-members]')!
+  expect(members.getAttribute('role')).toBe('region');expect(members.getAttribute('aria-label')).toBe('可选筛选成员');expect(members.tabIndex).toBe(0)
+  const check=members.querySelectorAll<HTMLInputElement>('input')[1]!;check.click()
+  root.querySelector('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))
+  expect(root.querySelector('[role=dialog]')?.getAttribute('aria-busy')).toBe('true')
+  expect(root.querySelector('[role=status]')?.textContent).toContain('正在读取或应用筛选')
+  expect(check.disabled).toBe(true);expect(check.checked).toBe(false)
+  reject(new Error('工作表已变化，输入已保留'))
+  await vi.waitFor(()=>expect(root.querySelector('[role=dialog]')?.getAttribute('aria-busy')).toBe('false'))
+  expect(check.disabled).toBe(false);expect(check.checked).toBe(false)
+  expect(root.querySelector('[role=alert]')?.textContent).toContain('输入已保留')
+  expect(root.querySelector<HTMLElement>('[role=dialog]')!.hidden).toBe(false)
+ }finally{dialog.dispose();root.remove()}
+})

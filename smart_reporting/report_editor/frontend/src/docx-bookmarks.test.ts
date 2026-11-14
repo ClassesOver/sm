@@ -52,3 +52,24 @@ it('preserves bookmark buttons through mousedown focus transaction so real click
  button.dispatchEvent(new MouseEvent('mouseup',{bubbles:true}));if(button.isConnected)button.click()
  expect(down.defaultPrevented).toBe(true);expect(f.draft.operations).toEqual([{kind:'deleteBookmark',sourceId,bookmarkId:'e'.repeat(64)}])
 })
+it('keeps keyboard focus on a bookmark when an unrelated selection transaction refreshes controls',()=>{
+ const range={targetId,expectedParagraphSha256:'d'.repeat(64),from:0,to:5,text:'Alpha'},m={...model,bookmarks:[{bookmarkId:'e'.repeat(64),name:'Existing',ranges:[range],readOnlyReason:null}]},f=fixture(m)
+ f.controls.open();const button=f.root.querySelector<HTMLButtonElement>('[data-bookmark-delete]')!;button.focus()
+ f.editor.commands.setTextSelection({from:1,to:3})
+ expect(button.isConnected).toBe(true);expect(document.activeElement).toBe(button)
+})
+it('moves keyboard deletion to the next bookmark, then previous, then the name field',()=>{
+ const range={targetId,expectedParagraphSha256:'d'.repeat(64),from:0,to:5,text:'Alpha'},m={...model,bookmarks:['A','B','C'].map((name,i)=>({bookmarkId:String(i).repeat(64),name,ranges:[range],readOnlyReason:null}))},f=fixture(m)
+ f.controls.open()
+ const remove=(id:string)=>f.root.querySelector<HTMLButtonElement>(`[data-bookmark-delete="${id.repeat(64)}"]`)!
+ expect(remove('1').getAttribute('aria-label')).toBe('删除书签 B')
+ remove('1').focus();remove('1').click();expect(document.activeElement).toBe(remove('2'))
+ remove('2').click();expect(document.activeElement).toBe(remove('0'))
+ remove('0').click();expect(document.activeElement).toBe(f.root.querySelector('[data-bookmark-name]'))
+ expect(f.draft.operations).toHaveLength(3);expect(f.editor.state.doc.textContent).toBe(model.targets[0].text)
+})
+it('focuses the name on opening and restores the connected entry on closing',()=>{
+ const f=fixture(),opener=document.body.appendChild(document.createElement('button'));opener.focus();f.controls.open()
+ expect(document.activeElement).toBe(f.root.querySelector('[data-bookmark-name]'))
+ f.root.querySelector<HTMLButtonElement>('[data-bookmark-close]')!.click();expect(document.activeElement).toBe(opener)
+})

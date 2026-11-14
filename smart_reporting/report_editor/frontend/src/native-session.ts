@@ -19,6 +19,8 @@ interface SessionOptions {
   format: 'docx' | 'pdf'
   view: NativeViewHandle
   editingEnabled?: boolean
+  refreshBusy?: () => boolean
+  onStateChange?: () => void
   navigate?: (url: string) => void
 }
 
@@ -32,9 +34,11 @@ export function bindNativeSession(shell: EditorShell, options: SessionOptions) {
   root.querySelector('.report-meta')?.insertAdjacentElement('afterend', delivery)
   const navigate = options.navigate ?? ((url: string) => window.location.assign(url))
   let preparing = false
+  let savedFileSource: NativeSaveResponse | undefined
   const update = (showDraftStatus = true) => {
-    for (const button of [shell.save, shell.exportPdf, shell.exportWord]) button.disabled = options.editingEnabled === false || preparing || draft.saving || draft.closed
+    for (const button of [shell.save, shell.exportPdf, shell.exportWord]) button.disabled = options.editingEnabled === false || preparing || draft.saving || draft.closed || options.refreshBusy?.() === true
     shell.status.setAttribute('aria-busy', String(preparing || draft.saving))
+    options.onStateChange?.()
     if (draft.persistenceError) shell.statusLabel.textContent = draft.persistenceError
     else if (showDraftStatus && draft.dirty && !draft.saving) shell.statusLabel.textContent = '有未保存修改'
   }
@@ -64,7 +68,7 @@ export function bindNativeSession(shell: EditorShell, options: SessionOptions) {
   }
   let retryAction: 'save' | 'export' = 'save'
   const save = async (action: 'save' | 'export') => {
-    if (options.editingEnabled === false || preparing || draft.saving || draft.closed) return
+    if (options.editingEnabled === false || preparing || draft.saving || draft.closed || options.refreshBusy?.()) return
     retryAction = action
     shell.retry.hidden = true
     try {
@@ -78,6 +82,7 @@ export function bindNativeSession(shell: EditorShell, options: SessionOptions) {
       view.setSaving(true)
       shell.statusLabel.textContent = action === 'export' ? '正在保存并导出' : '正在保存'
       const result = await api[action](payload)
+      savedFileSource = result
       renderResult(result)
       draft.saveCompleted(result)
       shell.statusLabel.textContent = result.revisionRegistered ? `已保存修订 ${result.revision}` : '修订尚未登记，可重试'
@@ -114,7 +119,19 @@ export function bindNativeSession(shell: EditorShell, options: SessionOptions) {
   shell.retry.addEventListener('click', doRetry)
   window.addEventListener('beforeunload', beforeLeave)
   update()
-  return { save, update, dispose() {
+  const flushForFileOperation = async (): Promise<NativeSaveResponse | undefined> => {
+    if (draft.closed && savedFileSource?.revisionRegistered) return savedFileSource
+    if (options.editingEnabled === false || preparing || draft.saving || draft.closed || options.refreshBusy?.()) throw new Error('当前文档只读或正在保存，请稍后重试')
+    view.flushPendingEdits?.()
+    if (!draft.dirty) return undefined
+    savedFileSource = undefined
+    await save('save')
+    const saved = savedFileSource as NativeSaveResponse | undefined
+    if (!saved) throw new Error(shell.statusLabel.textContent || '保存当前修改失败，未拆分文件')
+    if (!saved.revisionRegistered) throw new Error('修订尚未登记；已生成文件下载保留，请完成登记后再拆分')
+    return saved
+  }
+  return { save, update, flushForFileOperation, get preparing() { return preparing }, dispose() {
     shell.save.removeEventListener('click', doSave)
     shell.exportWord.removeEventListener('click', doSave)
     shell.exportPdf.removeEventListener('click', doExport)

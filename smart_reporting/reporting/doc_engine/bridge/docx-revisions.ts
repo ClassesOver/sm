@@ -3,7 +3,7 @@
  * 并在整份请求校验完后使用 saveDocx(kind:'xml') 原子保存。这里不接受客户端 XML/filter。
  */
 import {createHash} from 'node:crypto'
-import type {Block} from '@genoffice/docx-engine'
+import type {Block,Run} from '@genoffice/docx-engine'
 import {XMLParser,XMLValidator} from 'fast-xml-parser'
 import {splitXmlChildren} from '../packages/docx-engine/src/generate'
 import {applyTrackedChangesXml} from '../packages/docx-engine/src/revision-xml'
@@ -23,6 +23,13 @@ export interface TextRevisionTarget {
  type:'insertion'|'deletion'
  author:string
  date:string|null
+}
+export interface NewTextRevisionOperation {
+ blockId:string
+ expectedObjectSha256:string
+ from:number
+ to:number
+ text:string
 }
 interface Element {name:string;xml:string;start:number}
 interface Target {element:Element;public:TextRevisionTarget}
@@ -98,4 +105,53 @@ export function resolveTextRevisions(block:Block,blockId:string,operations:reado
  }
  if(XMLValidator.validate(xml)!==true)fail('docx_revision_result_invalid')
  return{xml,resolvedRevisionIds:operations.map(op=>op.revisionId)}
+}
+
+/** Creates run-level revisions only for source-bound, plain-text paragraph edits. */
+export function recordTextRevisions(block:Block,blockId:string,operations:readonly NewTextRevisionOperation[],author:string,date:string,protectedDocument=false):{runs:Run[];revisionCount:number}{
+ const xml=block.originalXml
+ if(protectedDocument)fail('docx_revision_protected')
+ if(!['paragraph','heading','listItem'].includes(block.type)||!xml||!/^<w:p(?:\s|>)/.test(xml)||!blockId||xml.length>1024*1024||XMLValidator.validate(xml)!==true||/<!|<\?/.test(xml)||/\sxmlns(?::[\w.-]+)?\s*=/.test(xml))fail('docx_revision_block_unsupported')
+ if(/<w:(?:ins|del|move\w*|\w+Change|cellIns|cellDel|cellMerge|hyperlink|fldChar|instrText|drawing|object|pict|ruby|sdt|customXml|bookmark\w*|comment\w*|proofErr)\b/.test(xml))fail('docx_revision_complex_unsupported')
+ if(!Array.isArray(operations)||!operations.length||operations.length>500||typeof author!=='string'||!author||author.length>255||typeof date!=='string'||!/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ/.test(date)||!Number.isFinite(Date.parse(date))||new Date(date).toISOString().replace(/\.\d{3}Z$/,'Z')!==date)fail('docx_revision_operations_invalid')
+ const root:Element={name:'w:p',xml,start:0},parts=children(root)
+ if(parts.some(part=>part.name!=='w:pPr'&&part.name!=='w:r')||parts.filter(part=>part.name==='w:pPr').length>1)fail('docx_revision_complex_unsupported')
+ for(const run of parts.filter(part=>part.name==='w:r')){
+  const payload=children(run),properties=payload.filter(part=>part.name==='w:rPr')
+  if(properties.length>1||properties.length&&payload[0]!==properties[0]||payload.some(part=>part.name!=='w:rPr'&&part.name!=='w:t'))fail('docx_revision_complex_unsupported')
+ }
+ const source=block.runs
+ if(!Array.isArray(source)||!source.length||source.some(run=>!run.text||run.ins||run.del||run.image||run.math||run.ruby||run.noteRef||run.link||run.instrField!==undefined||run.refField!==undefined||run.sym))fail('docx_revision_complex_unsupported')
+ const sourceText=source.map(run=>run.text).join(''),expectedObjectSha256=hash(xml)
+ const validBoundary=(at:number)=>at>=0&&at<=sourceText.length&&!(at>0&&at<sourceText.length&&/[\uD800-\uDBFF]/.test(sourceText[at-1]!)&&/[\uDC00-\uDFFF]/.test(sourceText[at]!))
+ let previousTo=-1
+ const planned=operations.map(op=>{
+  if(!op||Object.keys(op).sort().join(',')!=='blockId,expectedObjectSha256,from,text,to'||op.blockId!==blockId||op.expectedObjectSha256!==expectedObjectSha256||!Number.isSafeInteger(op.from)||!Number.isSafeInteger(op.to)||op.from<0||op.to<op.from||!validBoundary(op.from)||!validBoundary(op.to)||op.from<=previousTo||typeof op.text!=='string'||!op.text&&op.from===op.to||!op.text.isWellFormed()||op.text.length>20000||/[\u0000-\u0008\u000B-\u001F\uFFFE\uFFFF]/.test(op.text))fail('docx_revision_anchor_invalid')
+  previousTo=op.to
+  if(op.from===op.to&&!op.text)fail('docx_revision_anchor_invalid')
+  return op
+ })
+ const slice=(from:number,to:number,revision:'ins'|'del'|null,text?:string,inheritAt=from):Run[]=>{
+  let offset=0;const out:Run[]=[]
+  for(const run of source){
+   const end=offset+run.text.length
+   if(revision==='ins'){
+    if(offset<=inheritAt&&inheritAt<=end){const plain={...structuredClone(run),text:text!};delete plain.ins;delete plain.del;out.push({...plain,ins:{author,date}});return out}
+   }else if(from<end&&to>offset){const piece={...structuredClone(run),text:run.text.slice(Math.max(from,offset)-offset,Math.min(to,end)-offset)};if(revision==='del')out.push({...piece,del:{author,date}});else out.push(piece)}
+   offset=end
+  }
+  if(revision==='ins'&&inheritAt===sourceText.length){const run=source.at(-1)!;const plain={...structuredClone(run),text:text!};delete plain.ins;delete plain.del;out.push({...plain,ins:{author,date}});return out}
+  if(revision==='ins')fail('docx_revision_anchor_invalid')
+  return out
+ }
+ const runs:Run[]=[];let cursor=0
+ for(const op of planned){
+  runs.push(...slice(cursor,op.from,null))
+  if(op.to>op.from)runs.push(...slice(op.from,op.to,'del'))
+  if(op.text)runs.push(...slice(op.from,op.from,'ins',op.text,op.from))
+  cursor=op.to
+ }
+ runs.push(...slice(cursor,sourceText.length,null))
+ if(!runs.length)fail('docx_revision_result_invalid')
+ return{runs,revisionCount:planned.length}
 }

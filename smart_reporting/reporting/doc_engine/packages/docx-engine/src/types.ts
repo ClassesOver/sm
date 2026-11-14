@@ -2206,6 +2206,8 @@ export type FinalBlock =
 /** Content the generator can turn into an OOXML <w:p> fragment. */
 export interface GeneratedBlock {
   type: 'paragraph' | 'heading' | 'listItem'
+  /** exact original <w:p> attributes for source-bound regenerated paragraphs */
+  rawPAttrs?: string
   level?: number
   /** heading by direct w:outlineLvl only: write the level, never a Heading style */
   outlineOnly?: boolean

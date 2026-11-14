@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -319,7 +320,7 @@ describe('report editor enhancements', () => {
     const panel = createExportPanel()
     panel.show({ revision: 1, pdf: { downloadUrl: '/old-pdf' }, word: { downloadUrl: '/old-word' } })
     panel.show({ revision: 2, [format]: { downloadUrl: `/${format}` },
-      validation: { ok: false, issues: [{ code: 'render_format_failed', message: '另一格式转换失败' }] } })
+      validation: { ok: false, issues: [{ code: 'render_format_failed', message: '另一格式转换失败' }] } }, 'pdf', 'document')
     const missing = format === 'pdf' ? 'word' : 'pdf'
     const link = panel.dialog.querySelector<HTMLAnchorElement>(`[data-format="${format}"]`)!
     expect(link.hidden).toBe(false)
@@ -333,6 +334,63 @@ describe('report editor enhancements', () => {
     panel.show({ revision: 3, pdf: { downloadUrl: '/new-pdf' }, word: { downloadUrl: '/new-word' } })
     expect(absent.hidden).toBe(false)
     expect(panel.dialog.querySelector<HTMLButtonElement>(`[data-copy="${missing}"]`)!.disabled).toBe(false)
+  })
+
+  it.each([
+    ['pdf', 'pdf', 'PDF'], ['docx', 'word', 'Word'], ['md', 'md', 'MD'],
+    ['xlsx', 'xlsx', 'XLSX'], ['pptx', 'pptx', 'PPTX'],
+  ] as const)('shows a valid single %s export without requiring other formats', (target, format, label) => {
+    const panel = createExportPanel()
+    panel.show({ revision: 2, [format]: { downloadUrl: `/${format}`, path: `report.${target}`, size: 100 },
+      validation: { ok: true, issues: [] } }, format, target)
+    expect(panel.dialog.querySelector('#export-title')?.textContent).toBe(`${label} 导出完成`)
+    expect(panel.dialog.querySelector<HTMLElement>('.export-validation-warning')!.hidden).toBe(true)
+    expect(panel.dialog.querySelector<HTMLAnchorElement>(`[data-format="${format}"]`)?.getAttribute('href')).toBe(`/${format}`)
+    expect(panel.dialog.querySelector(`[data-artifact-meta="${format}"]`)?.textContent).toContain('100 B')
+  })
+
+  it('infers MD from actual receipt, copies its link and clears it on the next result', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const panel = createExportPanel()
+    panel.show({ revision: 2, md: { downloadUrl: '/md' }, validation: { ok: false, issues: [{ message: 'MD 待业务复核' }] } })
+    expect(panel.dialog.querySelector('#export-title')?.textContent).toBe('MD 已生成 · 验收未通过')
+    expect(panel.dialog.textContent).toContain('MD 待业务复核')
+    panel.dialog.querySelector<HTMLButtonElement>('[data-copy="md"]')!.click()
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith('/md'))
+    await vi.waitFor(() => expect(panel.dialog.querySelector('.export-copy-status')?.textContent).toBe('MD 链接已复制'))
+    panel.show({ revision: 3, pdf: { downloadUrl: '/pdf' }, validation: { ok: true, issues: [] } })
+    const old = panel.dialog.querySelector<HTMLAnchorElement>('[data-format="md"]')!
+    expect(old.hidden).toBe(true)
+    expect(old.hasAttribute('href')).toBe(false)
+    expect(panel.dialog.querySelector<HTMLButtonElement>('[data-copy="md"]')!.disabled).toBe(true)
+    expect(panel.dialog.querySelector('#export-title')?.textContent).toBe('PDF 导出完成')
+  })
+
+  it('hides absent download rows and editor links under the existing download layout', () => {
+    const style = document.createElement('style')
+    // 从当前生产样式提取原样规则，避免手写样式与实际布局漂移。
+    const editorStyles = readFileSync('src/style.css', 'utf8')
+    const rules = [editorStyles.match(/\.export-format-row\s*\{[^}]*\}/)?.[0],
+      editorStyles.match(/\.export-links a\s*\{[^}]*\}/)?.[0]]
+    expect(rules.every(Boolean)).toBe(true)
+    style.textContent = rules.join('\n')
+    document.head.append(style)
+    try {
+      const panel = createExportPanel()
+      panel.show({ revision: 2, md: { downloadUrl: '/md' }, validation: { ok: true, issues: [] } }, 'md', 'md')
+      expect(getComputedStyle(panel.dialog.querySelector('[data-format="pdf"]')!.parentElement!).display).toBe('none')
+      expect(getComputedStyle(panel.dialog.querySelector('[data-format="md"]')!.parentElement!).display).toBe('grid')
+      expect(getComputedStyle(panel.dialog.querySelector<HTMLElement>('[data-format="editor"]')!).display).toBe('none')
+    } finally { style.remove() }
+  })
+
+  it('does not claim an empty receipt has generated a revision', () => {
+    const panel = createExportPanel()
+    panel.show({ revision: 2, validation: { ok: true, issues: [] } }, 'md', 'md')
+    expect(panel.dialog.querySelector('#export-title')?.textContent).toBe('未生成可下载文件')
+    expect(panel.dialog.querySelector('.export-revision')?.textContent).not.toContain('已生成')
+    expect(panel.dialog.querySelector<HTMLElement>('.export-validation-warning')!.hidden).toBe(false)
   })
 
   it('highlights the export format requested by the user', () => {
@@ -420,5 +478,22 @@ describe('report editor enhancements', () => {
     window.dispatchEvent(new Event('online'))
     expect(label.textContent).toBe('网络已连接')
     expect(reconnect).toHaveBeenCalledOnce()
+  })
+})
+
+const provenance = () => ({ version: 1, template: { filename: '<img src=x onerror=alert(1)>.docx', size: 42, sha256: 'a'.repeat(64) }, contentSha256: 'b'.repeat(64), layoutValidation: 'unverified', undeclaredSamples: 'not_assessed', previewSourceFormat: 'word', formats: { word: { artifact: { size: 25, sha256: 'c'.repeat(64) }, layoutSource: 'uploaded_template', signatureSource: 'frozen_revision_preferences', generatedDate: '2026-11-13', dateFormatSource: 'editor_design', descriptionSource: 'editor_reset', placement: 'declared_template_slot', signatureLayoutSource: 'template', templateSampleStatus: 'replaced', signatureReadback: 'passed', bodyReadback: 'structure_verified' }, pdf: { artifact: { size: 26, sha256: 'd'.repeat(64) }, layoutSource: 'uploaded_template', signatureSource: 'frozen_revision_preferences', generatedDate: null, dateFormatSource: 'frozen_revision_preferences', descriptionSource: 'unavailable', placement: 'body_end', signatureLayoutSource: 'generated_fallback', templateSampleStatus: 'no_declared_slot', signatureReadback: 'unverified', bodyReadback: 'sample_only' } } })
+
+describe('export layout provenance integration', () => {
+  it('replaces old export provenance and keeps links available with malformed receipts', () => {
+    const panel = createExportPanel()
+    const result = { revision: 2, pdf: { downloadUrl: '/report.pdf' }, validation: { ok: false, issues: [], layoutProvenance: provenance() } }
+    panel.show(result)
+    expect(panel.dialog.querySelector('[data-export-provenance] details')).not.toBeNull()
+    panel.show({ ...result, validation: { ...result.validation, layoutProvenance: { version: 9 } } })
+    expect(panel.dialog.querySelector('[data-export-provenance]')?.textContent).toContain('待复核')
+    expect(panel.dialog.querySelector('a[data-format="pdf"]')?.getAttribute('href')).toBe('/report.pdf')
+    panel.show({ revision: 3, pdf: result.pdf })
+    expect(panel.dialog.querySelector('[data-export-provenance]')?.childElementCount).toBe(0)
+    panel.dialog.remove()
   })
 })

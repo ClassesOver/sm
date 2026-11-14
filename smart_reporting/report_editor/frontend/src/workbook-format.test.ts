@@ -124,8 +124,8 @@ it('renders mixed state, actual single-cell state, Chinese tabs, roving focus an
   expect(host.querySelector('[data-ribbon-command="bold"]')!.getAttribute('aria-pressed')).toBe('true')
   const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
   // 固定源页签顺序以"文件"开头；激活页签仍是"开始"，roving tabindex 只落在它上面。
-  expect(tabs.map(tab => tab.dataset.ribbonTab)).toEqual(['File', 'Home', 'Insert', 'Page Layout', 'Formulas', 'Data', 'Review', 'View'])
-  expect(tabs.map(tab => tab.tabIndex)).toEqual([-1, 0, -1, -1, -1, -1, -1, -1])
+  expect(tabs.map(tab => tab.dataset.ribbonTab)).toEqual(['File', 'Home', 'Insert', 'Page Layout', 'Formulas', 'Data', 'Review', 'View', 'Chart Design'])
+  expect(tabs.map(tab => tab.tabIndex)).toEqual([-1, 0, -1, -1, -1, -1, -1, -1, -1])
   tabs[1]!.focus(); tabs[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
   expect((document.activeElement as HTMLElement).dataset.ribbonTab).toBe('Insert')
   host.querySelector<HTMLElement>('[role="tablist"]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))

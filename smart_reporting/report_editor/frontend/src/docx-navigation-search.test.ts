@@ -71,6 +71,18 @@ it('清空/无匹配/重新打开恢复标题树及折叠，Enter与Shift+Enter�
   f.action('clear').click(); expect(f.input.value).toBe(''); expect(f.results()).toHaveLength(0)
   expect(f.navigation.panel.querySelector<HTMLElement>('[role="tree"]')!.hidden).toBe(false); expect(f.status()).toContain('请输入')
 })
+it.each(['composition', 'legacy', 'handled'])('导航搜索保留受保护Enter的查询和当前选区：%s', protection => {
+  const f = setup(); f.query('cat'); f.input.focus()
+  const selection = f.editor.state.selection, before = f.editor.getJSON(), storage = JSON.stringify(localStorage)
+  for (const shiftKey of [false, true]) {
+    const event = new KeyboardEvent('keydown', { key: 'Enter', shiftKey, bubbles: true, cancelable: true, isComposing: protection === 'composition', keyCode: protection === 'legacy' ? 229 : 0 })
+    if (protection === 'handled') event.preventDefault()
+    f.input.dispatchEvent(event)
+    expect(f.count()).toBe('0/4'); expect(f.input.value).toBe('cat'); expect(f.editor.state.selection).toBe(selection); expect(document.activeElement).toBe(f.input)
+  }
+  f.input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); expect(f.count()).toBe('1/4')
+  expect(f.editor.getJSON()).toEqual(before); expect(JSON.stringify(localStorage)).toBe(storage); expect(undoDepth(f.editor.state)).toBe(0)
+})
 
 it.each(['readonly', 'saving'])('%s 搜索与导航可用，不清除现有查找替换高亮', state => {
   const f = setup(); if (state === 'readonly') f.editor.setEditable(false); else f.draft.beginSave()

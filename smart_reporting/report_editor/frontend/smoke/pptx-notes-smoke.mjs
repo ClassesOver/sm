@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
 import { verifyBrowserTextInput } from './browser-input-preflight.mjs'
+import { inspectPptxSettingsLayout } from './office-pptx-settings-layout.mjs'
 
 // This is an explicit authorization/CSRF route fixture, not a live-service authorization test.
 // Preview, rendering, save and downloaded-file inspection run the real Python/OOXML engine.
@@ -58,7 +59,8 @@ try {
   browser.on('disconnected', () => { runtimeEvents.push({ event: 'browser-disconnected', time: new Date().toISOString() }); stage('Browser disconnected') })
   const inputBaseline = await verifyBrowserTextInput(browser)
   stage('Chromium text input preflight passed')
-  page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, acceptDownloads: true })
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, acceptDownloads: true })
+  page = await context.newPage()
   page.on('close', () => { runtimeEvents.push({ event: 'page-close', time: new Date().toISOString() }); stage('Page closed') })
   page.on('crash', () => { runtimeEvents.push({ event: 'page-crash', time: new Date().toISOString() }); stage('Page crashed') })
   page.on('pageerror', error => pageErrors.push(error.message))
@@ -178,7 +180,77 @@ try {
     }
     await page.locator('[data-notes-text]').waitFor()
   }
+  const textPanelLayouts = []
   await open()
+  let settingsLayouts
+  if(process.env.PPTX_SETTINGS_PANEL_VIEWPORTS){
+    settingsLayouts=await inspectPptxSettingsLayout(page,{viewports:process.env.PPTX_SETTINGS_PANEL_VIEWPORTS,output,draft})
+    await page.setViewportSize({width:1440,height:1100})
+  }
+  if (process.env.PPTX_TEXT_PANEL_VIEWPORTS) {
+    for (const viewport of process.env.PPTX_TEXT_PANEL_VIEWPORTS.split(',')) {
+      const [width,height] = viewport.split('x').map(Number)
+      await page.setViewportSize({width,height})
+      const before = await draft()
+      await page.locator('[data-ribbon-tab="home"]').click()
+      const opener = page.locator('[data-command="findReplace"]'); await opener.click()
+      const dialog = page.getByRole('dialog',{name:'查找和替换',exact:true})
+      await dialog.getByLabel('查找文字',{exact:true}).fill('来源 0')
+      await dialog.locator('[data-command="findNext"]').click()
+      await page.evaluate(()=>document.fonts.ready)
+      const geometry = await dialog.evaluate(node=>{
+        const r=node.getBoundingClientRect(),input=node.querySelector('input')
+        return {x:r.x,y:r.y,right:r.right,bottom:r.bottom,width:r.width,font:getComputedStyle(node).fontFamily,inputFont:getComputedStyle(input).fontFamily,inputWidth:input.getBoundingClientRect().width,overflow:node.scrollWidth>node.clientWidth+1}
+      })
+      assert.ok(geometry.x>=0&&geometry.y>=0&&geometry.right<=width+1&&geometry.bottom<=height+1&&!geometry.overflow,JSON.stringify(geometry))
+      assert.ok(geometry.font.includes('Noto Sans')&&geometry.inputFont.includes('Noto Sans')&&geometry.inputWidth>=140)
+      if(width>=1000)assert.equal(geometry.width,560)
+      const last=dialog.locator('[data-command="closeFindReplace"]');await last.focus();await last.scrollIntoViewIfNeeded()
+      assert.ok(await last.evaluate(node=>{const r=node.getBoundingClientRect();return node.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}))
+      await page.screenshot({path:resolve(output,'find-'+viewport+'.png')})
+      await page.keyboard.press('Tab');assert.ok(await dialog.evaluate(node=>node.contains(document.activeElement)))
+      await page.keyboard.press('Escape');await dialog.waitFor({state:'detached'})
+      assert.ok(await opener.evaluate(node=>document.activeElement===node));assert.deepEqual(await draft(),before)
+      await showNotes()
+      const notes=page.locator('[data-notes-text]');await notes.scrollIntoViewIfNeeded()
+      let focusedNotesGeometry
+      if(height<=480){
+        const original=await notes.inputValue();await notes.click()
+        focusedNotesGeometry=await notes.evaluate(node=>{
+          const pane=node.closest('[data-notes-panel]'),r=pane.getBoundingClientRect()
+          return {x:r.x,y:r.y,right:r.right,bottom:r.bottom,position:getComputedStyle(pane).position,controls:[...pane.querySelectorAll('textarea,button')].map(control=>{const c=control.getBoundingClientRect();return {x:c.x,y:c.y,right:c.right,bottom:c.bottom,accessible:control.contains(document.elementFromPoint(c.x+c.width/2,c.y+c.height/2))}})}
+        })
+        assert.equal(focusedNotesGeometry.position,'fixed',JSON.stringify(focusedNotesGeometry))
+        assert.ok(focusedNotesGeometry.x>=0&&focusedNotesGeometry.y>=0&&focusedNotesGeometry.right<=width&&focusedNotesGeometry.bottom<=height,JSON.stringify(focusedNotesGeometry))
+        assert.ok(focusedNotesGeometry.controls.every(control=>control.accessible&&control.y>=focusedNotesGeometry.y&&control.bottom<=focusedNotesGeometry.bottom&&control.x>=focusedNotesGeometry.x&&control.right<=focusedNotesGeometry.right))
+        assert.equal(await notes.inputValue(),original)
+      }
+      const notesGeometry=await notes.evaluate(node=>{const r=node.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2),stage=node.closest('.slides-stage');return {font:getComputedStyle(node).fontFamily,x:r.x,y:r.y,bottom:r.bottom,width:r.width,height:r.height,accessible:node.contains(hit),hit:hit?.outerHTML.slice(0,500),stage:{scrollTop:stage.scrollTop,clientHeight:stage.clientHeight,scrollHeight:stage.scrollHeight}}})
+      assert.ok(notesGeometry.font.includes('Noto Sans')&&notesGeometry.height>=80&&notesGeometry.accessible,JSON.stringify(notesGeometry))
+      assert.equal(await notes.inputValue(),'已有备注\n第二行');assert.deepEqual(await draft(),before)
+      await page.screenshot({path:resolve(output,'notes-'+viewport+'.png')})
+      let shortScreenInteraction
+      if(height<=480){
+        const pane=page.locator('[data-notes-panel]')
+        await pane.getByRole('button',{name:'收起备注',exact:true}).click()
+        await pane.waitFor({state:'hidden'})
+        assert.notEqual(await pane.evaluate(node=>getComputedStyle(node).position),'fixed')
+        await showNotes()
+        await notes.waitFor({state:'visible'})
+        await notes.click()
+        assert.equal(await pane.evaluate(node=>getComputedStyle(node).position),'fixed')
+        await page.locator('[data-ribbon-tab="home"]').focus()
+        assert.notEqual(await pane.evaluate(node=>getComputedStyle(node).position),'fixed')
+        assert.equal(await notes.inputValue(),'已有备注\n第二行');assert.deepEqual(await draft(),before)
+        shortScreenInteraction={collapse:true,reopen:true,blurReturnsToDock:true,textUnchanged:true}
+      }
+      textPanelLayouts.push({width,height,geometry,notesGeometry,focusedNotesGeometry,shortScreenInteraction,draftUnchanged:true})
+    }
+    await page.setViewportSize({width:1440,height:1100})
+  }
+  const layoutOnly=process.env.PPTX_TEXT_PANEL_LAYOUT_ONLY==='1'
+  let saved,cleared
+  if(!layoutOnly){
   stage('Editing existing page notes and switching page directly without explicit blur')
   await showNotes()
   assert.equal(await page.locator('[data-notes-text]').inputValue(), '已有备注\n第二行')
@@ -208,7 +280,7 @@ try {
   await page.getByText('第 2 页 · 演讲者备注', {exact: true}).waitFor()
   await page.getByText('第 3 页 · 演讲者备注', {exact: true}).waitFor()
   await page.screenshot({path: resolve(output, 'notes-before-save.png'), fullPage: true})
-  const saved = await saveAndOpen()
+  saved = await saveAndOpen()
   assert.equal(activeRevision, 2)
   assert.deepEqual(saved.independent.slides.map(slide => slide.sourceText), ['来源 2', '来源 0', '来源 1'])
   assert.deepEqual(notesBySource(saved.independent), {'来源 2': '', '来源 0': firstText, '来源 1': secondText})
@@ -217,7 +289,7 @@ try {
   await page.locator('.slide-open[data-slide-index="1"]').click(); await showNotes()
   assert.equal(await page.locator('[data-notes-text]').inputValue(), firstText)
   await page.locator('[data-notes-text]').fill('')
-  const cleared = await saveAndOpen(false, [{slideIndex: 1, text: ''}])
+  cleared = await saveAndOpen(false, [{slideIndex: 1, text: ''}])
   assert.equal(activeRevision, 3)
   assert.deepEqual(notesBySource(cleared.independent), {'来源 2': '', '来源 0': '', '来源 1': secondText})
   assert.deepEqual(cleared.model.slides.map(slide => slide.notesText), ['', '', secondText])
@@ -225,19 +297,21 @@ try {
   assert.equal(await page.locator('[data-notes-text]').inputValue(), '')
   await page.screenshot({path: resolve(output, 'notes-cleared-reopened.png'), fullPage: true})
   assert.equal(saves.length, 2)
+  }else{assert.equal(saves.length,0);assert.deepEqual(await draft(),[])}
   await Promise.all(identityReads)
   assert.deepEqual(pageErrors, []); assert.deepEqual(consoleErrors, []); assert.deepEqual(routeErrors, []); assert.deepEqual(failedResponses, [])
   assert.equal(sha(await readFile(resolve(staticRoot, '.vite/manifest.json'))), manifestSha256)
   const evidence = {ok: true, authorization: 'explicit route fixture; production auth is not exercised',
     pdfPreview: 'valid attachment placeholder; PDF conversion and native PDF plugin are not exercised',
-    engine: 'real Python inspect/patch/render and independent python-pptx/ZIP readback',
+    engine: layoutOnly?'real Python source inspect/render; layout only, no patch/save': 'real Python inspect/patch/render and independent python-pptx/ZIP readback',layoutOnly,
     manifestSha256, runtimeJavaScript: [...runtimeJavaScript.values()], sourceSha256: sourceSha,
-    revision: activeRevision, saves, saved: saved.independent, cleared: cleared.independent,
-    pageErrors, consoleErrors, routeErrors, failedResponses, runtimeEvents, inputBaseline}
+    revision: activeRevision, saves, saved: saved?.independent, cleared: cleared?.independent,
+    pageErrors, consoleErrors, routeErrors, failedResponses, runtimeEvents, inputBaseline,textPanelLayouts,settingsLayouts}
   await writeFile(resolve(output, 'evidence.json'), JSON.stringify(evidence, null, 2))
   console.log(JSON.stringify({ok: true, output, revision: activeRevision, manifestSha256, runtimeJavaScript: runtimeJavaScript.size}))
 
 } catch (error) {
+  await page?.screenshot({path:resolve(output,'failure.png'),fullPage:true}).catch(()=>{})
   const body = await page?.locator('body').innerText().catch(() => '')
   throw new Error(`${error.stack ?? error}\n${JSON.stringify({ body: body?.slice(-6000), pageErrors, consoleErrors, routeErrors, failedResponses, runtimeEvents })}`)
 } finally {

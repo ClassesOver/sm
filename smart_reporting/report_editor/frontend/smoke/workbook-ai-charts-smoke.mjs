@@ -16,9 +16,10 @@ const staticDirectory=process.env.PDF_SMOKE_STATIC_DIRECTORY??join(frontend,'../
 const port=Number(process.env.WORKBOOK_AI_CHARTS_PORT??4353),origin=`http://127.0.0.1:${port}`
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
 const manualRange=process.env.WORKBOOK_AI_CHARTS_VALUE_RANGE==='1'
+const sourceData=process.env.WORKBOOK_AI_CHARTS_SOURCE_DATA==='1'
 await mkdir(directory,{recursive:false})
 const manifest=await readFile(join(staticDirectory,'.vite/manifest.json'))
-const server=spawn(join(repo,'.venv/bin/python'),[join(frontend,'smoke/workbook-ai-charts-server.py'),'--directory',directory,'--port',String(port)],{
+const server=spawn(join(repo,'.venv/bin/python'),[join(frontend,'smoke/workbook-ai-charts-server.py'),'--directory',directory,'--port',String(port),...(process.env.WORKBOOK_AI_CHARTS_SOURCE?['--source',process.env.WORKBOOK_AI_CHARTS_SOURCE]:[])],{
  cwd:repo,env:{...process.env,PYTHONPATH:repo,PDF_SMOKE_STATIC_DIRECTORY:staticDirectory},stdio:'pipe'})
 let serverLog='',browser,page,stage='server'
 server.stdout.on('data',data=>{serverLog+=data});server.stderr.on('data',data=>{serverLog+=data})
@@ -63,6 +64,7 @@ try{
  const operations=()=>page.evaluate(()=>Object.entries(localStorage).filter(([key])=>key.startsWith('native-editor-draft:')).flatMap(([,value])=>JSON.parse(value).operations??[]))
  const waitKind=(kind,present)=>page.waitForFunction(({kind,present})=>Object.entries(localStorage).filter(([key])=>key.startsWith('native-editor-draft:')).some(([,value])=>(JSON.parse(value).operations??[]).some(op=>op.kind===kind))===present,{kind,present})
  stage='open';await page.goto(origin+info.openPath);await ready()
+ await page.screenshot({path:join(directory,'source-opened.png'),fullPage:true})
  stage='manual-draft';await page.locator('[data-u-comp="defined-name"] input').fill('A1')
  await page.locator('[data-u-comp="defined-name"] input').press('Enter')
  await page.locator('[data-ribbon-command="bold"]').click()
@@ -75,7 +77,7 @@ try{
   await panel.locator('textarea').fill(instruction)
   await panel.locator('[type=submit]').click()
   await panel.locator('.native-ai-preview').waitFor({timeout:60000})
-  assert.match(await panel.locator('.native-ai-preview').innerText(),/xl\/charts\/chart1.xml/)
+  assert.match(await panel.locator('.native-ai-preview').innerText(),sourceData?/A1:B3|xl\/charts\/chart3.xml/:/xl\/charts\/chart1.xml/)
  }
  async function saveAndReopen(name,parent){
   const waiting=page.waitForResponse(response=>response.url().endsWith('/api/save')&&response.request().method()==='POST')
@@ -85,9 +87,9 @@ try{
   await writeFile(join(directory,name+'-save.json'),JSON.stringify({request:response.request().postDataJSON(),payload},null,2))
   const link=page.locator('[data-action="xlsx-download"]');await link.waitFor()
   assert.equal(await link.getAttribute('href'),payload.artifacts.xlsx.downloadUrl)
-  const downloaded=await page.request.get(payload.artifacts.xlsx.downloadUrl);assert.equal(downloaded.status(),200)
-  const bytes=await downloaded.body();assert.equal(sha(bytes),payload.artifacts.xlsx.sha256)
-  await writeFile(join(directory,name+'.xlsx'),bytes)
+  const [download]=await Promise.all([page.waitForEvent('download'),link.click()])
+  await download.saveAs(join(directory,name+'.xlsx'));assert.equal(await download.failure(),null)
+  const bytes=await readFile(join(directory,name+'.xlsx'));assert.equal(sha(bytes),payload.artifacts.xlsx.sha256)
   await page.goto(payload.editor.openUrl);await ready()
   const reopened=await page.evaluate(async()=>await(await fetch(location.pathname+'/api/context')).json())
   assert.equal(reopened.context.revision,parent+1);assert.equal(reopened.context.sourceFile.sha256,sha(bytes))
@@ -101,10 +103,30 @@ try{
   }
   saves.push({name,payload,reopened})
  }
+ let adopted
+ if(sourceData){
+  stage='source-discard';await generate('新增来源图表：Sheet!A1:B3，折线图，标题实际来源收入，放E20；保留两张原图')
+  assert.deepEqual(await operations(),manual)
+  await panel.locator('.native-ai-discard').click();await panel.locator('.native-ai-preview').waitFor({state:'hidden'})
+  assert.deepEqual(await operations(),manual)
+  stage='source-add';await generate('新增来源图表：Sheet!A1:B3，折线图，标题实际来源收入，放E20；保留两张原图')
+  await panel.locator('.native-ai-accept').click();await waitKind('applyChartSource',true)
+  adopted=await operations();assert.deepEqual(adopted.slice(0,manual.length),manual)
+  assert.equal(adopted.at(-1).operation.op,'add_chart')
+  await panel.locator('.native-ai-undo').click();await waitKind('applyChartSource',false);assert.deepEqual(await operations(),manual)
+  await panel.locator('.native-ai-redo').click();await waitKind('applyChartSource',true);assert.deepEqual(await operations(),adopted)
+  stage='source-restore';await page.reload();await ready();assert.deepEqual(await operations(),adopted)
+  stage='source-add-save';await saveAndReopen('added',4)
+  stage='source-rebind';await generate('换绑来源图表 xl/charts/chart3.xml：仅Sheet的A3/B3，标题第二季度收入；保留两张原图')
+  assert.deepEqual(await operations(),[])
+  await panel.locator('.native-ai-accept').click();await waitKind('applyChartSource',true)
+  assert.equal((await operations()).at(-1).operation.op,'edit_chart')
+  stage='source-rebind-save';await saveAndReopen('rebound',5)
+ }else{
  stage='edit-candidate';await generate('仅修改 Sheet 的 xl/charts/chart1.xml，标题 Updated、横向条形图、底部图例；保留另一张同名图表'+(process.env.WORKBOOK_AI_CHARTS_AXIS_TITLES==='1'?'；添加轴标题：分类 Quarter、数值 Amount (USD)':'')+(manualRange?'；数值范围5到25':'')+(process.env.WORKBOOK_AI_CHARTS_DATA_LABELS==='1'?'；显示数值数据标签，居中，格式0.0':''))
  assert.deepEqual(await operations(),manual)
  await panel.locator('.native-ai-accept').click();await waitKind('applyChartEdits',true)
- const adopted=await operations();assert.deepEqual(adopted.slice(0,manual.length),manual)
+ adopted=await operations();assert.deepEqual(adopted.slice(0,manual.length),manual)
  stage='undo-redo';await panel.locator('.native-ai-undo').click();await waitKind('applyChartEdits',false)
  assert.deepEqual(await operations(),manual)
  await panel.locator('.native-ai-redo').click();await waitKind('applyChartEdits',true)
@@ -124,6 +146,9 @@ try{
   await page.waitForFunction(count=>Object.entries(localStorage).filter(([key])=>key.startsWith('native-editor-draft:')).flatMap(([,value])=>JSON.parse(value).operations??[]).length===count,adopted.length)
   assert.deepEqual(await operations(),adopted)
  }
+ stage='restore-draft'
+ const beforeReload=await operations();await page.reload();await ready()
+ assert.deepEqual(await operations(),beforeReload)
  stage='save-edit';await saveAndReopen('edited',4)
  stage='discard-delete';await generate('删除 Sheet 的 xl/charts/chart1.xml，保留 chart2')
  const beforeDelete=await operations();await panel.locator('.native-ai-discard').click()
@@ -132,15 +157,16 @@ try{
  stage='accept-delete';await generate('删除 Sheet 的 xl/charts/chart1.xml，保留 chart2')
  await panel.locator('.native-ai-accept').click();await waitKind('applyChartDeletions',true)
  stage='save-delete';await saveAndReopen('deleted',5)
+ }
  stage='independent-checks'
- const verified=spawnSync(join(repo,'.venv/bin/python'),[join(frontend,'smoke/workbook-ai-charts-verify.py'),directory],{cwd:repo,encoding:'utf8'})
+ const verified=spawnSync(join(repo,'.venv/bin/python'),[join(frontend,'smoke/'+(sourceData?'workbook-ai-chart-sources-verify.py':'workbook-ai-charts-verify.py')),directory],{cwd:repo,encoding:'utf8'})
  assert.equal(verified.status,0,verified.stdout+verified.stderr)
  const independent=JSON.parse(verified.stdout)
  await Promise.all(checks);assert(assets.size>0)
  assert.equal(sha(await readFile(join(staticDirectory,'.vite/manifest.json'))),sha(manifest))
  assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(httpErrors,[]);assert.deepEqual(assetErrors,[])
  const state=await(await page.request.get(origin+'/__smoke__/state')).json()
- assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,2);assert.equal(state.plannerCalls,manualRange?4:3)
+ assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,2);assert.equal(state.plannerCalls,!sourceData&&manualRange?4:3)
  const summary={ok:true,scope:'real UI/HTTP/grant/cookie/CSRF/Agno tools/writer/publication/download/reopen; ScriptedModel provider and scoped memory repository',browserVersion:browser.version(),fontPreflight,manifestSha256:sha(manifest),assets:Object.fromEntries(assets),manual,adopted,saves,independent,pageErrors,consoleErrors,httpErrors,assetErrors,state}
  await writeFile(join(directory,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok:true,directory,assets:assets.size,independent}))
 }catch(error){

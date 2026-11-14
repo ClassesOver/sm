@@ -308,3 +308,33 @@ Font family, italic and full rich-run/theme inheritance are not ported. See
 NATIVE_XLSX_DATA_LABEL_STYLE_ACCEPTANCE.md for actual source XML, passive font
 paint traces, foreground/background blend pixel proof and save/reopen evidence.
 The modified painter's local adaptation hash is refreshed.
+
+2026-11-13 local chart fill display: `grid/chart-legend.ts` and
+`grid/chart-render.ts` use the engine's source palette and sparse point fills for
+bar/column/pie/doughnut previews, preserve noFill and keep empty pie slots in
+their source positions. Unsupported source fills produce a bounded text notice;
+the host chart-description modal exposes matching text outside the canvas.
+The engine reuses existing HLS conversions for ordered luminance transforms.
+No source chart writer or new chart dependency is introduced. Other plot types
+and the remaining DrawingML fill/color capabilities still require separate
+implementation and verification. Original vendor hashes remain unchanged;
+local renderer/helper identities are in LOCAL-ADAPTATIONS-SHA256.
+
+## 2026-11-13 同步 code 的图表画布整合
+
+同步origin/code至6a713d05时，逐处合并上游分类轴排序、数值刻度和数据标签与本地标题度量、来源系列/逐点配色、无填充及饼/环空槽身份。柱形零值仍进入标签规划；绘制颜色复用chartPointColor，分类与系列偏移复用上游chartCategorySlot。原有两组画布测试与烟测场景均保留，不以选一侧覆盖冲突。
+
+同一隔离构建的来源填充及标签亮度/主题两组完整宿主通过，分别校验171个实际JS/CSS响应；前者含6图与4视口说明/axe，后者含主题切换、Undo/Redo、保存、授权HTTP下载和新修订重开，独立OOXML/像素检查通过。证据/tmp/office-code-pull-20261113，未覆盖共享static或改变体积门槛；本批不证明四格式完整对齐。
+
+## 2026-11-13 图表绘制层级与格式化数值
+
+`grid/chart-render.ts` 的图表扩展排在内置单元格文字、边框及角标之后，避免这些底层内容透过图框；来源图表仍使用原锚点和既有绘制器，不移动或删除工作表内容。系列数值优先读取 Univer 官方 `getCellRaw()`，避免 `getCell()` 的数字格式拦截器把真实数值变成显示文本后漏绘；分类标签保留显示值读取，真实文本不被猜成数值。固定 SOURCE-SHA256 原记录不变，本地适配身份登记于 LOCAL-ADAPTATIONS-SHA256。
+
+## 2026-11-13 多图选择与饼环标签适配
+
+`grid/chart-render.ts` 与宿主选择控制器共用 `workbook-chart-geometry.ts` 的锚点/EMU 几何，选中身份按工作簿和工作表登记并画蓝色边框。`grid/chart-legend.ts` 可使用饼环分类及逐点颜色，空分类保留原索引并显示为空文字。新增 `grid/chart-pie-data-labels.ts` 按固定源 WorkbookVisuals 的份额、内外标签和引导线语义绘制分类/百分比，复用来源 plot/series/point 标签样式；不以单元格货币格式格式化占比。
+
+标签少于0.5%省略，默认9%起内标，超过500点不绘制；复杂自定义文字、手动布局、爆炸位移和非默认圆环孔径未由本批补齐，放不下或碰撞的标签不伪造。快速布局/配色及目标保护接线属于宿主代码，具体证据与剩余范围见 NATIVE_XLSX_CHART_SELECTION_PRESETS_ACCEPTANCE.md。只更新 LOCAL-ADAPTATIONS-SHA256，不修改原始 SOURCE-SHA256。
+
+
+2026-11-13 图表对象几何接线：以固定源 `WorkbookVisuals.tsx` 与 `xlsx-drawing-edit.ts` 为准补 move/八向 resize。twoCell 支持 move/resize；oneCell 只 move 并保留 extent，absoluteAnchor 仍明确拒绝。本地24px最小显示/选取及RTL投影保持一致；原始 SOURCE-SHA256 不变，必要本地适配登记 LOCAL-ADAPTATIONS-SHA256。见 `NATIVE_XLSX_CHART_OBJECT_GEOMETRY_ACCEPTANCE.md`。

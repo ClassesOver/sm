@@ -21,6 +21,12 @@ it('dispatches exact outline chords from canvas and the native hidden focus host
   c.key(document.querySelector('#workbook-grid > [contenteditable]')!, 'ArrowLeft')
   expect(c.command.mock.calls).toEqual([['outline-group:auto'], ['outline-ungroup:auto']])
 })
+it('legacy输入法按键不建立或取消分组，普通快捷键仍有效', () => {
+  const c = setup()
+  for (const code of ['ArrowLeft', 'ArrowRight']) expect(c.key(c.grid, code, { keyCode: 229 }).defaultPrevented).toBe(false)
+  expect(c.command).not.toHaveBeenCalled()
+  c.key(c.grid); expect(c.command).toHaveBeenCalledExactlyOnceWith('outline-group:auto')
+})
 it('preserves text editing, chrome, modal and unavailable states', () => {
   const c = setup()
   for (const target of document.querySelectorAll('input, textarea, [data-u-comp="formula-bar"] [contenteditable]')) expect(c.key(target).defaultPrevented).toBe(false)

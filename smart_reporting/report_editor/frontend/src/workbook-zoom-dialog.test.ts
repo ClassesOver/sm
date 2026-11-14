@@ -62,3 +62,13 @@ it('drops detached modal callbacks after disposal and never reopens removed UI',
  c.dialog.dispose();form.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));c.dialog.open(200)
  expect(c.command).not.toHaveBeenCalled();expect(document.querySelector('.workbook-zoom-overlay')).toBeNull()
 })
+
+it.each(['composition','legacy','handled'])('缩放输入中的受保护Enter不提前应用设置：%s',async protection=>{
+ const c=await setup();c.input.value='137';c.input.focus()
+ const event=new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,isComposing:protection==='composition',keyCode:protection==='legacy'?229:0})
+ if(protection==='handled')event.preventDefault()
+ c.input.dispatchEvent(event)
+ expect(c.command).not.toHaveBeenCalled();expect(c.overlay.hidden).toBe(false);expect(c.input.value).toBe('137');expect(document.activeElement).toBe(c.input)
+ c.input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+ expect(c.command).toHaveBeenCalledExactlyOnceWith('zoom:137',undefined);expect(c.overlay.hidden).toBe(true)
+})

@@ -45,6 +45,11 @@ export function createNativeOfficeTransport(options: {
         return await api.renderTree({ expectedSha256: sourceSha256,
           operations: payload ? (payload.operations as NativeOperation[] | undefined) ?? [{ kind: 'editSlides', edits: payload.edits ?? [] }] : [] }) as T
       }
+      if (path === 'preview' && payload) {
+        if (payload.expectedSha256 !== sourceSha256) throw new Error('幻灯片来源已变化')
+        if (!Array.isArray(payload.operations)) throw new Error('放映预览缺少完整草稿')
+        return await api.preview({ expectedSha256: sourceSha256, operations: payload.operations as NativeOperation[] }) as T
+      }
       throw new Error('上传幻灯片未开放该操作')
     },
   }
@@ -101,7 +106,7 @@ export async function createNativeOfficeView(shell: EditorShell, options: {
   if (options.context.context.format === 'xlsx') {
     const { createWorkbookEditorView } = await import('./workbook-main')
     const { createWorkbookNativeAIClient } = await import('./workbook-native-ai')
-    const view = await createWorkbookEditorView(shell, { native: true, draft: options.draft, request: transport.workbook, onAssistant,
+    const view = await createWorkbookEditorView(shell, { native: true, draft: options.draft, request: transport.workbook, onAssistant, threadActor: options.context.threadActor ?? undefined,
       ...(options.context.aiEnabled ? { nativeAI: createWorkbookNativeAIClient(options.context.context.documentId, options.context.context.revision, options.context.csrfToken) } : {}),
       file: async () => ({ bytes: await options.api.file(), path: options.context.context.sourceFile.path, sha256: options.context.context.sourceFile.sha256 }) })
     if (!view) throw new Error('工作簿载入失败')

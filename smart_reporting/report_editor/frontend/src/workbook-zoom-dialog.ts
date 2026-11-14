@@ -45,6 +45,7 @@ export function createWorkbookZoomDialog(root: HTMLElement, onCommand: (command:
   }
   modal.card.querySelector('form')!.addEventListener('submit', event => { event.preventDefault(); apply() })
   modal.card.addEventListener('keydown', event => {
+    if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
     if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) { event.preventDefault(); apply() }
   })
   return {

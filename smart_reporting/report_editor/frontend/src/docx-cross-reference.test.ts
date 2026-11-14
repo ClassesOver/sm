@@ -36,6 +36,33 @@ it('model verifier rejects duplicate names, stale range text and split surrogate
  expect(verifiedDocxCrossReferenceModel(model,a)).toEqual(model)
  for(const value of [{...model,sourceSha256:f},{...model,bookmarks:[model.bookmarks[0],{...model.bookmarks[0],bookmarkId:f}]},{...model,bookmarks:[{...model.bookmarks[0],ranges:[{...model.bookmarks[0].ranges[0],text:'forged'}]}]},{...model,bookmarks:[{...model.bookmarks[0],ranges:[{...model.bookmarks[0].ranges[0],from:4,text:'x'}]}]}])expect(()=>verifiedDocxCrossReferenceModel(value,a)).toThrow()
 })
+it('preserves a focused reference button through ordinary caret transactions',()=>{
+ const x=fixture();x.editor.commands.setTextSelection(17);x.controls.open()
+ const button=x.root.querySelector<HTMLButtonElement>('[data-cross-reference-insert]')!;button.focus()
+ x.editor.commands.setTextSelection(18)
+ expect(button.isConnected).toBe(true);expect(document.activeElement).toBe(button)
+})
+it('opens at the first available reference and returns to the connected entry on closing',()=>{
+ const x=fixture(),entry=document.body.appendChild(document.createElement('button'));entry.focus();x.controls.open()
+ expect(document.activeElement).toBe(x.root.querySelector('[data-cross-reference-insert]'))
+ x.root.querySelector<HTMLButtonElement>('[data-cross-reference-close]')!.click();expect(document.activeElement).toBe(entry)
+})
+it('keeps a locked list keyboard-readable and moves focus away from a newly disabled item',()=>{
+ const x=fixture();x.controls.open();x.root.querySelector<HTMLButtonElement>('[data-cross-reference-insert]')!.focus()
+ x.editor.setEditable(false);x.controls.refresh()
+ expect(document.activeElement).toBe(x.root.querySelector('[data-cross-reference-close]'))
+ const status=x.root.querySelector<HTMLElement>('[role=status]')!
+ expect(status.getAttribute('aria-label')).toBe('交叉引用状态');expect(status.tabIndex).toBe(0)
+ status.focus();expect(document.activeElement).toBe(status)
+ const list=x.root.querySelector<HTMLElement>('[data-cross-reference-list]')!
+ expect(list.getAttribute('aria-label')).toBe('已保存书签');expect(list.tabIndex).toBe(0)
+ list.focus();expect(document.activeElement).toBe(list)
+})
+it('explains an empty reference list and gives the close button initial focus',()=>{
+ const x=fixture({...model,bookmarks:[]});x.controls.open()
+ expect(x.root.querySelector('[role=status]')!.textContent).toBe('当前文档没有可插入的已保存书签')
+ expect(document.activeElement).toBe(x.root.querySelector('[data-cross-reference-close]'))
+})
 it('numeric XML entities align with real parseDocx and PM text',async()=>{
  const {parseDocx,readSections}=await import('@genoffice/docx-engine'),{buildDocx}=await import('../../../reporting/doc_engine/packages/docx-engine/tests/helpers/build-docx'),{spawnSync}=await import('node:child_process'),{resolve}=await import('node:path'),{blocksToPmDoc,pmDocOptions}=await import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/convert'),{editorExtensions}=await import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions')
  const inspectDocxCrossReferences=async(bytes:Uint8Array)=>{const script='import {inspectDocxCrossReferences} from "./bridge/docx-cross-reference.ts";let input="";for await(const part of process.stdin)input+=part;process.stdout.write(JSON.stringify(await inspectDocxCrossReferences(new Uint8Array(JSON.parse(input)))));',result=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',script],{cwd:resolve(process.cwd(),'../../reporting/doc_engine'),input:JSON.stringify(Array.from(bytes)),encoding:'utf8',timeout:15000});expect(result.status,result.stderr).toBe(0);return JSON.parse(result.stdout) as DocxCrossReferencesModel}

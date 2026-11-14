@@ -22,7 +22,8 @@ export function bindPdfExternalPagesDialog(options:{
   const apply=owner.createElement('button');apply.type='button';apply.textContent='生成新修订';apply.dataset.pdfExternalPagesApply=''
   const close=owner.createElement('button');close.type='button';close.textContent='关闭'
   const message=owner.createElement('p');message.setAttribute('role','status');const links=owner.createElement('div')
-  dialog.append(title,hint,fileLabel,afterLabel,pagesLabel,apply,close,message,links);options.root.append(dialog)
+  const actions=owner.createElement('div');actions.className='pdf-layout-actions';actions.append(close,apply)
+  dialog.append(title,hint,fileLabel,afterLabel,pagesLabel,message,links,actions);options.root.append(dialog)
   let action:'insert'|'replace'='insert',busy=false,disposed=false,generation=0,requestKey='',requestId='',cached:NativeSaveResponse|undefined
   function show(result:NativeSaveResponse){
     links.replaceChildren();message.textContent=`${result.validation.ok?'验收通过':'验收未通过，PDF 已生成'}${result.validation.issues.length?'：'+result.validation.issues.map(issue=>issue.message||issue.code).join('；'):''}`
@@ -63,11 +64,11 @@ export function bindPdfExternalPagesDialog(options:{
     finally{busy=false;if(!disposed&&dialog.open&&generation===token)enable(true)}
   }
   return {
-    open(next:'insert'|'replace'){
+    open(next:'insert'|'replace',insertAfterPage?:number){
       if(disposed||busy||dialog.open||options.unavailable())return
       if(action!==next){cached=undefined;requestKey='';file.value=''}
       action=next;generation++;enable(true);title.textContent=next==='insert'?'插入外部 PDF 页面':'替换为外部 PDF 页面'
-      afterLabel.hidden=next!=='insert';pagesLabel.hidden=next!=='replace';after.max=String(options.pageCount());after.value=String(options.currentPage());pages.value=String(options.currentPage())
+      afterLabel.hidden=next!=='insert';pagesLabel.hidden=next!=='replace';after.max=String(options.pageCount());after.value=String(insertAfterPage??options.currentPage());pages.value=String(options.currentPage())
       if(cached)show(cached);else{message.textContent='';links.replaceChildren()}
       dialog.showModal()
     },

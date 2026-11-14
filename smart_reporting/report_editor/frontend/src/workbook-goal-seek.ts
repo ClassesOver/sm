@@ -32,7 +32,8 @@ export function installGoalSeek(runtime: any, calculation: CalculationControl, p
       const target = address(input.setCell), changing = address(input.byCell)
       const targetRange = sheet.getRange(target.row, target.column, 1, 1), changingRange = sheet.getRange(changing.row, changing.column, 1, 1)
       if (!targetRange.getFormula()) throw new Error('目标单元格必须包含公式')
-      const original = changingRange.getValue()
+      // getValue经过NUMFMT显示拦截；求解必须保留数值本身和完整精度。
+      const original = changingRange.getRawValue()
       if (changingRange.getFormula() || original != null && typeof original !== 'number') throw new Error('可变单元格必须为空或数值，不能含公式')
       const write = (value: number | null) => {
         if (!commands.syncExecuteCommand('sheet.command.set-range-values', { unitId, subUnitId,
@@ -50,7 +51,7 @@ export function installGoalSeek(runtime: any, calculation: CalculationControl, p
       })
       const evaluate = async (value: number) => {
         check(); await recalc(() => write(value)); check()
-        const reached = targetRange.getValue()
+        const reached = targetRange.getRawValue()
         return typeof reached === 'number' ? reached : Number.NaN
       }
       const restore = async () => { if (valid()) await recalc(() => write(original ?? null)) }

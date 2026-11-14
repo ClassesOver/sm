@@ -1,0 +1,16 @@
+.workbook-chart-data-dialog { width:min(980px,calc(100vw - 32px)); }
+.workbook-chart-data-head,.workbook-chart-data-row { display:grid; grid-template-columns:minmax(100px,1fr) minmax(140px,1.3fr) minmax(140px,1.3fr) 112px; gap:8px; align-items:center; }
+.workbook-chart-data-head { color:var(--color-text-muted); font-size:12px; margin-bottom:8px; }
+.workbook-chart-data-dialog [data-chart-data-rows] { max-height:48vh; overflow:auto; }
+.workbook-chart-data-row { margin-bottom:8px; }
+.workbook-chart-data-row input { min-width:0; width:100%; box-sizing:border-box; }
+.workbook-chart-data-combo { width:min(1180px,calc(100vw - 32px)); }
+.workbook-chart-data-combo .workbook-chart-data-head,.workbook-chart-data-combo .workbook-chart-data-row { grid-template-columns:minmax(90px,1fr) minmax(100px,1.3fr) minmax(100px,1.3fr) 90px 90px 112px; }
+.workbook-chart-data-row select { min-width:0; width:100%; }
+.workbook-chart-data-row label { display:flex; align-items:center; gap:4px; }
+.workbook-chart-data-row input[type=checkbox] { width:auto; }
+.workbook-chart-data-row-actions { display:flex; gap:4px; }
+.workbook-chart-data-row-actions button { min-width:30px; }
+.workbook-chart-data-tools { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }
+.workbook-chart-data-dialog [hidden] { display:none; }
+@media(max-width:640px) { .workbook-chart-data-head { display:none; } .workbook-chart-data-row,.workbook-chart-data-combo .workbook-chart-data-row { grid-template-columns:minmax(0,1fr); gap:6px; padding:10px 0; border-bottom:1px solid var(--color-border-soft); } }

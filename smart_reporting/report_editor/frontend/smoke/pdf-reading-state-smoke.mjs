@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { observePdfBuiltAssets } from './pdf-object-dialog-checks.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_READING_SMOKE_PORT ?? 4209), base = `http://127.0.0.1:${port}`, sha = bytes => createHash('sha256').update(bytes).digest('hex')
 function python(input) {
@@ -30,13 +31,20 @@ let browser, readonly = false, scopeUser = 'fixture', savedOperations, previewBy
 const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: '/usr/bin/chromium' })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE?{executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE}:{}) })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true }), errors = []
+  const builtAssets=await observePdfBuiltAssets(page)
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
   await page.addInitScript(() => {
     const get = Storage.prototype.getItem, set = Storage.prototype.setItem
+    const trace=(event,value)=>{
+      const v=document.querySelector('.pdf-document-pages'),data=JSON.parse(get.call(sessionStorage,'reading-trace')??'[]')
+      data.push({event,value,at:Date.now(),scrollTop:v?.scrollTop,busy:document.querySelector('#report-editor')?.getAttribute('aria-busy'),status:document.querySelector('.save-state-label')?.textContent})
+      set.call(sessionStorage,'reading-trace',JSON.stringify(data.slice(-100)))
+    }
+    for(const event of ['beforeunload','pagehide'])window.addEventListener(event,()=>trace(event,get.call(localStorage,'genoffice-pdf-view-state')),true)
     Storage.prototype.getItem = function(key) { if (key === 'genoffice-pdf-view-state' && sessionStorage.getItem('block-reading') === 'yes') throw Error('fixture storage denied'); return get.call(this,key) }
-    Storage.prototype.setItem = function(key,value) { if (key === 'genoffice-pdf-view-state' && sessionStorage.getItem('block-reading') === 'yes') throw Error('fixture quota exceeded'); return set.call(this,key,value) }
+    Storage.prototype.setItem = function(key,value) { if (key === 'genoffice-pdf-view-state' && sessionStorage.getItem('block-reading') === 'yes') throw Error('fixture quota exceeded'); if(key==='genoffice-pdf-view-state')trace('write',value); return set.call(this,key,value) }
     const raf = window.requestAnimationFrame
     window.requestAnimationFrame = function(callback) { return sessionStorage.getItem('delay-reading') === 'yes' ? setTimeout(() => raf.call(this,callback),350) : raf.call(this,callback) }
   })
@@ -60,7 +68,7 @@ try {
   })
   await page.route('**/attachment-result.pdf', route => route.fulfill({ body:revisions.get(2),contentType:'application/pdf' }))
   await page.route(/\/reports\/v1\/native\/reading-fixture\/[123]$/, async route => route.fulfill({ response: await route.fetch({ url:`${base}/reports/v1/editor/assets/native.html` }) }))
-  const open = async n => { await page.goto(`${base}/reports/v1/native/reading-fixture/${n}`); await page.waitForFunction(() => document.querySelectorAll('.pdf-page').length === 3 && document.querySelector('.pdf-page canvas'),null,{timeout:60000}) }
+  const open = async n => { await page.goto(`${base}/reports/v1/native/reading-fixture/${n}`); await page.waitForFunction(() => document.querySelectorAll('.pdf-page').length === 3 && document.querySelector('.pdf-page canvas') && document.querySelector('#report-editor')?.getAttribute('aria-busy')==='false',null,{timeout:60000}) }
   const key = (revision=1,user=scopeUser) => `native-pdf:v1:native-editor-draft:v1:${JSON.stringify(['fixture','fixture',user,'fixture','reading-fixture',revision,sha(source)])}`
   const entry = (revision=1,user=scopeUser) => page.evaluate(key=>JSON.parse(localStorage.getItem('genoffice-pdf-view-state')??'{}')[key],key(revision,user))
   const flush = () => delay(360)
@@ -74,7 +82,7 @@ try {
   const ops = () => page.evaluate(()=>JSON.parse(Object.entries(localStorage).find(([key])=>key.includes('native-editor-draft')&&key.includes('reading-fixture'))?.[1]??'{"operations":[]}').operations)
   await open(1)
   const zoom=page.getByLabel('页面缩放',{exact:true});await zoom.selectOption('1.5');await page.waitForFunction(()=>document.querySelector('.pdf-page-content')?.style.width==='570px')
-  await scroll(1,.37);await waitSaved({page:2,scale:1.5,fitMode:null});const saved=await entry();assert.ok(Math.abs(saved.frac-.37)<.005)
+  await scroll(1,.37);await waitSaved({page:2,scale:1.5,fitMode:null});const saved=await entry();assert.ok(Math.abs(saved.frac-.37)<.005);await waitPosition(saved)
   await page.evaluate(()=>sessionStorage.setItem('delay-reading','yes'));await page.reload();await page.waitForFunction(()=>document.querySelectorAll('.pdf-page').length===3)
   await page.evaluate(()=>{document.querySelector('.pdf-document-pages').dispatchEvent(new Event('scroll'))});await delay(320);assert.equal((await entry()).page,2);assert.ok(Math.abs((await entry()).frac-saved.frac)<.005)
   await waitPosition(saved);assert.equal(Number(await zoom.inputValue()),1.5);await page.evaluate(()=>sessionStorage.removeItem('delay-reading'))
@@ -110,12 +118,13 @@ try {
   await page.setViewportSize({width:1440,height:1200});await zoom.selectOption('0.5');await page.waitForFunction(()=>document.querySelector('.pdf-page-content')?.style.width==='190px');await scroll(0,0);await waitSaved({page:1,scale:.5,fitMode:null},3)
   await page.locator('.pdf-page-label').nth(1).click();await zoom.selectOption('0.67');await page.waitForFunction(()=>document.querySelector('.pdf-page-content')?.style.width==='254.60000000000002px'||Math.abs(parseFloat(document.querySelector('.pdf-page-content')?.style.width??'0')-254.6)<.01)
   await waitSaved({page:1,scale:.67,fitMode:null},3);assert.ok((await page.locator('.pdf-page.is-active').getAttribute('data-page-id')).endsWith(':page:1'))
+  assert.ok((await page.locator('.pdf-thumbnail[aria-current="page"]').getAttribute('data-page-id')).endsWith(':page:1'))
   assert.deepEqual(errors,[])
-  const evidence={ok:true,browserVersion:browser.version(),sourceSha256:sha(source),downloadedSha256:sha(downloaded),actualPreviewSha256:sha(previewBytes),customScaleAndFraction:saved,fitRecomputed:{before:fitted.scale,after:reopenedFit},afterReverse,sourceBeforePreview:beforePreview,pagehideFlush:flushed,delayedRestoreDoesNotOverwrite:true,scopeRevisionAndCorruptIsolation:true,readonlyAndUnavailableStorage:true,selectedPageSurvivesRefresh:true,userNavigationWinsDelayedRestore:true,draftOperations:draftBeforePreview,provenance:'production static UI, real PDF.js and packed engine; delayed animation frames; substituted auth/revision routes; no desktop/production claim'}
+  const evidence={ok:true,browserVersion:browser.version(),sourceSha256:sha(source),downloadedSha256:sha(downloaded),actualPreviewSha256:sha(previewBytes),customScaleAndFraction:saved,fitRecomputed:{before:fitted.scale,after:reopenedFit},afterReverse,sourceBeforePreview:beforePreview,pagehideFlush:flushed,delayedRestoreDoesNotOverwrite:true,scopeRevisionAndCorruptIsolation:true,readonlyAndUnavailableStorage:true,selectedPageSurvivesRefresh:true,userNavigationWinsDelayedRestore:true,draftOperations:draftBeforePreview,readingLifecycleTrace:await page.evaluate(()=>JSON.parse(sessionStorage.getItem('reading-trace')??'[]')),...await builtAssets(),provenance:'production static UI, real PDF.js and packed engine; delayed animation frames; substituted auth/revision routes; no desktop/production claim'}
   const dir=process.env.PDF_READING_EVIDENCE_DIR;if(dir){await mkdir(dir,{recursive:true});await writeFile(`${dir}/source.pdf`,source);await writeFile(`${dir}/preview.pdf`,previewBytes);await writeFile(`${dir}/downloaded.pdf`,downloaded);await writeFile(`${dir}/evidence.json`,JSON.stringify(evidence,null,2));await page.screenshot({path:`${dir}/reading.png`,fullPage:true})}
   console.log(JSON.stringify(evidence))
 } catch(error) {
   const dir=process.env.PDF_READING_EVIDENCE_DIR
-  if(dir&&browser){await mkdir(dir,{recursive:true});const page=browser.contexts()[0]?.pages()[0];if(page){await writeFile(`${dir}/failure.json`,JSON.stringify({error:String(error),state:await page.evaluate(()=>({text:document.body.innerText,storage:{...localStorage}}))},null,2));await page.screenshot({path:`${dir}/failure.png`,fullPage:true})}}
+  if(dir&&browser){await mkdir(dir,{recursive:true});const page=browser.contexts()[0]?.pages()[0];if(page){await writeFile(`${dir}/failure.json`,JSON.stringify({error:String(error),state:await page.evaluate(()=>({text:document.body.innerText,storage:{...localStorage},trace:JSON.parse(sessionStorage.getItem('reading-trace')??'[]')}))},null,2));await page.screenshot({path:`${dir}/failure.png`,fullPage:true})}}
   throw error
 } finally {await browser?.close();server.kill('SIGTERM')}

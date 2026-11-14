@@ -44,6 +44,8 @@ class NativeWorkbookAIService(NativeAIService):
         self._requests = {key: value for key, value in self._requests.items() if value in self._jobs}
 
     def _reserve(self, *, cancelled=False):
+        if self._closed and not cancelled:
+            raise _invalid("native_ai_closed", "AI 候选服务已关闭。")
         self._prune()
         # 提前取消的墓碑同样保留一小时，不能为腾容量而重启迟到请求。
         if len(self._jobs) >= 128 or not cancelled and sum(job.status == "running" for job in self._jobs.values()) >= 32:
@@ -66,6 +68,7 @@ class NativeWorkbookAIService(NativeAIService):
             status="cancelled", client_request_id=request_id)
         self._jobs[job.edit_id] = job
         self._requests[key] = job.edit_id
+        await job.event_log.finish(job.status)
         return self._serialize(job)
 
     async def _context(self, session):
@@ -162,9 +165,9 @@ class NativeWorkbookAIService(NativeAIService):
                 "公式使用 cell:{value:null,formula:\"SUM(A1:A3)\"}，公式无等号。"
                 "格式在 edits 项的 style，例如 {bold:true,fillColor:\"#EEF2FF\"}；不要把格式写到 cell 内。"
                 + ("仅可输出 applyCellEdits，且必须在冻结选区内。选区：" + json.dumps(selection, ensure_ascii=False) if scope == "range" else
-                    "已明确授权整份工作簿，可使用WorkbookAIProposal声明的操作。已有图表仅允许格式编辑/删除，"
+                    "已明确授权整份工作簿，可使用WorkbookAIProposal声明的操作。图表允许可信既有目标的格式/删除和来源范围驱动的新增/系列换绑，"
                     "先read_sheet_features核对唯一chartPath与所属表；多图时按用户明确目标匹配，禁止按顺序猜测，不明确时请求澄清而不提交。"
-                    "使用load_guide(charts)读取协议；禁止新增图表、替换series/seriesSet数据、图片、保护、主题与外部请求。")
+                    "使用load_guide(charts)读取协议；新增/换绑必须使用源add_chart/edit_chart DSL并先读取数据范围，由引擎读取当前草稿生成引用和缓存；禁止模型填series/seriesSet缓存、图片、保护、主题与外部请求。")
                 + "\n用户要求：" + instruction + "\n包含人工未保存修改的授权内容：" + encoded)
             workbook_planner = getattr(self.planner, "plan_workbook", None)
             plan = (workbook_planner(prompt, model=material, scope=scope, selection=selection,

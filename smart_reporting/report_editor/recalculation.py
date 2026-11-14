@@ -5,10 +5,18 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from loguru import logger
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from ..reporting.contract import SHA256_PATTERN, StrictModel
 from ..reporting.models import ReportingError
+from ..reporting.saved_revision_reference import (
+    NativeRevisionSelection,
+    OfficeRevisionSelection,
+    SavedRevisionExecutionBinding,
+    SavedRevisionReference,
+    freeze_binary_revision_reference,
+    freeze_saved_revision_reference,
+)
 from ..reporting.semantics.models import PolicyVersionRef
 from ..reporting.semantics.policy_adoption import PolicyAdoptionConfirmation
 from ..reporting.trace.contracts_v1 import canonical_json_bytes
@@ -25,6 +33,31 @@ class RecalculationRequest(StrictModel):
     parent_revision: int = Field(alias='parentRevision', ge=1)
     expected_sha256: str = Field(alias='expectedSha256', pattern=SHA256_PATTERN)
     operation: Literal['verify_snapshot', 'refresh_data']
+
+
+class BinaryRecalculationRequest(StrictModel):
+    """二进制入口独立于旧 MD expectedSha256 协议。"""
+    request_id: str = Field(alias='requestId', min_length=1, max_length=128, pattern=r'^[A-Za-z0-9_-]+$')
+    parent_revision: int = Field(alias='parentRevision', ge=1)
+    expected_binary_sha256: str = Field(alias='expectedBinarySha256', pattern=SHA256_PATTERN)
+    operation: Literal['refresh_data'] = 'refresh_data'
+    native_source: NativeRevisionSelection | None = Field(default=None, alias='nativeSource')
+    office_source: OfficeRevisionSelection | None = Field(default=None, alias='officeSource')
+
+    @model_serializer(mode='wrap')
+    def legacy_serialization(self, handler):
+        payload = handler(self)
+        for field, alias in (('native_source', 'nativeSource'), ('office_source', 'officeSource')):
+            if getattr(self, field) is None:
+                payload.pop(field, None)
+                payload.pop(alias, None)
+        return payload
+
+    @model_validator(mode='after')
+    def binary_source(self):
+        if (self.native_source is None) == (self.office_source is None):
+            raise ValueError('二进制刷新必须且只能选择一个实际保存来源')
+        return self
 
 
 class PolicyAdoptionRequest(RecalculationRequest):
@@ -131,6 +164,7 @@ class RefreshDeliveryResult(StrictModel):
     @model_validator(mode='after')
     def delivery_identity(self):
         delivery = 'document-render' if set(self.execution.requested_outputs) <= {'pdf', 'docx'} else (
+            'document' if self.execution.requested_outputs == ('md',) else
             'slides' if self.execution.requested_outputs == ('pptx',) else 'workbook')
         root = f'报表/智能分析/{self.execution.execution_run_id}/{delivery}/revision-{self.execution.output_revision}'
         allowed = {f'{root}/report.{output}' for output in self.execution.requested_outputs}
@@ -151,6 +185,7 @@ class PolicyAdoptionDeliveryResult(StrictModel):
     @model_validator(mode='after')
     def delivery_identity(self):
         delivery = 'document-render' if set(self.execution.requested_outputs) <= {'pdf', 'docx'} else (
+            'document' if self.execution.requested_outputs == ('md',) else
             'slides' if self.execution.requested_outputs == ('pptx',) else 'workbook')
         root = f'报表/智能分析/{self.execution.scope.run_id}/{delivery}/revision-{self.execution.output_revision}'
         allowed = {f'{root}/report.{output}' for output in self.execution.requested_outputs}
@@ -166,16 +201,36 @@ class RecalculationTask(StrictModel):
     context_sha256: str = Field(alias='contextSha256', pattern=SHA256_PATTERN)
     basis_id: str = Field(alias='basisId', min_length=1)
     input_hash: str = Field(alias='inputHash', pattern=SHA256_PATTERN)
-    request: RecalculationRequest | PolicyAdoptionRequest
+    request: RecalculationRequest | PolicyAdoptionRequest | BinaryRecalculationRequest
     status: Literal['pending', 'completed', 'failed'] = 'pending'
     created_at: datetime = Field(alias='createdAt')
     checked_at: datetime | None = Field(default=None, alias='checkedAt')
+    saved_revision_reference: SavedRevisionReference | None = Field(default=None, alias='savedRevisionReference')
     refresh_binding: RefreshExecutionBinding | None = Field(default=None, alias='refreshBinding')
     result: SnapshotVerification | RefreshDeliveryResult | PolicyAdoptionDeliveryResult | None = None
     error_code: str | None = Field(default=None, alias='errorCode', max_length=128)
 
+    @model_serializer(mode='wrap')
+    def legacy_serialization(self, handler):
+        payload = handler(self)
+        if self.saved_revision_reference is None:
+            payload.pop('savedRevisionReference', None)
+            payload.pop('saved_revision_reference', None)
+        return payload
+
     @model_validator(mode='after')
     def terminal_result(self):
+        reference = self.saved_revision_reference
+        if reference is not None and (self.request.operation not in {'refresh_data', 'adopt_policy'}
+                or reference.task_id != self.task_id or reference.context_sha256 != self.context_sha256
+                or reference.report_id != self.report_id or reference.revision != self.request.parent_revision
+                or reference.file.sha256 != (self.request.expected_binary_sha256
+                    if isinstance(self.request, BinaryRecalculationRequest) else self.request.expected_sha256)
+                or reference.native_source != (self.request.native_source
+                    if isinstance(self.request, BinaryRecalculationRequest) else None)
+                or reference.office_source != (self.request.office_source
+                    if isinstance(self.request, BinaryRecalculationRequest) else None)):
+            raise ValueError('保存参考必须绑定本重算任务与保存回执')
         if (self.request.operation == 'refresh_data') != (self.refresh_binding is not None):
             raise ValueError('刷新任务必须绑定独立计算修订；原快照复核不能附加刷新执行')
         if self.refresh_binding and self.refresh_binding.report_revision != (
@@ -189,12 +244,20 @@ class RecalculationTask(StrictModel):
                         or self.result.execution.parent_basis_id != self.basis_id
                         or self.result.execution.request_id != self.task_id):
                     raise ValueError('新口径完成必须绑定本任务与可信父依据的实际交付')
+                if self.result.execution.saved_revision_binding != (SavedRevisionExecutionBinding(
+                        taskId=self.task_id, inputHash=self.input_hash, contextSha256=self.context_sha256,
+                        reference=reference) if reference is not None else None):
+                    raise ValueError('新口径完成执行必须保留本任务完整保存参考绑定')
             elif self.request.operation == 'refresh_data':
                 if (not isinstance(self.result, RefreshDeliveryResult)
                         or self.result.execution.basis_id != self.basis_id
                         or self.result.execution.report_revision != self.refresh_binding.report_revision
                         or self.result.execution.parent_report_revision != self.refresh_binding.parent_report_revision):
                     raise ValueError('刷新完成必须绑定本任务计算修订的实际交付')
+                if self.result.execution.saved_revision_binding != (SavedRevisionExecutionBinding(
+                        taskId=self.task_id, inputHash=self.input_hash, contextSha256=self.context_sha256,
+                        reference=reference) if reference is not None else None):
+                    raise ValueError('刷新完成执行必须保留本任务完整保存参考绑定')
             elif not isinstance(self.result, SnapshotVerification):
                 raise ValueError('快照复核不能冒充已刷新计算')
         if self.created_at.utcoffset() is None or (self.checked_at and self.checked_at.utcoffset() is None):
@@ -219,10 +282,11 @@ def task_identity(context, request_id):
     })).hexdigest()[:32]
 
 
-def request_hash(context, request):
-    return hashlib.sha256(canonical_json_bytes({
-        'contextSha256': context.digest(), 'request': request.model_dump(mode='json', by_alias=True),
-    })).hexdigest()
+def request_hash(context, request, saved_revision_reference=None):
+    payload = {'contextSha256': context.digest(), 'request': request.model_dump(mode='json', by_alias=True)}
+    if saved_revision_reference is not None:
+        payload['savedRevisionReference'] = saved_revision_reference.model_dump(mode='json', by_alias=True)
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 async def read_task(editor, context, request_id):
@@ -237,8 +301,12 @@ async def read_task_by_id(editor, context, task_id):
     task = RecalculationTask.model_validate(raw)
     if (task.context_sha256 != context.digest() or task.report_id != context.report_id
             or task.task_id != task_id or task.task_id != task_identity(context, task.request.request_id)
-            or task.request.parent_revision != context.revision or task.input_hash != request_hash(context, task.request)):
+            or task.request.parent_revision != context.revision or task.input_hash != request_hash(context, task.request, task.saved_revision_reference)):
         raise ReportingError('report_editor_scope_mismatch', '复核任务不属于当前报告修订。')
+    if isinstance(task.request, BinaryRecalculationRequest) and task.saved_revision_reference is None:
+        raise ReportingError('report_editor_scope_mismatch', '二进制任务缺少已登记保存参考。')
+    if task.saved_revision_reference is not None:
+        task.saved_revision_reference.require_context(context, task_id)
     return task
 
 
@@ -266,7 +334,7 @@ async def start_recalculation(editor, expected, request):
             raise ReportingError('report_editor_conflict', '重算请求与父修订不一致。')
         task = await read_task(editor, context, request.request_id)
         if task is not None:
-            if task.input_hash != request_hash(context, request):
+            if task.input_hash != request_hash(context, request, task.saved_revision_reference):
                 raise ReportingError('report_editor_conflict', '同一请求已登记其他输入，请核对原任务。')
         elif request.operation == 'adopt_policy':
             task = await register_policy_adoption_request(editor, context, request)
@@ -340,7 +408,7 @@ async def register_policy_adoption_request(editor, expected, request):
             raise ReportingError('report_editor_conflict', '确认请求与父交付修订不一致。')
         previous = await read_task(editor, context, request.request_id)
         if previous is not None:
-            if previous.input_hash != request_hash(context, request):
+            if previous.input_hash != request_hash(context, request, previous.saved_revision_reference):
                 raise ReportingError('report_editor_conflict', '同一确认请求已登记其他输入，请读取原任务核对。')
             return previous
         _, _, sha256 = await editor._read_revision_markdown(context)
@@ -360,14 +428,17 @@ async def register_policy_adoption_request(editor, expected, request):
             raise ReportingError('report_editor_scope_mismatch', '确认预检的父依据与当前报告来源不一致。')
         if preview.digest() != request.confirmation.preview_hash:
             raise ReportingError('report_editor_conflict', '新口径预检已变化，请重新核对后确认。')
-        task = RecalculationTask(taskId=task_identity(context, request.request_id), reportId=context.report_id,
+        task_id = task_identity(context, request.request_id)
+        reference = await freeze_saved_revision_reference(editor, context, task_id, request)
+        task = RecalculationTask(taskId=task_id, reportId=context.report_id,
             contextSha256=context.digest(), basisId=index.report_basis_id,
-            inputHash=request_hash(context, request), request=request, createdAt=datetime.now(UTC))
+            inputHash=request_hash(context, request, reference), savedRevisionReference=reference,
+            request=request, createdAt=datetime.now(UTC))
         await record_task(editor, context, task)
         return task
 
 
-async def register_refresh_request(editor, expected, request, *, parent_report_revision=None, vault=None):
+async def register_refresh_request(editor, expected, request, *, parent_report_revision=None, vault=None, binary_content=None):
     """内部控制器登记刷新意图；父计算修订由可信运行解析，HTTP请求不能指定。"""
     editor._require_lineage_feature('panel')
     if request.operation != 'refresh_data':
@@ -377,23 +448,39 @@ async def register_refresh_request(editor, expected, request, *, parent_report_r
         if request.parent_revision != context.revision:
             raise ReportingError('report_editor_conflict', '刷新请求与父交付修订不一致。')
         task_id = task_identity(context, request.request_id)
+        if isinstance(request, BinaryRecalculationRequest) and request.office_source is not None:
+            state = await editor.state_repository.get(context.workflow_run_id)
+            for registered in state.payload.get('reportEditorRecalculations', {}).values():
+                if (registered.get('reportId') == context.report_id
+                        and registered.get('request', {}).get('requestId') == request.request_id
+                        and registered.get('request', {}).get('officeSource') is not None
+                        and registered.get('taskId') != task_id):
+                    raise ReportingError('report_editor_conflict', '同一刷新请求已绑定另一 Office 保存修订。')
         previous = await read_task(editor, context, request.request_id)
         if previous is not None:
-            if (previous.input_hash != request_hash(context, request)
+            if (previous.input_hash != request_hash(context, request, previous.saved_revision_reference)
                     or parent_report_revision is not None and (
                         previous.refresh_binding is None
                         or previous.refresh_binding.parent_report_revision != parent_report_revision)):
                 raise ReportingError('report_editor_conflict', '同一刷新请求已绑定其他输入或父计算修订。')
             return previous
-        _, _, sha256 = await editor._read_revision_markdown(context)
-        if sha256 != request.expected_sha256:
-            raise ReportingError('report_editor_conflict', '正文已变化，请读取后重新发起刷新。')
-        source = await editor._source_context(context)
+        binary = isinstance(request, BinaryRecalculationRequest)
+        if binary:
+            await editor._ensure_sources_retained(context)
+        reference = (await freeze_binary_revision_reference(editor, context, task_id, request, binary_content)
+            if binary else await freeze_saved_revision_reference(editor, context, task_id, request))
+        source = context if binary else await editor._source_context(context)
+        if binary and request.office_source is not None:
+            from .office_refresh import office_selection, restore_office_source
+            source = await restore_office_source(editor, context)
+            if request.office_source != office_selection(context, source):
+                raise ReportingError('report_editor_scope_mismatch', 'Office 保存来源与正式计算指针不一致。')
+            await editor._ensure_sources_retained(source)
         index = await editor.trace.require_index(source)
         if not index.report_basis_id:
             raise ReportingError('report_editor_recalculation_unavailable', '报告未登记计算依据，无法刷新。')
         if parent_report_revision is None:
-            parent = await resolve_refresh_parent(editor, context, vault=vault)
+            parent = await resolve_refresh_parent(editor, source if binary else context, vault=vault, exact_source=binary)
             if parent.basis_id != index.report_basis_id:
                 raise ReportingError('report_editor_scope_mismatch', '刷新父依据与当前来源不一致。')
             parent_report_revision = parent.report_revision
@@ -401,19 +488,22 @@ async def register_refresh_request(editor, expected, request, *, parent_report_r
             reportRevision='editor-refresh-' + task_id.removeprefix('recalc-'))
         task = RecalculationTask(taskId=task_id, reportId=context.report_id,
             contextSha256=context.digest(), basisId=index.report_basis_id,
-            inputHash=request_hash(context, request), request=request, refreshBinding=binding,
+            inputHash=request_hash(context, request, reference), request=request, refreshBinding=binding,
+            savedRevisionReference=reference,
             createdAt=datetime.now(UTC))
         await record_task(editor, context, task)
         return task
 
 
-async def resolve_refresh_parent(editor, expected, *, vault):
+async def resolve_refresh_parent(editor, expected, *, vault, exact_source=False):
     """从当前实际来源的正式事实及管理回执恢复父计算，不猜交付版本或最新版本。"""
     from ..management.models import ManagementScope
     from ..reporting.semantics.planning_contracts import MetricPlanningContext
     from ..reporting.trace.fact_service import read_fact_document
 
-    source = await editor._source_context(expected)
+    source = await editor._restore(expected) if exact_source else await editor._source_context(expected)
+    if exact_source:
+        await editor._ensure_sources_retained(source)
     index = await editor.trace.require_index(source)
     files = {item.resource_id: item for item in index.files}
     parent = None
@@ -480,10 +570,11 @@ async def run_policy_adoption_request(editor, expected, task_id, *, runtime):
             else await continue_policy_adoption_delivery(runtime, run_context, execution))
         content = dict(published.content)
         delivery = 'document-render' if set(execution.requested_outputs) <= {'pdf', 'docx'} else (
+            'document' if execution.requested_outputs == ('md',) else
             'slides' if execution.requested_outputs == ('pptx',) else 'workbook')
         root = f'报表/智能分析/{execution.scope.run_id}/{delivery}/revision-{execution.output_revision}'
         artifacts, identity_issues = [], []
-        for label in ('pdf', 'word', 'pptx', 'xlsx'):
+        for label in ('md', 'pdf', 'word', 'pptx', 'xlsx'):
             if not content.get(f'{label}Path'):
                 continue
             try:
@@ -552,11 +643,14 @@ async def run_refresh_request(editor, expected, task_id, *, runtime):
         else:
             execution = await prepare_refresh_delivery(runtime, run_context,
                 parent_report_revision=task.refresh_binding.parent_report_revision,
-                report_revision=task.refresh_binding.report_revision)
+                report_revision=task.refresh_binding.report_revision, task=task)
         if (execution.basis_id != task.basis_id or execution.source_scope.run_id != context.workflow_run_id
                 or execution.source_scope.as_state() != context.scope
                 or execution.report_revision != task.refresh_binding.report_revision
-                or execution.parent_report_revision != task.refresh_binding.parent_report_revision):
+                or execution.parent_report_revision != task.refresh_binding.parent_report_revision
+                or execution.saved_revision_binding != (SavedRevisionExecutionBinding(
+                    taskId=task.task_id, inputHash=task.input_hash, contextSha256=task.context_sha256,
+                    reference=task.saved_revision_reference) if task.saved_revision_reference is not None else None)):
             raise ReportingError('report_editor_scope_mismatch', '刷新执行与已登记任务或原报告作用域不一致。')
         published = await continue_revision_delivery(runtime, run_context, execution)
         from agno.workflow.types import StepOutput
@@ -564,9 +658,10 @@ async def run_refresh_request(editor, expected, task_id, *, runtime):
         content = dict(published.content)
         artifacts, identity_issues = [], []
         delivery = 'document-render' if set(execution.requested_outputs) <= {'pdf', 'docx'} else (
+            'document' if execution.requested_outputs == ('md',) else
             'slides' if execution.requested_outputs == ('pptx',) else 'workbook')
         root = f'报表/智能分析/{execution.execution_run_id}/{delivery}/revision-{execution.output_revision}'
-        for label in ('pdf', 'word', 'pptx', 'xlsx'):
+        for label in ('md', 'pdf', 'word', 'pptx', 'xlsx'):
             if not content.get(f'{label}Path'):
                 continue
             try:
@@ -614,6 +709,16 @@ async def run_refresh_request(editor, expected, task_id, *, runtime):
         return completed, published
 
 
+class RefreshDeliveryRecovery(StrictModel):
+    """只读目标恢复回执；绝不冒充已核验输入的 RecalculationTask。"""
+    task_id: str = Field(alias='taskId', pattern=r'^recalc-[0-9a-f]{32}$')
+    report_id: str = Field(alias='reportId', min_length=1)
+    status: Literal['unavailable'] = 'unavailable'
+    input_verified: Literal[False] = Field(default=False, alias='inputVerified')
+    error_code: Literal['refresh_task_input_unverified', 'policy_adoption_task_input_unverified'] = Field(
+        default='refresh_task_input_unverified', alias='errorCode')
+
+
 async def read_registered_recalculation_execution(editor, context, task_id):
     """父输入不可读时仅从同授权来源唯一登记的精确任务child识别操作。"""
     import re
@@ -635,13 +740,65 @@ async def read_registered_recalculation_execution(editor, context, task_id):
                 continue
             execution = model.model_validate(raw)
             execution_id = execution.scope.run_id if model is PolicyAdoptionExecution else execution.execution_run_id
+            binding = execution.saved_revision_binding
             if (execution_id != child_id or execution.source_scope.as_state() != context.scope
-                    or execution.source_scope.run_id != context.workflow_run_id):
+                    or execution.source_scope.run_id != context.workflow_run_id
+                    or binding is not None and (binding.task_id != task_id or binding.context_sha256 != context.digest())):
                 raise ReportingError('report_editor_scope_mismatch', '交付候选执行不属于当前授权任务。')
+            if binding is not None:
+                binding.reference.require_context(context, task_id)
             candidates.append(execution)
     if len(candidates) != 1:
         raise ReportingError('report_editor_recalculation_unavailable', '交付缺少当前授权任务唯一已登记执行。')
     return candidates[0]
+
+
+async def _restore_refresh_delivery(editor, context, task_id, *, runtime):
+    """父输入不可验证时，只从当前授权 context 的唯一 child 恢复已生成目标。"""
+    import re
+
+    from agno.run import RunContext
+    from agno.workflow.types import StepOutput
+
+    from ..reporting.workflow.revision_execution import require_revision_execution
+    from ..reporting.workflow.runtime.base import REPORT_WORKFLOW_SCOPE_STATE_KEY
+
+    if re.fullmatch(r'recalc-[0-9a-f]{32}', task_id) is None:
+        raise ReportingError('report_editor_scope_mismatch', '刷新交付任务身份无效。')
+    state = await editor.state_repository.get(context.workflow_run_id)
+    candidates = []
+    target_revision = 'editor-refresh-' + task_id.removeprefix('recalc-')
+    for child_id in state.payload.get('reportEditorRevisionReservations', {}) if state else ():
+        child = await editor.state_repository.get(child_id)
+        raw = child.payload.get('reportRevisionExecution') if child else None
+        if isinstance(raw, dict) and raw.get('reportRevision') == target_revision:
+            try:
+                execution = ReportRevisionExecution.model_validate(raw)
+                binding = execution.saved_revision_binding
+                if (execution.execution_run_id != child_id or binding is None or binding.task_id != task_id
+                        or binding.context_sha256 != context.digest()
+                        or execution.source_scope.run_id != context.workflow_run_id
+                        or execution.source_scope.as_state() != context.scope):
+                    raise ValueError('目标执行不属于当前任务上下文')
+                binding.reference.require_context(context, task_id)
+            except (ValueError, ReportingError) as error:
+                raise ReportingError('report_editor_scope_mismatch', '刷新交付候选执行身份无法核验。') from error
+            candidates.append(execution)
+    if len(candidates) != 1:
+        raise ReportingError('report_editor_recalculation_unavailable', '刷新交付缺少当前任务唯一已登记执行。')
+    execution = candidates[0]
+    run_context = RunContext(run_id=context.workflow_run_id, session_id=context.scope['sessionId'],
+        user_id=context.scope['userId'], session_state={REPORT_WORKFLOW_SCOPE_STATE_KEY: context.scope})
+    # restore_only 仍核对 reservation/child/run/scope，并在父校验失败时实际读取精确目标身份。
+    await require_revision_execution(runtime, run_context, execution, restore_only=True)
+    published = await runtime._publish_revision_report(run_context, execution, restore_only=True)
+    content = dict(published.content)
+    issue = {'code': 'refresh_task_input_unverified',
+        'message': '刷新任务的保存稿参考或输入摘要无法核验，未使用损坏输入；仅恢复当前授权执行已核验的实际文件，业务验收未通过。'}
+    issues = [*content.get('validation', {}).get('issues', ()), issue]
+    content.update({'validation': {**content.get('validation', {}), 'ok': False, 'issues': issues},
+        'validationIssues': issues, 'status': 'validation_failed'})
+    return RefreshDeliveryRecovery(taskId=task_id, reportId=context.report_id), StepOutput(content=content)
 
 
 async def read_refresh_delivery(editor, expected, task_id, *, runtime):
@@ -652,8 +809,13 @@ async def read_refresh_delivery(editor, expected, task_id, *, runtime):
 
     editor._require_lineage_feature('panel')
     context = await editor._restore(expected)
-    task = await read_task_by_id(editor, context, task_id)
-    if task is None or task.request.operation != 'refresh_data':
+    try:
+        task = await read_task_by_id(editor, context, task_id)
+    except (ValueError, ReportingError):
+        return await _restore_refresh_delivery(editor, context, task_id, runtime=runtime)
+    if task is None:
+        return await _restore_refresh_delivery(editor, context, task_id, runtime=runtime)
+    if task.request.operation != 'refresh_data':
         raise ReportingError('report_editor_recalculation_unavailable', '没有可读取的已登记刷新请求。')
     if task.status == 'completed':
         execution = task.result.execution
@@ -672,11 +834,14 @@ async def read_refresh_delivery(editor, expected, task_id, *, runtime):
             or execution.source_scope.run_id != context.workflow_run_id
             or execution.basis_id != task.basis_id
             or execution.report_revision != task.refresh_binding.report_revision
-            or execution.parent_report_revision != task.refresh_binding.parent_report_revision):
+            or execution.parent_report_revision != task.refresh_binding.parent_report_revision
+            or execution.saved_revision_binding != (SavedRevisionExecutionBinding(
+                taskId=task.task_id, inputHash=task.input_hash, contextSha256=task.context_sha256,
+                reference=task.saved_revision_reference) if task.saved_revision_reference is not None else None)):
         raise ReportingError('report_editor_scope_mismatch', '刷新交付与已登记请求作用域不一致。')
     run_context = RunContext(run_id=context.workflow_run_id, session_id=context.scope['sessionId'],
         user_id=context.scope['userId'], session_state={REPORT_WORKFLOW_SCOPE_STATE_KEY: context.scope})
-    published = await runtime._publish_revision_report(run_context, execution)
+    published = await runtime._publish_revision_report(run_context, execution, restore_only=True)
     if task.status != 'completed':
         from agno.workflow.types import StepOutput
 
@@ -707,7 +872,10 @@ async def _read_policy_adoption_execution(editor, context, task):
         execution = executions[0]
     if (execution.source_scope.as_state() != context.scope
             or execution.source_scope.run_id != context.workflow_run_id
-            or execution.parent_basis_id != task.basis_id or execution.request_id != task.task_id):
+            or execution.parent_basis_id != task.basis_id or execution.request_id != task.task_id
+            or execution.saved_revision_binding != (SavedRevisionExecutionBinding(
+                taskId=task.task_id, inputHash=task.input_hash, contextSha256=task.context_sha256,
+                reference=task.saved_revision_reference) if task.saved_revision_reference is not None else None)):
         raise ReportingError('report_editor_scope_mismatch', '新口径交付与已确认任务作用域不一致。')
     return execution
 
@@ -721,21 +889,34 @@ async def read_policy_adoption_delivery(editor, expected, task_id, *, runtime):
 
     editor._require_lineage_feature('panel')
     context = await editor._restore(expected)
-    task = await read_task_by_id(editor, context, task_id)
-    if task is None or not isinstance(task.request, PolicyAdoptionRequest):
-        raise ReportingError('report_editor_recalculation_unavailable', '没有可读取的已确认新口径任务。')
-    execution = await _read_policy_adoption_execution(editor, context, task)
+    try:
+        task = await read_task_by_id(editor, context, task_id)
+        if task is not None:
+            if not isinstance(task.request, PolicyAdoptionRequest):
+                raise ReportingError('report_editor_scope_mismatch', '父任务操作与新口径执行不一致。')
+            execution = await _read_policy_adoption_execution(editor, context, task)
+    except (ValueError, ReportingError):
+        task = None
+    if task is None:
+        execution = await read_registered_recalculation_execution(editor, context, task_id)
+        if not isinstance(execution, PolicyAdoptionExecution):
+            raise ReportingError('report_editor_scope_mismatch', '交付登记不是当前新口径任务。')
     run_context = RunContext(run_id=context.workflow_run_id, session_id=context.scope['sessionId'],
         user_id=context.scope['userId'], session_state={REPORT_WORKFLOW_SCOPE_STATE_KEY: context.scope})
-    published = await runtime._publish_revision_report(run_context, execution)
-    if task.status != 'completed':
+    published = await runtime._publish_revision_report(run_context, execution, restore_only=True)
+    if task is None or task.status != 'completed':
         content = dict(published.content)
-        issue = {'code': 'policy_adoption_completion_record_unavailable',
-            'message': '新口径完成状态未确认；已核验文件仍可下载，请先读取任务状态。'}
+        issue = ({'code': 'policy_adoption_task_input_unverified',
+            'message': '新口径父任务输入无法核验，未使用损坏输入；仅恢复当前授权执行已核验文件，业务验收未通过。'}
+            if task is None else {'code': 'policy_adoption_completion_record_unavailable',
+                'message': '新口径完成状态未确认；已核验文件仍可下载，请先读取任务状态。'})
         issues = [*content.get('validation', {}).get('issues', ()), issue]
         content.update({'validation': {**content.get('validation', {}), 'ok': False, 'issues': issues},
             'validationIssues': issues, 'status': 'validation_failed'})
         published = StepOutput(content=content)
+    if task is None:
+        task = RefreshDeliveryRecovery(taskId=task_id, reportId=context.report_id,
+            errorCode='policy_adoption_task_input_unverified')
     return task, published, execution
 
 
@@ -897,7 +1078,8 @@ async def task_response(editor, context, task):
 
 
 def recalculation_run_input(context, task):
-    return {'reportRunId': context.workflow_run_id, 'revision': context.revision,
+    return {**({'savedRevisionReference': task.saved_revision_reference.model_dump(mode='json', by_alias=True)}
+        if task.saved_revision_reference is not None else {}), 'reportRunId': context.workflow_run_id, 'revision': context.revision,
         'taskId': task.task_id, 'inputHash': task.input_hash, 'contextSha256': context.digest()}
 
 
@@ -925,7 +1107,7 @@ def create_refresh_workflow(editor, *, runtime, database):
 
     async def execute(step_input, run_context):
         inputs = step_input.input
-        if (not isinstance(inputs, dict) or set(inputs) != {
+        if (not isinstance(inputs, dict) or set(inputs) - {'savedRevisionReference'} != {
                 'reportRunId', 'revision', 'taskId', 'inputHash', 'contextSha256'}
                 or not isinstance(inputs['reportRunId'], str)
                 or type(inputs['revision']) is not int):
@@ -958,7 +1140,7 @@ def create_policy_adoption_workflow(editor, *, runtime, database):
 
     async def execute(step_input, run_context):
         inputs = step_input.input
-        if (not isinstance(inputs, dict) or set(inputs) != {
+        if (not isinstance(inputs, dict) or set(inputs) - {'savedRevisionReference'} != {
                 'reportRunId', 'revision', 'taskId', 'inputHash', 'contextSha256'}
                 or not isinstance(inputs['reportRunId'], str)
                 or type(inputs['revision']) is not int):

@@ -1,0 +1,4 @@
+.docx-watermark-source-host{position:relative;z-index:10020}
+.docx-watermark-source-host .modal-backdrop{z-index:10020}
+.docx-native.docx-watermark-source-host .watermark-dialog{box-sizing:border-box;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);overflow:auto}
+@media(max-width:700px){.docx-native.docx-watermark-source-host .watermark-dialog .wm-body{display:flex;flex-direction:column}.docx-native.docx-watermark-source-host .watermark-dialog{padding:16px}.docx-native.docx-watermark-source-host .watermark-dialog .wm-row{flex-wrap:wrap}.docx-native.docx-watermark-source-host .watermark-dialog .wm-preview{align-self:center;flex:none}.docx-native.docx-watermark-source-host .watermark-dialog .wm-form{min-width:0}}

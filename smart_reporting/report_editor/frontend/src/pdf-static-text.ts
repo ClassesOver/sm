@@ -52,7 +52,8 @@ export function bindPdfStaticText(options: {
   const error = owner.createElement('p'); error.setAttribute('role', 'alert')
   const confirm = owner.createElement('button'); confirm.type = 'button'; confirm.textContent = '确定并选择落点'; confirm.dataset.pdfStaticTextConfirm = ''
   const dismiss = owner.createElement('button'); dismiss.type = 'button'; dismiss.textContent = '取消'
-  dialog.append(error, confirm, dismiss); options.root.append(dialog)
+  const actions = owner.createElement('div'); actions.className = 'pdf-layout-actions'; actions.append(dismiss, confirm)
+  dialog.append(error, actions); options.root.append(dialog)
   let disposed = false, pending: TextConfig | undefined, snapshot = ''
   function cancel() { pending = undefined; if (dialog.open) dialog.close(); options.stop() }
   function reason() { return options.unavailable() ?? (snapshot !== JSON.stringify(options.draft.operations) ? '草稿已变化，请重新配置插入文字' : null) }
@@ -67,7 +68,10 @@ export function bindPdfStaticText(options: {
       validateConfig(config); dialog.close(); pending = config; options.start(); options.status('请点击页面选择插入文字的首行基线；按 Escape 取消')
     } catch (cause) { error.textContent = cause instanceof Error ? cause.message : String(cause) }
   })
-  const key = (event: KeyboardEvent) => { if (event.key === 'Escape' && pending) { cancel(); options.status('已取消插入文字') } }
+  const key = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+    if (event.key === 'Escape' && pending) { cancel(); options.status('已取消插入文字') }
+  }
   options.root.addEventListener('keydown', key)
   return {
     open() {

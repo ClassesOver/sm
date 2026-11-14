@@ -4,10 +4,10 @@ import {createBlankWorkbook} from '../src/blank'
 import {applyChartAdditions} from '../src/chart-add'
 import {readWorkbook} from '../src/workbook-read'
 
-async function fixture(mode:'value'|'none'|'percent'|undefined='value',mutate?:(xml:string)=>string){
+async function fixture(mode:'value'|'none'|'percent'|undefined='value',mutate?:(xml:string)=>string,chartType:'bar'|'pie'|'radar'='bar'){
  const bytes=await applyChartAdditions(await createBlankWorkbook(),[{worksheetSheetName:'Sheet1',
   anchor:{fromRow:0,fromColumn:3,fromRowOffset:0,fromColumnOffset:0,toRow:9,toColumn:11,toRowOffset:0,toColumnOffset:0},
-  chart:{chartType:'bar',title:'Labels',...(mode===undefined?{}:{dataLabels:mode}),...(mode==='value'?{dataLabelPosition:'inside-end' as const,dataLabelFormat:'"$"0.0'}:{}),
+  chart:{chartType,title:'Labels',...(mode===undefined?{}:{dataLabels:mode}),...(mode==='value'?{dataLabelPosition:'inside-end' as const,dataLabelFormat:'"$"0.0'}:{}),
    series:[{name:'Values',categories:['A','B','C'],values:[3,6,9],valuesRef:'Sheet1!$B$2:$B$4'}]}}])
  const zip=await JSZip.loadAsync(bytes),path='xl/charts/chart1.xml'
  if(mutate)zip.file(path,mutate(await zip.file(path)!.async('string')))
@@ -15,6 +15,11 @@ async function fixture(mode:'value'|'none'|'percent'|undefined='value',mutate?:(
 }
 it('reads plot value labels, canonical position and decoded explicit number format',async()=>{
  expect((await fixture()).dataLabels).toMatchObject({showValue:true,position:'inside-end',numberFormat:'"$"0.0'})
+})
+it('reads radar plot value labels for canvas rendering',async()=>{
+ const chart=await fixture('value',undefined,'radar')
+ expect(chart.dataLabels).toMatchObject({showValue:true,position:'inside-end',numberFormat:'"$"0.0'})
+ expect(chart.design?.dataLabels).toBe('value')
 })
 it('keeps absent labels absent and an explicit off flag off',async()=>{
  // Passing undefined uses the function default, so remove the real plot block.
@@ -37,6 +42,20 @@ it.each([
 })
 it('does not reinterpret percent labels as raw values',async()=>{
  expect((await fixture('percent')).dataLabels?.unsupported).toBe(true)
+})
+it.each([
+ ['percent','<c:showPercent val="1"/>'],
+ ['category-percent','<c:showCatName val="1"/><c:showPercent val="1"/>'],
+])('does not expose axis-chart %s labels as a supported design mode',async(_mode,flags)=>{
+ const chart=await fixture(undefined,xml=>xml.replace(/<c:dLbls>[\s\S]*?<\/c:dLbls>/g,'').replace('</c:barChart>',`<c:dLbls><c:showVal val="0"/>${flags}</c:dLbls></c:barChart>`))
+ expect(chart.dataLabels?.unsupported).toBe(true)
+ expect(chart.design?.dataLabels).toBeUndefined()
+})
+it('keeps pie percentage labels available as a design mode',async()=>{
+ const chart=await fixture('percent',undefined,'pie')
+ expect(chart.dataLabels).toMatchObject({showPercent:true})
+ expect(chart.dataLabels?.unsupported).toBeUndefined()
+ expect(chart.design?.dataLabels).toBe('percent')
 })
 it('keeps the value cache format separate from the category and explicit label formats',async()=>{
  const chart=await fixture('value',xml=>xml.replace(/(<c:val>[\s\S]*?<c:formatCode>)General/,(_all,prefix)=>prefix+'0.0%'))

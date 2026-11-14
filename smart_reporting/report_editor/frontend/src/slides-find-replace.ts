@@ -1,3 +1,6 @@
+import { installFocusTrap } from './focus-trap'
+import { buttonClasses } from './button'
+
 /** Web adapter for GenOffice f8c17004 FindReplaceDialog: literal search, element navigation,
  * and first/all replacement. Only source text explicitly proven safe by the bridge is edited. */
 export interface SlidesFindSource {
@@ -90,11 +93,16 @@ interface FindReplaceController {
 }
 
 export function openSlidesFindReplace(host: HTMLElement, controller: FindReplaceController) {
+  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
   const dialog = document.createElement('dialog')
   dialog.className = 'slides-find-replace'
   dialog.setAttribute('aria-label', '查找和替换')
   const heading = document.createElement('h2')
   heading.textContent = '查找和替换'
+  let active = true
+  const release = installFocusTrap(dialog)
+  const dispose = () => { if (!active) return; active = false; release(); dialog.remove(); if (previous?.isConnected) previous.focus({ preventScroll: true }) }
+  const close = document.createElement('button'); close.type = 'button'; close.className = 'slides-find-close ' + buttonClasses('quiet', true); close.setAttribute('aria-label', '关闭查找和替换'); close.textContent = '×'; close.addEventListener('click', dispose)
   const query = document.createElement('input')
   query.setAttribute('aria-label', '查找文字')
   const replacement = document.createElement('input')
@@ -105,7 +113,13 @@ export function openSlidesFindReplace(host: HTMLElement, controller: FindReplace
   const status = document.createElement('p')
   status.setAttribute('role', 'status')
   status.setAttribute('aria-live', 'polite')
+  status.setAttribute('aria-label', '查找替换结果')
+  status.tabIndex = 0
+  const showStatus = (message: string) => { status.textContent = message; status.scrollIntoView?.({ block: 'nearest' }) }
   const scope = document.createElement('p')
+  scope.setAttribute('role', 'region')
+  scope.setAttribute('aria-label', '查找替换范围说明')
+  scope.tabIndex = 0
   scope.textContent = '仅查找可安全编辑的来源文本框和形状；不含混合样式、域、表格、组合、母版和新增对象。替换不跨段落。'
   let current: { slideIndex: number; elementId: string } | undefined
   let cursor = -1
@@ -123,55 +137,65 @@ export function openSlidesFindReplace(host: HTMLElement, controller: FindReplace
   }
   const next = () => {
     const { matches } = snapshot()
-    if (!matches.length) { status.textContent = '未找到可编辑的匹配文字'; return }
+    if (!matches.length) { showStatus('未找到可编辑的匹配文字'); return }
     cursor = (cursor + 1) % matches.length
     current = matches[cursor]!
     controller.onNavigate(current.slideIndex, current.elementId)
-    status.textContent = `第 ${cursor + 1}/${matches.length} 个对象，共 ${matches.reduce((sum, item) => sum + item.count, 0)} 处匹配`
+    showStatus(`第 ${cursor + 1}/${matches.length} 个对象，共 ${matches.reduce((sum, item) => sum + item.count, 0)} 处匹配`)
   }
   const replace = (all: boolean) => {
     try {
-      if (controller.isLocked()) { status.textContent = '当前为只读状态或正在保存，不能替换'; return }
+      if (controller.isLocked()) { showStatus('当前为只读状态或正在保存，不能替换'); return }
       const { slides, edits, options } = snapshot()
       if (!all && !current) { next(); return }
       const plan = planSlidesReplace(slides, edits, { query: query.value, replacement: replacement.value,
         matchCase: matchCase.checked, ...(!all ? { target: current } : {}) }, options)
-      if (!plan.count) { status.textContent = '没有需要替换的文字'; return }
+      if (!plan.count) { showStatus('没有需要替换的文字'); return }
       controller.onReplace(plan)
       const previousCursor = cursor
       reset()
       if (!all) cursor = previousCursor - 1
-      status.textContent = `已替换 ${plan.count} 处；保存新修订后生效`
-    } catch (error) { status.textContent = error instanceof Error ? error.message : '替换失败，未提交修改' }
+      showStatus(`已替换 ${plan.count} 处；保存新修订后生效`)
+    } catch (error) { showStatus(error instanceof Error ? error.message : '替换失败，未提交修改') }
   }
   const actions = document.createElement('div')
+  actions.className = 'slides-table-actions slides-find-actions'
   for (const [command, label, action] of [
     ['findNext', '查找下一个', next], ['replace', '替换', () => replace(false)],
-    ['replaceAll', '全部替换', () => replace(true)], ['closeFindReplace', '关闭', () => dialog.remove()],
+    ['replaceAll', '全部替换', () => replace(true)], ['closeFindReplace', '关闭', dispose],
   ] as const) {
     const button = document.createElement('button')
     button.type = 'button'
     button.dataset.command = command
     button.textContent = label
+    button.className = buttonClasses(command === 'findNext' ? 'primary' : 'secondary')
     button.addEventListener('click', action)
     actions.append(button)
   }
+  const header = document.createElement('header')
+  header.append(heading, close)
+  const body = document.createElement('div')
+  body.className = 'slides-find-body'
   for (const [label, input] of [['查找 ', query], ['替换为 ', replacement], ['区分大小写 ', matchCase]] as const) {
     const row = document.createElement('label')
-    row.style.display = 'block'
+    row.className = input === matchCase ? 'slides-find-option' : 'slides-find-field'
     row.append(label, input)
-    dialog.append(row)
+    body.append(row)
   }
-  dialog.prepend(heading)
-  dialog.append(scope, status, actions)
+  body.append(scope, status)
+  const footer = document.createElement('footer')
+  footer.append(actions)
+  dialog.append(header, body, footer)
   dialog.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { event.preventDefault(); dialog.remove() }
+    if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
+    if (event.key === 'Escape') { event.preventDefault(); dispose() }
     if (event.key === 'Enter' && event.target === query) { event.preventDefault(); next() }
   })
-  dialog.addEventListener('close', () => dialog.remove())
+  dialog.addEventListener('cancel', event => { event.preventDefault(); dispose() })
+  dialog.addEventListener('close', dispose)
   host.append(dialog)
   if (typeof dialog.showModal === 'function') dialog.showModal()
   else dialog.setAttribute('open', '')
   query.focus()
-  return { dispose: () => dialog.remove() }
+  return { dispose }
 }

@@ -72,11 +72,11 @@ export function mountPdfFormCanvas(options:Options):PdfFormCanvasController{
   if(!page||page.pageId!==pageId||!widget.designEditable||(options.model().formDesignWidgets??[]).filter(w=>w.fieldName===widget.fieldName).length!==1)continue
   const selection={sourceSha256,pageId,...target({...widget,sourceSha256,pageId})},rect=doc.createElementNS(NS,'rect');records.set(rect,selection);rect.setAttribute('class','pdf-form-canvas-widget');rect.dataset.pdfFormCanvasWidget=widget.widgetIdentity;rect.dataset.pdfFormCanvasWidgetId=widget.widgetId;rect.setAttribute('role','button');rect.setAttribute('tabindex','0');rect.setAttribute('aria-label',widget.fieldName+' 控件 '+widget.widgetId+'（第'+(widget.pageIndex+1)+'页），方向键微调');paint(rect,widget.rect)
   rect.addEventListener('pointerdown',event=>{if(event.button===0&&event.isPrimary!==false)choose(event,rect,selection)},{signal:abort.signal})
-  rect.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' ')choose(event,rect,selection)},{signal:abort.signal});svg.append(rect)
+  rect.addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229)return;if(event.key==='Enter'||event.key===' ')choose(event,rect,selection)},{signal:abort.signal});svg.append(rect)
  }
  const blocked='.pdf-ribbon,input,textarea,select,[contenteditable]:not([contenteditable="false"]),[role="tablist"],[role="dialog"],dialog,.pdf-form-create-panel,.pdf-form-design-panel,.pdf-form-text-properties-panel,.pdf-form-radio-extension-panel'
  doc.addEventListener('keydown',event=>{
-  if(event.defaultPrevented||event.ctrlKey||event.metaKey||event.altKey||!active()||!ownsSelection())return
+  if(event.defaultPrevented||event.isComposing||event.keyCode===229||event.ctrlKey||event.metaKey||event.altKey||!active()||!ownsSelection())return
   const element=event.target instanceof Element?event.target:undefined
   if([...doc.querySelectorAll('dialog[open],[role="dialog"],[role="alertdialog"]')].some(dialog=>!dialog.closest('[hidden],[aria-hidden="true"]')&&doc.defaultView?.getComputedStyle(dialog).display!=='none'))return
   if(element?.closest(blocked)||element&&!editor.contains(element)&&element!==doc.body&&element!==doc.documentElement)return

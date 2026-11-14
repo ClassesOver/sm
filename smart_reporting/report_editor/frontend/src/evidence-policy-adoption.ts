@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import { ReportEditorApiError, type DataRefreshTask, type PolicyAdoptionOptions,
   type PolicyAdoptionPreview, type PolicyAdoptionRequest, type ReportEditorClient } from './api'
-import { markdownSha256 } from './source-validation'
 import { mountPolicyPreparation } from './policy-preparation'
+import { deliveryFormats, deliveryLabels, deliveryLayoutDetails, deliveryUrl, deliveryValidation } from './delivery-presentation'
 
 const identity = z.string().min(1).max(128)
 const sha = z.string().regex(/^[a-f0-9]{64}$/)
@@ -22,6 +22,7 @@ const requestSchema = z.object({
 /** 每次选择须明确确认；未知响应只读原请求，页面重开不自动提交。 */
 export function mountPolicyAdoption(root: HTMLElement, options: {
   client: ReportEditorClient; storageKey: string; getDraft?: () => { markdown: string } | null
+  saveMarkdown?: () => Promise<string>
 }) {
   const key = options.storageKey + ':policy-adoption'
   let request: PolicyAdoptionRequest | null = null
@@ -63,6 +64,15 @@ export function mountPolicyAdoption(root: HTMLElement, options: {
     try { await action() }
     catch (error) { message.textContent = error instanceof ReportEditorApiError ? error.message : '读取失败，请稍后显式重试。' }
     finally { selected.disabled = false; selected.removeAttribute('aria-busy') }
+  }
+  const save = async () => {
+    try {
+      if (!options.saveMarkdown) throw new Error('save unavailable')
+      return sha.parse(await options.saveMarkdown())
+    } catch {
+      message.textContent = '保存尚未确认，未提交新口径请求。请先确认保存成功后重新预检。'
+      return null
+    }
   }
   const showTask = (task: DataRefreshTask) => {
     taskId = task.taskId; delivery.hidden = false
@@ -131,7 +141,9 @@ export function mountPolicyAdoption(root: HTMLElement, options: {
     confirmation.append(submit)
     submit.addEventListener('click', () => { void work(submit, async () => {
       if (!choices || !options.getDraft) return
-      if (await markdownSha256(options.getDraft()?.markdown ?? '') !== draftHash) {
+      const savedSha256 = await save()
+      if (savedSha256 === null) return
+      if (savedSha256 !== draftHash) {
         message.textContent = '正文已变化，请保存并重新预检。'; confirmation.replaceChildren(); return
       }
       if (preview !== frozen) return
@@ -170,7 +182,9 @@ export function mountPolicyAdoption(root: HTMLElement, options: {
       if (!draft || !target || !choices || select.value === '') return
       const version = selectionVersion
       confirmation.replaceChildren(); preview = null
-      draftHash = await markdownSha256(draft.markdown)
+      const savedSha256 = await save()
+      if (savedSha256 === null || selectionVersion !== version || request) return
+      draftHash = savedSha256
       const result = await options.client.previewPolicyAdoption({ parentRevision: choices.parentRevision,
         expectedSha256: draftHash, policyVersion: target.policyVersion })
       if (selectionVersion !== version || request) return
@@ -198,16 +212,21 @@ export function mountPolicyAdoption(root: HTMLElement, options: {
     if (!taskId) return
     const { delivery: output } = await options.client.dataRefreshDelivery(taskId)
     links.replaceChildren()
-    for (const [format, label] of [['pdf', 'PDF'], ['word', 'Word'], ['pptx', 'PPTX'], ['xlsx', 'XLSX'], ['editor', '打开新报告']] as const) {
+    let downloadable = false
+    for (const format of [...deliveryFormats, 'editor'] as const) {
       const file = output[format]
-      const value = format === 'editor' ? output.editor?.openUrl : file && 'downloadUrl' in file ? file.downloadUrl : null
-      if (!value) continue
-      const url = new URL(value, location.href)
-      if (!['http:', 'https:'].includes(url.protocol)) continue
-      const link = document.createElement('a'); link.href = url.href; link.className = 'ui-button'
-      link.textContent = format === 'editor' ? label : `下载 ${label} · 修订 ${output.revision}`; links.append(link)
+      const value = format === 'editor' ? output.editor?.openUrl
+        : file && typeof file === 'object' && 'downloadUrl' in file ? file.downloadUrl : null
+      const url = deliveryUrl(value)
+      if (!url) continue
+      const link = document.createElement('a'); link.href = url; link.className = 'ui-button'
+      if (format !== 'editor') downloadable = true
+      link.textContent = format === 'editor' ? '打开新报告' : `下载 ${deliveryLabels[format]} · 修订 ${output.revision}`; links.append(link)
     }
-    message.textContent = output.validation?.ok === true ? '文件已生成，尚未进行业务批准。'
-      : '文件可下载，验收尚未通过：' + (output.validation?.issues.map(issue => issue.message).filter(Boolean).join('；') || '请核对告警。')
+    const validation = deliveryValidation(output.validation)
+    message.textContent = !downloadable ? '未生成可下载文件。' + (validation.reasons || '请核对交付告警。')
+      : validation.ok ? '文件已生成，尚未进行业务批准。'
+      : '文件可下载，验收尚未通过：' + (validation.reasons || '请核对告警。')
+    links.append(deliveryLayoutDetails(output.validation))
   }) })
 }

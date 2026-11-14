@@ -11,7 +11,8 @@ export function installDataValidationNames(runtime: any) {
   const validator = injector.get(DataValidatorRegistryService).getValidatorItem('list')
   const names = injector.get(IDefinedNamesService)
   const original = validator.validatorFormula
-  const resolve = (formula: string, unitId: string, subUnitId: string) => {
+  const resolve = (formula: string | undefined, unitId: string, subUnitId: string) => {
+    if (typeof formula !== 'string') return formula
     const visited = new Set<string>()
     while (typeof formula === 'string' && /^=[\p{L}_\\][\p{L}\p{N}_.\\]*$/u.test(formula)) {
       if (isReferenceString(formula.slice(1))) break

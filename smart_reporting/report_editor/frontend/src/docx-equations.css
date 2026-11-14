@@ -1,0 +1,110 @@
+/* ---- Equations: built-in equation library dropdown + LaTeX insert dialog ---- */
+
+.equation-gallery {
+  /* right-aligned to its trigger (the Equation button sits at the ribbon's
+     far right) — fixed + anchored like the other panels */
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  right: anchor(right);
+  position-visibility: anchors-visible;
+  z-index: 60;
+  width: 300px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 6px;
+}
+
+.equation-gallery-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  padding: 8px 6px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.equation-gallery-item:hover {
+  background: var(--active-bg);
+}
+
+.equation-gallery-name {
+  font-size: 11px;
+  color: var(--text-dim);
+  align-self: flex-start;
+}
+
+.equation-gallery-preview {
+  font-family: 'Cambria Math', 'STIX Two Math', serif;
+  font-size: 15px;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.equation-gallery-custom {
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--border-strong);
+  background: none;
+  padding: 8px 6px;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.equation-gallery-custom:hover {
+  background: var(--active-bg);
+}
+
+.equation-modal {
+  min-width: 460px;
+}
+
+.equation-preview {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  margin: 10px 0 2px;
+  padding: 10px;
+  font-family: 'Cambria Math', 'STIX Two Math', serif;
+  font-size: 18px;
+  overflow-x: auto;
+}
+
+.equation-preview-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: system-ui, sans-serif;
+}
+
+.equation-preview-error {
+  font-size: 12px;
+  color: var(--danger);
+  font-family: system-ui, sans-serif;
+}
+
+.equation-inline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.docx-native .modal.equation-modal { box-sizing: border-box; min-width: 0; width: min(560px,calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow:auto; }
+.docx-native .equation-gallery[data-rb-panel] { box-sizing: border-box; bottom:16px; max-width:calc(100vw - 32px); max-height:60vh; overflow:auto; }

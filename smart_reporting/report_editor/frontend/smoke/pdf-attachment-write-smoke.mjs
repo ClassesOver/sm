@@ -5,6 +5,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { observePdfBuiltAssets } from './pdf-object-dialog-checks.mjs'
+import { inspectPdfSidebar } from './pdf-sidebar-checks.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_ATTACHMENTS_SMOKE_PORT ?? 4212), base = `http://127.0.0.1:${port}`, sha = bytes => createHash('sha256').update(bytes).digest('hex')
 function python(input) {
@@ -31,11 +33,12 @@ elif p['mode']=='patch':
 }
 const fixture = python({ mode: 'create' }), source = Buffer.from(fixture.bytes, 'base64'), revisions = new Map([[1, source], [3, Buffer.from(fixture.empty, 'base64')]])
 let page, browser, readonly = false, savedOperations
-const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+const server = spawn('./node_modules/.bin/vite', ['preview', ...(process.env.PDF_STATIC_ROOT?['--outDir',process.env.PDF_STATIC_ROOT]:[]), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: '/usr/bin/chromium' })
-  page = await browser.newPage({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true }); const errors = []
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? {executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE} : {}) })
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true }); page = await context.newPage(); const errors = []
+  const verifyAssets=await observePdfBuiltAssets(page),sidebarLayouts=[]
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
   await page.addInitScript(() => {
     window.__attachmentReads = []; window.__failList = true; window.__failContent = true; window.__releasedAttachments = false; window.__downloads = 0; window.__liveUrls = new Set()
@@ -81,10 +84,14 @@ try {
   const loaded = () => page.waitForFunction(() => !document.querySelector('.pdf-attachments-sidebar [role="status"]')?.textContent?.includes('正在读取'))
   await open(1); await page.locator('[data-pdf-ribbon-tab="view"]').click(); await toggle.click(); await loaded()
   assert.match(await panel.locator('[role="status"]').innerText(),/目录读取失败/); assert.equal(await rows.count(),0)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'attachments',phase:'directory-error',operations:ops,directory:process.env.PDF_ATTACHMENTS_EVIDENCE_DIR}))
   await panel.getByRole('button',{name:'重试附件读取'}).click(); await page.waitForFunction(() => window.__attachmentReads.length === 2); await toggle.click(); assert.equal(await panel.isVisible(),false); await page.evaluate(()=>window.__releaseAttachmentRead()); await toggle.click(); await loaded()
   assert.match(await panel.locator('[role="status"]').innerText(),/1 个内容读取失败/); assert.equal(await rows.count(),4)
   assert.equal(await rows.getByRole('button',{name:'下载附件'}).filter({visible:true}).count(),4)
-  await panel.getByRole('button',{name:'重试附件读取'}).click(); await loaded(); assert.equal(await panel.getByRole('button',{name:'下载附件',disabled:true}).count(),0)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'attachments',phase:'content-error',operations:ops,directory:process.env.PDF_ATTACHMENTS_EVIDENCE_DIR}))
+  const retry=panel.getByRole('button',{name:'重试附件读取'});if(process.env.PDF_ATTACHMENTS_KEYBOARD==='1'){await retry.focus();await page.keyboard.press('Space')}else await retry.click(); await loaded(); assert.equal(await panel.getByRole('button',{name:'下载附件',disabled:true}).count(),0)
+  if(process.env.PDF_ATTACHMENTS_KEYBOARD==='1')assert.equal(await rows.locator('[data-pdf-attachment-action=download]').first().evaluate(node=>document.activeElement===node),true)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'attachments',phase:'loaded',operations:ops,directory:process.env.PDF_ATTACHMENTS_EVIDENCE_DIR,reopen:async()=>{await toggle.click();await loaded()}}))
   const reads = await page.evaluate(() => window.__attachmentReads); assert.equal(reads.filter(r => r.action === 'GetAttachments').length,2); assert.equal(reads.filter(r => r.action === 'GetAttachmentContent').length,5)
   assert.equal(await rows.locator('strong').filter({hasText:/^same.txt$/}).count(),2); assert.equal(await panel.locator('img').count(),0)
   let expected = Object.values(fixture.files).map(b => sha(Buffer.from(b,'base64'))).sort(), downloads=[]
@@ -99,7 +106,8 @@ try {
   const withNote=await ops(); assert.equal(withNote.length,1); assert.deepEqual(before,[])
   assert.equal(fixture.model.attachmentsEditable,true,fixture.model.attachmentsReason)
   const removedKey = fixture.model.attachments.find(row=>row.name.includes('same.txt')).key
-  await rows.filter({hasText:'same.txt'}).first().getByRole('button',{name:'移除附件',exact:true}).click(); await loaded()
+  const remove=rows.filter({hasText:'same.txt'}).first().locator('[data-pdf-attachment-action=remove]');if(process.env.PDF_ATTACHMENTS_KEYBOARD==='1'){await remove.focus();await page.keyboard.press('Space')}else await remove.click(); await loaded()
+  if(process.env.PDF_ATTACHMENTS_KEYBOARD==='1')assert.equal(await rows.filter({hasText:'same.txt'}).first().locator('[data-pdf-attachment-action=remove]').evaluate(node=>document.activeElement===node&&node.textContent==='撤销移除附件'),true)
   assert.equal((await ops()).filter(op=>op.kind==='removeAttachment').length,1)
   await page.locator('[data-pdf-ribbon-tab="home"]').click()
   await page.getByRole('button',{name:'撤销',exact:true}).click(); await loaded(); assert.equal((await ops()).length,1)
@@ -107,7 +115,13 @@ try {
   const upload = page.getByLabel('选择新增附件'), addedBytes=Buffer.from([0,1,2,255,128,10])
   await upload.setInputFiles({name:'zz-new.bin',mimeType:'application/octet-stream',buffer:addedBytes})
   await page.waitForFunction(()=>document.querySelector('.pdf-attachments-list')?.textContent.includes('zz-new.bin（待新增）'))
+  if(process.env.PDF_ATTACHMENTS_KEYBOARD==='1'){
+    const cancel=rows.locator('[data-pdf-attachment-action=cancel]');await cancel.focus();await page.keyboard.press('Space');await loaded()
+    assert.equal(await cancel.count(),0);assert.equal(await panel.getByRole('button',{name:'新增附件',exact:true}).evaluate(node=>document.activeElement===node),true)
+    await upload.setInputFiles({name:'zz-new.bin',mimeType:'application/octet-stream',buffer:addedBytes});await page.waitForFunction(()=>document.querySelector('.pdf-attachments-list')?.textContent.includes('zz-new.bin（待新增）'))
+  }
   const withAttachments=await ops(); assert.equal(withAttachments.length,3)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'attachments',phase:'pending',operations:ops,directory:process.env.PDF_ATTACHMENTS_EVIDENCE_DIR}))
   await page.evaluate(()=>{const original=File.prototype.arrayBuffer;window.__restoreFileRead=()=>File.prototype.arrayBuffer=original;File.prototype.arrayBuffer=function(){return this.name==='stale.bin'?new Promise(resolve=>window.__releaseFile=()=>original.call(this).then(resolve)):original.call(this)}})
   await upload.setInputFiles({name:'stale.bin',mimeType:'application/octet-stream',buffer:Buffer.from('stale')}); await page.waitForFunction(()=>!!window.__releaseFile)
   await page.getByRole('button',{name:'撤销',exact:true}).click();await loaded();await page.evaluate(()=>window.__releaseFile());await page.waitForFunction(()=>document.body.textContent.includes('草稿已变化，请重新选择附件'))
@@ -130,11 +144,14 @@ try {
   await page.locator('[data-action="save"]').click(); await page.waitForFunction(()=>document.querySelector('.save-state-label')?.textContent==='已保存修订 2',null,{timeout:30000})
   const downloaded=Buffer.from(await page.evaluate(async()=>[...new Uint8Array(await(await fetch('/attachment-result.pdf')).arrayBuffer())])); assert.deepEqual(downloaded,revisions.get(2))
   readonly=true; await open(2); await page.locator('[data-pdf-ribbon-tab="view"]').click(); await toggle.click(); await loaded(); if(await panel.getByRole('button',{name:'重试附件读取'}).isVisible()){await panel.getByRole('button',{name:'重试附件读取'}).click();await loaded()}; if(await panel.getByRole('button',{name:'重试附件读取'}).isVisible()){await panel.getByRole('button',{name:'重试附件读取'}).click();await loaded()}
-  assert.equal(await rows.count(),4); assert.ok(expected.includes(sha((await downloadRow(3)).bytes))); assert.equal(await panel.getByRole('button',{name:'新增附件',exact:true}).isDisabled(),true); assert.equal(await panel.getByRole('button',{name:'移除附件',exact:true,disabled:false}).count(),0)
+  assert.equal(await rows.count(),4); assert.ok(expected.includes(sha((await downloadRow(3)).bytes))); assert.equal(await panel.getByRole('button',{name:'新增附件',exact:true}).isDisabled(),true); assert.equal(await panel.locator('[data-pdf-attachment-action=remove]:enabled').count(),0)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'attachments',phase:'readonly',operations:ops,directory:process.env.PDF_ATTACHMENTS_EVIDENCE_DIR}))
   await page.setViewportSize({width:390,height:844}); assert.ok(await panel.getByRole('button',{name:'关闭附件侧栏'}).isVisible()); await panel.getByRole('button',{name:'关闭附件侧栏'}).click(); assert.equal(await panel.isVisible(),false)
   await open(3); await page.evaluate(()=>window.__failList=false); await page.locator('[data-pdf-ribbon-tab="view"]').click(); await toggle.click(); await loaded(); assert.equal(await rows.count(),0); assert.match(await panel.locator('[role="status"]').innerText(),/没有附件/)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'attachments',phase:'empty',operations:ops,directory:process.env.PDF_ATTACHMENTS_EVIDENCE_DIR}))
   assert.deepEqual(errors,[])
   const evidence={attachmentWrite:true,staleFileReadRejected:true,undoRedoAndReload:true,collisionRejected:true,ok:true,browserVersion:browser.version(),sourceSha256:sha(source),downloadedSha256:sha(downloaded),downloads,initialReads:reads,metadataAndContentRetry:true,cacheAndExclusiveSidebar:true,staleDownloadsRejected:true,actualPreviewAndReadonlyDownloads:true,emptyAndDuplicateNames:true,operations:savedOperations,provenance:'production static UI; actual PDF.js/packed engine; Worker failures; substituted auth/revision routes, no production claim'}
+  evidence.keyboardChecked=process.env.PDF_ATTACHMENTS_KEYBOARD==='1';evidence.sidebarLayouts=sidebarLayouts;Object.assign(evidence,await verifyAssets())
   const dir=process.env.PDF_ATTACHMENTS_EVIDENCE_DIR
   if(dir){await mkdir(dir,{recursive:true});await writeFile(`${dir}/source.pdf`,source);await writeFile(`${dir}/downloaded.pdf`,downloaded);await writeFile(`${dir}/evidence.json`,JSON.stringify(evidence,null,2));await page.screenshot({path:`${dir}/mobile.png`,fullPage:true})}
   console.log(JSON.stringify(evidence))

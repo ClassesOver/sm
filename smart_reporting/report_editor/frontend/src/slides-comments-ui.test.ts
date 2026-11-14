@@ -113,3 +113,60 @@ it('未发布输入阻止删除来源页，非法未失焦输入不保存或部�
   o.shell.editor.querySelectorAll<HTMLButtonElement>('.slide-open')[1]!.click(); o.command('newComment').click(); o.input().value = 'x'.repeat(10001); o.input().dispatchEvent(new Event('input', { bubbles: true }))
   o.shell.save.click(); expect(o.request.mock.calls.some(([path]) => path === 'save')).toBe(false); expect(o.nativeDraft.operations).toEqual([]); expect(o.shell.editor.textContent).toContain('10000'); o.view.dispose()
 })
+
+it.each([false, true])('关闭批注恢复可见入口或当前标签，不改草稿（切换标签%s）', async switched => {
+  const o = await open(); const review = o.shell.editor.querySelector<HTMLButtonElement>('[data-ribbon-tab="review"]')!
+  review.click(); o.command('commentsPane').click()
+  const home = o.shell.editor.querySelector<HTMLButtonElement>('[data-ribbon-tab="home"]')!
+  if (switched) home.click()
+  o.action('close').click()
+  expect(document.activeElement).toBe(switched ? home : o.command('commentsPane'))
+  expect(o.command('commentsPane').getAttribute('aria-pressed')).toBe('false')
+  expect(o.nativeDraft.operations).toEqual([]); o.view.dispose()
+})
+
+it('取消和发布后焦点回到新增入口，删除后回到存活卡片', async () => {
+  const o = await open(); o.command('newComment').click()
+  o.action('cancel').focus(); o.action('cancel').click()
+  expect(document.activeElement).toBe(o.action('compose'))
+  o.action('compose').click(); o.input().value = '新增'; o.input().dispatchEvent(new Event('input', { bubbles: true }))
+  o.action('add').focus(); o.action('add').click()
+  expect(document.activeElement).toBe(o.action('compose'))
+  const first = o.shell.editor.querySelector<HTMLButtonElement>('[data-comment-author-id="0"] [data-comment-action="delete"]')!
+  first.focus(); first.click()
+  expect(document.activeElement).toBe(o.shell.editor.querySelector('[data-comment-author-id="1"] [data-comment-action="delete"]'))
+  o.view.dispose()
+})
+
+it('同页重绘保留列表位置、编辑焦点、选择范围和输入框滚动', async () => {
+  const o = await open(); o.command('newComment').click()
+  o.input().value = '未发布正文\n第二行'; o.input().dispatchEvent(new Event('input', { bubbles: true })); o.input().setSelectionRange(2, 5, 'backward'); o.input().scrollTop = 45
+  o.shell.editor.querySelector<HTMLElement>('.comments-list')!.scrollTop = 120
+  // 程序更新不把焦点移到Ribbon，模拟同页宿主重绘。
+  o.shell.editor.querySelector<HTMLButtonElement>('[data-ribbon-tab="home"]')!.click()
+  o.shell.editor.querySelector<HTMLButtonElement>('[data-command="toggleAnimationPane"]')!.click()
+  expect(document.activeElement).toBe(o.input())
+  expect([o.input().selectionStart, o.input().selectionEnd, o.input().selectionDirection, o.input().scrollTop]).toEqual([2, 5, 'backward', 45])
+  expect(o.shell.editor.querySelector('.comments-list')!.scrollTop).toBe(120)
+  expect(o.nativeDraft.operations).toEqual([]); o.view.dispose()
+})
+
+it('长批注正文可聚焦并用Home/End完整阅读，保留组合键行为', async () => {
+  const o = await open(); o.command('commentsPane').click()
+  const text = o.shell.editor.querySelector<HTMLElement>('.comment-text')!
+  expect(text.tabIndex).toBe(0)
+  expect(text.getAttribute('aria-readonly')).toBe('true')
+  Object.defineProperty(text, 'scrollHeight', { value: 500 }); Object.defineProperty(text, 'clientHeight', { value: 100 })
+  text.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })); expect(text.scrollTop).toBe(500)
+  text.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', ctrlKey: true, bubbles: true, cancelable: true })); expect(text.scrollTop).toBe(500)
+  text.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })); expect(text.scrollTop).toBe(0)
+  expect(o.nativeDraft.operations).toEqual([]); o.view.dispose()
+})
+
+it('输入法确认不发布批注，随后Ctrl+Enter可正常发布', async () => {
+  const o = await open(); o.command('newComment').click(); o.input().value = '中文输入中'; o.input().dispatchEvent(new Event('input', { bubbles: true }))
+  o.input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true, bubbles: true, cancelable: true }))
+  expect(o.nativeDraft.operations).toEqual([])
+  o.input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }))
+  expect(o.nativeDraft.operations[0]).toMatchObject({ commentEdits: [{ kind: 'add', text: '中文输入中' }] }); o.view.dispose()
+})

@@ -17,7 +17,7 @@ export function bindPdfProtectionDialog(options:{root:HTMLElement;sourceSha256:s
  const apply=owner.createElement('button');apply.type='button';apply.textContent='生成保护 PDF';apply.dataset.pdfProtectionApply=''
  const close=owner.createElement('button');close.type='button';close.textContent='关闭'
  const status=owner.createElement('p');status.setAttribute('role','status')
- const links=owner.createElement('div');dialog.append(apply,close,status,links);options.root.append(dialog)
+ const links=owner.createElement('div'),actions=owner.createElement('div');actions.className='pdf-layout-actions';actions.append(close,apply);dialog.append(status,links,actions);options.root.append(dialog)
  let disposed=false,busy=false,generation=0,cached:NativeSaveResponse|undefined
  const clear=()=>{user.value=confirm.value=admin.value=''}
  function show(result:NativeSaveResponse){
@@ -34,10 +34,10 @@ export function bindPdfProtectionDialog(options:{root:HTMLElement;sourceSha256:s
   const valid=(value:string)=>new TextEncoder().encode(value).length<=127
   if(!valid(user.value)||!valid(admin.value)){status.textContent='密码不得超过 127 UTF-8 字节';return}
   const payload:PdfProtectionRequest={requestId:crypto.randomUUID(),expectedSha256:options.sourceSha256,userPassword:user.value,ownerPassword:admin.value||user.value,permissions:{printing:checks.get('printing')!.checked,modifying:checks.get('modifying')!.checked,annotating:checks.get('annotating')!.checked,copying:checks.get('copying')!.checked}}
-  clear();const token=generation;busy=true;apply.disabled=true;links.replaceChildren();status.textContent='正在创建保护副本…'
+  clear();const token=generation;busy=true;apply.disabled=true;for(const input of [user,confirm,admin,...checks.values()])input.disabled=true;links.replaceChildren();status.textContent='正在创建保护副本…'
   try{const result=await options.submit(payload);cached=result;if(!disposed&&dialog.open&&token===generation)show(result)}
   catch(error){if(!disposed&&dialog.open&&token===generation)status.textContent=error instanceof Error?error.message:String(error)}
-  finally{payload.userPassword=payload.ownerPassword='';busy=false;if(!disposed)apply.disabled=false}
+  finally{payload.userPassword=payload.ownerPassword='';busy=false;if(!disposed){apply.disabled=false;for(const input of [user,confirm,admin,...checks.values()])input.disabled=false}}
  }
  apply.addEventListener('click',()=>{void submit()});close.addEventListener('click',()=>dialog.close())
  dialog.addEventListener('close',()=>{clear();generation++});dialog.addEventListener('cancel',clear)

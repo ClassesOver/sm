@@ -13,6 +13,40 @@ const slides: SlidesFindSource[] = [
 const conditions = { query: 'cat', replacement: '$&', matchCase: false }
 afterEach(() => document.body.replaceChildren())
 
+it.each(['Escape', 'Enter'])('输入法或已消费按键不关闭查找或跳转匹配：%s', key => {
+  for (const protection of ['composition', 'legacy', 'handled']) {
+    const navigate = vi.fn(), replace = vi.fn()
+    const handle = openSlidesFindReplace(document.body, { getSlides: () => slides, getEdits: () => [], isLocked: () => false, onNavigate: navigate, onReplace: replace })
+    const dialog = document.querySelector('dialog')!, query = dialog.querySelector<HTMLInputElement>('[aria-label="查找文字"]')!
+    query.value = 'cat'; query.focus()
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, isComposing: protection === 'composition', keyCode: protection === 'legacy' ? 229 : 0 })
+    if (protection === 'handled') event.preventDefault()
+    query.dispatchEvent(event)
+    expect(dialog.isConnected).toBe(true); expect(query.value).toBe('cat'); expect(document.activeElement).toBe(query)
+    expect(navigate).not.toHaveBeenCalled(); expect(replace).not.toHaveBeenCalled()
+    query.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+    if (key === 'Escape') expect(dialog.isConnected).toBe(false)
+    else expect(navigate).toHaveBeenCalledWith(0, 'title')
+    handle.dispose()
+  }
+})
+
+it.each(['closeFindReplace', 'headerClose', 'Escape', 'cancel', 'dispose'])('restores the opener when closed with %s without replacing text', action => {
+  const opener = document.body.appendChild(document.createElement('button')); opener.textContent = '查找'; opener.focus()
+  const onReplace = vi.fn(), handle = openSlidesFindReplace(document.body, { getSlides: () => slides, getEdits: () => [], isLocked: () => false, onNavigate: vi.fn(), onReplace })
+  const dialog = document.querySelector('dialog')!
+  expect(document.activeElement).toBe(dialog.querySelector('[aria-label="查找文字"]'))
+  if (action === 'dispose') handle.dispose()
+  else if (action === 'Escape') dialog.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  else if (action === 'cancel') dialog.dispatchEvent(new Event('cancel', { cancelable: true }))
+  else if (action === 'headerClose') dialog.querySelector<HTMLButtonElement>('[aria-label="关闭查找和替换"]')!.click()
+  else dialog.querySelector<HTMLButtonElement>('[data-command="closeFindReplace"]')!.click()
+  expect(document.querySelector('dialog')).toBeNull()
+  expect(document.activeElement).toBe(opener)
+  expect(onReplace).not.toHaveBeenCalled()
+  handle.dispose()
+})
+
 it('finds only proven editable source text, uses pending text and visible page order, and never mutates edits', () => {
   const edits = [{ slideIndex: 0, elementId: 'title', text: 'edited CAT cat', geometry: { x: 1, y: 2, width: 3, height: 4 } }]
   const original = structuredClone(edits)
@@ -149,4 +183,38 @@ it('continues finding from the consumed element after a single replacement', () 
   const click = (command: string) => document.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)!.click()
   click('findNext'); click('findNext'); click('replace'); click('findNext')
   expect(navigate).toHaveBeenLastCalledWith(1, 'shape')
+})
+
+it('separates the fixed title and actions from the scrollable search fields and named guidance', () => {
+  openSlidesFindReplace(document.body, { getSlides: () => slides, getEdits: () => [], isLocked: () => false,
+    onNavigate: vi.fn(), onReplace: vi.fn() })
+  const dialog = document.querySelector('dialog')!
+  expect(dialog.querySelector('header h2')?.textContent).toBe('查找和替换')
+  expect(dialog.querySelector('header [aria-label="关闭查找和替换"]')).not.toBeNull()
+  expect(dialog.querySelector('.slides-find-body [aria-label="查找文字"]')).not.toBeNull()
+  expect(dialog.querySelector('footer [data-command="replaceAll"]')).not.toBeNull()
+  const scope = dialog.querySelector<HTMLElement>('[role=region][aria-label="查找替换范围说明"]')
+  expect(scope).not.toBeNull()
+  expect(scope!.tabIndex).toBe(0)
+  expect(scope!.textContent).toContain('混合样式')
+})
+
+it('keeps replacement refusal readable through a named keyboard-accessible result without committing', () => {
+  const { click, onReplace } = panel(vi.fn(), () => true)
+  click('replaceAll')
+  const status = document.querySelector<HTMLElement>('[role=status]')!
+  expect(status.getAttribute('aria-label')).toBe('查找替换结果')
+  expect(status.tabIndex).toBe(0)
+  expect(status.textContent).toContain('只读')
+  expect(onReplace).not.toHaveBeenCalled()
+})
+
+it('reveals an action result without stealing the search field focus', () => {
+  const { click, query } = panel(vi.fn(), () => true)
+  const status = document.querySelector<HTMLElement>('[role=status]')!
+  const reveal = vi.fn()
+  status.scrollIntoView = reveal
+  query.focus(); click('replaceAll')
+  expect(reveal).toHaveBeenCalledWith({ block: 'nearest' })
+  expect(document.activeElement).toBe(query)
 })

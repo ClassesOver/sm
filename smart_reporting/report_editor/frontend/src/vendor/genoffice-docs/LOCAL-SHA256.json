@@ -1,8 +1,8 @@
 {
   "LICENSE": "68e32334df324ef4fc79fad3a26487e5abac36055a484bb6c8d7ecf9d8350885",
   "NOTICE": "26fa7a458f2463af07f96af3d4b26b3cc3b4de688340838e3c9b3b958d390882",
-  "SOURCE-SHA256.json": "4ebdb74de61a090104fcde920450e670cb557b221addb41164fded6ad04f89f3",
-  "SOURCE.md": "f5c31d86f1d2509fc120f3893caba3f8f25d0e6f463b16ef1f0bfdd5251a6eca",
+  "SOURCE-SHA256.json": "a0eff02d8555fee46baf87718a74626f18d2eba76bb7185418235473adc58431",
+  "SOURCE.md": "010594b1be839078838b90c3ee5a93cf5793c29cfa0f1de2b8aa719e569e5c84",
   "apps/docs/src/renderer/ai/after-text.ts": "c46615f9ac84ac61e7085887cae313ecb952594adcc91b3726c50db8fb42bf1a",
   "apps/docs/src/renderer/ai/doc-utils.ts": "d7aba78ea23c72f43b99c92c725dfa6310fe079a78d79def0d029f5129c28e54",
   "apps/docs/src/renderer/ai/field-ops.ts": "bc27a4bca288c1eaf33aed401b9f281c5eaeb3280415986cbe62fd15d1c89956",
@@ -239,7 +239,7 @@
   "packages/i18n/src/font-names.ts": "fc4c54ddac45dbd22b8dd11afbdba8b5b6c1fdc848016ee78bdbc8a30ea199b3",
   "packages/i18n/src/index.ts": "89d40d73586a6197579f8b4265247bcea766f227ec6156875a232969eb700691",
   "packages/pptx-render/src/preset-geometry.ts": "86ac4834984aadbb9dc445702c4fe56a8e9ffe123e1e22067d405a134e69d5f4",
-  "packages/ui/src/browser.ts": "e899fdc860e78a3e3d97e956133ab1aea089857f282e1b676fd2ce167c1a8170",
+  "packages/ui/src/browser.ts": "a78796326afeefcd8764ddbde62f271c04ba9a8b339dc1cf07c8a4890033c191",
   "packages/ui/src/font-list.ts": "a3e94dcb9f89a635bc6cbc5a773d2af610b6a1c922d568d644e8561f7b6de49c",
   "packages/ui/src/popover-dismiss.ts": "581b8f1fe677bb95eeee57b6f495df48e3a20e84b2d62f57e3412e3f60e527db",
   "packages/ui/src/shape-gallery.tsx": "316b6d345e3ad1da3cc3c14813ac9196a993d461cf12ec8b8c5d39e76bf41e95",
@@ -247,5 +247,12 @@
   "scoped.css": "c619903cbe36a76820bcc64310bfbdec667ea0790e082598d6015f50a90171a5",
   "apps/docs/src/renderer/components/Ruler.tsx": "e7f9d523fb2cd9229b018ff3154e5e745dee71e977f79787062875731ba1ec2d",
   "apps/docs/src/renderer/use-measurement.ts": "5231765ebe729f6aa3f5c233a4605240e8ab78013e13d094e2d0dfd6695eb915",
-  "apps/docs/src/renderer/units.ts": "7ff1a75d8300070d357da335ac86d17bc6e005dfad0087d9a82bfe8d0515243d"
+  "apps/docs/src/renderer/units.ts": "7ff1a75d8300070d357da335ac86d17bc6e005dfad0087d9a82bfe8d0515243d",
+  "apps/docs/src/renderer/components/ListDialogs.tsx": "d8c9677a037bdd24fdd7b60fd0e7c4c98b142fcd34e80e84e9dec19c36063078",
+  "apps/docs/src/renderer/components/LengthInput.tsx": "5a96ac53d301ff56dd76329be7e5aa4f6770db973f37c6744c72a4a55b43272b",
+  "apps/docs/src/renderer/components/modal-keys.ts": "d02f6342981eddda166dae5dcd1afd95ff08499cc2984636e6cca5b2d7e29563",
+  "apps/docs/src/renderer/system-fonts.ts": "73314f76cc3039304c4fae9f08ad2335a6c57281c98ef5340a0f7ed6f81f2dca",
+  "apps/docs/src/renderer/list-presets.ts": "cbdec8354baeebf1b673b81301c6dca527cf05213ba4ba02efca8e0d4b57edd1",
+  "packages/ui/src/dropdown.tsx": "86991831ca375f662a389b0087cb426336efe155e6aa90246b351c243cfeb1ff",
+  "packages/ui/src/dropdown.css": "dd3965147814b4fea9013768a9a7d7505535f8244cfcea854d35a46755078f0c"
 }

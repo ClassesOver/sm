@@ -17,6 +17,16 @@ interface ModalOptions {
   onRequestClose?: () => void
 }
 
+const openModals: { overlay: HTMLElement; opener: HTMLElement | null }[] = []
+const topModal = () => openModals.findLast(({ overlay }) => overlay.isConnected && !overlay.hidden)
+const syncModalAccess = () => {
+  const top = topModal()
+  for (const modal of openModals) {
+    modal.overlay.inert = modal !== top && !modal.overlay.contains(top?.overlay ?? null)
+    modal.overlay.setAttribute('aria-modal', String(modal === top))
+  }
+}
+
 export function createModal(options: ModalOptions) {
   const overlay = document.createElement('div')
   overlay.className = ['modal-overlay', options.overlayClass].filter(Boolean).join(' ')
@@ -49,29 +59,53 @@ export function createModal(options: ModalOptions) {
 
   options.root.append(overlay)
   const uninstallFocusTrap = installFocusTrap(overlay)
-  let opener: HTMLElement | null = null
+  const entry = { overlay, opener: null as HTMLElement | null }
 
   const restoreFocus = () => {
-    opener?.focus()
-    opener = null
+    if (entry.opener?.isConnected) entry.opener.focus()
+    entry.opener = null
+  }
+  const deactivate = () => {
+    const wasTop = topModal() === entry
+    for (const modal of openModals) {
+      if (modal !== entry && modal.opener && overlay.contains(modal.opener)) modal.opener = entry.opener
+    }
+    const index = openModals.indexOf(entry)
+    if (index !== -1) openModals.splice(index, 1)
+    overlay.inert = false
+    syncModalAccess()
+    return wasTop
   }
   const close = () => {
+    const wasTop = deactivate()
     overlay.hidden = true
-    restoreFocus()
+    if (wasTop) restoreFocus()
+    else entry.opener = null
   }
   const remove = () => {
+    const wasTop = deactivate()
+    overlay.removeEventListener('keydown', onKeyDown)
     window.removeEventListener('keydown', onKeyDown)
     uninstallFocusTrap()
     overlay.remove()
-    restoreFocus()
+    if (wasTop) restoreFocus()
+    else entry.opener = null
   }
   const requestClose = () => {
+    if (topModal() !== entry) return
     if (options.onRequestClose) options.onRequestClose()
     else close()
   }
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape' && !overlay.hidden) requestClose()
+    if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
+    if (event.target instanceof Element && event.target.closest('dialog[open]')) return
+    if (event.key === 'Escape' && topModal() === entry) {
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      requestClose()
+    }
   }
+  overlay.addEventListener('keydown', onKeyDown)
   window.addEventListener('keydown', onKeyDown)
   closeButton?.addEventListener('click', requestClose)
   overlay.addEventListener('click', (event) => {
@@ -85,10 +119,17 @@ export function createModal(options: ModalOptions) {
     close,
     remove,
     open(initialFocus?: HTMLElement | null) {
-      opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
-        ? document.activeElement
-        : null
+      if (overlay.hidden) {
+        entry.opener = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+          ? document.activeElement
+          : null
+      }
+      const index = openModals.indexOf(entry)
+      if (index !== -1) openModals.splice(index, 1)
+      openModals.push(entry)
+      overlay.parentElement?.append(overlay)
       overlay.hidden = false
+      syncModalAccess()
       ;(initialFocus ?? closeButton ?? card.querySelector<HTMLElement>('button, input, select, textarea, a[href]'))?.focus()
     },
   }

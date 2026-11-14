@@ -2,7 +2,7 @@ import { createModal } from './modal'
 import { buttonClasses } from './button'
 
 export function openDocxColumnWidthDialog(root: HTMLElement, initialWidthTwips: number, apply: (widthTwips: number) => void) {
-  const modal = createModal({ root, label: '列宽', closeLabel: '关闭列宽', onRequestClose: () => modal.remove(), content: `
+  const modal = createModal({ root, label: '列宽', cardClass: 'docx-table-property-dialog', closeLabel: '关闭列宽', onRequestClose: () => modal.remove(), content: `
     <h2>列宽</h2><form novalidate>
       <label>列宽（twip）<input aria-label="列宽（twip）" type="number" min="1" max="31680" step="1"></label>
       <p role="alert"></p><button type="button" data-action="cancel" class="${buttonClasses('secondary')}">取消</button>

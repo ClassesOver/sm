@@ -30,7 +30,7 @@ export interface XlsxMutation {
 export interface EntrySource {
   paths(): Promise<readonly string[]>
   has(path: string): Promise<boolean>
-  readText(path: string): Promise<string>
+  readText(path: string, options?: { preservePrefixes: boolean }): Promise<string>
 }
 
 /// The entry-level outcome of patch planning: what the assembler must
@@ -94,14 +94,14 @@ export async function createBufferEntrySource(bytes: Uint8Array): Promise<EntryS
         .filter(([, file]) => !file.dir)
         .map(([path]) => path),
     has: async (path) => zip.file(path) !== null,
-    readText: async (path) => {
+    readText: async (path, options) => {
       const entry = zip.file(path)
       if (!entry) throw new Error(`工作簿缺少 ${path}。`)
       const text = await entry.async('text')
       if (/\.xml$|\.rels$/i.test(path) && /<!\s*(?:DOCTYPE|ENTITY)\b/i.test(text)) {
         throw new Error(`${path} 包含不受支持的 DOCTYPE 或 ENTITY 声明。`)
       }
-      return normalizeOoxmlPartPrefix(text)
+      return options?.preservePrefixes ? text : normalizeOoxmlPartPrefix(text)
     },
   }
 }

@@ -1,4 +1,5 @@
 // GenOffice f8c17004 WatchWindowPanel/App 的会话监视契约；来源见 workbook-vendor/SOURCE.md。
+import './office-theme.css'
 import './workbook-watch-window.css'
 import { formatAddress } from '@sheets-web/xlsx-engine/cell-address'
 interface WatchCell {sheetId:string;row:number;column:number}
@@ -17,10 +18,18 @@ interface WatchWorkbook {
 }
 const key=(cell:WatchCell)=>`${cell.sheetId}:${cell.row}:${cell.column}`
 export function createWorkbookWatchWindow(host:HTMLElement,workbook:()=>WatchWorkbook|null|undefined,changed?:()=>void){
- let cells:WatchCell[]=[],identity:object|undefined,panel:HTMLElement|undefined,timer:ReturnType<typeof setInterval>|undefined,disposed=false
+ let cells:WatchCell[]=[],identity:object|undefined,panel:HTMLElement|undefined,timer:ReturnType<typeof setInterval>|undefined,disposed=false,trigger:HTMLElement|undefined
  const rows=new Map<string,HTMLTableRowElement>()
  const sync=()=>{const current=workbook()?.getWorkbook();if(identity!==current){cells=[];identity=current}return workbook()}
- const close=()=>{if(timer!==undefined)clearInterval(timer);timer=undefined;panel?.remove();panel=undefined;rows.clear();changed?.()}
+ const close=(restoreFocus=false)=>{
+  if(timer!==undefined)clearInterval(timer);timer=undefined;panel?.remove();panel=undefined;rows.clear();changed?.()
+  if(restoreFocus){
+   const visible=(node:HTMLElement|undefined|null)=>node?.isConnected&&!node.closest('[hidden],[inert]')&&getComputedStyle(node).display!=='none'&&getComputedStyle(node).visibility!=='hidden'
+   const target=visible(trigger)?trigger:host.querySelector<HTMLElement>('[data-ribbon-tab][aria-selected="true"]')
+   if(visible(target))target?.focus()
+  }
+  trigger=undefined
+ }
  const render=()=>{
   if(!panel)return
   const book=sync(),body=panel.querySelector('tbody')!
@@ -38,11 +47,15 @@ export function createWorkbookWatchWindow(host:HTMLElement,workbook:()=>WatchWor
    if(!row){
     row=document.createElement('tr');row.dataset.watchRow=id
     for(let i=0;i<4;i++)row.append(document.createElement('td'))
-    const td=document.createElement('td'),remove=document.createElement('button');remove.type='button';remove.dataset.watchRemove=id;remove.textContent='删除';remove.setAttribute('aria-label',`删除监视 ${formatAddress(cell.row,cell.column)}`);remove.addEventListener('click',()=>{cells=cells.filter(item=>key(item)!==id);render()});td.append(remove);row.append(td);rows.set(id,row);body.append(row)
+    const td=document.createElement('td'),remove=document.createElement('button');remove.type='button';remove.dataset.watchRemove=id;remove.textContent='删除';remove.setAttribute('aria-label',`删除监视 ${formatAddress(cell.row,cell.column)}`);remove.addEventListener('click',()=>{
+     const focused=document.activeElement===remove,index=cells.findIndex(item=>key(item)===id)
+     cells=cells.filter(item=>key(item)!==id);render()
+     if(focused){const remaining=panel?.querySelectorAll<HTMLButtonElement>('[data-watch-remove]');(remaining?.[Math.min(index,remaining.length-1)]??panel?.querySelector<HTMLButtonElement>('button:enabled'))?.focus()}
+    });td.append(remove);row.append(td);rows.set(id,row);body.append(row)
    }
    row.classList.toggle('watch-gone',!resolved)
-   const values=[resolved?.name??'—',formatAddress(cell.row,cell.column),resolved?.value??'',resolved?.formula??'']
-   values.forEach((value,index)=>{if(row!.cells[index]!.textContent!==value)row!.cells[index]!.textContent=value})
+   const values=[resolved?.name??'来源不可用',formatAddress(cell.row,cell.column),resolved?.value??'',resolved?.formula??'']
+   values.forEach((value,index)=>{if(row!.cells[index]!.textContent!==value){row!.cells[index]!.textContent=value;row!.cells[index]!.title=value}})
   }
  }
  const add=()=>{
@@ -58,10 +71,18 @@ export function createWorkbookWatchWindow(host:HTMLElement,workbook:()=>WatchWor
   state:()=>({active:Boolean(panel)}),
   toggle(){
    if(disposed)return
-   if(panel){close();return}
+   if(panel){close(true);return}
+   trigger=document.activeElement instanceof HTMLElement?document.activeElement:undefined
    sync();panel=document.createElement('section');panel.className='workbook-watch-window';panel.dataset.watchWindow='';panel.setAttribute('role','dialog');panel.setAttribute('aria-label','监视窗口')
-   panel.innerHTML='<header><strong>监视窗口</strong><button type="button" data-watch-add>添加选区</button><button type="button" data-watch-close aria-label="关闭监视窗口">关闭</button></header><p>按单元格地址监视；每次最多新增 20 格。</p><p data-watch-empty>选择单元格后添加监视。</p><div class="watch-scroll"><table><thead><tr><th>工作表</th><th>单元格</th><th>值</th><th>公式</th><th></th></tr></thead><tbody></tbody></table></div>'
-   panel.querySelector('[data-watch-add]')!.addEventListener('click',add);panel.querySelector('[data-watch-close]')!.addEventListener('click',close);host.append(panel);render();timer=setInterval(render,800);changed?.()
+   panel.innerHTML='<header><strong>监视窗口</strong><button type="button" data-watch-add>添加选区</button><button type="button" data-watch-close aria-label="关闭监视窗口" title="关闭监视窗口">×</button></header><p>按单元格地址监视；每次最多新增 20 格。</p><p data-watch-empty>选择单元格后添加监视。</p><div class="watch-scroll" tabindex="0" role="region" aria-label="监视单元格表格"><table><thead><tr><th scope="col">工作表</th><th scope="col">单元格</th><th scope="col">值</th><th scope="col">公式</th><th scope="col">操作</th></tr></thead><tbody></tbody></table></div>'
+   panel.addEventListener('keydown',event=>{
+    if(event.isComposing||event.keyCode===229||event.defaultPrevented)return
+    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();close(true);return}
+    const scroll=panel?.querySelector<HTMLElement>('.watch-scroll')
+    if(event.target!==scroll||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||!['Home','End'].includes(event.key))return
+    event.preventDefault();scroll!.scrollTop=event.key==='Home'?0:scroll!.scrollHeight
+   })
+   panel.querySelector('[data-watch-add]')!.addEventListener('click',add);panel.querySelector('[data-watch-close]')!.addEventListener('click',()=>close(true));host.append(panel);render();timer=setInterval(render,800);changed?.();panel.querySelector<HTMLButtonElement>('button:enabled')!.focus()
   },
   reset(){close();cells=[];identity=undefined},
   dispose(){disposed=true;close();cells=[];identity=undefined},

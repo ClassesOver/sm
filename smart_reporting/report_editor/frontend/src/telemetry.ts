@@ -1,3 +1,5 @@
+import type { ExportFormat } from './delivery-format'
+
 export type EditorTelemetryEvent =
   | 'document_loaded'
   | 'save_succeeded'
@@ -8,7 +10,7 @@ export type EditorTelemetryEvent =
 export interface EditorTelemetryPayload {
   event: EditorTelemetryEvent
   durationMs?: number
-  format?: 'pdf' | 'word'
+  format?: ExportFormat
   errorCode?: string
 }
 

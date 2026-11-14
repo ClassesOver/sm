@@ -3,6 +3,7 @@
 /// core (values + styles only — structural/chart/sheet-plan operations stay
 /// desktop features for now).
 
+import { parseRange, formatAddress } from './cell-address'
 import type { WorkbookRichRun, WorkbookStyleEdit } from './edit-schemas'
 import { sha256Hex } from './sha256'
 import { spillsDynamicArray, withFutureFunctionMarkers } from './future-functions'
@@ -358,6 +359,15 @@ export async function applyCellEdits(
       worksheetXml = patchCellKeepingStyle(worksheetXml, address, edit.cell, styleOverride, edit.rich)
     } else if (styleOverride !== undefined) {
       worksheetXml = patchCellStyleOnly(worksheetXml, address, styleOverride)
+    }
+    // 新增/扩展单元格后同步已用范围，流式 Office 读取器依赖 dimension。
+    if (edit.writeValue || wantsStyle) {
+      worksheetXml = worksheetXml.replace(/(<dimension\b[^>]*\bref=")([^"]+)(")/, (_match, before, ref, after) => {
+        const bounds = parseRange(ref)
+        const first = formatAddress(Math.min(bounds.startRow, edit.row), Math.min(bounds.startColumn, edit.column))
+        const last = formatAddress(Math.max(bounds.endRow, edit.row), Math.max(bounds.endColumn, edit.column))
+        return before + (first === last ? first : first + ':' + last) + after
+      })
     }
     worksheetXmlByName.set(edit.sheetName, worksheetXml)
   }

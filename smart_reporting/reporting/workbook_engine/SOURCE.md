@@ -588,3 +588,75 @@ Hyperlink readers and writers accept single- and double-quoted attributes.
 Relationship reclamation preserves references from untouched cells, and readback
 checks retain the target and availability of untouched links. Package-level
 regression covers removing one shared reference and then its single-quoted peer.
+## Local chart anchor read extension (2026-11-13)
+
+`packages/xlsx-engine/src/chart-read.ts` reads `oneCellAnchor` and
+`absoluteAnchor` in addition to existing `twoCellAnchor` drawings. Single-cell
+frames retain their source cell and fixed EMU extent; absolute frames use the
+sheet origin and source EMU position/extent. Both map to the existing endpoint
+offset representation without estimating column widths or row heights, changing
+the canvas renderer, or rewriting source XML. Invalid extents are skipped locally
+without hiding valid sibling charts. This is a local read/display adaptation;
+it does not claim new anchor writing, worksheet structural-edit semantics, or
+desktop Excel interoperability.
+
+Evidence: 8 new anchor tests first failed with an empty chart list; 16 targeted
+engine tests and 3 existing renderer geometry tests pass after the change. The
+old frozen browser build displayed only 1 of the 3 source charts. The new frozen
+host displays all 3, with independently measured screenshot boundaries matching
+source XML positions/extents for each anchor type. Four viewport chart-description
+checks, source byte identity, unchanged drafts, no-save assertions and runtime
+asset identity also pass. Evidence is retained under
+`/dev/shm/office-xlsx-anchor-types-verification-20261112`; the directory date marks
+the start of this batch on November 12. `SOURCE-SHA256.json` remains the original
+source record; the changed reader is pinned in `LOCAL-ADAPTATIONS-SHA256.json`.
+
+## Local chart fill projection (2026-11-13)
+
+`chart-read.ts` now projects sparse `dPt` fills, explicit `noFill`, plain RGB /
+system fallback / theme-slot fills, the workbook's accent palette and explicit
+`varyColors`. It uses existing `parseThemePalette` and `themeSlotIndex` helpers.
+`style-color.ts::applyDrawingLuminance` reuses the existing HLS conversions for
+ordered DrawingML `lumMod`/`lumOff`, clamping after each operation and rounding
+the final channels. Cell `applyTint` retains its existing truncation behavior.
+Unresolved/unsupported fills and ambiguous point identities carry an explicit
+preview limitation rather than silently using an unrelated default color.
+This is read-only metadata; source parts and workbook facts are not rewritten.
+
+The host renders these fills for bar, column, pie and doughnut previews. Empty
+pie/doughnut values retain their original point slots. Its text descriptions
+identify series fills, point overrides and unsupported previews without relying
+only on color. Other plot types, chart-local theme overrides, arbitrary color
+transforms and gradient/picture/pattern rendering remain outside this batch.
+The final real-browser fixture includes six charts, sparse values, noFill,
+custom theme slots, a gradient limitation and a theme luminance transform;
+source OOXML and output pixel colors are independently checked with Python.
+Evidence: `/dev/shm/office-xlsx-chart-fills-verification-20261113`.
+
+## Local chart edit namespace adaptation (2026-11-13)
+
+`chart-edit.ts` uses the existing Saxes dependency to identify Chart and DrawingML elements by namespace URI before applying the existing surgical edits. Source default/arbitrary main prefixes are restored using local bindings; mixed aliases may normalize to the source main prefix. Local namespace shadowing must not change element URIs. Foreign namespaces, extension subtrees, comments, CDATA and processing instructions retain their original text. Attribute-bearing chart/title/plot targets participate in editing instead of silently inserting duplicate titles or skipping edits. The adapter does not reserialize the whole chart or rewrite unrelated ZIP members.
+
+Targeted RED/GREEN, independent namespace review and eleven saved XLSX files are retained under `/dev/shm/office-xlsx-namespace-write-verification-20261113` and `/dev/shm/office-xlsx-namespace-review-20261113`. Independent stdlib ZIP/XML readback checks the requested chart edits and unchanged non-target members. `SOURCE-SHA256.json` remains the original source identity; this local writer is pinned in `LOCAL-ADAPTATIONS-SHA256.json`. This is a chart-edit namespace subset, not exhaustive OOXML or desktop Excel interoperability certification.
+
+## 2026-11-13 同步 code 的主题与来源读取整合
+
+本地 code 从448085bf快进至origin/code的6a713d05（PR #222），保留本地命名空间URI归一、三种锚点、来源系列/逐点填充和按顺序亮度变换，同时合入上游分类/数值轴和标签样式读取。系列与标签共用上游chartThemePalette的唯一内部主题关系解析；主题移动时不再读取旧固定路径。显式schemeClr缺失实际主题时标记填充预览受限，不猜成Office默认蓝色。旧填充测试夹具补全12槽和实际主题关系，新增移动主题与缺失主题负控；缺失主题用例先RED后GREEN。既有标签的有界亮度合同与系列填充的来源顺序合同分别保留。
+
+整合定向引擎104个不同用例分批通过，前端105项通过，两端类型检查与隔离构建通过。完整宿主实际保存主题、新修订重开和独立XML/像素回读证据位于/tmp/office-code-pull-20261113；不将此范围推导为完整图表、任意主题写入或桌面Office验证完成。固定SOURCE-SHA256不改，LOCAL-ADAPTATIONS-SHA256登记整合后的本地身份。
+
+## 2026-11-13 图表命名空间删除与编辑宿主闭环
+
+`chart-delete.ts` 以已有SaxesParser按URI、解码属性和真实graphicFrame归属定位唯一目标，保留原字符串中非目标区间。三类XDR anchor、默认/任意前缀、转义关系ID和多次累积删除已验证；同anchor额外对象、重复目标、foreign chart/id及共享关系拒绝且来源不变。`zip.ts::EntrySource.readText` 增加可选preservePrefixes，仅该命名空间感知写入选择原文；默认读取行为保持，避免改写package关系或ContentTypes前缀。此为本地适配，以LOCAL-ADAPTATIONS-SHA256记录，不改SOURCE-SHA256的迁移身份。
+
+110个不同定向测试、两端类型检查、47.24秒隔离构建与394 JS预算通过。命名空间双图经真实UI/Agno工具候选、显式采纳、UndoRedo/草稿恢复、两次点击下载和明确修订重开；171个实际JS/CSS身份与独立openpyxl/lxml/ZIP及像素回读通过。provider和修订仓库分别是ScriptedModel与限定内存夹具。证据/tmp/office-xlsx-chart-namespace-20261113，详细范围见../../report_editor/NATIVE_XLSX_CHART_NAMESPACE_ACCEPTANCE.md；没有将本批扩展为多图对象选中UI、复杂图表依赖清理或桌面Excel验证完成。
+
+## 2026-11-13 饼环标签读取与源预设接线
+
+`chart-read.ts` 为 pie/doughnut 的 plot、series、point 层补充 showCategory/showPercent 及 bestFit 投影，复用现有字体、主题色、数字格式和复杂设置识别。柱形标签的保守边界不放开，自定义文字或手动布局不假装支持。宿主利用现有 applyChartEdits writer 登记固定源四布局/五配色；没有新增写入协议或图表依赖。读取与布局的定向保存/独立ZIP证据及最终宿主范围见 ../../report_editor/NATIVE_XLSX_CHART_SELECTION_PRESETS_ACCEPTANCE.md。原始 SOURCE-SHA256 保留，本地 chart-read 身份登记在 LOCAL-ADAPTATIONS-SHA256。
+
+
+2026-11-13 图表对象几何接线：以固定源 `WorkbookVisuals.tsx` 与 `xlsx-drawing-edit.ts` 为准补 move/八向 resize。twoCell 支持 move/resize；oneCell 只 move 并保留 extent，absoluteAnchor 仍明确拒绝。本地24px最小显示/选取及RTL投影保持一致；原始 SOURCE-SHA256 不变，必要本地适配登记 LOCAL-ADAPTATIONS-SHA256。见 `NATIVE_XLSX_CHART_OBJECT_GEOMETRY_ACCEPTANCE.md`。
+
+
+2026-11-13 推荐图表必要移植修复：chart-add.ensureSheetDrawing 复用本地既有 OPC relationships/resolveTablePartPath，支持固定源 xlsx-drawing-add 已支持的合法绝对与相对 drawing Target，拒绝 External、URI、网络和越根目标；不重写已有 drawing/原图。源功能参照与本地适配哈希分别保留，不称本地 chart-add 原字节同源。

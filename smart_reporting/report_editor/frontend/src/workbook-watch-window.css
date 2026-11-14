@@ -1,3 +1,20 @@
-.workbook-watch-window{position:fixed;right:18px;bottom:64px;width:420px;max-width:calc(100vw - 36px);max-height:320px;display:flex;flex-direction:column;background:var(--surface,#fff);color:var(--text,#172b4d);border:1px solid var(--border,#d0d5dd);border-radius:8px;box-shadow:0 8px 24px #0002;z-index:1000;overflow:hidden;font-size:12px}
-.workbook-watch-window header{display:flex;align-items:center;gap:8px;padding:8px;background:var(--accent,#1f5aa8);color:white}
-.workbook-watch-window header strong{flex:1}.workbook-watch-window button{cursor:pointer}.workbook-watch-window .watch-scroll{overflow:auto}.workbook-watch-window table{width:100%;border-collapse:collapse}.workbook-watch-window th,.workbook-watch-window td{padding:5px 8px;border-bottom:1px solid var(--border,#ddd);text-align:left;max-width:150px;overflow-wrap:anywhere}.workbook-watch-window .watch-gone td:not(:last-child){text-decoration:line-through;color:#667085}.workbook-watch-window p{margin:10px}
+.workbook-watch-window{position:fixed;right:16px;bottom:48px;box-sizing:border-box;width:640px;max-width:calc(100vw - 32px);max-height:min(420px,calc(100dvh - 64px));display:flex;flex-direction:column;background:var(--office-chrome);color:var(--office-ink);border:1px solid var(--office-border);border-radius:var(--office-radius);box-shadow:var(--shadow-popover);z-index:1000;overflow:hidden;font:inherit;font-size:var(--office-font-size);line-height:1.5}
+.workbook-watch-window header{display:flex;flex:none;align-items:center;gap:8px;min-height:44px;box-sizing:border-box;padding:6px 10px;background:var(--office-tabbar);border-bottom:1px solid var(--office-border)}
+.workbook-watch-window header strong{flex:1;min-width:0;overflow-wrap:anywhere;font-size:13px;font-weight:600}
+.workbook-watch-window button{flex:none;box-sizing:border-box;min-height:28px;padding:4px 10px;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink-2);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}
+.workbook-watch-window button:hover:not(:disabled){background:var(--office-hover-bg);border-color:var(--office-hover-border)}
+.workbook-watch-window button:disabled{opacity:var(--office-disabled-opacity);cursor:default}
+.workbook-watch-window [data-watch-close]{width:28px;height:28px;padding:0;border-color:transparent;background:transparent;font-size:20px;line-height:1}
+.workbook-watch-window :is(button,.watch-scroll):focus-visible{outline:2px solid var(--office-focus-ring);outline-offset:-2px}
+.workbook-watch-window p{flex:none;margin:8px 12px;color:var(--office-muted);font-size:12px}
+.workbook-watch-window [data-watch-empty]{margin-top:0}
+.workbook-watch-window .watch-scroll{min-height:48px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scroll-padding:calc(1.5em + 16px) 4px 4px}
+.workbook-watch-window table{width:100%;min-width:540px;table-layout:fixed;border-collapse:collapse}
+.workbook-watch-window th,.workbook-watch-window td{padding:6px 10px;border-bottom:1px solid var(--office-border-soft);text-align:left;vertical-align:top;overflow-wrap:anywhere}
+.workbook-watch-window th{position:sticky;top:0;z-index:1;background:var(--office-tabbar);font-weight:500;color:var(--office-muted)}
+.workbook-watch-window :is(th,td):nth-child(2){width:64px}
+.workbook-watch-window :is(th,td):last-child{width:76px}
+.workbook-watch-window tbody tr:hover{background:var(--office-hover-bg)}
+.workbook-watch-window .watch-gone td{color:var(--office-muted)}
+.workbook-watch-window .watch-gone td:nth-child(n+2):not(:last-child){text-decoration:line-through}
+@media(max-height:480px){.workbook-watch-window{bottom:16px;max-height:calc(100dvh - 32px)}}

@@ -3,6 +3,32 @@ import { createNativeChartEditDialog } from './slides-native-chart-edit'
 
 afterEach(() => { document.body.replaceChildren() })
 const initial = { kind: 'bar' as const, categories: ['甲', '乙'], series: [{ name: '收入', values: [1, 2] }] }
+it('输入法或已消费按键不关闭图表数据窗口或丢失字段草稿', () => {
+ for (const protection of ['composition', 'legacy', 'handled']) {
+  const confirm=vi.fn(),close=vi.fn(),handle=createNativeChartEditDialog(document.body,{mode:'data',initial,onConfirm:confirm,onClose:close})
+  const dialog=document.querySelector('dialog')!,input=dialog.querySelector<HTMLInputElement>('input')!
+  input.value='未确认的中文草稿';input.focus()
+  const event=new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true,isComposing:protection==='composition',keyCode:protection==='legacy'?229:0})
+  if(protection==='handled')event.preventDefault()
+  input.dispatchEvent(event)
+  expect(dialog.isConnected).toBe(true);expect(input.value).toBe('未确认的中文草稿');expect(document.activeElement).toBe(input)
+  expect(close).not.toHaveBeenCalled();expect(confirm).not.toHaveBeenCalled()
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+  expect(dialog.isConnected).toBe(false);expect(close).toHaveBeenCalledOnce();handle.dispose()
+ }
+})
+it.each(['Escape', '取消', '确定'])('图表弹窗通过 %s 关闭后恢复入口焦点', action => {
+ const opener=document.createElement('button');document.body.append(opener);opener.focus()
+ const onClose=vi.fn()
+ createNativeChartEditDialog(document.body,{mode:'style',initial,onConfirm:vi.fn(),onClose})
+ const dialog=document.querySelector<HTMLDialogElement>('dialog')!
+ dialog.querySelector<HTMLInputElement>('input')!.focus()
+ if(action==='Escape')dialog.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))
+ else [...dialog.querySelectorAll('button')].find(button=>button.textContent===action)!.click()
+ expect(document.querySelector('dialog')).toBeNull()
+ expect(document.activeElement).toBe(opener)
+ expect(onClose).toHaveBeenCalledOnce()
+})
 it('单点配色从覆盖回填，只提交变化点并允许恢复系列颜色',()=>{
  const confirm=vi.fn()
  createNativeChartEditDialog(document.body,{mode:'points',initial:{...initial,pointColors:{0:{0:'#FF0000'}},seriesColors:['#4472C4']},onConfirm:confirm,onClose:vi.fn()})
@@ -52,6 +78,17 @@ it('图表设计提供固定配色和十种命名预设，只提交选中预设�
  preset.value='bold'
  document.querySelector<HTMLButtonElement>('[data-chart-confirm]')!.click()
  expect(confirm).toHaveBeenCalledWith({colorScheme:'warm',legendPos:'b',dataLabels:false,gridlines:true,gapWidthPct:50})
+})
+
+it('配色预览提供具名分组和每个色块的可读颜色值，切回保留当前配色时清空色块',()=>{
+ createNativeChartEditDialog(document.body,{mode:'design',initial,colorSchemes:[{key:'warm',label:'暖色',colors:['#FF0000','#123456']}],onConfirm:vi.fn(),onClose:vi.fn()})
+ const preview=document.querySelector('[aria-label="配色预览"]')!
+ expect(preview.getAttribute('role')).toBe('group')
+ const palette=document.querySelector<HTMLSelectElement>('[data-chart-palette]')!
+ palette.value='warm';palette.dispatchEvent(new Event('change'))
+ expect([...preview.querySelectorAll('[role="img"]')].map(node=>node.getAttribute('aria-label'))).toEqual(['#FF0000','#123456'])
+ palette.value='';palette.dispatchEvent(new Event('change'))
+ expect(preview.children).toHaveLength(0)
 })
 
 it('未选择配色或预设不改变草稿，设计确认失败保留弹窗',()=>{

@@ -1,6 +1,7 @@
 """原生修订保存与交付；身份可读的文件不受验收/登记附加故障阻断。"""
 
 from __future__ import annotations
+from .native_xlsx_threads import xlsx_thread_actor
 from .native_pdf_contract import PDF_CONFIRMATION_KINDS,PDF_RECEIPT_KINDS,pdf_review_issues
 
 import asyncio
@@ -204,12 +205,20 @@ class NativePublicationService:
             )
             try:
                 text_receipt = None
+                if parent.format == 'docx' and any(op.get('kind') == 'mailMergeSingle' for op in operations):
+                    from .native_mail_merge import verify_mail_merge_sources
+
+                    await verify_mail_merge_sources(self.workspace, key, operations)
                 patch = patch_docx if parent.format == "docx" else patch_pdf
+                if parent.format == "docx" and any(op.get("kind") == "recordTextRevision" for op in operations):
+                    from functools import partial
+
+                    patch = partial(patch_docx, revision_author=parent.scope.user_id)
                 if parent.format in {"xlsx", "pptx"}:
                     from functools import partial
 
                     from .native_office import patch_office
-                    patch = partial(patch_office, parent.format)
+                    patch = partial(patch_office, parent.format, thread_actor=xlsx_thread_actor(parent.scope) if parent.format == "xlsx" else None)
                 if parent.format == 'pdf' and any(op.get('kind') in PDF_RECEIPT_KINDS for op in operations):
                     text_receipt = await run_office_engine(patch_pdf_with_receipt, content, operations)
                     if any(op.get('kind') in PDF_CONFIRMATION_KINDS for op in operations) and (not confirmed_preview_digest or text_receipt['previewDigest'] != confirmed_preview_digest):

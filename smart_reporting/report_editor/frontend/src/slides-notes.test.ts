@@ -59,6 +59,38 @@ it('只读来源纯文本展示原因，折叠可切换，销毁取消输入且�
  pane.update(view());node.dispatchEvent(new CompositionEvent('compositionstart'));input(node,'未完成输入');pane.dispose();node.dispatchEvent(new CompositionEvent('compositionend'));input(node,'旧事件')
  expect(onChange).not.toHaveBeenCalled();expect(document.querySelector('.slides-notes-pane')).toBeNull();expect(pane.flush()).toBe(true)
 })
+it.each([
+ ['notes_edit_master_registration_invalid','备注母版结构暂不支持编辑；可查看或复制现有备注。'],
+ ['notes_edit_master_relationships_invalid','备注母版结构暂不支持编辑；可查看或复制现有备注。'],
+ ['notes_edit_future_source_reason','此文件的备注结构暂不支持编辑；可查看或复制现有备注。'],
+ ['复杂备注','复杂备注'],
+ [null,'当前页面备注仅可读'],
+])('只读原因%s展示可理解的提示且不改变备注或编辑能力',(reason,message)=>{
+ const onChange=vi.fn(),pane=createSlidesNotesPane(document.body,{onChange})
+ pane.update(view({text:'来源备注',editable:false,reason}))
+ const node=document.querySelector<HTMLTextAreaElement>('textarea')!
+ expect(document.querySelector('.slides-notes-reason')?.textContent).toBe(message)
+ expect(node.readOnly).toBe(true);expect(node.value).toBe('来源备注');expect(onChange).not.toHaveBeenCalled()
+ if(reason?.startsWith('notes_edit_'))expect(()=>validateSlidesNotesDraft({notesEdits:[{slideIndex:0,text:'不能覆盖'}]},[{notesEditable:false,notesReason:reason}])).toThrow(message!)
+ pane.dispose()
+})
+it('备注只读提示关联输入框，多实例描述身份不混用',()=>{
+ const panes=[0,1].map(slideIndex=>{
+  const pane=createSlidesNotesPane(document.body,{onChange(){}})
+  pane.update(view({slideIndex,editable:false,reason:'notes_edit_master_registration_invalid'}))
+  return pane
+ })
+ const descriptions=[...document.querySelectorAll('textarea')].map(node=>{
+  const id=node.getAttribute('aria-describedby')
+  expect(id).toBeTruthy()
+  const reason=document.getElementById(id!)
+  expect(reason?.closest('.slides-notes-pane')).toBe(node.closest('.slides-notes-pane'))
+  expect(reason?.textContent).toContain('备注母版')
+  return id
+ })
+ expect(new Set(descriptions).size).toBe(2)
+ panes.forEach(pane=>pane.dispose())
+})
 it('同步回调内旧视图刷新不覆盖输入，失败时不能切到只读状态',()=>{
  let reject=false
  const onChange=vi.fn(()=>{pane.update(view());if(reject)throw Error('拒绝写入')}),pane=createSlidesNotesPane(document.body,{onChange})

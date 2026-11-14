@@ -15,6 +15,8 @@ createSlidesNotesPane(host,{onChange,onError?}) 返回 update({slideIndex,text,e
 
 同来源刷新不会覆盖未收尾/未提交输入，回调重入也不会覆盖输入；已提交基线可由外部 undo 更新。只读内容采用 textarea.value 与 textContent 展示。dispose 是取消与销毁，不隐式写入；旧节点事件无效。选择器 .slides-notes-pane、[data-notes-panel]、[data-notes-text]，textarea 的 aria-label 为“演讲者备注”。
 
+slidesNotesReadOnlyReason 将 notes_edit_master_* 与其他 notes_edit_* 内部原因转换为中文只读提示，保留已有自然语言原因；仅影响显示，不改变来源能力或允许写入。备注输入框通过实例独立的 aria-describedby 关联只读说明，仍允许选中复制原文。
+
 可选 onVisibleChange(visible) 仅在面板可见状态实际变化时通知主编辑器，使本地折叠按钮与 View 按钮共享状态；同状态 update、提交失败和销毁后不通知。
 
 这是备注编辑面板，不代表演讲者视图、计时器、双屏输出等能力已实现。验证见 slides-notes.test.ts；未扩展固定源的拖动调高等交互。

@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
 import { verifyBrowserTextInput } from './browser-input-preflight.mjs'
+import { inspectDocxLinkLayout } from './office-docx-link-layout.mjs'
 
 // Authorization/revision storage are route substitutes; DOCX parsing/patching/readback are real.
 const frontend = fileURLToPath(new URL('../', import.meta.url))
@@ -17,6 +19,18 @@ const baseUrl = `http://127.0.0.1:${port}`
 const mediaType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const temporary = await mkdtemp(join(tmpdir(), 'docx-links-'))
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
+const staticRoot = process.env.DOCX_TEST_DIST ? resolve(process.env.DOCX_TEST_DIST) : null
+const pcLayout = process.env.DOCX_LINK_PC_LAYOUT === '1', layout = { cases: [], failures: [] }
+const evidenceDir = process.env.DOCX_LINK_SMOKE_EVIDENCE_DIR ? resolve(process.env.DOCX_LINK_SMOKE_EVIDENCE_DIR) : null
+if (pcLayout) {
+  assert.ok(staticRoot && evidenceDir, 'PC acceptance requires frozen production assets and a new evidence directory')
+  await mkdir(evidenceDir, { recursive: true })
+  assert.equal((await readdir(evidenceDir)).some(name => /^save-\d+\.json$/.test(name)), false, 'Never replay a successful save directory')
+}
+const manifestSha256 = staticRoot ? hash(await readFile(join(staticRoot, '.vite/manifest.json'))) : null
+if (staticRoot) assert.equal(manifestSha256, process.env.DOCX_EXPECTED_MANIFEST_SHA256)
+if (pcLayout) await writeFile(join(evidenceDir, 'build-manifest.json'), await readFile(join(staticRoot, '.vite/manifest.json')))
+const chunkIdentities = [], chunks = {}
 const targetText = '经营收入100万元'
 const paragraphText = `前缀 ${targetText} 后缀😀同段链接`
 const firstUrl = 'https://example.test/report?a=1&b=2'
@@ -59,14 +73,33 @@ else:
   return result.stdout.trim()
 }
 const inspect = bytes => JSON.parse(python({ mode: 'inspect', bytes: bytes.toString('base64') }))
-let browser, server
+let browser, server, staticServer, page
 try {
   const source = Buffer.from(python({ mode: 'create' }), 'base64')
   const sourceSha = hash(source)
   const revisions = new Map([[1, source]])
+  if (pcLayout) await writeFile(join(evidenceDir, 'revision-1.docx'), source)
   const inspections = new Map([[1, inspect(source)]])
   const saves = []
-  server = spawn('./node_modules/.bin/vite', ['--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+  if (staticRoot) {
+    staticServer = createServer(async (request, response) => {
+      try {
+        const prefix = '/reports/v1/editor/assets/', pathname = new URL(request.url, baseUrl).pathname
+        if (pcLayout && /^\/fixture-links-download-\d+\.docx$/.test(pathname)) {
+          const revision = Number(/download-(\d+)/.exec(pathname)[1]), bytes = revisions.get(revision)
+          assert.ok(bytes)
+          response.writeHead(200, { 'Content-Type': mediaType, 'Content-Disposition': `attachment; filename="revision-${revision}.docx"`, 'Content-Length': bytes.length })
+          response.end(bytes); return
+        }
+        assert.ok(pathname.startsWith(prefix))
+        const file = resolve(staticRoot, pathname.slice(prefix.length))
+        assert.ok(file.startsWith(staticRoot + '/'))
+        response.writeHead(200, { 'Content-Type': ({ '.js': 'application/javascript', '.css': 'text/css', '.woff2': 'font/woff2' })[extname(file)] ?? 'text/html' })
+        response.end(await readFile(file))
+      } catch { response.writeHead(404); response.end('not found') }
+    })
+    await new Promise((done, reject) => { staticServer.once('error', reject); staticServer.listen(port, '127.0.0.1', done) })
+  } else server = spawn('./node_modules/.bin/vite', ['--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
   let ready = false
   for (let attempt = 0; attempt < 120; attempt++) {
     try { if ((await fetch(`${baseUrl}/reports/v1/editor/assets/native.html`)).ok) { ready = true; break } } catch {}
@@ -75,10 +108,18 @@ try {
   assert.ok(ready, 'Vite unavailable')
   browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? { executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE } : {}) })
   const baseline = await verifyBrowserTextInput(browser)
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, acceptDownloads: true })
+  page = await browser.newPage({ viewport: { width: 1600, height: 1000 }, acceptDownloads: true })
   const errors = [], failedResponses = []
   page.on('pageerror', error => errors.push(error.message))
-  page.on('response', response => { if (response.status() >= 400) failedResponses.push([response.status(), response.url()]) })
+  await page.route('**/favicon.ico', route => route.fulfill({ body: '', status: 200 }))
+  page.on('response', response => {
+    if (response.status() >= 400) failedResponses.push([response.status(), response.url()])
+    const pathname = new URL(response.url()).pathname, prefix = '/reports/v1/editor/assets/'
+    if (staticRoot && response.status() === 200 && pathname.startsWith(prefix) && /\.(?:js|css)$/.test(pathname)) chunkIdentities.push(response.body().then(async bytes => {
+      assert.equal(hash(bytes), hash(await readFile(resolve(staticRoot, pathname.slice(prefix.length)))))
+      chunks[pathname] = hash(bytes)
+    }).catch(error => errors.push(String(error))))
+  })
   const revisionOf = request => Number(new URL(request.url()).pathname.split('/')[5])
   await page.route('**/reports/v1/native/fixture-links/*/api/context', route => {
     const revision = revisionOf(route.request()), bytes = revisions.get(revision)
@@ -101,12 +142,16 @@ try {
     assert.equal(payload.expectedSha256, hash(revisions.get(revision)))
     const bytes = Buffer.from(python({ mode: 'patch', bytes: revisions.get(revision).toString('base64'), operations: payload.operations }), 'base64')
     revisions.set(revision + 1, bytes); inspections.set(revision + 1, inspect(bytes)); saves.push(payload)
+    if (pcLayout) {
+      await writeFile(join(evidenceDir, `revision-${revision + 1}.docx`), bytes)
+      await writeFile(join(evidenceDir, `save-${revision + 1}.json`), JSON.stringify({ request: payload, revision: revision + 1, sha256: hash(bytes), size: bytes.length }, null, 2))
+    }
     await route.fulfill({ json: { documentId: 'fixture-links', revision: revision + 1, parentRevision: revision, revisionRegistered: true,
       artifacts: { word: { downloadUrl: `/fixture-links-download-${revision + 1}.docx`, size: bytes.length, sha256: hash(bytes) } },
       editor: { openUrl: `/reports/v1/native/fixture-links/${revision + 1}` },
       validation: { ok: false, issues: [{ code: 'fixture_review', message: '链接验收待复核，保留 Word 下载' }] } } })
   })
-  await page.route(/\/fixture-links-download-\d+\.docx$/, route => {
+  if (!pcLayout) await page.route(/\/fixture-links-download-\d+\.docx$/, route => {
     const revision = Number(/download-(\d+)/.exec(route.request().url())[1])
     return route.fulfill({ body: revisions.get(revision), contentType: mediaType, headers: { 'Content-Disposition': `attachment; filename="revision-${revision}.docx"` } })
   })
@@ -126,13 +171,36 @@ try {
     for (let i = 0; i < '前缀 '.length; i++) await page.keyboard.press('ArrowRight')
     for (let i = 0; i < targetText.length; i++) await page.keyboard.press('Shift+ArrowRight')
     assert.equal(await page.evaluate(() => getSelection()?.toString()), targetText)
+    // 原生 selectionchange 异步进入 PM；等产品选区同步后才切换 Ribbon，不能只检查浏览器高亮。
+    await page.waitForFunction(text => {
+      const editor = document.querySelector('.tiptap')?.editor, selection = editor?.state.selection
+      return selection && editor.state.doc.textBetween(selection.from, selection.to) === text
+    }, targetText)
   }
   const targetLink = () => paragraph().locator('a').filter({ hasText: targetText })
   const linkCount = () => targetLink().count()
   const dialog = page.getByRole('dialog', { name: 'Link', exact: true })
+  const inspectLayout = async phase => {
+    if (!pcLayout) return
+    await inspectDocxLinkLayout(page, { directory: evidenceDir, phase, layout, draft: () => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('native-editor-draft:v1:'))) })
+    assert.deepEqual(layout.failures, [])
+  }
   const invoke = async action => {
+    const selectionState = () => editor.evaluate(element => {
+      const editor = element.editor, selection = editor.state.selection
+      return { native: getSelection()?.toString(), editable: editor.isEditable, from: selection.from, to: selection.to, parent: selection.$from.parent.toJSON(), pmText: editor.state.doc.textBetween(selection.from, selection.to), buttons: [...document.querySelectorAll('.docx-source-insert [data-action$=link]')].map(button => ({ action: button.dataset.action, disabled: button.disabled, title: button.title })) }
+    })
     await page.locator('[data-tab-id="insert"]').click()
-    await page.locator(`.docx-source-insert [data-action="${action}"]`).click()
+    try { await page.locator(`.docx-source-insert [data-action="${action}"]`).click() }
+    catch (error) {
+      if (process.env.DOCX_LINK_SMOKE_EVIDENCE_DIR) {
+        const directory = resolve(process.env.DOCX_LINK_SMOKE_EVIDENCE_DIR)
+        await mkdir(directory, { recursive: true })
+        await writeFile(join(directory, `selection-${action}-${saves.length}.json`), JSON.stringify(await selectionState(), null, 2))
+        await page.screenshot({ path: join(directory, 'failure.png') })
+      }
+      throw error
+    }
   }
   const expectedRuns = [{ text: '前缀 ', bold: false, italic: false }, { text: targetText, bold: true, italic: true }, { text: ' 后缀😀', bold: false, italic: false }, { text: '同段链接', bold: false, italic: false }]
   const saveAndReopen = async (revision, expectedHref) => {
@@ -143,6 +211,7 @@ try {
     await page.getByRole('link', { name: '下载 Word', exact: true }).click()
     const download = await event, path = join(temporary, `download-${revision}.docx`)
     await download.saveAs(path); const bytes = await readFile(path)
+    if (pcLayout) await writeFile(join(evidenceDir, `download-${revision}.docx`), bytes)
     assert.equal(hash(bytes), hash(revisions.get(revision)))
     const actual = inspect(bytes), first = actual.paragraphs[0]
     assert.equal(first.text, paragraphText)
@@ -158,10 +227,17 @@ try {
   }
   await open(1)
   await selectTarget(); await invoke('insert-link')
+  await inspectLayout('insert')
   await dialog.getByLabel('Link URL', { exact: true }).fill('javascript:alert(1)')
   await dialog.locator('[data-command="applyLink"]').click()
   assert.ok(await dialog.isVisible(), 'Invalid URL must not close dialog or modify document')
   assert.equal(await linkCount(), 0)
+  await inspectLayout('invalid-url')
+  if (process.env.DOCX_LINK_SMOKE_EVIDENCE_DIR) {
+    const evidenceDir = resolve(process.env.DOCX_LINK_SMOKE_EVIDENCE_DIR)
+    await mkdir(evidenceDir, { recursive: true })
+    await page.screenshot({ path: join(evidenceDir, 'link-validation.png') })
+  }
   await dialog.getByLabel('Link URL', { exact: true }).fill(firstUrl)
   await dialog.locator('[data-command="applyLink"]').click()
   assert.equal(await linkCount(), 1)
@@ -171,6 +247,7 @@ try {
   await saveAndReopen(2, firstUrl)
   await selectTarget(); await invoke('edit-link')
   assert.equal(await dialog.getByLabel('Link URL', { exact: true }).inputValue(), firstUrl)
+  await inspectLayout('edit-saved')
   await dialog.getByLabel('Link URL', { exact: true }).fill(secondUrl)
   await dialog.locator('[data-command="applyLink"]').click()
   await saveAndReopen(3, secondUrl)
@@ -179,8 +256,17 @@ try {
   await saveAndReopen(4, null)
   assert.equal(saves.length, 3)
   assert.ok(saves.every(save => save.operations.some(op => op.kind === 'setParagraphLink')))
+  if (pcLayout) {
+    const checked = spawnSync(join(repo, '.venv/bin/python'), [join(frontend, 'smoke/office-docx-link-verify.py'), evidenceDir], { encoding: 'utf8', timeout: 30000 })
+    assert.equal(checked.status, 0, checked.stderr)
+    await page.screenshot({ path: join(evidenceDir, 'final-reopened.png'), fullPage: true })
+  }
+  await page.waitForLoadState('networkidle')
+  await Promise.all(chunkIdentities)
+  if (staticRoot) assert.equal(hash(await readFile(join(staticRoot, '.vite/manifest.json'))), manifestSha256)
   assert.deepEqual(errors, []); assert.deepEqual(failedResponses, [])
   const receipt = { ok: true, browserVersion: baseline.browserVersion, revisions: [2, 3, 4],
+    apiRoutesAreFixtures: true, realPythonNodeBridge: true, manifestSha256, chunks, ...(pcLayout ? { layout, realHttpDownload: true } : {}),
     sourceSha256: sourceSha, finalSha256: hash(revisions.get(4)), unchangedOtherLinkTooltip: true,
     mixedStylesPreserved: true, nativeSelection: true, draftRefresh: true, undoRedo: true,
     failedValidationRetainsDownload: true, operationKinds: saves.map(save => save.operations.map(op => op.kind)),
@@ -194,8 +280,15 @@ try {
     await writeFile(join(evidenceDir, 'evidence.json'), JSON.stringify(receipt, null, 2) + '\n')
   }
   console.log(JSON.stringify(receipt))
+} catch (error) {
+  if (pcLayout) {
+    await page?.screenshot({ path: join(evidenceDir, 'failure.png'), fullPage: true }).catch(() => {})
+    await writeFile(join(evidenceDir, 'failure.json'), JSON.stringify({ error: String(error), stack: error.stack, layoutFailures: layout.failures, savedReceipts: (await readdir(evidenceDir)).filter(name => /^save-\d+\.json$/.test(name)) }, null, 2))
+  }
+  throw error
 } finally {
   await browser?.close()
   if (server && server.exitCode === null) { const exited = new Promise(resolve => server.once('exit', resolve)); server.kill('SIGTERM'); await exited }
+  if (staticServer) await new Promise(done => staticServer.close(done))
   await rm(temporary, { recursive: true, force: true })
 }

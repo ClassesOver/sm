@@ -2,24 +2,31 @@ import assert from 'node:assert/strict'
 import {createServer} from 'node:http'
 import {spawn,spawnSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
-import {mkdir,readFile,writeFile} from 'node:fs/promises'
+import {mkdir,readFile,readdir,writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {setTimeout as delay} from 'node:timers/promises'
 import {chromium} from 'playwright'
+import {inspectAnalysisLayout} from './office-xlsx-analysis-layout.mjs'
 const frontend=fileURLToPath(new URL('../',import.meta.url)),repo=fileURLToPath(new URL('../../../../',import.meta.url))
 const port=Number(process.env.ADVANCED_FILTER_SMOKE_PORT??4284),base=`http://127.0.0.1:${port}`,documentId='advanced-filter-built'
 const checkpoint=process.env.ADVANCED_FILTER_SMOKE_DIRECTORY??`/tmp/xlsx-advanced-filter-built-${Date.now()}`
+const pcLayout=process.env.ADVANCED_FILTER_PC_LAYOUT==='1',reviewOnly=process.env.ADVANCED_FILTER_REVIEW_ONLY==='1',layout={cases:[],failures:[]}
 await mkdir(checkpoint,{recursive:true})
+if(pcLayout&&!reviewOnly)assert.equal((await readdir(checkpoint)).some(name=>/^(?:saved-source-|revision-|downloaded-)/.test(name)),false,'PC验收必须使用全新目录，禁止重放已有保存')
 const manifest=await readFile(join(frontend,'../static/.vite/manifest.json'));try{assert.deepEqual(await readFile(join(checkpoint,'build-manifest.json')),manifest,'checkpoint构建身份已变化，必须新建目录')}catch(error){if(error.code!=='ENOENT')throw error;await writeFile(join(checkpoint,'build-manifest.json'),manifest)}
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex'),media='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+if(pcLayout)assert.equal(sha(manifest),process.env.ADVANCED_FILTER_EXPECTED_MANIFEST_SHA256,'必须锁定预期构建manifest')
 function python(payload){const result=spawnSync(join(repo,'.venv/bin/python'),['-c',`
 import base64,json,sys
+from copy import copy
 from io import BytesIO
 from zipfile import ZipFile
 from lxml import etree
 from openpyxl import Workbook,load_workbook
 from openpyxl.worksheet.filters import FilterColumn,Filters
+from openpyxl.styles import Font,PatternFill,Alignment
+from openpyxl.comments import Comment
 from smart_reporting.report_editor.native_office import patch_office
 p=json.load(sys.stdin)
 if p['mode']=='fixture':
@@ -28,6 +35,11 @@ if p['mode']=='fixture':
  for r,row in enumerate(rows,5):
   for c,v in enumerate(row,3):s.cell(r,c,v)
  s['C12']='Tail';s['D12']=99;s['E12']='outside'
+ if p.get('pcLayout'):
+  s['D6'].number_format='0.00';s['C6'].font=Font(bold=True,color='0055AA');s['C6'].comment=Comment('保留批注 & <来源>','fixture')
+  s['F12']='=D6*2';s['F13']='原有链接';s['F13'].hyperlink='https://example.org/source'
+  s.merge_cells('C14:E14');s['C14']='合并区保真';s.column_dimensions['D'].width=14
+  keep=b.create_sheet('Keep');keep['A1']='不应改动 & <原文> 😀';keep['A1'].fill=PatternFill('solid',fgColor='FFF2CC');keep['A1'].alignment=Alignment(horizontal='center');keep['B2']='=1+2'
  if p['existing']:
   s.auto_filter.ref='C5:E9';s.auto_filter.filterColumn=[FilterColumn(colId=2,filters=Filters(filter=['keep']))];s.row_dimensions[8].hidden=True
  if p['manual']:s.row_dimensions[7].hidden=True
@@ -48,15 +60,38 @@ else:
  assert [[c.value for c in row] for row in s]==[[c.value for c in row] for row in original]
  hidden=sorted(r for r,d in s.row_dimensions.items() if d.hidden);assert hidden==p['hidden'],(hidden,p['hidden'])
  assert not s.row_dimensions[5].hidden and s['C12'].value=='Tail'
- print(json.dumps({'zipXmlOpenpyxl':True,'ref':s.auto_filter.ref,'hidden':hidden,'dataUnchanged':True,'filters':p['filters']}))
+ fidelity=None
+ if p.get('pcLayout'):
+  for row in original:
+   for before in row:
+    after=s[before.coordinate]
+    for prop in ('font','fill','border','alignment','protection','number_format'):
+     assert copy(getattr(before,prop))==copy(getattr(after,prop)),(before.coordinate,prop)
+    assert (before.comment.text if before.comment else None)==(after.comment.text if after.comment else None)
+    assert (before.hyperlink.target if before.hyperlink else None)==(after.hyperlink.target if after.hyperlink else None)
+  assert str(original.merged_cells)==str(s.merged_cells)
+  assert original.column_dimensions['D'].width==s.column_dimensions['D'].width
+  with ZipFile(BytesIO(source)) as a,ZipFile(BytesIO(data)) as b:
+   names={n for n in a.namelist() if not n.endswith('/')};assert names=={n for n in b.namelist() if not n.endswith('/')}
+   changed=sorted(n for n in names if a.read(n)!=b.read(n));assert changed==['xl/worksheets/sheet1.xml'],changed
+   def without_filter_changes(raw):
+    root=etree.fromstring(raw);ns={'m':root.nsmap[None]}
+    for node in root.findall('m:autoFilter',ns):root.remove(node)
+    for node in root.findall('m:sheetData/m:row',ns):node.attrib.pop('hidden',None)
+    return etree.tostring(root,method='c14n')
+   assert without_filter_changes(a.read(changed[0]))==without_filter_changes(b.read(changed[0])),'筛选外XML发生变化'
+   fidelity={'changedParts':changed,'onlyFilterAndRowVisibilityChanged':True,'stylesCommentsLinksMergedColumnsPreserved':True,'otherSheetByteIdentical':True}
+ print(json.dumps({'zipXmlOpenpyxl':True,'ref':s.auto_filter.ref,'hidden':hidden,'dataUnchanged':True,'filters':p['filters'],'fidelity':fidelity}))
 `],{cwd:repo,env:{...process.env,PYTHONPATH:repo},input:JSON.stringify(payload),encoding:'utf8',maxBuffer:30*1024*1024});assert.equal(result.status,0,result.stderr);return result.stdout.trim()}
 const cases=[
  {name:'and',revision:1,existing:true,manual:false,column:1,first:['greaterThanOrEqual','10'],second:['lessThan','30'],and:true,hidden:[6,8,9],filters:[{operator:'greaterThanOrEqual',val:'10'},{operator:'lessThan',val:'30'}]},
  {name:'or-create',revision:10,existing:false,manual:false,column:1,first:['lessThan','10'],second:['greaterThan','30'],and:false,hidden:[7,8],filters:[{operator:'lessThan',val:'10'},{operator:'greaterThan',val:'30'}]},
  {name:'text-equal-manual',revision:20,existing:true,manual:true,column:0,first:['equal','A'],and:false,hidden:[7,8],filters:[{val:'A'}]},
 ].filter(item=>!process.env.ADVANCED_FILTER_SMOKE_CASE||item.name===process.env.ADVANCED_FILTER_SMOKE_CASE)
+assert.ok(cases.length,'筛选场景不得为空')
+if(reviewOnly)for(const item of cases)assert.ok(await readFile(join(checkpoint,`saved-source-${item.revision}.json`)),'只读复核必须已有保存回执')
 const revisions=new Map(),downloads=new Map(),savedSources=new Set(),results=[],assets=new Map(),assetChecks=[],errors=[]
-for(const item of cases){const path=join(checkpoint,`source-${item.revision}.xlsx`);let bytes;try{bytes=await readFile(path)}catch(error){if(error.code!=='ENOENT')throw error;bytes=Buffer.from(python({mode:'fixture',...item}),'base64');await writeFile(path,bytes)}revisions.set(item.revision,bytes)}
+for(const item of cases){const path=join(checkpoint,`source-${item.revision}.xlsx`);let bytes;try{bytes=await readFile(path)}catch(error){if(error.code!=='ENOENT')throw error;bytes=Buffer.from(python({mode:'fixture',...item,pcLayout}),'base64');await writeFile(path,bytes)}revisions.set(item.revision,bytes)}
 let preview,browser,page,stage='setup',routeError,saveCount=0
 const http=createServer(async(req,res)=>{try{
  const file=/^\/reports\/v1\/native\/advanced-filter-built\/(\d+)\/api\/file$/.exec(req.url??''),context=/^\/reports\/v1\/native\/advanced-filter-built\/(\d+)\/api\/context$/.exec(req.url??''),download=/^\/download\/(\d+)\.xlsx$/.exec(req.url??'')
@@ -70,21 +105,22 @@ try{
  for(let i=0;;i++){assert.equal(preview.exitCode,null);try{if((await fetch(base+'/reports/v1/editor/assets/native.html')).ok)break}catch{}assert(i<120);await delay(250)}
  browser=await chromium.launch({headless:true});page=await browser.newPage({viewport:{width:1500,height:1100},acceptDownloads:true,permissions:['clipboard-read','clipboard-write']})
  page.on('pageerror',error=>{errors.push(error.message);const detail={stage,message:error.message,stack:error.stack};console.error(JSON.stringify({pageerror:detail}));void writeFile(join(checkpoint,`page-error-${errors.length}.json`),JSON.stringify(detail,null,2))});page.on('dialog',dialog=>dialog.type()==='beforeunload'?dialog.accept():dialog.dismiss())
- page.on('response',response=>{const path=new URL(response.url()).pathname;if(!path.startsWith('/reports/v1/editor/assets/')||!path.endsWith('.js'))return;assetChecks.push((async()=>{assert.equal(response.status(),200);const bytes=await response.body();assert.equal(sha(bytes),sha(await readFile(join(frontend,'../static',path.slice('/reports/v1/editor/assets/'.length)))));assets.set(path,sha(bytes));await writeFile(join(checkpoint,'assets.json'),JSON.stringify(Object.fromEntries(assets),null,2))})())})
+ page.on('response',response=>{const path=new URL(response.url()).pathname;if(!path.startsWith('/reports/v1/editor/assets/')||!(/\.(?:js|css)$/.test(path)))return;assetChecks.push((async()=>{assert.equal(response.status(),200);const bytes=await response.body();assert.equal(sha(bytes),sha(await readFile(join(frontend,'../static',path.slice('/reports/v1/editor/assets/'.length)))));assets.set(path,sha(bytes));await writeFile(join(checkpoint,'assets.json'),JSON.stringify(Object.fromEntries(assets),null,2))})())})
  await page.route('**/reports/v1/native/advanced-filter-built/*/api/save',async route=>{try{
+  assert.equal(reviewOnly,false,'只读复核禁止调用保存')
   const revision=Number(new URL(route.request().url()).pathname.split('/')[5]),payload=route.request().postDataJSON();assert(!savedSources.has(revision),'禁止重复保存已成功的来源修订')
   const bytes=Buffer.from(python({mode:'patch',bytes:revisions.get(revision).toString('base64'),operations:payload.operations}),'base64')
   revisions.set(revision+1,bytes);downloads.set(revision+1,bytes);savedSources.add(revision);saveCount++
   await writeFile(join(checkpoint,`revision-${revision+1}.xlsx`),bytes)
   await writeFile(join(checkpoint,`saved-source-${revision}.json`),JSON.stringify({revision:revision+1,sourceRevision:revision,sha256:sha(bytes),operations:payload.operations},null,2))
-  await route.fulfill({json:{documentId,revision:revision+1,parentRevision:revision,revisionRegistered:true,artifacts:{xlsx:{downloadUrl:`${app}/download/${revision+1}.xlsx`,size:bytes.length,sha256:sha(bytes)}},editor:{openUrl:`/reports/v1/native/${documentId}/${revision+1}`},validation:{ok:true,issues:[]}}})
+  await route.fulfill({json:{documentId,revision:revision+1,parentRevision:revision,revisionRegistered:true,artifacts:{xlsx:{downloadUrl:`${app}/download/${revision+1}.xlsx`,size:bytes.length,sha256:sha(bytes)}},editor:{openUrl:`/reports/v1/native/${documentId}/${revision+1}`},validation:pcLayout?{ok:false,issues:[{code:'manual_review',message:'高级筛选版式待复核，文件已生成。'}]}:{ok:true,issues:[]}}})
  }catch(error){routeError=String(error);await route.fulfill({status:500,json:{detail:routeError}})}})
  const ready=()=>page.waitForFunction(()=>document.querySelector('#report-editor')?.getAttribute('aria-busy')==='false',null,{timeout:60000})
  const open=async revision=>{await page.goto(`${app}/reports/v1/native/${documentId}/${revision}`);await ready()}
  const command=async(tab,id)=>{await page.locator(`[data-ribbon-tab="${tab}"]`).click();await page.locator(`[data-ribbon-command="${id}"]`).click()}
  const goto=async reference=>{await command('Home','goto-open');await page.locator('[data-goto-reference]').fill(reference);await page.locator('.workbook-ribbon-goto-dialog button[type="submit"]').click();await page.locator('.workbook-ribbon-goto-dialog').waitFor({state:'hidden'})}
  const copyActive=async expected=>{const marker=`advanced-${Date.now()}-${Math.random()}`;await page.evaluate(text=>navigator.clipboard.writeText(text),marker);await page.keyboard.press('Control+c');const until=Date.now()+10000;let copied;do{copied=(await page.evaluate(()=>navigator.clipboard.readText())).trimEnd();if(copied===expected)return copied;await delay(100)}while(Date.now()<until);assert.equal(copied,expected,'公开 Ctrl+C 未在 10 秒内返回预期可见单元格');return copied}
- const visibleRows=async item=>{await goto("'Data'!D5");await page.keyboard.press('ArrowDown');const expected=item.name==='and'?'10':'5';assert.equal(await copyActive(expected),expected);if(item.name!=='and'){await page.keyboard.press('Escape');await page.keyboard.press('ArrowDown');assert.equal(await copyActive('40'),'40')}}
+ const visibleRows=async item=>{await goto("'Data'!D5");await page.keyboard.press('ArrowDown');const expected=item.name==='and'?'10':pcLayout?'5.00':'5';assert.equal(await copyActive(expected),expected);if(item.name!=='and'){await page.keyboard.press('Escape');await page.keyboard.press('ArrowDown');assert.equal(await copyActive('40'),'40')}}
  const drafts=()=>page.evaluate(()=>Object.fromEntries(Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>[key,JSON.parse(localStorage.getItem(key))])))
  for(const item of cases){stage=`${item.name}-setup`;let saved;try{saved=JSON.parse(await readFile(join(checkpoint,`saved-source-${item.revision}.json`),'utf8'))}catch(error){if(error.code!=='ENOENT')throw error}
   let bytes,operations
@@ -95,7 +131,15 @@ try{
   if(saved){bytes=await readFile(join(checkpoint,`revision-${saved.revision}.xlsx`));assert.equal(sha(bytes),saved.sha256);revisions.set(saved.revision,bytes);downloads.set(saved.revision,bytes);savedSources.add(item.revision);operations=saved.operations}
   else{
    try{await readFile(join(checkpoint,`revision-${item.revision+1}.xlsx`));throw Error('已有产物缺少回执，禁止重复保存')}catch(error){if(error.code!=='ENOENT')throw error}
-   await open(item.revision);const before=await drafts();await openDialog();await modal.getByRole('button',{name:'取消',exact:true}).click();assert.deepEqual(await drafts(),before)
+   await open(item.revision);const before=await drafts();await openDialog()
+   if(pcLayout){
+    await inspectAnalysisLayout(page,{directory:checkpoint,label:'高级筛选',phase:item.name+'-initial',layout,draft:drafts})
+    if(item.name==='and'){
+     await modal.getByRole('button',{name:'确定',exact:true}).click();await modal.getByRole('alert').getByText('请填写第一筛选条件',{exact:true}).waitFor()
+     await inspectAnalysisLayout(page,{directory:checkpoint,label:'高级筛选',phase:'and-empty-error',layout,draft:drafts})
+    }
+   }
+   await modal.getByRole('button',{name:'取消',exact:true}).click();assert.deepEqual(await drafts(),before)
    await openDialog();await modal.getByLabel('高级筛选字段',{exact:true}).selectOption(String(item.column));await modal.getByLabel('第一条件运算符',{exact:true}).selectOption(item.first[0]);await modal.getByLabel('第一条件值',{exact:true}).fill(item.first[1])
    if(item.second){await modal.getByLabel('第二条件运算符',{exact:true}).selectOption(item.second[0]);await modal.getByLabel('第二条件值',{exact:true}).fill(item.second[1]);await modal.getByLabel('条件连接',{exact:true}).selectOption(item.and?'and':'or')}
    await page.screenshot({path:join(checkpoint,`${item.name}-dialog.png`),fullPage:true});await modal.getByRole('button',{name:'确定',exact:true}).click();await modal.waitFor({state:'hidden'});await assertDraft();await visibleRows(item)
@@ -104,24 +148,28 @@ try{
    const beforeRefresh=await drafts();stage=`${item.name}-refresh`;await page.reload();await ready();await assertDraft();assert.deepEqual(await drafts(),beforeRefresh)
    stage=`${item.name}-save`;await page.locator('[data-action="save"]').click();await page.waitForFunction(revision=>(document.querySelector('.save-state-label')?.textContent??'').includes(`已保存修订 ${revision}`),item.revision+1,{timeout:60000});assert.equal(routeError,undefined)
    saved=JSON.parse(await readFile(join(checkpoint,`saved-source-${item.revision}.json`),'utf8'));operations=saved.operations
+   if(pcLayout)assert.ok((await page.locator('.workbook-feedback').textContent()).includes('高级筛选版式待复核，文件已生成。'))
    const [download]=await Promise.all([page.waitForEvent('download'),page.locator('[data-action="xlsx-download"]').click()]);bytes=await readFile(await download.path());assert.equal(sha(bytes),saved.sha256);await writeFile(join(checkpoint,`downloaded-${item.revision+1}.xlsx`),bytes)
   }
   assert.equal(operations.filter(op=>op.kind==='applySheetFilter').length,1)
-  const independent=JSON.parse(python({mode:'inspect',bytes:bytes.toString('base64'),source:revisions.get(item.revision).toString('base64'),...item}));stage=`${item.name}-new-revision`;await open(item.revision+1);const reopenedDraft=await page.evaluate(async()=>({url:location.pathname,context:(await(await fetch(`${location.pathname}/api/context`)).json()).context,status:document.querySelector('.save-state-label')?.textContent,drafts:Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>({key,value:JSON.parse(localStorage.getItem(key))}))}));await writeFile(join(checkpoint,`${item.name}-reopened-draft.json`),JSON.stringify(reopenedDraft,null,2));await visibleRows(item)
-  await openDialog();await modal.getByRole('button',{name:'取消',exact:true}).click()
+  const independent=JSON.parse(python({mode:'inspect',bytes:bytes.toString('base64'),source:revisions.get(item.revision).toString('base64'),...item,pcLayout}));stage=`${item.name}-new-revision`;await open(item.revision+1);const reopenedDraft=await page.evaluate(async()=>({url:location.pathname,context:(await(await fetch(`${location.pathname}/api/context`)).json()).context,status:document.querySelector('.save-state-label')?.textContent,drafts:Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>({key,value:JSON.parse(localStorage.getItem(key))}))}));await writeFile(join(checkpoint,`${item.name}-reopened-draft.json`),JSON.stringify(reopenedDraft,null,2));await visibleRows(item)
+  await openDialog()
+  if(pcLayout)await inspectAnalysisLayout(page,{directory:checkpoint,label:'高级筛选',phase:item.name+'-reopened',layout,draft:drafts})
+  await modal.getByRole('button',{name:'取消',exact:true}).click()
   assert.equal(reopenedDraft.status,'已保存');assert.equal(reopenedDraft.context.revision,item.revision+1);assert.equal(reopenedDraft.context.sourceFile.sha256,sha(bytes));assert.deepEqual(reopenedDraft.drafts.filter(entry=>entry.value.identity.revision===item.revision+1).flatMap(entry=>entry.value.operations),[])
   let reopenedCriteriaCopy,reopenedCriteriaDraft,reopenedUndoDraft,reopenedRedoDraft,reopenedFinalUndoDraft
   if(item.name==='and'){
    await openDialog();await modal.getByLabel('高级筛选字段',{exact:true}).selectOption('1');await modal.getByLabel('第一条件运算符',{exact:true}).selectOption('lessThan');await modal.getByLabel('第一条件值',{exact:true}).fill('10');await modal.getByLabel('第二条件值',{exact:true}).fill('');await modal.getByRole('button',{name:'确定',exact:true}).click();await modal.waitFor({state:'hidden'})
    await page.waitForFunction(()=>Object.values(localStorage).some(value=>{try{return JSON.parse(value).operations?.some(op=>op.kind==='applySheetFilter')}catch{return false}}));reopenedCriteriaDraft=await page.evaluate(()=>({status:document.querySelector('.save-state-label')?.textContent,drafts:Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>({key,value:JSON.parse(localStorage.getItem(key))}))}));await writeFile(join(checkpoint,'and-reopened-criteria-draft.json'),JSON.stringify(reopenedCriteriaDraft,null,2))
-   await goto("'Data'!D5");await page.keyboard.press('ArrowDown');const copied=await copyActive('5');reopenedCriteriaCopy={value:copied,expected:'5',ok:copied==='5',formulaBar:await page.locator('[data-u-comp="formula-bar"]').innerText()}
+   await goto("'Data'!D5");await page.keyboard.press('ArrowDown');const expected=pcLayout?'5.00':'5',copied=await copyActive(expected);reopenedCriteriaCopy={value:copied,expected,ok:copied===expected,formulaBar:await page.locator('[data-u-comp="formula-bar"]').innerText()}
    await command('File','undo');await page.waitForFunction(()=>Object.keys(localStorage).some(key=>key.startsWith('native-editor-draft:'))&&Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).every(key=>JSON.parse(localStorage.getItem(key)).operations.length===0));reopenedUndoDraft=await page.evaluate(()=>({status:document.querySelector('.save-state-label')?.textContent,drafts:Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>({key,value:JSON.parse(localStorage.getItem(key))}))}));await writeFile(join(checkpoint,'and-reopened-undo-draft.json'),JSON.stringify(reopenedUndoDraft,null,2));assert.equal(reopenedUndoDraft.status,'已保存');await visibleRows(item)
-   await command('File','redo');await page.waitForFunction(()=>Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).some(key=>JSON.parse(localStorage.getItem(key)).operations.some(op=>op.kind==='applySheetFilter'&&JSON.stringify(op.hiddenRows)==='[6,7,8]')));reopenedRedoDraft=await page.evaluate(()=>({status:document.querySelector('.save-state-label')?.textContent,drafts:Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>({key,value:JSON.parse(localStorage.getItem(key))}))}));await writeFile(join(checkpoint,'and-reopened-redo-draft.json'),JSON.stringify(reopenedRedoDraft,null,2));assert.equal(reopenedRedoDraft.status,'有未保存修改');assert.deepEqual(reopenedRedoDraft.drafts,reopenedCriteriaDraft.drafts);await goto("'Data'!D5");await page.keyboard.press('ArrowDown');assert.equal(await copyActive('5'),'5')
+   await command('File','redo');await page.waitForFunction(()=>Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).some(key=>JSON.parse(localStorage.getItem(key)).operations.some(op=>op.kind==='applySheetFilter'&&JSON.stringify(op.hiddenRows)==='[6,7,8]')));reopenedRedoDraft=await page.evaluate(()=>({status:document.querySelector('.save-state-label')?.textContent,drafts:Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>({key,value:JSON.parse(localStorage.getItem(key))}))}));await writeFile(join(checkpoint,'and-reopened-redo-draft.json'),JSON.stringify(reopenedRedoDraft,null,2));assert.equal(reopenedRedoDraft.status,'有未保存修改');assert.deepEqual(reopenedRedoDraft.drafts,reopenedCriteriaDraft.drafts);await goto("'Data'!D5");await page.keyboard.press('ArrowDown');assert.equal(await copyActive(pcLayout?'5.00':'5'),pcLayout?'5.00':'5')
    await command('File','undo');await page.waitForFunction(()=>document.querySelector('.save-state-label')?.textContent==='已保存'&&Object.keys(localStorage).some(key=>key.startsWith('native-editor-draft:'))&&Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).every(key=>JSON.parse(localStorage.getItem(key)).operations.length===0));reopenedFinalUndoDraft=await page.evaluate(()=>({status:document.querySelector('.save-state-label')?.textContent,drafts:Object.keys(localStorage).filter(key=>key.startsWith('native-editor-draft:')).map(key=>({key,value:JSON.parse(localStorage.getItem(key))}))}));await writeFile(join(checkpoint,'and-reopened-final-undo-draft.json'),JSON.stringify(reopenedFinalUndoDraft,null,2));assert.equal(reopenedFinalUndoDraft.status,'已保存');assert.deepEqual(reopenedFinalUndoDraft.drafts,reopenedUndoDraft.drafts);await visibleRows(item)
   }
+  if(reviewOnly){const [download]=await Promise.all([page.waitForEvent('download'),page.locator('[data-action="xlsx-download"]').click()]);assert.equal(await download.failure(),null);const downloaded=await readFile(await download.path());assert.equal(sha(downloaded),saved.sha256);assert.deepEqual(downloaded,bytes);await writeFile(join(checkpoint,`downloaded-${item.revision+1}.xlsx`),downloaded)}
   const response=await page.request.get(`${app}/download/${item.revision+1}.xlsx`);assert.equal(response.status(),200);assert.equal(sha(await response.body()),sha(bytes))
   await page.screenshot({path:join(checkpoint,`${item.name}-reopened.png`),fullPage:true});results.push({...item,sha256:sha(bytes),operations,independent,reopenedDraft,reopenedCriteriaCopy,reopenedCriteriaDraft,reopenedUndoDraft,reopenedRedoDraft,reopenedFinalUndoDraft,download:true,newRevisionReopen:true,publicKeyboardVisibility:true,reopenedCriteriaChange:item.name==='and'});await writeFile(join(checkpoint,`${item.name}-result.json`),JSON.stringify(results.at(-1),null,2))
  }
- await Promise.all(assetChecks);assert.deepEqual(errors,[]);const ok=results.every(result=>result.reopenedCriteriaCopy?.ok!==false);const summary={ok,checkpoint,browserVersion:browser.version(),saveCount,resourceCount:assets.size,results,assets:Object.fromEntries(assets),errors};await writeFile(join(checkpoint,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok,checkpoint,cases:results.length,assets:assets.size}))
+ await Promise.all(assetChecks);assert.deepEqual(errors,[]);assert.deepEqual(layout.failures,[]);assert.deepEqual(await readFile(join(frontend,'../static/.vite/manifest.json')),manifest);const ok=results.every(result=>result.reopenedCriteriaCopy?.ok!==false);const summary={ok,checkpoint,browserVersion:browser.version(),saveCount,pcLayout,reviewOnly,validationWarningVerified:pcLayout&&!reviewOnly,manifestSha256:sha(manifest),layout,resourceCount:assets.size,results,assets:Object.fromEntries(assets),errors};await writeFile(join(checkpoint,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok,checkpoint,cases:results.length,assets:assets.size}))
 }catch(error){if(page){await writeFile(join(checkpoint,'failure.html'),await page.content()).catch(()=>{});await page.screenshot({path:join(checkpoint,'failure.png'),fullPage:true}).catch(()=>{})}console.error(JSON.stringify({stage,checkpoint}));throw error}
 finally{await browser?.close();preview?.kill();await new Promise(resolve=>http.close(resolve))}

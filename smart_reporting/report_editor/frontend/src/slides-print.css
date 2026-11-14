@@ -1,0 +1,5 @@
+.slides-print-dialog{width:min(1000px,calc(100vw - 24px));max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px);box-sizing:border-box}
+.slides-print-dialog h3{margin:0 0 12px}.slides-print-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,300px);gap:16px}.slides-print-body>iframe{width:100%;height:min(65dvh,650px);min-height:260px;border:1px solid var(--office-border);background:var(--office-canvas)}
+.slides-print-options{display:flex;flex-direction:column;gap:10px;min-width:0}.slides-print-options label{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.slides-print-options :is(select,input[type=text]){width:100%;min-height:30px;box-sizing:border-box}.slides-print-options p{margin:0;overflow-wrap:anywhere}.slides-print-options footer{display:flex;justify-content:flex-end;gap:8px}.slides-print-options [role=alert]{color:var(--office-danger,#b42318)}
+.slides-print-job{position:fixed;left:-100000px;width:1px;height:1px;border:0;pointer-events:none}
+@media(max-width:640px){.slides-print-body{grid-template-columns:minmax(0,1fr)}.slides-print-body>iframe{height:34dvh;min-height:180px}}

@@ -687,10 +687,11 @@ async def test_export_revision_drops_lineage_but_still_issues_links_when_source_
 
         return
     assert result["validation"]["ok"] is False
-    assert [issue["code"] for issue in result["validation"]["issues"]] == [
-        "report_editor_lineage_unavailable"
-    ]
-    message = result["validation"]["issues"][0]["message"]
+    expected_codes = (["report_editor_table_caption_snapshot_unavailable", "report_editor_lineage_unavailable"]
+        if fault == "snapshot" else ["report_editor_lineage_unavailable"])
+    assert [issue["code"] for issue in result["validation"]["issues"]] == expected_codes
+    message = next(issue["message"] for issue in result["validation"]["issues"]
+        if issue["code"] == "report_editor_lineage_unavailable")
     assert "数据来源追溯不可用" in message
     assert (csv_path in message) is (fault == "missing_source")
     assert ("成品已生成" in message) is (fault == "snapshot")

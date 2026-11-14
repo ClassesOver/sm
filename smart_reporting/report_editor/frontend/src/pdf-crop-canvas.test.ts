@@ -20,6 +20,20 @@ function pointer(target: EventTarget, type: string, x: number, y: number, id = 1
   target.dispatchEvent(event)
 }
 
+it('裁切预览提供当前边距的图像说明，鼠标控制柄不作为无效的独立命名控件', () => {
+  const f = fixture()
+  expect(f.stage.getAttribute('role')).toBe('img')
+  expect(f.stage.getAttribute('aria-label')).toBe('裁切预览：左侧裁去 0%，顶部裁去 0%，右侧裁去 0%，底部裁去 0%')
+  const region = f.host.querySelector('[data-pdf-crop-region]')!
+  expect(region.getAttribute('aria-hidden')).toBe('true')
+  expect(region.querySelectorAll('[aria-label]')).toHaveLength(0)
+  f.controller.setMargins([10, 20, 5, 15])
+  expect(f.stage.getAttribute('aria-label')).toBe('裁切预览：左侧裁去 10%，顶部裁去 20%，右侧裁去 5%，底部裁去 15%')
+  pointer(region, 'pointerdown', 100, 150)
+  pointer(window, 'pointermove', 140, 200)
+  expect(f.stage.getAttribute('aria-label')).toBe('裁切预览：左侧裁去 15%，顶部裁去 30%，右侧裁去 0%，底部裁去 5%')
+})
+
 it('resizes eight displayed handles and keeps a 16px minimum preview side', () => {
   const f = fixture()
   expect(f.host.querySelectorAll('[data-pdf-crop-handle]')).toHaveLength(8)
@@ -104,6 +118,23 @@ it('continues a drag while a background sibling scrolls without moving the crop 
   background.dispatchEvent(new Event('scroll'))
   pointer(window, 'pointermove', 50, 120)
   expect(f.controller.margins()).toEqual([10, 20, 0, 0])
+})
+
+it.each(['consumed', 'composition', '229'])('preserves the active crop gesture when Escape belongs to %s input', reason => {
+  const f = fixture(), input = document.createElement('input'); f.host.append(input); input.focus()
+  if (reason === 'consumed') input.addEventListener('keydown', event => event.preventDefault())
+  pointer(f.host.querySelector('[data-pdf-crop-handle="e"]')!, 'pointerdown', 410, 300)
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: reason === 'composition', keyCode: reason === '229' ? 229 : 27 }))
+  pointer(window, 'pointermove', 310, 300)
+  expect(f.controller.margins()).toEqual([0, 0, 25, 0])
+})
+
+it('stops the active crop gesture on an unconsumed Escape', () => {
+  const f = fixture()
+  pointer(f.host.querySelector('[data-pdf-crop-handle="e"]')!, 'pointerdown', 410, 300)
+  f.host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  pointer(window, 'pointermove', 310, 300)
+  expect(f.controller.margins()).toEqual([0, 0, 0, 0])
 })
 
 it.each(['width', 'height'] as const)('cancels a scrolled drag when canvas %s changes', dimension => {

@@ -65,9 +65,9 @@ export function selectedDocxBookmarkRanges(editor:Editor,m:DocxBookmarksModel):D
 interface Options {editor:Editor;container:HTMLElement;model?:DocxBookmarksModel;collectOperations:(doc:DocxPmNode)=>NativeOperation[];readOnlyReason:()=>string|null;onError:(e:unknown)=>void}
 export function createDocxBookmarksControls(options:Options){
  const {editor,model:m}=options,panel=document.createElement('section');panel.className='docx-comment-panel docx-bookmarks';panel.hidden=true;panel.setAttribute('aria-label','书签')
- panel.innerHTML='<h2>书签</h2><p>书签绑定所选普通正文；书签修改需独立保存。</p><label>书签名称<input data-bookmark-name aria-label="书签名称" maxlength="40"></label><button type="button" data-bookmark-add>添加书签</button><button type="button" data-bookmark-close>关闭书签</button><p role="status" aria-live="polite"></p><ul data-bookmark-list></ul>'
+ panel.innerHTML='<div class="docx-reference-fields"><h2>书签</h2><p>书签绑定所选普通正文；书签修改需独立保存。</p><label>书签名称<input data-bookmark-name aria-label="书签名称" maxlength="40"></label><button type="button" data-bookmark-add>添加书签</button><button type="button" data-bookmark-close>关闭书签</button><p role="status" aria-live="polite"></p></div><ul data-bookmark-list></ul>'
  options.container.append(panel);const input=panel.querySelector<HTMLInputElement>('[data-bookmark-name]')!,add=panel.querySelector<HTMLButtonElement>('[data-bookmark-add]')!,status=panel.querySelector<HTMLElement>('[role=status]')!
- let disposed=false
+ let disposed=false,listSignature='',previous:HTMLElement|null=null
  const reason=()=>options.readOnlyReason()??(!editor.isEditable?'当前文档不可编辑或正在保存':null)??m?.readOnlyReason??(!m?.sourceId?'当前来源未提供书签能力':null)
  const show=(e:unknown)=>{status.textContent=e instanceof Error?e.message:String(e);options.onError(e)}
  const commit=(ops:DocxBookmarkOperation[])=>{if(reason())throw new Error(reason()!);if(!m)fail();const valid=checked(ops,m),tr=closeHistory(editor.state.tr).setDocAttribute(intent,valid.length?valid:null);options.collectOperations(tr.doc.toJSON());editor.view.dispatch(tr);if(!editor.state.doc.eq(tr.doc))fail();refresh()}
@@ -75,17 +75,21 @@ export function createDocxBookmarksControls(options:Options){
   for(const r of ranges){const t=m.targets.find(t=>t.targetId===r.targetId)!;let found=false;editor.state.doc.forEach((n,pos)=>{if(n.attrs.docxIndex!==t.blockIndex)return;if(found||!n.isTextblock||n.textContent!==t.text)fail();found=true;positions.push({from:pos+1+r.from,to:pos+1+r.to})});if(!found)fail()}
   editor.commands.setTextSelection({from:positions[0].from,to:positions.at(-1)!.to});editor.commands.focus();editor.commands.scrollIntoView()
  }
- const refresh=()=>{if(disposed)return;const blocked=reason();input.disabled=add.disabled=!!blocked;const list=panel.querySelector('[data-bookmark-list]')!;list.replaceChildren();if(!m){status.textContent=blocked;return}
+ const refresh=()=>{if(disposed)return;const blocked=reason();input.disabled=add.disabled=!!blocked;const list=panel.querySelector('[data-bookmark-list]')!;if(!m){list.replaceChildren();status.textContent=blocked;return}
   const ops=docxBookmarksOf(editor.getJSON(),m),deleted=new Set(ops.filter(o=>o.kind==='deleteBookmark').map(o=>o.bookmarkId)),entries=[...m.bookmarks.filter(b=>!deleted.has(b.bookmarkId)),...ops.filter(o=>o.kind==='createBookmark').map(o=>({bookmarkId:'pending:'+o.name,name:o.name,ranges:o.ranges,readOnlyReason:null}))]
-  for(const b of entries){const li=document.createElement('li'),go=document.createElement('button'),remove=document.createElement('button');go.type=remove.type='button';go.addEventListener('mousedown',e=>e.preventDefault());remove.addEventListener('mousedown',e=>e.preventDefault());go.dataset.bookmarkGo=b.bookmarkId;go.textContent=b.name;go.disabled=!!b.readOnlyReason||!b.ranges.length;go.addEventListener('click',()=>{try{locate(b.ranges)}catch(e){show(e)}})
-   remove.dataset.bookmarkDelete=b.bookmarkId;remove.textContent='删除书签';remove.disabled=!!blocked||!!b.readOnlyReason;remove.addEventListener('click',()=>{try{commit(b.bookmarkId.startsWith('pending:')?ops.filter(o=>o.kind!=='createBookmark'||o.name!==b.name):[...ops,{kind:'deleteBookmark',sourceId:m.sourceId!,bookmarkId:b.bookmarkId}])}catch(e){show(e)}});li.append(go,remove);if(b.readOnlyReason)li.append(document.createTextNode('：'+b.readOnlyReason));list.append(li)
-  }
   if(blocked)status.textContent=blocked
   else if(status.dataset.blocked==='true')status.textContent=''
   status.dataset.blocked=String(!!blocked)
+  const signature=JSON.stringify({blocked,ops,entries});if(signature===listSignature)return;listSignature=signature
+  const active=document.activeElement instanceof HTMLButtonElement&&list.contains(document.activeElement)?document.activeElement:null,action=active?.hasAttribute('data-bookmark-delete')?'bookmarkDelete':'bookmarkGo',id=active?.dataset[action],index=active?Array.from(list.children).indexOf(active.closest('li')!):-1
+  list.replaceChildren()
+  for(const b of entries){const li=document.createElement('li'),go=document.createElement('button'),remove=document.createElement('button');go.type=remove.type='button';go.addEventListener('mousedown',e=>e.preventDefault());remove.addEventListener('mousedown',e=>e.preventDefault());go.dataset.bookmarkGo=b.bookmarkId;go.textContent=b.name;go.disabled=!!b.readOnlyReason||!b.ranges.length;go.addEventListener('click',()=>{try{locate(b.ranges)}catch(e){show(e)}})
+   remove.dataset.bookmarkDelete=b.bookmarkId;remove.textContent='删除书签';remove.setAttribute('aria-label',`删除书签 ${b.name}`);remove.disabled=!!blocked||!!b.readOnlyReason;remove.addEventListener('click',()=>{try{commit(b.bookmarkId.startsWith('pending:')?ops.filter(o=>o.kind!=='createBookmark'||o.name!==b.name):[...ops,{kind:'deleteBookmark',sourceId:m.sourceId!,bookmarkId:b.bookmarkId}])}catch(e){show(e)}});li.append(go,remove);if(b.readOnlyReason){const note=document.createElement('span');note.textContent=b.readOnlyReason;li.append(note)}list.append(li)
+  }
+  if(active){const buttons=Array.from(list.querySelectorAll<HTMLButtonElement>(action==='bookmarkDelete'?'[data-bookmark-delete]':'[data-bookmark-go]')),target=buttons.find(b=>b.dataset[action]===id&&!b.disabled)??buttons.slice(index).find(b=>!b.disabled)??buttons.slice(0,index).reverse().find(b=>!b.disabled)??(input.disabled?panel.querySelector<HTMLButtonElement>('[data-bookmark-close]')!:input);target.focus({preventScroll:true});target.scrollIntoView?.({block:'nearest'})}
  }
  // 按钮保持原正文选区；在名称输入框内输入不会改变 PM selection。
  add.addEventListener('mousedown',e=>e.preventDefault());add.addEventListener('click',()=>{try{if(!m)fail();if(!validName(input.value))throw new Error('书签名称须以字母、中文或下划线开头，仅含字母、数字、中文或下划线，最长40字');commit([...docxBookmarksOf(editor.getJSON(),m),{kind:'createBookmark',sourceId:m.sourceId!,name:input.value,ranges:selectedDocxBookmarkRanges(editor,m)}]);input.value='';status.textContent='书签已加入草稿，可撤销和重做'}catch(e){show(e)}})
- panel.querySelector('[data-bookmark-close]')!.addEventListener('click',()=>{panel.hidden=true});editor.on('transaction',refresh)
- return{open(){panel.hidden=false;refresh();panel.scrollIntoView?.({block:'nearest'})},refresh,dispose(){disposed=true;editor.off('transaction',refresh);panel.remove()}}
+ panel.querySelector('[data-bookmark-close]')!.addEventListener('click',()=>{panel.hidden=true;if(previous?.isConnected)previous.focus({preventScroll:true})});editor.on('transaction',refresh)
+ return{open(event?:Event){if(panel.hidden)previous=event?.currentTarget instanceof HTMLElement?event.currentTarget:document.activeElement instanceof HTMLElement?document.activeElement:null;panel.hidden=false;refresh();panel.scrollIntoView?.({block:'nearest'});(input.disabled?panel.querySelector<HTMLButtonElement>('[data-bookmark-close]')!:input).focus({preventScroll:true})},refresh,dispose(){disposed=true;editor.off('transaction',refresh);panel.remove()}}
 }

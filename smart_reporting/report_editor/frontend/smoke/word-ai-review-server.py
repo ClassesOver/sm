@@ -62,9 +62,11 @@ async def create_app(directory: Path, port: int) -> FastAPI:
 
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
     editor = NativeEditorService(workspace, ScopedRepository(), grants, report_editor=None, docx_enabled=True)
+    planner_calls = []
 
     class Planner:
         async def plan_word(self, prompt, *, selected, session_id, user_id):
+            planner_calls.append(session_id)
             target = selected[0]
             if target['selectionKind'] == 'revision':
                 operation = {'kind': 'resolveTextRevision', 'blockId': target['blockId'],
@@ -110,10 +112,18 @@ async def create_app(directory: Path, port: int) -> FastAPI:
     app.include_router(create_native_ai_router(grants, editor=editor, ai=ai, allowed_origin=origin))
     app.mount('/reports/v1/editor/assets', StaticFiles(directory=static_root))
     requests = []
+    hold_start = os.environ.get('WORD_AI_REVIEW_HOLD_START') == '1'
+    held_starts = 0
+    release_start = asyncio.Event()
 
     @app.middleware('http')
     async def record(request: Request, call_next):
+        nonlocal held_starts
         body = await request.body() if request.method == 'POST' else b''
+        if hold_start and request.url.path.endswith('/api/ai/start'):
+            held_starts += 1
+            await release_start.wait()
+            release_start.clear()
         response = await call_next(request)
         requests.append({'method': request.method, 'path': request.url.path, 'status': response.status_code,
             **({'body': json.loads(body)} if body and 'application/json' in request.headers.get('content-type', '') else {})})
@@ -141,7 +151,13 @@ async def create_app(directory: Path, port: int) -> FastAPI:
                 value['actualPatchedPath'] = str(path)
                 value['actualPatchedSha256'] = hashlib.sha256(patched).hexdigest()
             jobs.append(value)
-        return {'sourceSha256': hashlib.sha256(current).hexdigest(), 'jobs': jobs, 'requests': requests}
+        return {'sourceSha256': hashlib.sha256(current).hexdigest(), 'jobs': jobs, 'requests': requests,
+                'heldStarts': held_starts, 'plannerCalls': planner_calls}
+
+    @app.post('/__smoke__/release-start')
+    async def release_held_start():
+        release_start.set()
+        return {'released': True}
 
     paths = {}
     for name in ('reply', 'resolve', 'revision'):

@@ -80,3 +80,77 @@ it('非法输入改回原显示值后清除错误，且不新增几何写入', (
   expect(pane.flush()).toBe(true); expect(confirm).not.toHaveBeenCalled()
   pane.dispose()
 })
+
+it('键盘切换纵横比后保留复选框焦点且不写入几何', () => {
+  const { pane, confirm } = setup()
+  const ratio = pane.element.querySelector<HTMLInputElement>('[data-geometry-ratio]')!
+  ratio.focus(); ratio.click()
+  const current = pane.element.querySelector<HTMLInputElement>('[data-geometry-ratio]')!
+  expect(current.checked).toBe(true)
+  expect(document.activeElement).toBe(current)
+  expect(confirm).not.toHaveBeenCalled()
+  pane.dispose()
+})
+
+it('切换位置参考点后保留选择框焦点且不写入几何', () => {
+  const { pane, confirm } = setup()
+  const reference = pane.element.querySelector<HTMLSelectElement>('[data-geometry-reference="x"]')!
+  reference.focus(); reference.value = 'center'; reference.dispatchEvent(new Event('change'))
+  const current = pane.element.querySelector<HTMLSelectElement>('[data-geometry-reference="x"]')!
+  expect(current.value).toBe('center')
+  expect(document.activeElement).toBe(current)
+  expect(confirm).not.toHaveBeenCalled()
+  pane.dispose()
+})
+
+it('Escape撤回当前未提交输入后仍可继续键盘编辑同一字段', () => {
+  const { pane, confirm, input } = setup()
+  input('width').focus(); input('width').value = 'invalid'
+  input('width').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(input('width').value).toBe('5.08')
+  expect(document.activeElement).toBe(input('width'))
+  expect(confirm).not.toHaveBeenCalled()
+  pane.dispose()
+})
+
+it('输入法组合中的Enter和Escape不提交或撤回几何输入', () => {
+  const { pane, confirm, input } = setup()
+  const width = input('width'); width.focus(); width.value = '7.62'
+  for (const key of ['Enter', 'Escape']) {
+    width.dispatchEvent(new KeyboardEvent('keydown', { key, isComposing: true, bubbles: true }))
+    expect(confirm).not.toHaveBeenCalled()
+    expect(input('width')).toBe(width)
+    expect(width.value).toBe('7.62')
+    expect(document.activeElement).toBe(width)
+  }
+  pane.dispose()
+})
+
+it.each(['Enter', 'Escape'])('旧式输入法和已消费的%s不提交或撤回草稿', key => {
+  for (const protection of ['legacy', 'handled']) {
+    const { pane, confirm, input } = setup(), width = input('width')
+    width.focus(); width.value = '7.62'
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, keyCode: protection === 'legacy' ? 229 : 0 })
+    if (protection === 'handled') event.preventDefault()
+    width.dispatchEvent(event)
+    expect(confirm).not.toHaveBeenCalled(); expect(input('width')).toBe(width)
+    expect(width.value).toBe('7.62'); expect(document.activeElement).toBe(width)
+    pane.dispose()
+  }
+})
+
+it('越界错误标记实际字段并关联可键盘读取的说明，修正后清除无效状态', () => {
+  const { pane, confirm, input, change } = setup()
+  change('width', '0')
+  expect(input('width').getAttribute('aria-invalid')).toBe('true')
+  const id = input('width').getAttribute('aria-describedby')
+  expect(id).toBeTruthy()
+  const message = document.getElementById(id!)!
+  expect(message.textContent).toContain('至少')
+  expect(message.tabIndex).toBe(0)
+  message.focus(); expect(document.activeElement).toBe(message)
+  change('width', '5.08')
+  expect(input('width').hasAttribute('aria-invalid')).toBe(false)
+  expect(message.textContent).toBe(''); expect(confirm).not.toHaveBeenCalled()
+  pane.dispose()
+})

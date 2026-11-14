@@ -1071,18 +1071,26 @@ it('来源目录接入数据刷新入口，确认前不提交，后台等待时�
     return Response.json({ ...PAYLOADS['/api/sources'] as object,
       dataRefresh: { available: true, parentRevision: 12 } })
   })
+  let saved!: (sha: string) => void
+  const saveMarkdown = vi.fn(() => new Promise<string>(resolve => { saved = resolve }))
   const root = document.createElement('div'); document.body.append(root)
   createEvidenceBrowser(root, { client: new ReportEditorClient('/reports/v1/editor/report-1/12', fetcher),
     revisionLabel: '修订12', storageKey: 'refresh-integration', onReturnToReport: vi.fn(), locateSubject: vi.fn(),
-    getDraft: () => ({ markdown: '# 报告', sha256: 'saved' }) }).open()
+    getDraft: () => ({ markdown: '# 报告', sha256: 'saved' }), saveMarkdown }).open()
   await vi.waitFor(() => expect(root.querySelector<HTMLElement>('.evidence-refresh')?.hidden).toBe(false))
   const button = root.querySelector<HTMLButtonElement>('.evidence-refresh button')!
   button.click()
   expect(fetcher.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   button.click()
+  await vi.waitFor(() => expect(saveMarkdown).toHaveBeenCalledTimes(1))
+  expect(fetcher.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  saved('c'.repeat(64))
   await vi.waitFor(() => expect(root.querySelector('.evidence-refresh')?.textContent).toContain('正在刷新'))
   expect(button.textContent).toBe('读取刷新进度')
   button.click()
   await vi.waitFor(() => expect(fetcher.mock.calls.some(([input]) => String(input).includes('/api/recalculation-requests/'))).toBe(true))
-  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+  const posts = fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')
+  expect(posts).toHaveLength(1)
+  expect(JSON.parse(String(posts[0]?.[1]?.body)).expectedSha256).toBe('c'.repeat(64))
+  expect(saveMarkdown).toHaveBeenCalledTimes(1)
 })

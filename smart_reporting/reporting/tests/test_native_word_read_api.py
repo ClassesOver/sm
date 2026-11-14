@@ -172,14 +172,14 @@ async def test_word_read_model_is_get_only_and_available_without_editing(word_ht
 
 
 @pytest.mark.anyio
-async def test_word_read_model_rejects_revision_scope_and_non_docx(word_http):
+async def test_word_read_model_rejects_revision_scope_and_unsupported_format(word_http):
     client, _, token, _, _, editor = word_http
     client.cookies.set(NATIVE_SESSION_COOKIE, token)
     assert (await client.get(BASE.replace('/1/', '/2/') + '/read-model')).status_code == 403
     assert (await client.get(BASE.replace('/doc/', '/foreign/') + '/read-model')).status_code == 403
     original = editor.context_for_session
     context = await original(await editor.grants.lookup_session(token))
-    editor.context_for_session = AsyncMock(return_value=context.model_copy(update={'format': 'pdf'}))
+    editor.context_for_session = AsyncMock(return_value=context.model_copy(update={'format': 'xlsx'}))
     assert (await client.get(BASE + '/read-model')).status_code == 422
     editor.context_for_session = AsyncMock(side_effect=ReportingError('native_permission_denied', '作用域不一致'))
     assert (await client.get(BASE + '/read-model')).status_code == 403

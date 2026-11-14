@@ -4779,3 +4779,5 @@ export function setGroupChildShapeCustomGeometry(
   slide.structureDirty = true
   return true
 }
+
+export {readCustomShows,writeCustomShows,type CustomShow,type BoundCustomShow} from './custom-shows'

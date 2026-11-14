@@ -94,6 +94,39 @@ it('normalizes native scalar number rules through writer and reader without a ph
   } finally { c.univer.dispose() }
 })
 
+it('does not persist implicit conditional-formatting colors when only the rule value changes', async () => {
+  const { workbookConditionalFormattingOperations } = await import(/* @vite-ignore */ implementation)
+  const blank = await createBlankWorkbook(), model = await readWorkbook(await applyWorkbookOperations(blank, [{
+    kind: 'replaceSheetConditionalFormats', sheetName: 'Sheet1', rules: [{ ...wire, rule: { ...wire.rule, value: [10], style: {} } }],
+  }]))
+  const c = await runtime(model)
+  try {
+    const rule = c.sheet.getConditionalFormattingRules()[0]!
+    const changed = { ...rule, rule: { ...rule.rule, value: 20, style: { cl: { rgb: '#2f56ef' }, bg: { rgb: '#e8ecfc' } } } }
+    expect(c.commands.syncExecuteCommand(SetCfCommand.id, { ...c.params, cfId: rule.cfId, rule: changed })).toBe(true)
+    expect(workbookConditionalFormattingOperations(model, c.workbook)).toEqual([{
+      kind: 'replaceSheetConditionalFormats', sheetName: 'Sheet1',
+      rules: [{ ranges, stopIfTrue: true, rule: { ...wire.rule, value: [20], style: {} } }],
+    }])
+  } finally { c.univer.dispose() }
+})
+
+it('keeps conditional-formatting colors that differ from the framework defaults', async () => {
+  const { workbookConditionalFormattingOperations } = await import(/* @vite-ignore */ implementation)
+  const blank = await createBlankWorkbook(), model = await readWorkbook(await applyWorkbookOperations(blank, [{
+    kind: 'replaceSheetConditionalFormats', sheetName: 'Sheet1', rules: [{ ...wire, rule: { ...wire.rule, style: {} } }],
+  }]))
+  const c = await runtime(model)
+  try {
+    const rule = c.sheet.getConditionalFormattingRules()[0]!
+    const changed = { ...rule, rule: { ...rule.rule, style: { cl: { rgb: '#123456' }, bg: { rgb: '#abcdef' } } } }
+    expect(c.commands.syncExecuteCommand(SetCfCommand.id, { ...c.params, cfId: rule.cfId, rule: changed })).toBe(true)
+    expect(workbookConditionalFormattingOperations(model, c.workbook)[0]).toMatchObject({
+      rules: [{ rule: { style: { cl: { rgb: '#123456' }, bg: { rgb: '#abcdef' } } } }],
+    })
+  } finally { c.univer.dispose() }
+})
+
 it('extends native sheet dimensions to offscreen CF and rejects out-of-file-grid ranges before hydration', async () => {
   const { withWorkbookConditionalFormatting } = await import(/* @vite-ignore */ implementation)
   const model = await readWorkbook(await createBlankWorkbook())

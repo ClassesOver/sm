@@ -75,12 +75,13 @@ export function installDataTable(runtime: any, calculation: CalculationControl, 
       if (!formula.getFormula()) throw new Error('数据表的结果来源必须是公式单元格')
       const inputs = [rowInput, columnInput].filter((cell): cell is CellCoordinates => !!cell).map(cell => ({ cell, range: range(cell) }))
       const originals = inputs.map(({ range }) => {
-        const value = range.getValue()
+        // 使用官方原始值接口，避免货币/百分比等显示字符串改变模拟分析语义。
+        const value = range.getRawValue()
         if (range.getFormula() || value !== null && value !== undefined && typeof value !== 'number') throw new Error('输入单元格必须为空或数值，不能含公式')
         return value ?? null
       })
       const readNumbers = (cells: CellCoordinates[]) => cells.map(cell => {
-        const value = range(cell).getValue()
+        const value = range(cell).getRawValue()
         if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error('代入值必须为数值')
         return value
       })
@@ -113,7 +114,7 @@ export function installDataTable(runtime: any, calculation: CalculationControl, 
         let done = 0
         const evaluate = async (index: number, value: number) => { check(); await recalc(() => writeInput(index, value)); check() }
         const read = (): Scalar => {
-          const value = formula.getValue()
+          const value = formula.getRawValue()
           input.onProgress?.(++done, total)
           return typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean' ? value : null
         }

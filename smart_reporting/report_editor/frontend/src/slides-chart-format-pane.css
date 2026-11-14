@@ -26,3 +26,23 @@
 .slides-chart-format-pane .chart-format-error { font-size:12px;color:var(--office-muted); }
 .slides-chart-format-pane .chart-format-error:empty { display:none; }
 .slides-chart-point-palette { position:fixed;inset:auto;margin:0;padding:0;border:none;background:transparent;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto; }
+
+/* 数据点配色沿用桌面属性窗格：系列分组、紧凑控件和独立内容滚动。 */
+.slides-chart-format-pane { display:flex;flex-direction:column;grid-column:1/-1;min-width:0;max-height:min(520px,56dvh);padding:0 14px 10px;color:var(--office-ink);font:inherit;font-size:13px;line-height:1.5; }
+.slides-chart-format-pane > header { flex:none;min-height:36px;display:flex;align-items:center;border-bottom:1px solid var(--office-border-soft); }
+.slides-chart-format-pane .chart-format-heading { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.slides-chart-format-pane .chart-format-body { min-width:0;min-height:0;padding:0 3px 6px;overflow:auto;scrollbar-width:thin;scroll-padding:8px; }
+.slides-chart-format-pane .fp-section { margin:8px 0 6px;font:inherit;font-weight:600; }
+.slides-chart-format-pane fieldset { min-width:0;margin:10px 0 0;padding:8px;border:1px solid var(--office-border-soft);border-radius:var(--office-radius); }
+.slides-chart-format-pane .fp-chart-series { min-width:0;max-width:100%;margin:0;padding:0 4px;font:inherit;font-weight:600;white-space:normal;overflow-wrap:anywhere; }
+.slides-chart-format-pane .fp-chart-point { display:grid;grid-template-columns:74px minmax(0,1fr) auto;align-items:center;gap:8px;margin:0;padding:6px 0; }
+.slides-chart-format-pane .fp-chart-point + .fp-chart-point { margin:0;border-top:1px solid var(--office-border-soft); }
+.slides-chart-format-pane .fp-chart-point-label { min-width:0;white-space:normal;overflow:visible;overflow-wrap:anywhere;text-overflow:clip;font:inherit; }
+.slides-chart-format-pane :is(.fp-color-well,.chart-point-reset) { box-sizing:border-box;height:28px;min-width:0;max-width:100%;border-radius:var(--office-radius);font:inherit;color:var(--office-ink); }
+.slides-chart-format-pane .chart-point-reset { padding:3px 6px; }
+.slides-chart-format-pane :is(.fp-color-well,.chart-point-reset):disabled { opacity:var(--office-disabled-opacity);cursor:not-allowed; }
+.slides-chart-format-pane :is(.fp-color-well,.chart-point-reset):hover:not(:disabled) { background:var(--office-hover-bg);border-color:var(--office-hover-border); }
+.slides-chart-format-pane button { scroll-margin:8px 4px; }
+.slides-chart-format-pane button:focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+.slides-chart-format-pane .chart-format-error { margin:8px 0 0;color:var(--color-danger);font:inherit;white-space:pre-wrap;overflow-wrap:anywhere; }
+.slides-chart-format-pane [role=status] { margin:8px 0;white-space:pre-wrap;overflow-wrap:anywhere; }

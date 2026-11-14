@@ -1,0 +1,21 @@
+/* 图片批注侧栏覆盖网格，不额外占用网格行；画布其余区域仍可操作。 */
+.workbook-grid-frame:has(> .workbook-note-pictures-host){position:relative}
+.workbook-note-pictures-host{position:absolute;inset:0;pointer-events:none;z-index:75}
+.workbook-note-pictures-toggle{position:absolute;right:8px;top:8px;pointer-events:auto;min-height:30px;padding:4px 10px;border:1px solid var(--office-border-strong,#cbd5e1);border-radius:4px;background:var(--office-chrome,#fff);color:var(--office-ink,#26354a);font:inherit;cursor:pointer}
+.note-pictures-pane{position:absolute;right:8px;top:46px;bottom:8px;box-sizing:border-box;width:340px;max-width:calc(100% - 16px);pointer-events:auto;background:var(--office-chrome,#fff);border:1px solid var(--office-border-strong,#cbd5e1);border-radius:6px;box-shadow:var(--shadow-popover,0 5px 20px #0f172a22);display:flex;flex-direction:column;padding:10px;gap:8px;overflow:auto;color:var(--office-ink,#26354a);font:13px/1.5 var(--font-sans,sans-serif)}
+.note-pictures-pane>header,.np-card>header,.note-hover-card>header{display:flex;align-items:center;gap:8px;justify-content:space-between}
+.note-pictures-pane>header{flex:none;font-weight:600}
+.note-pictures-pane>[role=status]{margin:0;font-size:12px;color:var(--office-ink-2,#475569)}
+.np-list{overflow:auto;min-height:0;flex:1}
+.np-card{border:1px solid var(--office-border,#dde4ee);border-radius:5px;margin:8px 0;padding:8px}
+.note-pictures-pane button,.note-hover-card button{min-height:28px;border:1px solid var(--office-border-strong,#cbd5e1);border-radius:4px;background:var(--office-chrome,#fff);padding:4px 7px;color:inherit;font:inherit;cursor:pointer}
+:is(.workbook-note-pictures-toggle,.note-pictures-pane button,.note-hover-card button):hover:not(:disabled){background:var(--office-hover-bg,#f2f6f9)}
+:is(.workbook-note-pictures-toggle,.note-pictures-pane button,.note-hover-card button):focus-visible{outline:2px solid var(--office-focus-ring,#8fc9df);outline-offset:2px}
+.note-pictures-pane button:disabled,.note-hover-card button:disabled{opacity:var(--office-disabled-opacity,.55);cursor:default}
+.np-author{color:var(--office-muted,#64748b);overflow-wrap:anywhere}
+.np-image{display:block;max-width:100%;max-height:230px;object-fit:contain;margin:8px auto}
+.np-text{white-space:pre-wrap;overflow-wrap:anywhere}
+.np-image-missing{color:var(--color-danger,#b42318);padding:6px}
+.note-hover-card{position:fixed;box-sizing:border-box;width:260px;max-width:calc(100vw - 16px);max-height:70dvh;overflow:auto;pointer-events:auto;background:var(--office-chrome,#fff);border:1px solid var(--office-border-strong,#cbd5e1);border-radius:6px;box-shadow:var(--shadow-popover,0 4px 18px #0f172a33);padding:10px;z-index:1100;font:13px/1.5 var(--font-sans,sans-serif);color:var(--office-ink,#26354a)}
+/* 低高度时功能区已占据大部分视口，侧栏锚定视口以保持关闭与图片操作可达。 */
+@media(max-height:420px){.note-pictures-pane{position:fixed;top:8px;bottom:8px;max-width:calc(100vw - 16px);z-index:1100;gap:4px;padding:7px}.np-image{max-height:120px}.note-pictures-pane>[role=status]{font-size:11px}}

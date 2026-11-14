@@ -1,54 +1,62 @@
 import { formatAddress, parseRange, type ChartReadSpec, type ChartSeriesSetEntry } from '@sheets-web/xlsx-engine'
 
-/** 仅切换带表头/分类标签的连续矩形；不猜测字面缓存、名称或外部引用。 */
+const REPLACEABLE_KINDS = new Set<ChartReadSpec['kind']>([
+  'column', 'bar', 'line', 'area', 'pie', 'doughnut', 'radar', 'scatter', 'combo',
+])
+const MAX_SERIES = 1_000
+const MAX_TRANSPOSED_CATEGORIES = 24
+
+export function chartSwitchReference(reference: string, defaultSheet: string, maxCells = MAX_TRANSPOSED_CATEGORIES): { sheetName: string; range: string } {
+  const trimmed = reference.trim()
+  const qualified = /^(?:'((?:[^']|'')+)'|([^'!\[\]]+))!(.+)$/.exec(trimmed)
+  if (/[\[\]]/.test(trimmed)) throw new Error('图表数据缓存引用不能来自外部工作簿')
+  const sheetName = qualified ? qualified[1]?.replaceAll("''", "'") ?? qualified[2]! : defaultSheet
+  const range = (qualified ? qualified[3]! : trimmed).toUpperCase().replaceAll('$', '')
+  if (!/^[A-Z]{1,3}[1-9]\d*(?::[A-Z]{1,3}[1-9]\d*)?$/.test(range)) throw new Error('图表数据缓存引用格式无效')
+  const bounds = parseRange(range)
+  if (bounds.endRow >= 1_048_576 || bounds.endColumn >= 16_384) throw new Error('图表数据缓存引用超出工作表范围')
+  if (bounds.startRow !== bounds.endRow && bounds.startColumn !== bounds.endColumn) throw new Error('图表数据缓存引用必须为一行或一列')
+  const vertical = bounds.startColumn === bounds.endColumn
+  const count = Math.min(vertical ? bounds.endRow - bounds.startRow + 1 : bounds.endColumn - bounds.startColumn + 1, maxCells)
+  const endRow = vertical ? bounds.startRow + count - 1 : bounds.startRow
+  const endColumn = vertical ? bounds.startColumn : bounds.startColumn + count - 1
+  return { sheetName, range: `${formatAddress(bounds.startRow, bounds.startColumn)}:${formatAddress(endRow, endColumn)}` }
+}
+
+/** 固定源 chart-visual.transposeChartSeries：基于已读缓存转置，不保留单元格引用。 */
 export function switchChartSeries(
   chart: Pick<ChartReadSpec, 'kind' | 'series'>,
-  sheetName: string,
-  read: (row: number, column: number) => unknown,
-): (ChartSeriesSetEntry & { valuesRef: string; categoriesRef: string })[] {
-  const reject = () => { throw new Error('当前图表来源不是可切换的带表头连续矩形数据') }
-  if (!['column', 'bar', 'line', 'area'].includes(chart.kind) || !chart.series.length || chart.series.length > 32) return reject()
-  const parse = (ref: string | undefined) => {
-    const match = /^(?:'((?:[^']|'')+)'|([^'!\[\]]+))!(\$?[A-Z]+\$?[1-9]\d*(?::\$?[A-Z]+\$?[1-9]\d*)?)$/.exec(ref ?? '')
-    if (!match || (match[1]?.replaceAll("''", "'") ?? match[2]) !== sheetName) return reject()
-    return parseRange(match[3]!)
-  }
-  const ranges = chart.series.map(entry => parse(entry.valuesRef)), category = parse(chart.series[0]!.categoriesRef)
-  if (chart.series.some(entry => JSON.stringify(parse(entry.categoriesRef)) !== JSON.stringify(category))) return reject()
-  const first = ranges[0]!
-  const columns = first.startColumn === first.endColumn && category.startColumn === category.endColumn &&
-    category.startRow === first.startRow && category.endRow === first.endRow && category.startColumn + 1 === first.startColumn && first.startRow > 0 &&
-    ranges.every((range, index) => range.startRow === first.startRow && range.endRow === first.endRow && range.startColumn === first.startColumn + index && range.endColumn === range.startColumn)
-  const rows = first.startRow === first.endRow && category.startRow === category.endRow &&
-    category.startColumn === first.startColumn && category.endColumn === first.endColumn && category.startRow + 1 === first.startRow && first.startColumn > 0 &&
-    ranges.every((range, index) => range.startColumn === first.startColumn && range.endColumn === first.endColumn && range.startRow === first.startRow + index && range.endRow === range.startRow)
-  if (columns === rows) return reject()
-  const count = columns ? first.endRow - first.startRow + 1 : first.endColumn - first.startColumn + 1
-  if (count > 32) return reject()
+  readValues: (ref: string) => readonly unknown[],
+): ChartSeriesSetEntry[] {
+  const reject = () => { throw new Error('当前图表的数据缓存无法切换行/列') }
+  if (!REPLACEABLE_KINDS.has(chart.kind) || !chart.series.length || chart.series.length > MAX_SERIES) return reject()
+
+  const first = chart.series[0]!
+  const categories = first.categories?.length
+    ? first.categories.map(value => String(value ?? '').slice(0, 255))
+    : first.xValues?.map(value => String(value).slice(0, 255)) ?? (first.xValuesRef ? readValues(first.xValuesRef).map(value => String(value ?? '').slice(0, 255)) : [])
+  if (!categories.length) return reject()
+
   const names = chart.series.map((entry, index) => {
-    const name = read(columns ? first.startRow - 1 : first.startRow + index, columns ? first.startColumn + index : first.startColumn - 1)
-    if (typeof name !== 'string' || name !== entry.name || !name) return reject()
-    return name
+    const value = (entry.nameRef ? readValues(entry.nameRef)[0] : undefined) || entry.nameCache || entry.name
+    return String(value ?? `系列 ${index + 1}`).slice(0, 255)
   })
-  const reference = (r1: number, c1: number, r2: number, c2: number) => {
-    const absolute = (r: number, c: number) => formatAddress(r, c).replace(/^([A-Z]+)(\d+)$/, '$$$1$$$2')
-    return `'${sheetName.replaceAll("'", "''")}'!${absolute(r1, c1)}:${absolute(r2, c2)}`
-  }
-  return Array.from({ length: count }, (_, index) => {
-    const row = columns ? first.startRow + index : first.startRow
-    const column = columns ? first.startColumn : first.startColumn + index
-    const name = read(columns ? row : category.startRow, columns ? category.startColumn : column)
-    if (typeof name !== 'string' || !name) return reject()
-    const values = chart.series.map((_, offset) => {
-      const value = read(columns ? row : row + offset, columns ? column + offset : column)
-      if (typeof value !== 'number' || !Number.isFinite(value)) return reject()
-      return value
+  const valuesBySeries = chart.series.map(entry => {
+    const values = entry.valuesRef ? readValues(entry.valuesRef) : entry.values ?? []
+    return values.map(value => {
+      const number = typeof value === 'number' ? value : Number(String(value ?? '').trim())
+      return Number.isFinite(number) ? number : 0
     })
-    return { name, categories: names, values,
-      categoriesRef: columns
-        ? reference(first.startRow - 1, column, first.startRow - 1, column + names.length - 1)
-        : reference(row, first.startColumn - 1, row + names.length - 1, first.startColumn - 1),
-      valuesRef: columns ? reference(row, column, row, column + names.length - 1) : reference(row, column, row + names.length - 1, column),
-    }
+  })
+  const transposed = categories.slice(0, MAX_TRANSPOSED_CATEGORIES).map((category, index) => ({
+    name: category || `系列 ${index + 1}`,
+    values: valuesBySeries.map(values => values[index] ?? 0),
+    categories: names,
+  }))
+
+  if (chart.kind !== 'combo') return transposed
+  return transposed.map((entry, index) => {
+    const line = transposed.length >= 2 && index === transposed.length - 1
+    return { ...entry, plot: line ? 'lineChart' : 'barChart', secondaryAxis: line }
   })
 }

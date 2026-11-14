@@ -24,3 +24,21 @@ ADVANCED_FILTER_SMOKE_DIRECTORY=/tmp/xlsx-advanced-filter-built-20261111-final-0
 root 确认 `/tmp/four-format-build-final3-20261111.log` 的 session83592 exit 0 并冻结 manifest 后，session13810 在全新 `/tmp/xlsx-advanced-filter-built-20261111-final-03` exit 0。实际 summary 为 `ok:true`、三场景、`saveCount:3`、126 个 JS、`errors:[]`、浏览器 `140.0.7339.16`。manifest SHA256 为 `184c94a96f863198c30ffcfaae1ec2169a8e6b6df2eaca50415bbd62538eada5`，所有资源 response 均与磁盘 SHA256 一致。
 
 三场景新修订身份/已保存/空草稿、取消零修改、Undo/Redo、刷新草稿、唯一保存、真实下载与独立 ZIP/XML/openpyxl 回读全部通过；三 receipt 操作均只有 `applySheetFilter`，全表数据不变。AND 额外改条件→Undo→Redo→再次 Undo 的状态、完整草稿与精确复制 5/10 也全部通过。三张 `*-reopened.png` 已实际查看。具体 SHA256、回执和范围边界见 `../../NATIVE_XLSX_ADVANCED_FILTER_ACCEPTANCE.md` 与 checkpoint 的 `summary.json`。没有改生产代码、没有自行构建、没有全套测试或提交。
+
+## 2026-11-12 PC 窗口续批
+
+PC模式复用五视口布局/键盘检查，保留真实引擎、保存/下载/重开；额外fixture包含数字格式、批注、超链接、合并区和另一张工作表，独立回读必须证明仅筛选定义及行可见性变化。此模式禁止普通重放已有保存回执，须使用全新目录并锁定构建manifest：
+
+```sh
+TMPDIR=/dev/shm ADVANCED_FILTER_PC_LAYOUT=1 \
+ADVANCED_FILTER_SMOKE_CASE=or-create \
+ADVANCED_FILTER_EXPECTED_MANIFEST_SHA256=2f3d5846cbb6cdf122d35c250655707e7813b234e89c3634b1b6b1574b51162f \
+ADVANCED_FILTER_SMOKE_DIRECTORY=/dev/shm/advanced-filter-new-run \
+node smoke/workbook-advanced-filter-built-smoke.mjs
+```
+
+该SHA只指本批冻结静态构建，当前源码后续并行变更不由本轮运行证据背书。`ADVANCED_FILTER_REVIEW_ONLY=1` 用于已保存文件的只读复核，必须预先提供相同manifest、source、revision和saved-source回执；save路由强制拒绝调用，仍执行浏览器下载、独立回读及重开检查。它不能证明原保存应答中的告警展示。
+
+最终成功目录为 `/dev/shm/office-xlsx-advanced-filter-and-review-final-20261112`（既有AND文件，只读、0保存）、`...-or-built-20261112`、`...-text-built-20261112`（后两者各1保存）；首次AND实际保存留在 `...-built-20261112`，保存后因夹具issues格式错误停止，该失败目录未再次签发。全批真实保存3次。中间只读复核因5.00显示值预期错误停止后，改用精确显示字符串，未更改源数字格式。
+
+25个成功生产布局场景、275条Tab记录、171个资源SHA、三个独立文件保真回读通过；AND改条件后Undo/Redo及回到空草稿/已保存精确检查通过。6种故意损坏均被独立校验器拒绝，普通重放保护经32个证据文件前后SHA验证。首轮AND初始/空错误10个布局场景只作为阶段证据，不计入25。组件忙碌/长错误等20场景另由 `office-xlsx-advanced-filter-component-smoke.mjs` 验证，回调为可释放Promise，不代替引擎验收。详见 `../../NATIVE_OFFICE_UI_AUDIT_20261112.md` 的“XLSX 高级筛选窗口 PC 续批”。

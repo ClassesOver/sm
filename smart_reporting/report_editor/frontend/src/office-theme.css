@@ -135,7 +135,7 @@
 .slides-native-ribbon > [role=tabpanel] { grid-column: 1 / -1; }
 :is(.pdf-ribbon-group, .slides-native-ribbon-group):first-child { padding-left: 0; }
 :is(.pdf-ribbon-group, .slides-native-ribbon-group):last-child { border-right: 0; }
-:is(.pdf-ribbon-group, .slides-native-ribbon-group) h3 {
+.pdf-ribbon-group h2, .slides-native-ribbon-group h2 {
   position: absolute;
   right: 12px;
   bottom: 0;
@@ -146,7 +146,7 @@
   font-weight: 500;
   text-align: center;
 }
-:is(.pdf-ribbon-group, .slides-native-ribbon-group):first-child h3 { left: 0; }
+.pdf-ribbon-group:first-child h2, .slides-native-ribbon-group:first-child h2 { left: 0; }
 :is(.pdf-ribbon-group .pdf-tool, .pdf-ribbon-group .pdf-original-download, .slides-native-ribbon-group button) {
   display: inline-flex;
   flex: 0 0 auto;
@@ -307,6 +307,53 @@
 .slides-inspector :is(select, textarea):focus-visible,
 .geometry-grid input:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
 .status-dot { background: var(--color-success); }
+
+/* 原生 PDF 设置与 PPTX 尺寸/表格弹窗：只影响 UI，不匹配文档纸面内容。 */
+dialog:is(.pdf-layout-dialog, .slides-table-dialog, .slides-native-chart-dialog, .slides-native-link-dialog) {
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  color: var(--office-ink);
+  background: var(--office-chrome);
+  font: inherit;
+  font-size: var(--office-font-size);
+  line-height: 1.6;
+  scrollbar-width: thin;
+}
+dialog:is(.pdf-layout-dialog, .slides-table-dialog, .slides-native-chart-dialog, .slides-native-link-dialog) :is(h2, h3) {
+  margin: 0 0 16px;
+  font-size: var(--font-size-lg);
+  line-height: 1.5;
+}
+dialog:is(.pdf-layout-dialog, .slides-table-dialog, .slides-native-chart-dialog, .slides-native-link-dialog) p { overflow-wrap: anywhere; }
+dialog:is(.pdf-layout-dialog, .slides-table-dialog, .slides-native-chart-dialog, .slides-native-link-dialog) :is(input, select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--office-ink);
+  background: var(--office-chrome);
+  font: inherit;
+}
+dialog:is(.pdf-layout-dialog, .slides-table-dialog, .slides-native-chart-dialog, .slides-native-link-dialog) :is(button, input, select, textarea, a):focus-visible {
+  outline: 2px solid var(--office-focus-ring);
+  outline-offset: 2px;
+}
+:is(.pdf-layout-dialog, .slides-native-chart-dialog, .slides-native-link-dialog) button {
+  min-height: 34px;
+  padding: 6px 14px;
+  border: 1px solid var(--office-border-strong);
+  border-radius: var(--office-radius);
+  background: var(--office-chrome);
+  color: var(--office-ink-2);
+  font: inherit;
+  cursor: pointer;
+}
+:is(.pdf-layout-dialog, .slides-native-chart-dialog, .slides-native-link-dialog) button:hover:not(:disabled) { background: var(--office-hover-bg); }
+:is(.pdf-layout-dialog, .slides-native-chart-dialog, .slides-native-link-dialog) button:disabled { opacity: var(--office-disabled-opacity); cursor: not-allowed; }
+.pdf-layout-dialog :is([data-pdf-extract-apply], [data-pdf-protection-apply], [data-pdf-export-text-apply], [data-pdf-external-pages-apply], [data-pdf-static-text-confirm], [data-pdf-convert-office-apply], [data-pdf-image-export-apply], [data-pdf-existing-image-confirm], [data-pdf-dialog-confirm], .pdf-link-actions > button:last-child) { border-color: var(--office-accent); background: var(--office-accent); color: var(--office-chrome); }
+.pdf-layout-dialog :is([data-pdf-extract-apply], [data-pdf-protection-apply], [data-pdf-export-text-apply], [data-pdf-external-pages-apply], [data-pdf-static-text-confirm], [data-pdf-convert-office-apply], [data-pdf-image-export-apply], [data-pdf-existing-image-confirm], [data-pdf-dialog-confirm], .pdf-link-actions > button:last-child):hover:not(:disabled) { background: var(--office-accent-hover); }
+.pdf-layout-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.pdf-layout-dialog label:has(> input[type=checkbox]) { display: flex; align-items: center; gap: 8px; }
+.pdf-layout-dialog input[type=checkbox] { flex: none; width: 16px; height: 16px; min-height: 0; padding: 0; accent-color: var(--office-accent); }
+.slides-size-dialog select { min-height: 34px; padding: 4px 8px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); }
 
 /* ---- 顶部文件操作沿用智能报告主题；桌面式外壳布局见下方 ---- */
 :is(.editor-format-docx, .editor-format-pdf, .editor-format-xlsx, .editor-format-pptx) .report-actions a:not([hidden]) {

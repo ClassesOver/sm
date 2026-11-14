@@ -1,0 +1,5 @@
+/* 固定 PC 源 ZoomDialog 选中边框；沿用宿主主题 token 与 aria-pressed 状态。 */
+.slides-zoom-grid { padding:4px; }
+.slides-zoom-grid > button { border:2px solid var(--office-border-strong);border-radius:4px;background:var(--office-chrome);cursor:pointer; }
+.slides-zoom-grid > button[aria-pressed=true] { border-color:var(--office-accent);box-shadow:0 0 0 2px var(--office-accent-soft); }
+.slides-zoom-grid > button:focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:3px; }

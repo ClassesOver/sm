@@ -40,7 +40,7 @@ export function chartCategoryLabels(series: Series | undefined, worksheet: Works
 // top-down; column maxMin mirrors both categories and series inside a group.
 export function chartCategorySlot(spec: ChartReadSpec, index: number, count: number): number {
   const axis = spec.axes?.category
-  const reversed = axis && (spec.kind === 'bar' ? !axis.reversed : axis.reversed)
+  const reversed = axis && (spec.kind === 'bar' ? !axis.reversed : spec.kind === 'column' && axis.reversed)
   return reversed ? count-1-index : index
 }
 
@@ -48,14 +48,17 @@ export function planCategoryAxis(ctx: UniverRenderingContext, spec: ChartReadSpe
   const empty = {plot:outer,paint:(_plot: Plot)=>{}}
   const axis = spec.axes?.category
   if (!axis || axis.hidden || count < 1 || count > MAX_LABELS || outer.right-outer.left < 64 || outer.bottom-outer.top < 64) return empty
-  const horizontal = spec.kind === 'column'
+  const horizontal = spec.kind === 'column' || spec.kind === 'line' || spec.kind === 'area'
   const side: keyof Plot = horizontal ? axis.position === 'top' ? 'top' : 'bottom' : axis.position === 'right' ? 'right' : 'left'
-  const labels = chartCategoryLabels(spec.series[0],worksheet,count,axis.numberFormat)
-  if (!labels.some(Boolean)) return empty
+  const primary = spec.series[0]
+  const labels = chartCategoryLabels(primary,worksheet,count,axis.numberFormat)
+  const groups = spec.kind === 'bar' || spec.kind === 'column' ? primary?.categoryGroups ?? [] : []
+  if (!labels.some(Boolean) && !groups.length) return empty
   ctx.save(); ctx.font = '10px system-ui'
   const measure = (text: string) => ctx.measureText(text).width
   const width = outer.right-outer.left
-  const reserve = horizontal ? 20 : Math.min(width*0.3,Math.max(16,...labels.map(text=>text?measure(text.slice(0,500))+10:0)))
+  const labelReserve = horizontal ? 20 : Math.min(width*0.3,Math.max(16,...labels.map(text=>text?measure(text.slice(0,500))+10:0)))
+  const reserve = labelReserve + (groups.length ? horizontal ? 22 : 54 : 0)
   ctx.restore()
   const plot = {...outer}
   if (side === 'top' || side === 'left') plot[side] += reserve
@@ -76,10 +79,43 @@ export function planCategoryAxis(ctx: UniverRenderingContext, spec: ChartReadSpe
       if (!text || slot%stride) return
       const label = fitted(text.replace(/\s+/g,' ').trim(),horizontal ? band-6 : reserve-10,measure)
       if (!label) return
-      const x = horizontal ? finalPlot.left+band*(slot+0.5) : edge+direction*6
+      const lineLike = spec.kind === 'line' || spec.kind === 'area'
+      const x = horizontal
+        ? lineLike ? finalPlot.left + extent * slot / Math.max(1,count-1) : finalPlot.left+band*(slot+0.5)
+        : edge+direction*6
       const y = horizontal ? edge+direction*11 : finalPlot.top+band*(slot+0.5)
       ctx.fillText(label,x,y)
     })
+    if (groups.length) {
+      const slotAt = (index: number): number => chartCategorySlot(spec,index,count)
+      ctx.font = '10px system-ui'; ctx.strokeStyle = '#d9d9d9'; ctx.lineWidth = 1
+      ctx.beginPath()
+      groups.forEach(group => {
+        if (group.start < 0 || group.end > count || group.start >= group.end) return
+        const first = slotAt(group.start), last = slotAt(group.end - 1)
+        const start = Math.min(first,last), end = Math.max(first,last)+1
+        if (horizontal) {
+          const xStart = finalPlot.left + extent * start / count
+          const xEnd = finalPlot.left + extent * end / count
+          const y1 = edge + direction * 22, y2 = edge + direction * reserve
+          ctx.moveTo(xStart,y1); ctx.lineTo(xStart,y2); ctx.moveTo(xEnd,y1); ctx.lineTo(xEnd,y2)
+          ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+          ctx.fillText(fitted(group.label,xEnd-xStart-6,measure),(xStart+xEnd)/2,edge+direction*31)
+        } else {
+          const yStart = finalPlot.top + extent * start / count
+          const yEnd = finalPlot.top + extent * end / count
+          const x1 = edge + direction * labelReserve, x2 = edge + direction * reserve
+          ctx.moveTo(x1,yStart); ctx.lineTo(x2,yStart); ctx.moveTo(x1,yEnd); ctx.lineTo(x2,yEnd)
+          const x = edge + direction * (labelReserve + 27), y = (yStart+yEnd)/2
+          const label = fitted(group.label,Math.max(0,yEnd-yStart-6),measure)
+          if (label) {
+            ctx.save(); ctx.translate(x,y); ctx.rotate(-Math.PI/2)
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(label,0,0); ctx.restore()
+          }
+        }
+      })
+      ctx.stroke()
+    }
     ctx.restore()
   }}
 }

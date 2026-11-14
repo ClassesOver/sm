@@ -22,6 +22,9 @@ it('resolves global aliases case-insensitively, delegates other inputs and resto
   expect(validator.validatorFormula({ formula1: '=Cycle' })).toEqual({ success: false })
   expect(validator.validatorFormula({ formula1: '=LocalOnly' })).toEqual({ success: false })
   expect(validator.validatorFormula({ formula1: 'a,b' })).toEqual({ success: false })
+  // 切换到列表类型时 Univer 先传入没有公式的临时规则。
+  expect(validator.validatorFormula({})).toEqual({ success: false })
+  expect(original).toHaveBeenLastCalledWith({ formula1: undefined }, undefined, undefined)
   entries.b.formulaOrRefString = 'Missing'
   expect(validator.validatorFormula(rule)).toEqual({ success: false })
   registration.dispose()

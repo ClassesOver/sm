@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest'
+import { vi, afterEach, expect, it } from 'vitest'
 import { Editor, Extension, Mark, Node } from '@tiptap/core'
 import { UndoRedo } from '@tiptap/extensions'
 import { Plugin } from '@tiptap/pm/state'
@@ -196,4 +196,54 @@ it('validates preexisting foreign replay identity rather than trusting superfici
   const f = setup([p('cat')], [anchor(0)]), candidate = structuredClone(f.baseline)
   candidate.content![0].content![0].text = 'dog'
   expect(() => validateDocxReplacement(f.baseline, candidate, [], f.editor.schema, new Map())).toThrow(/锚点/)
+})
+
+it('keeps keyboard focus on the activated result after navigation repaints highlights', () => {
+  const f = setup(); f.search('cat')
+  const result = f.find.panel.querySelectorAll<HTMLButtonElement>('.find-result')[2]
+  result.focus(); result.click()
+  const active = f.find.panel.querySelector<HTMLButtonElement>('.find-result.on')!
+  expect(f.count()).toBe('3/4')
+  expect(document.activeElement).toBe(active)
+  expect(f.draft.operations).toEqual([])
+})
+
+it.each(['Enter', 'Escape'])('ignores composing %s without moving selection or closing the search', key => {
+  const f = setup(), query = f.search('cat'); query.focus()
+  const selection = f.editor.state.selection.toJSON()
+  query.dispatchEvent(new KeyboardEvent('keydown', { key, isComposing: true, bubbles: true, cancelable: true }))
+  expect(f.find.panel.hidden).toBe(false)
+  expect(f.editor.state.selection.toJSON()).toEqual(selection)
+  expect(document.activeElement).toBe(query)
+  expect(f.draft.operations).toEqual([])
+})
+
+it('exposes the selected find mode and supports keyboard movement between mode tabs', () => {
+  const f = setup()
+  const tabs = () => [...f.find.panel.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+  expect(tabs()).toHaveLength(2)
+  expect(tabs().map(tab => tab.getAttribute('aria-selected'))).toEqual(['false','true'])
+  tabs()[1].focus(); tabs()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }))
+  expect(tabs().map(tab => tab.getAttribute('aria-selected'))).toEqual(['true','false'])
+  expect(document.activeElement).toBe(tabs()[0])
+  expect(f.find.panel.querySelector<HTMLElement>('[data-replace-row]')!.hidden).toBe(true)
+  tabs()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }))
+  expect(document.activeElement).toBe(tabs()[1])
+  expect(tabs()[1].tabIndex).toBe(0)
+  expect(tabs()[0].tabIndex).toBe(-1)
+  expect(f.draft.operations).toEqual([])
+})
+
+it('scrolls the active result within its list during query navigation without stealing input focus', () => {
+  const f = setup(), query = f.search('cat'), results = f.find.panel.querySelector<HTMLElement>('.find-results')!
+  const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    const top = this === results ? 100 : this.classList.contains('find-result') ? 220 : 0
+    return { top, bottom: top + (this === results ? 80 : 28), left: 0, right: 200, x: 0, y: top, width: 200, height: this === results ? 80 : 28, toJSON() {} }
+  })
+  try {
+    query.focus(); query.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(results.scrollTop).toBeGreaterThan(0)
+    expect(document.activeElement).toBe(query)
+    expect(f.draft.operations).toEqual([])
+  } finally { bounds.mockRestore() }
 })

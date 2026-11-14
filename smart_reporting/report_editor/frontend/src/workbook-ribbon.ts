@@ -11,6 +11,7 @@ import { indentToUniverPadding, univerPaddingToIndent, type UniverStyleData } fr
 import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboard'
 import { CELL_STYLE_PRESETS } from './workbook-cell-style-presets'
 import { THEME_MENU_OPTIONS } from './workbook-theme'
+import { chartPresetMenuOptions, type ChartPresetSource } from './workbook-chart-presets'
 
 type RibbonTab =
   | 'File'
@@ -32,6 +33,7 @@ type RibbonCommand =
   | 'slicer-open' | 'timeline-open' | 'allow-edit-ranges-open'
   | 'error-checking'
   | 'watch-window'
+  | 'external-links-panel'
   | 'trace-precedents' | 'trace-dependents' | 'remove-arrows'
   | 'normal-view' | 'toggle-page-break-preview'
   | 'toggle-cross-highlight'
@@ -40,10 +42,13 @@ type RibbonCommand =
   | 'toggle-right-to-left'
   | `cell-style:${string}`
   | 'insert-checkbox'
+  | 'recommended-charts-open'
   | `sparkline:${'line' | 'column' | 'stacked' | 'delete' | 'edit'}`
   | `insert-chart:${'column' | 'bar' | 'line' | 'area' | 'pie' | 'scatter' | 'radar' | 'doughnut' | 'combo'}`
-  | 'chart-title' | 'chart-axis-cat' | 'chart-axis-val' | 'chart-legend' | 'chart-labels' | 'chart-format-pane' | 'chart-select-data' | 'chart-switch-row-col' | 'chart-delete'
+  | 'chart-title' | 'chart-axis-cat' | 'chart-axis-val' | 'chart-legend' | 'chart-labels' | 'chart-format-pane' | 'chart-select-data' | 'chart-switch-row-col' | 'chart-delete' | 'chart-descriptions'
   | `chart-type-${'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut'}`
+  | `chart-layout:${'1' | '2' | '3' | '4'}`
+  | `chart-colors:${'office' | 'blue' | 'green' | 'warm' | 'gray'}`
   | 'format-as-table'
   | 'bold'
   | 'italic'
@@ -134,6 +139,7 @@ type RibbonCommand =
   | 'autofit-row-height'
   | 'autofit-col-width'
   | `paste-special:${PasteSpecialKind}`
+  | 'paste-special-open'
   | 'indent-step:increase'
   | 'indent-step:decrease'
   | 'note-open'
@@ -171,7 +177,7 @@ type RibbonCommand =
   | `page-fit:${'width' | 'height'}:${number}`
   | 'print-scale-open'
   | 'header-footer-open'
-  | 'insert-symbol'
+  | 'insert-picture' | 'insert-equation' | 'insert-icons' | 'insert-symbol'
   | 'link-open'
   | 'refresh-all'
   | 'print-gridlines'
@@ -375,6 +381,7 @@ const commandLabels: Record<string, string> = {
   "chart-switch-row-col": "切换行列",
   "chart-format-pane": "图表格式",
   "chart-delete": "删除图表",
+  "chart-descriptions": "图表说明",
   "insert-chart:column": "柱形图",
   "insert-chart:bar": "条形图",
   "insert-chart:line": "折线图",
@@ -460,15 +467,15 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
   ],
   Insert: [
     { title: '表格', actions: ['pivot-open', 'pivot-edit', 'format-as-table'].map(id => action(id, id, id as RibbonCommand)) },
-    { title: '插图', actions: ['insert-picture', 'insert-shape', 'insert-icons', 'insert-screenshot'].map(id => action(id, id)) },
+    { title: '插图', actions: ['insert-picture', 'insert-shape', 'insert-icons', 'insert-screenshot'].map(id => action(id, id, id === 'insert-picture' || id === 'insert-icons' ? id : undefined)) },
     { title: '复选框', actions: [action('复选框', 'insert-checkbox', 'insert-checkbox')] },
-    { title: '图表', actions: ['recommended-charts-open', 'insert-chart:column', 'insert-chart:bar', 'insert-chart:line', 'insert-chart:area', 'insert-chart:pie', 'insert-chart:scatter', 'insert-chart:radar', 'insert-chart:doughnut', 'insert-chart:combo'].map(id => action(id, id, id === 'recommended-charts-open' ? undefined : id as RibbonCommand)) },
+    { title: '图表', actions: ['recommended-charts-open', 'insert-chart:column', 'insert-chart:bar', 'insert-chart:line', 'insert-chart:area', 'insert-chart:pie', 'insert-chart:scatter', 'insert-chart:radar', 'insert-chart:doughnut', 'insert-chart:combo'].map(id => action(id, id, id as RibbonCommand)) },
     { title: '迷你图', actions: (['sparkline:line', 'sparkline:column', 'sparkline:stacked', 'sparkline:edit', 'sparkline:delete'] as const).map(id => action(id, id, id)) },
     { title: '筛选器', actions: (['slicer-open', 'timeline-open'] as const).map(id => action(id, id, id)) },
     { title: '链接', actions: [action('link-open', 'link-open', 'link-open')] },
     { title: '批注', actions: [action('批注', 'note-open', 'note-open')] },
     { title: '文本', actions: [action('insert-textbox', 'insert-textbox'), action('header-footer-open', 'header-footer-open', 'header-footer-open')] },
-    { title: '符号', actions: [action('insert-equation', 'insert-equation'), action('insert-symbol', 'insert-symbol', 'insert-symbol')] },
+    { title: '符号', actions: [action('insert-equation', 'insert-equation', 'insert-equation'), action('insert-symbol', 'insert-symbol', 'insert-symbol')] },
   ],
   'Page Layout': [
     { title: '主题', actions: ['theme', 'theme-colors', 'theme-fonts', 'theme-effects'].map(id => action(id, id)) },
@@ -501,13 +508,13 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('用于公式', 'use-in-formula', 'use-in-formula'),
     ] },
     { title: '公式审核', actions: ['trace-precedents', 'trace-dependents', 'remove-arrows', 'toggle-show-formulas', 'error-checking', 'watch-window', 'external-links-panel']
-      .map(id => ['toggle-show-formulas', 'trace-precedents', 'trace-dependents', 'remove-arrows', 'watch-window', 'error-checking'].includes(id) ? action(id, id, id as RibbonCommand) : action(id, id)) },
+      .map(id => ['toggle-show-formulas', 'trace-precedents', 'trace-dependents', 'remove-arrows', 'watch-window', 'error-checking', 'external-links-panel'].includes(id) ? action(id, id, id as RibbonCommand) : action(id, id)) },
     // 计算选项为固定源 MenuSelect（calc-mode:auto|manual），在下方按组渲染为下拉。
     { title: '计算', actions: [action('calculate-now', 'calculate-now', 'calculate-now'), action('calculate-sheet', 'calculate-sheet', 'calculate-sheet')] },
   ],
   Data: [
     { title: '数据透视表', actions: ['pivot-open', 'pivot-edit'].map(id => action(id, id, id as RibbonCommand)) },
-    { title: '获取数据', actions: [action('import-csv', 'import-csv', 'import-csv'), action('queries-open', 'queries-open', 'queries-open'), action('merge-workbooks', 'merge-workbooks'), action('refresh-all', 'refresh-all', 'refresh-all')] },
+    { title: '获取数据', actions: [action('import-csv', 'import-csv', 'import-csv'), action('queries-open', 'queries-open', 'queries-open'), action('merge-workbooks', 'merge-workbooks', 'merge-workbooks'), action('refresh-all', 'refresh-all', 'refresh-all')] },
     { title: '排序和筛选', actions: [
       action('升序', 'sort:asc', 'sort:asc'), action('降序', 'sort:desc', 'sort:desc'),
       action('自定义排序…', 'sort-custom-open', 'sort-custom-open'), action('筛选', 'filter-toggle', 'filter-toggle'), action('清除筛选条件', 'filter-clear', 'filter-clear'),
@@ -559,7 +566,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '图表布局', actions: ['chart-title', 'chart-axis-cat', 'chart-axis-val', 'chart-legend', 'chart-labels'].map(id => action(id, id, id as RibbonCommand)) },
     { title: '更改图表类型', actions: ['chart-type-column', 'chart-type-bar', 'chart-type-line', 'chart-type-area', 'chart-type-pie', 'chart-type-doughnut'].map(id => action(id, id, id as RibbonCommand)) },
     { title: '数据', actions: ['chart-select-data', 'chart-switch-row-col', 'chart-format-pane'].map(id => action(id, id, id as RibbonCommand)) },
-    { title: '图表操作', actions: ['chart-delete'].map(id => action(id, id)) },
+    { title: '图表操作', actions: [action('图表说明', 'chart-descriptions', 'chart-descriptions'), action('删除图表', 'chart-delete', 'chart-delete')] },
   ],
   'Table Design': [{ title: '属性', actions: [] }],
 }
@@ -584,7 +591,6 @@ const COMMAND_GLYPHS: Record<string, string> = {
 }
 
 const disabledReasons: Record<string, string> = {
-  'recommended-charts-open': '尚未接入静态图表创建对话框与文件回写',
   'translate': '尚未接入基于选区的翻译操作',
   'background': '尚无工作表背景图片读取与回写',
   'new-window': '网页编辑器不管理桌面工作簿窗口',
@@ -753,6 +759,7 @@ export function mountWorkbookRibbon(
     unavailableReason?(): string | undefined
     format?(): WorkbookFormatState
     hasSelection?(): boolean
+    chart?(): ChartPresetSource | null
     zoomSelectionAvailable?(): boolean
     crossHighlight?(): { active: boolean; available: boolean }
     formulaBar?(): { visible: boolean; available: boolean }
@@ -879,8 +886,8 @@ export function mountWorkbookRibbon(
       // 打印 is read-only (available like 查找 even while read-only/saved);
       // 撤销/恢复 replay history mutations and follow editability.
       // 复制只读选区（固定源 read-only-safe），只读/已保存时仍可用。
-      const readOnlySafe = noteViewAction || id === 'copy' || id === 'goto-open' || id === 'zoom-to-selection' || id === 'zoom-open' || id === 'workbook-statistics'
-      button.disabled = id === 'find' || id === 'print' || id === 'goto-open' || id === 'workbook-statistics' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo', 'sheet-protect', 'workbook-protect'].includes(id))
+      const readOnlySafe = noteViewAction || id === 'copy' || id === 'goto-open' || id === 'zoom-to-selection' || id === 'zoom-open' || id === 'workbook-statistics' || id === 'chart-descriptions'
+      button.disabled = id === 'find' || id === 'print' || id === 'goto-open' || id === 'workbook-statistics' || id === 'chart-descriptions' ? false : readOnlySafe ? !selected : id === 'replace' ? !editable : !editable || (!selected && !['insert-sheet', 'toggle-gridlines', 'print-gridlines', 'print-headings', 'name-manager-open', 'undo', 'redo', 'sheet-protect', 'workbook-protect'].includes(id))
       button.title = button.disabled ? !editable && !readOnlySafe ? '当前工作簿不可编辑或正在保存' : '请先选择单元格或区域' : button.textContent ?? ''
       // 公式视图/重新计算只改变显示与计算结果，不修改文件内容，只读时亦可用。
       if (['toggle-show-formulas', 'calculate-now', 'calculate-sheet'].includes(id)) {
@@ -888,6 +895,10 @@ export function mountWorkbookRibbon(
         if (id === 'toggle-show-formulas') button.setAttribute('aria-pressed', String(!!view.calculation?.().formulaView))
       }
       const protection = view.protection?.()
+      if (id.startsWith('chart-') && id !== 'chart-descriptions' && view.chart) {
+        button.disabled = !editable || !view.chart() || !!protection?.sheet.protected
+        button.title = !editable ? '当前工作簿不可编辑或正在保存' : protection?.sheet.protected ? PROTECTED_SHEET_REASON : !view.chart() ? '请先选择要操作的图表' : button.textContent ?? ''
+      }
       if (protection?.sheet.protected && !button.disabled && !PROTECTED_SHEET_RIBBON.has(id)) { button.disabled = true; button.title = PROTECTED_SHEET_REASON }
       if (id === 'error-checking') {
         const state = view.errorChecking?.()
@@ -989,6 +1000,23 @@ export function mountWorkbookRibbon(
       pasteSpecial.title = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : '选择性粘贴'
     }
     const themeState = view.theme?.()
+    for (const kind of ['layout', 'colors'] as const) {
+      const select = body.querySelector<HTMLSelectElement>(`[data-ribbon-menu="chart-${kind}"]`)
+      if (!select) continue
+      const source = view.chart?.() ?? null
+      const protectedSheet = !!view.protection?.().sheet.protected
+      const options = chartPresetMenuOptions(kind, source, editable && !protectedSheet)
+      const label = select.getAttribute('aria-label')!
+      const title = document.createElement('option'); title.value = ''; title.textContent = label
+      select.replaceChildren(title, ...options.map(item => {
+        const option = document.createElement('option')
+        option.value = item.command; option.textContent = item.label; option.disabled = item.disabled
+        return option
+      }))
+      select.value = ''; select.disabled = options.every(item => item.disabled)
+      select.title = !editable ? '当前工作簿不可编辑或正在保存' : protectedSheet ? PROTECTED_SHEET_REASON : !source ? '请先选择要操作的图表' : label
+      select.setAttribute('aria-description', select.title)
+    }
     for (const menu of ['theme', 'theme-colors', 'theme-fonts'] as const) {
       const select = body.querySelector<HTMLSelectElement>(`[data-ribbon-menu="${menu}"]`)
       if (!select) continue
@@ -1041,7 +1069,7 @@ export function mountWorkbookRibbon(
       zoomMenu.disabled = view.zoomSelectionAvailable?.() === false
       zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放比例'
     }
-    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"])')) {
+    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"]):not([data-ribbon-menu^="chart-"])')) {
       select.disabled = !editable || !pageState
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
       select.setAttribute('aria-description', select.title)
@@ -1119,12 +1147,29 @@ export function mountWorkbookRibbon(
     for (const group of groups[active]) {
       const section = document.createElement('section')
       section.className = 'workbook-ribbon-group'
-      const heading = document.createElement('h3')
+      const heading = document.createElement('h2')
       heading.textContent = group.title
       section.append(heading)
       if (group.title === 'AI 助手') {
         section.classList.add('office-ai-group')
         section.append(createOfficeAIEntry(view?.onAssistant))
+      }
+      if (active === 'Chart Design' && group.title === '图表布局') {
+        for (const [kind, label, glyph] of [['layout', '快速布局', '▦'], ['colors', '更改颜色', '🎨']] as const) {
+          const wrapper = document.createElement('label')
+          wrapper.className = 'workbook-ribbon-chart-menu'
+          const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
+          icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('', glyph) ?? ''
+          const select = document.createElement('select')
+          select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', label)
+          select.dataset.ribbonMenu = `chart-${kind}`
+          select.addEventListener('change', () => {
+            const value = select.value, enabled = !select.disabled && !select.selectedOptions[0]?.disabled
+            select.value = ''
+            if (value && enabled) onCommand(value as RibbonCommand)
+          })
+          wrapper.append(icon, select); section.append(wrapper)
+        }
       }
       if (active === 'Table Design' && group.title === '属性') {
         const input = document.createElement('input')
@@ -1208,6 +1253,7 @@ export function mountWorkbookRibbon(
         select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '选择性粘贴'); select.dataset.ribbonMenu = 'paste-special'
         const title = document.createElement('option'); title.value = ''; title.textContent = '选择性粘贴'
         select.append(title, ...PASTE_SPECIAL_CHOICES.map(choice => { const option = document.createElement('option'); option.value = choice.value; option.textContent = choice.label; return option }))
+        const dialogOption=document.createElement('option');dialogOption.value='paste-special-open';dialogOption.textContent='选择性粘贴…';select.append(dialogOption)
         select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(value as RibbonCommand) })
         section.append(select)
       }
@@ -1328,6 +1374,7 @@ export function mountWorkbookRibbon(
     refreshState()
   }
   const onTabKeyDown = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
     event.preventDefault()
     const index = visibleTabs.indexOf(active)

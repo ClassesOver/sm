@@ -5,7 +5,13 @@ type Series = ChartReadSpec['series'][number]
 export type Worksheet = { getName?(): string; getCell(row: number, column: number): { v?: unknown } | null | undefined }
 export type Plot = { left: number; top: number; right: number; bottom: number }
 export const CHART_PALETTE = ['#4472c4', '#ed7d31', '#a5a5a5', '#ffc000', '#5b9bd5', '#70ad47']
-export const chartSeriesColor = (series: Series, index: number) => series.color ?? CHART_PALETTE[index % CHART_PALETTE.length]!
+export const chartSeriesColor = (series: Series, index: number, palette = CHART_PALETTE as readonly string[]) => series.color ?? palette[index % palette.length]!
+export function chartPointColor(spec: ChartReadSpec, seriesIndex: number, pointIndex: number): string {
+  const series = spec.series[seriesIndex]!, palette = spec.palette ?? CHART_PALETTE
+  return series.pointColors?.[pointIndex] ?? series.color ??
+    ((spec.varyColors ?? (spec.kind === 'pie' || spec.kind === 'doughnut'))
+      ? palette[pointIndex % palette.length]! : chartSeriesColor(series, seriesIndex, palette))
+}
 
 export function chartLegendName(series: Series, index: number, worksheet: Worksheet): string {
   return chartTextValue({literal:series.name,reference:series.nameRef,cache:series.nameCache},worksheet,`系列 ${index + 1}`)
@@ -43,14 +49,15 @@ export function fitted(text: string, width: number, measure: (value: string) => 
 /** Common automatic bar/column legends. Reserve plot space unless overlay=1;
  * bound labels/entry counts to the frame and expose omissions with … +N.
  */
-export function paintChartLegend(ctx: UniverRenderingContext, spec: ChartReadSpec, worksheet: Worksheet, plot: Plot): Plot {
+export function paintChartLegend(ctx: UniverRenderingContext, spec: ChartReadSpec, worksheet: Worksheet, plot: Plot,
+  categoryEntries?: Array<{ label: string; color: string; index: number }>): Plot {
   if (!spec.legend || plot.right - plot.left < 64 || plot.bottom - plot.top < 50) return plot
   // Noncanonical series identities plus legend exceptions need their own
   // OOXML ordering reconciliation. Do not guess which label to suppress.
-  if (spec.legend.hiddenEntries.length && spec.series.some((series, index) => series.index !== undefined && series.index !== index)) return plot
-  const entries = spec.series.map((series, index) => ({
-    label: chartLegendName(series, index, worksheet), color: chartSeriesColor(series, index), index: series.index ?? index,
-  })).filter(entry => !spec.legend!.hiddenEntries.includes(entry.index))
+  if (!categoryEntries && spec.legend.hiddenEntries.length && spec.series.some((series, index) => series.index !== undefined && series.index !== index)) return plot
+  const entries = (categoryEntries ?? spec.series.map((series, index) => ({
+    label: chartLegendName(series, index, worksheet), color: chartSeriesColor(series, index, spec.palette), index: series.index ?? index,
+  }))).filter(entry => !spec.legend!.hiddenEntries.includes(entry.index))
   if (!entries.length) return plot
   ctx.save()
   ctx.font = '11px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'

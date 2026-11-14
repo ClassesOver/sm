@@ -58,7 +58,7 @@ try{
     const desktop=await page.evaluate(()=>{
       const dock=document.querySelector('.office-task-dock'),main=document.querySelector('.docx-navigation-layout')??document.querySelector('#report-editor'),workspace=dock.parentElement
       const d=dock.getBoundingClientRect(),m=main.getBoundingClientRect()
-      return {dock:{x:d.x,y:d.y,width:d.width,height:d.height},main:{x:m.x,y:m.y,width:m.width,height:m.height},siblings:main.parentElement===workspace,ribbonOutside:!workspace.querySelector('[role=tablist]')}
+      return {dock:{x:d.x,y:d.y,width:d.width,height:d.height},main:{x:m.x,y:m.y,width:m.width,height:m.height},siblings:main.parentElement===workspace,ribbonOutside:!!document.querySelector('.docx-ribbon')&&!workspace.querySelector('.docx-ribbon')}
     })
     assert(desktop.siblings);assert(desktop.ribbonOutside);assert(Math.abs(desktop.main.x+desktop.main.width-desktop.dock.x)<2)
     const divider=dock.getByRole('separator',{name:'调整 AI 助手宽度',exact:true}),oldWidth=Number(await divider.getAttribute('aria-valuenow'))

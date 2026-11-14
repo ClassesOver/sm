@@ -89,7 +89,7 @@ export function mountDrawingCanvas(options: Options): DrawingCanvasController {
   for(const type of ['pointercancel','lostpointercapture'])svg.addEventListener(type,event=>{if(gesture?.id===(event as PointerEvent).pointerId)cancel()},{signal:abort.signal})
   window.addEventListener('blur',cancel,{signal:abort.signal});window.addEventListener('resize',cancel,{signal:abort.signal})
   for(const type of ['scroll','wheel'])document.addEventListener(type,cancel,{capture:true,passive:true,signal:abort.signal})
-  document.addEventListener('keydown',event=>{if(event.key==='Escape')cancel()},{capture:true,signal:abort.signal})
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented)cancel()},{signal:abort.signal})
   for(const [index,operation]of operations.entries()) {
     const shape=String(operation.shape)
     if(operation.kind!=='addDrawing'||operation.pageId!==pageId||!CANVAS_DRAWING_KINDS.has(shape)||(options.imagesOnly&&shape!=='image'))continue

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from .native_xlsx_threads import xlsx_thread_actor
 from copy import deepcopy
 from functools import partial
 from time import monotonic
@@ -131,7 +132,7 @@ class NativeOfficeReadService(NativePDFReadService):
                         for operation in base for key, value in operation.items()
                     ):
                         raise ReportingError('native_ai_selection_invalid', 'PPTX 草稿对象结构已变化，请保存后选择或改用整稿阅读。')
-                    content = await run_office_engine(partial(patch_office, context.format), content, base)
+                    content = await run_office_engine(partial(patch_office, context.format, thread_actor=xlsx_thread_actor(context.scope) if context.format == "xlsx" else None), content, base)
                 if job.status != 'running':
                     return
                 model = await run_office_engine(partial(inspect_office, context.format), content)

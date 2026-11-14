@@ -184,7 +184,7 @@ export function applyDefinedNameAction(
   return applied ? null : '定义名称未应用（名称或引用状态未变化）。'
 }
 
-/// 名称管理器对话框（createModal 款，复用既有 token/类，不新增 CSS）：
+/// 名称管理器对话框（createModal 款，复用既有设置主题）：
 /// 列表 + 新建/更新/删除；作用域创建后不可改，复合键区分同名名称。
 export function createNameManagerDialog(
   root: HTMLElement,
@@ -197,19 +197,19 @@ export function createNameManagerDialog(
   const modal = createModal({
     root,
     label: '名称管理器',
-    cardClass: 'workbook-ribbon-note-dialog',
+    cardClass: 'workbook-ribbon-note-dialog workbook-ribbon-format-dialog workbook-defined-names-dialog',
     closeLabel: '关闭名称管理器',
     content: `
-      <h2>名称管理器</h2><form class="workbook-ribbon-note-form">
+      <h2>名称管理器</h2><form class="workbook-ribbon-note-form workbook-ribbon-format-form">
         <label>已定义名称<select class="workbook-ribbon-select workbook-defined-name-list" size="6" style="width:100%" aria-label="已定义名称"></select></label>
         <label>范围<select class="workbook-defined-name-scope" aria-label="名称作用域"></select></label>
         <label>名称<input class="workbook-ribbon-format-code workbook-defined-name-name" maxlength="255" autocomplete="off" spellcheck="false" placeholder="MyRange"></label>
         <label>引用<input class="workbook-ribbon-format-code workbook-defined-name-ref" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Sheet1!$A$1:$B$9"></label>
-        <p class="workbook-defined-name-error" role="alert"></p>
-        <div class="workbook-ribbon-note-actions">
+        <p class="workbook-defined-name-error workbook-ribbon-format-error" role="alert"></p>
+        <div class="workbook-ribbon-note-actions workbook-ribbon-format-actions">
           <button type="button" class="workbook-defined-name-delete" disabled>删除</button>
           <button type="button" class="workbook-defined-name-update" disabled>更新</button>
-          <button type="button" class="workbook-defined-name-add">新建</button>
+          <button type="button" class="workbook-defined-name-add workbook-ribbon-format-apply">新建</button>
         </div>
       </form>`,
   })

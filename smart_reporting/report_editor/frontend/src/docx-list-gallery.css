@@ -1,0 +1,193 @@
+/* Source dropdown.css; selectors scoped to the DOCX host. */
+/* Shared select-replacement dropdown (Dropdown in dropdown.tsx): themed
+ * trigger + anchored popover. Colors are chrome tokens only; apps size the
+ * control via a class on the .gs-dd wrapper. */
+
+.docx-native .gs-dd {
+  position: relative;
+  display: inline-flex;
+  anchor-name: --gs-dd;
+  anchor-scope: --gs-dd;
+}
+
+.docx-native .gs-dd-btn {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  /* right 5px: caret glyph right edge lands 6px from the outer edge, matching
+   * the format-pane caret alignment line */
+  padding: 0 5px 0 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.docx-native .gs-dd-btn:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.docx-native .gs-dd-btn:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.docx-native .gs-dd-value {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.docx-native .gs-dd-caret {
+  flex-shrink: 0;
+  display: flex;
+  color: var(--text-dim);
+}
+
+/* fixed + anchored so scroll-container overflow never clips the popover or
+ * its shadow; flips above the trigger near the viewport bottom */
+.docx-native .gs-dd-pop {
+  position: fixed;
+  position-anchor: --gs-dd;
+  top: calc(anchor(bottom) + 2px);
+  left: anchor(left);
+  min-width: anchor-size(width);
+  /* flip-inline: a popover wider than its trigger near the window's right edge would
+   * otherwise run offscreen and clip (fixed positioning clips at the viewport) —
+   * flipping right-aligns it to the trigger so it grows leftwards instead */
+  position-try-fallbacks:
+    flip-block,
+    flip-inline,
+    flip-block flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 80;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  box-shadow: var(--shadow-menu);
+}
+
+/* with a filter box the popover stops scrolling itself: the box stays put
+ * above an inner scroller, so it never rides out of view with the list */
+.docx-native .gs-dd-pop.has-search {
+  overflow: hidden;
+}
+
+.docx-native .gs-dd-list {
+  display: contents;
+}
+
+.docx-native .gs-dd-pop.has-search .gs-dd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.docx-native .gs-dd-search {
+  box-sizing: border-box;
+  flex-shrink: 0;
+  margin: 0 0 2px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.docx-native .gs-dd-search:focus {
+  border-color: var(--accent);
+}
+
+.docx-native .gs-dd-item {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  border-radius: 3px;
+  padding: 5px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.docx-native .gs-dd-item.active {
+  background: var(--hover);
+}
+
+.docx-native .gs-dd-item:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.docx-native .gs-dd-item.selected {
+  background: var(--accent-soft);
+}
+
+.docx-native.docx-list-dialog-host, .docx-native .docx-list-control {
+  --surface:var(--office-chrome, #fff);
+  --text:var(--office-ink, #242424);
+  --border:var(--office-border, #e3e6ea);
+  --border-strong:var(--office-border-strong, #d9d9d9);
+  --text-dim:var(--office-muted, #605e5c);
+  --hover:var(--office-hover-bg, #f5f5f5);
+  --shadow-menu:var(--shadow-popover, 0 8px 24px rgb(0 0 0 / 18%));
+}
+
+.docx-native.docx-list-dialog-host .list-define-modal {
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+
+.docx-native.docx-list-dialog-host .list-bullet-dialog,
+.docx-native.docx-list-dialog-host .list-number-dialog,
+.docx-native.docx-list-dialog-host .list-value-dialog {
+  box-sizing: border-box;
+  width: min(460px, calc(100vw - 24px));
+  min-width: 0;
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+}
+
+@media (max-width: 640px) {
+  .docx-native.docx-list-dialog-host .list-bullet-dialog,
+  .docx-native.docx-list-dialog-host .list-number-dialog,
+  .docx-native.docx-list-dialog-host .list-value-dialog { padding: 16px; }
+  .docx-native.docx-list-dialog-host .list-dialog-symbols { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .docx-native.docx-list-dialog-host .list-define-modal { padding: 16px; }
+  .docx-native.docx-list-dialog-host .list-define-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .docx-native.docx-list-dialog-host .list-define-levels { max-height: 140px; }
+  .docx-native.docx-list-dialog-host .list-define-grid { grid-template-columns: minmax(0, 1fr); }
+  .docx-native.docx-list-dialog-host .list-define-fields { min-width: 0; }
+  .docx-native.docx-list-dialog-host .list-define-fields .fld > span:first-child { flex-basis: 110px; }
+  .docx-native.docx-list-dialog-host .list-define-fields input { min-width: 0; }
+  .docx-native.docx-list-dialog-host .list-dialog-font { grid-template-columns: minmax(0, 1fr); }
+  .docx-native.docx-list-dialog-host .list-dialog-font .fld { min-width: 0; }
+  .docx-native.docx-list-dialog-host .list-dialog-font .gs-dd { flex: 1; width: 0; min-width: 0; }
+}

@@ -1,0 +1,7 @@
+.slides-equation-dialog { width: min(720px, calc(100vw - 48px)); max-height: calc(100vh - 48px); overflow: auto; }
+.slides-equation-gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.slides-equation-gallery button { display: flex; flex-direction: column; gap: 6px; padding: 10px; overflow-wrap: anywhere; text-align: left; }
+.slides-equation-preview { font-family: 'Cambria Math', serif; font-style: italic; }
+.slides-equation-dialog label { display: grid; gap: 6px; }
+.slides-equation-dialog input { width: 100%; box-sizing: border-box; }
+@media (max-width: 560px) { .slides-equation-gallery { grid-template-columns: 1fr; } }

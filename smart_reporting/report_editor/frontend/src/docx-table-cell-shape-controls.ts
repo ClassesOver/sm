@@ -3,7 +3,7 @@ import { buttonClasses } from './button'
 
 /** 与来源拆分对话框一致；输入只接受整数，不静默四舍五入。 */
 export function openDocxCellSplitDialog(root: HTMLElement, apply: (options: { rows: number; columns: number; mergeFirst: boolean }) => void) {
-  const modal = createModal({ root, label: '拆分单元格', closeLabel: '关闭拆分单元格', onRequestClose: () => modal.remove(), content: `
+  const modal = createModal({ root, label: '拆分单元格', cardClass: 'docx-table-property-dialog', closeLabel: '关闭拆分单元格', onRequestClose: () => modal.remove(), content: `
     <h2>拆分单元格</h2><form novalidate>
       <label>列数<input aria-label="列数" type="number" min="1" max="50" step="1" value="2"></label>
       <label>行数<input aria-label="行数" type="number" min="1" max="50" step="1" value="1"></label>

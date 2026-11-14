@@ -26,16 +26,19 @@ export function canonicalPdfSelectionStyleRuns(text:string,runs:unknown){validat
 export function bindPdfTextSelectionStyles(root:HTMLElement){
  const owner=root.ownerDocument,section=owner.createElement('fieldset'),legend=owner.createElement('legend');legend.textContent='选区文字样式';section.className='pdf-text-selection-style';section.append(legend)
  const hint=owner.createElement('p');hint.textContent='选中替换文字中的字符后应用或清除选区样式。选区保持不变；最终字体与混排位置请核对实际 PDF 预览。';section.append(hint)
- function label(name:string,input:HTMLElement){const row=owner.createElement('label');row.textContent=name;input.setAttribute('aria-label','选区'+name);row.append(input);section.append(row);return input}
+ const fieldsGrid=owner.createElement('div');fieldsGrid.className='pdf-text-style-fields';section.append(fieldsGrid)
+ function label(name:string,input:HTMLElement){const row=owner.createElement('label'),caption=owner.createElement('span');caption.textContent=name;input.setAttribute('aria-label','选区'+name);row.append(caption,input);fieldsGrid.append(row);return input}
  function select(name:string,options:[string,string][]){const input=label(name,owner.createElement('select')) as HTMLSelectElement;for(const [value,title]of options){const option=owner.createElement('option');option.value=value;option.textContent=title;input.append(option)}return input}
  const font=select('字体',[['','不修改字体'],['arial','Arial / Liberation Sans'],['times','Times / Liberation Serif'],['courier','Courier / Liberation Mono']])
  const size=label('字号',owner.createElement('input')) as HTMLInputElement;size.type='number';size.min='6';size.max='72';size.step='any';size.placeholder='不修改字号'
  const bold=select('粗体',[['','不修改粗体'],['true','粗体'],['false','常规字重']]),italic=select('斜体',[['','不修改斜体'],['true','斜体'],['false','正体']])
  const useColor=label('指定颜色',owner.createElement('input')) as HTMLInputElement;useColor.type='checkbox'
  const color=label('颜色',owner.createElement('input')) as HTMLInputElement;color.type='color';color.value='#cc2222'
+ useColor.parentElement!.classList.add('pdf-text-style-check')
  const apply=owner.createElement('button');apply.type='button';apply.textContent='对选区应用样式';apply.dataset.pdfSelectionStyleApply=''
  const clear=owner.createElement('button');clear.type='button';clear.textContent='清除选区样式';clear.dataset.pdfSelectionStyleClear=''
- const status=owner.createElement('p');status.setAttribute('role','status');const current=owner.createElement('p');current.dataset.pdfSelectionStyleCurrent='';current.setAttribute('aria-live','polite');const error=owner.createElement('p');error.setAttribute('role','alert');section.append(apply,clear,status,current,error);root.append(section)
+ const actions=owner.createElement('div');actions.className='pdf-text-selection-actions';actions.append(apply,clear)
+ const status=owner.createElement('p');status.setAttribute('role','status');const current=owner.createElement('p');current.dataset.pdfSelectionStyleCurrent='';current.setAttribute('aria-live','polite');const error=owner.createElement('p');error.setAttribute('role','alert');section.append(actions,status,current,error);root.append(section)
  let textarea:HTMLTextAreaElement|undefined,value='',keys:string[]=[],disabled=false,range:[number,number,'forward'|'backward'|'none']=[0,0,'none']
  function sync(){if(textarea&&textarea.value!==value){keys=spliceCharColors(value,keys,textarea.value);value=textarea.value}status.textContent=colorsToRuns(keys).length?'已配置 '+colorsToRuns(keys).length+' 段选区样式；UTF-16 范围 '+colorsToRuns(keys).map(run=>'['+run.start+','+run.end+')').join('、'):'尚未配置选区样式'}
  function renderSelection(){const[start,end]=range;const valid=!!textarea&&end>start&&scalarBoundary(value,start)&&scalarBoundary(value,end);const labels={font:'字体',size:'字号',color:'颜色',bold:'粗体',italic:'斜体'},parts=[];for(const field of fields){const selected=valid?keys.slice(start,end).map(key=>decodeStyle(key)[field]):[];const first=selected[0];const state=!valid?'none':selected.some(value=>value!==first)?'mixed':first===undefined?'inherit':String(first);current.dataset[field]=state;parts.push(labels[field]+'：'+(state==='mixed'?'混合':state==='inherit'?'继承整对象':state==='none'?'—':field==='bold'||field==='italic'?state==='true'?'开启':'关闭':state))}current.textContent=valid?'当前选区 ['+start+','+end+')：'+parts.join('；'):'当前选区：未选择字符';updateDisabled()}

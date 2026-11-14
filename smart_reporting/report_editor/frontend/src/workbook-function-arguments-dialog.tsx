@@ -169,6 +169,7 @@ export function FunctionArgumentsDialog({
         {...modal}
         aria-label={t('dlgFnArgsTitle')}
         onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.keyCode === 229 || event.defaultPrevented) return
           if (event.key === 'Enter' && event.target instanceof HTMLInputElement) {
             event.preventDefault()
             if (collapsed) setCollapsed(false)
@@ -180,7 +181,7 @@ export function FunctionArgumentsDialog({
       >
         <header>{collapsed ? `${t('dlgFnArgsTitle')} — ${spec.name}` : t('dlgFnArgsTitle')}</header>
         {!collapsed && <p className="fn-args-name">{spec.name}</p>}
-        <div className="fn-args-rows">
+        <div id="fn-args-rows" className="fn-args-rows">
           {rows.map((row) =>
             collapsed && row.index !== active ? null : (
               <div className="fn-args-row" key={row.index}>
@@ -205,6 +206,8 @@ export function FunctionArgumentsDialog({
                     type="button"
                     className="secondary fn-args-pick"
                     aria-label={collapsed ? t('dlgFnArgsExpand') : t('dlgFnArgsPickRange')}
+                    aria-expanded={!collapsed}
+                    aria-controls="fn-args-rows"
                     title={collapsed ? t('dlgFnArgsExpand') : t('dlgFnArgsPickRange')}
                     onClick={() => {
                       setActive(row.index)
@@ -262,9 +265,11 @@ export function FunctionArgumentsDialog({
                     </select>
                     <input
                       placeholder="A1:B2"
+                      aria-label={t('dlgFnArgsExternalRange', { name: pickTarget.name })}
                       value={typedRange}
                       onChange={(event) => setTypedRange(event.target.value)}
                       onKeyDown={(event) => {
+                        if (event.nativeEvent.isComposing || event.keyCode === 229 || event.defaultPrevented) return
                         if (event.key === 'Enter') {
                           event.preventDefault()
                           insertTypedRange(pickTarget)

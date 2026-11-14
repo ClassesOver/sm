@@ -5,6 +5,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { observePdfBuiltAssets, inspectPdfObjectDialog } from './pdf-object-dialog-checks.mjs'
+import { inspectPdfObjectPanel } from './pdf-object-panel-checks.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_PENDING_NOTES_SMOKE_PORT ?? 4205), base = `http://127.0.0.1:${port}`, sha = bytes => createHash('sha256').update(bytes).digest('hex')
 function python(input) {
@@ -29,8 +31,9 @@ let browser, readonly = false
 const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ?? '/usr/bin/chromium' })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? {executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE} : {}) })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = []
+  const verifyAssets=await observePdfBuiltAssets(page)
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
   const revision = route => Number(route.request().url().match(/pending-notes-fixture\/(\d+)\/api/)[1]), active = route => revisions.get(revision(route))
   const inspect = bytes => python({ mode: 'inspect', bytes: bytes.toString('base64') }), patch = (bytes, operations) => python({ mode: 'patch', bytes: bytes.toString('base64'), operations })
@@ -56,7 +59,7 @@ try {
   const ops = () => page.evaluate(() => JSON.parse(Object.entries(localStorage).find(([key]) => key.includes('pending-notes-fixture'))?.[1] ?? '{"operations":[]}').operations)
   const pending = page.locator('.pdf-pending-note')
   const waitPending = n => page.waitForFunction(n => document.querySelectorAll('.pdf-pending-note').length === n, n)
-  const edit = async (index, text, cancel = false) => { await pending.nth(index).getByRole('button', { name: '编辑便签' }).click(); await page.getByLabel('编辑便签正文').fill(text); await page.getByRole('button', { name: cancel ? '取消' : '应用便签修改', exact: true }).click() }
+  const edit = async (index, text, cancel = false) => { await pending.nth(index).getByRole('button', { name: '编辑便签' }).click(); await page.getByRole('textbox', { name: '编辑便签正文', exact: true }).fill(text); await page.getByRole('button', { name: cancel ? '取消' : '应用便签修改', exact: true }).click() }
   const zoomHalf = async () => { await page.locator('[data-pdf-ribbon-tab="home"]').click(); await page.getByLabel('页面缩放', { exact: true }).selectOption('0.5'); await page.waitForFunction(() => parseFloat(document.querySelector('.pdf-page-content')?.style.width || '') === 380) }
   const place = async (n, text, x = 120, y = 160) => {
     await page.locator('[data-pdf-ribbon-tab="home"]').click(); const jump = page.locator('[data-source-command-id="genoffice.pdf.home.pageZoom.goToPage"]'); await jump.fill(String(n)); await jump.press('Enter')
@@ -67,6 +70,8 @@ try {
   await place(1, 'same pending'); await waitPending(1)
   await place(1, 'same pending'); await waitPending(2)
   const identical = await ops(); assert.deepEqual(Object.fromEntries(Object.entries(identical[0]).filter(([key]) => key !== 'createdMs')), Object.fromEntries(Object.entries(identical[1]).filter(([key]) => key !== 'createdMs')))
+  const objectPanels=await inspectPdfObjectPanel(page,{panel:page.locator('.pdf-pending-comments').first(),kind:'pending-notes',operations:ops,directory:process.env.PDF_PENDING_NOTES_EVIDENCE_DIR})
+  const objectLayouts=await inspectPdfObjectDialog(page,{opener:pending.first().getByRole('button',{name:'编辑便签',exact:true}),title:'编辑便签正文',operations:ops,directory:process.env.PDF_PENDING_NOTES_EVIDENCE_DIR})
   await pending.first().getByRole('button', { name: '删除便签' }).evaluate(node => { window.__stalePendingDelete = node })
   await pending.first().getByRole('button', { name: '删除便签' }).click(); await waitPending(1)
   const afterDelete = await ops(); await page.evaluate(() => window.__stalePendingDelete.dispatchEvent(new MouseEvent('click', { bubbles: true })))
@@ -81,6 +86,7 @@ try {
   const edited = await ops(); await page.reload(); await waitPending(1); assert.deepEqual(await ops(), edited)
   readonly = true; await page.reload(); await waitPending(1)
   for (const control of await pending.first().locator('button').all()) assert.equal(await control.isDisabled(), true)
+  const readonlyObjectPanels=await inspectPdfObjectPanel(page,{panel:page.locator('.pdf-pending-comments').first(),kind:'readonly-notes',operations:ops,directory:process.env.PDF_PENDING_NOTES_EVIDENCE_DIR})
   await pending.first().getByRole('button', { name: '删除便签' }).evaluate(node => node.dispatchEvent(new MouseEvent('click', { bubbles: true })))
   await page.waitForFunction(() => document.querySelector('.pdf-editor-message')?.textContent?.includes('当前修订不支持')); assert.deepEqual(await ops(), edited)
   readonly = false; await page.reload(); await waitPending(1); await zoomHalf()
@@ -96,9 +102,11 @@ try {
   const link = await page.locator('.native-delivery a').filter({ hasText: '下载 PDF' }).getAttribute('href'), downloaded = Buffer.from(await page.evaluate(async url => [...new Uint8Array(await (await fetch(url)).arrayBuffer())], link)); assert.deepEqual(downloaded, revisions.get(2))
   await page.goto(`${base}/reports/v1/native/pending-notes-fixture/2`); await page.waitForFunction(() => document.querySelectorAll('.pdf-page').length === 2 && document.querySelectorAll('.pdf-saved-note').length === 3, null, { timeout: 60000 })
   assert.equal(await pending.count(), 0)
+  const savedObjectPanels=await inspectPdfObjectPanel(page,{panel:page.locator('.pdf-saved-comments').last(),kind:'saved-notes',operations:ops,directory:process.env.PDF_PENDING_NOTES_EVIDENCE_DIR})
   const reopened = inspect(downloaded); assert.deepEqual(reopened.pages[0].notes.map(note => note.contents), ['rotated pending']); assert.deepEqual(reopened.pages[1].notes.map(note => note.contents), ['keep note', '待保存修改 金额 750 ✓'])
   assert.deepEqual(errors, [])
-  const evidence = { ok: true, browserVersion: browser.version(), sourceSha256: sha(source), downloadedSha256: sha(downloaded), identicalNotes: identical, finalOperations: final, staleDetachedControlRefused: true, modalCancelUndoRedoReload: true, readonlyForcedMutationRefused: true, pageDeleteUndoReverseIdentity: true, pendingBecomesSavedOnReopen: true, provenance: 'production static UI; substituted authorization/revision routes; actual packed engine, PDF.js and downloaded file; existing pending-only preview behavior unchanged, no byte-identical preview claim' }
+  const evidence = { ok: true, ...await verifyAssets(), objectLayouts, browserVersion: browser.version(), sourceSha256: sha(source), downloadedSha256: sha(downloaded), identicalNotes: identical, finalOperations: final, staleDetachedControlRefused: true, modalCancelUndoRedoReload: true, readonlyForcedMutationRefused: true, pageDeleteUndoReverseIdentity: true, pendingBecomesSavedOnReopen: true, provenance: 'production static UI; substituted authorization/revision routes; actual packed engine, PDF.js and downloaded file; existing pending-only preview behavior unchanged, no byte-identical preview claim' }
+  evidence.objectPanels=objectPanels;evidence.savedObjectPanels=savedObjectPanels;evidence.readonlyObjectPanels=readonlyObjectPanels
   if (process.env.PDF_PENDING_NOTES_EVIDENCE_DIR) { const dir = process.env.PDF_PENDING_NOTES_EVIDENCE_DIR; await mkdir(dir, { recursive: true }); await writeFile(`${dir}/source.pdf`, source); await writeFile(`${dir}/downloaded.pdf`, downloaded); await writeFile(`${dir}/evidence.json`, JSON.stringify(evidence, null, 2)); await page.screenshot({ path: `${dir}/saved-reopen.png`, fullPage: true }) }
   console.log(JSON.stringify(evidence))
 } finally { await browser?.close(); server.kill('SIGTERM') }

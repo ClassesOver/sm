@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +20,9 @@ const builtPreview = process.env.NATIVE_GUI_PREVIEW === '1'
 const baseUrl = `http://127.0.0.1:${port}`
 const mediaType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
+const manifestPath = join(frontend, '../static/.vite/manifest.json')
+const manifestSha256 = builtPreview ? sha256(await readFile(manifestPath)) : null
+if (builtPreview && process.env.DOCX_EXPECTED_MANIFEST_SHA256) assert.equal(manifestSha256, process.env.DOCX_EXPECTED_MANIFEST_SHA256)
 const temporary = await mkdtemp(join(tmpdir(), 'docx-insert-gui-'))
 const sourcePath = join(temporary, 'revision-1.docx'), savedPath = join(temporary, 'revision-2.docx')
 const runPython = input => {
@@ -1245,11 +1248,16 @@ try {
   ])
   assert.deepEqual(pageErrors, [])
   }
-  if (builtPreview && smokeCase.startsWith('hf-insert')) {
+  if (builtPreview) {
     await Promise.all(chunkChecks)
     assert.ok([...loadedChunks.keys()].some(file => /^lazy-docx-main-.*\.js$/.test(file)))
-    console.log(JSON.stringify({ builtChunkIdentityVerified: true, loadedChunks: Object.fromEntries(loadedChunks), chunkCount: loadedChunks.size }))
+    assert.equal(sha256(await readFile(manifestPath)), manifestSha256, '验收期间构建身份不得变化')
+    console.log(JSON.stringify({ builtChunkIdentityVerified: true, manifestSha256, loadedChunks: Object.fromEntries(loadedChunks), chunkCount: loadedChunks.size }))
   }
+  if (process.env.DOCX_INSERT_EVIDENCE_OUTPUT) await writeFile(process.env.DOCX_INSERT_EVIDENCE_OUTPUT, JSON.stringify({ ok:true, case:smokeCase, builtPreview, manifestSha256, sourcePath,
+    revisions:[...revisions].map(([revision,bytes]) => ({ revision,sha256:sha256(bytes),size:bytes.length,path:join(temporary,`revision-${revision}.docx`) })),
+    operations:[...savePayloads].map(([revision,payload]) => ({revision,operations:payload.operations})),
+    sections:[...inspections].map(([revision,inspection]) => ({revision,sections:inspection.sections,hfParts:inspection.hfParts})), pageErrors,loadedChunks:Object.fromEntries(loadedChunks) },null,2))
 } finally {
   await browser?.close()
   server?.kill()

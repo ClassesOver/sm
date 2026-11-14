@@ -21,7 +21,7 @@
 // not silently dropped.
 
 import { fromUniverStyle, type LogicalStyle, type UniverStyleData } from './workbook-vendor/core/style-map'
-import { formatNumericValue } from '@sheets-web/xlsx-engine'
+import { formatNumericValue, type HeaderFooterPicture } from '@sheets-web/xlsx-engine'
 import { decodeHeaderFooter, expandHeaderFooterCodes } from './workbook-print-header-footer'
 import { isHiddenAxisEntry, type UniverColumnData, type UniverRowData } from './workbook-vendor/core/univer-data'
 
@@ -96,6 +96,15 @@ export interface SheetPrintSource {
   readonly rowHeights: Readonly<Record<number, number | undefined>>
   readonly hiddenColumns: ReadonlySet<number>
   readonly hiddenRows: ReadonlySet<number>
+  readonly headerFooterPictures?: ReadonlyMap<string, { readonly dataUrl: string; readonly widthPt: number; readonly heightPt: number }>
+}
+
+function pictureDataUrl(picture: HeaderFooterPicture): string {
+  let binary = ''
+  for (let offset = 0; offset < picture.bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...picture.bytes.subarray(offset, offset + 0x8000))
+  }
+  return `data:${picture.mediaType};base64,${btoa(binary)}`
 }
 
 export interface SheetPrintHeaderFooter {
@@ -223,7 +232,7 @@ export function parsePrintTitles(reference: string | null): { rows: IndexSpan | 
 /// Snapshot sheet → print source. Mirrors workbook-vendor readBackSnapshot's
 /// extraction but keeps the hidden flags it drops: print layout must give
 /// hidden rows/columns zero size instead of the default.
-export function printSourceFromSnapshotSheet(sheet: unknown, styles: Readonly<Record<string, UniverStyleData>> = {}): SheetPrintSource {
+export function printSourceFromSnapshotSheet(sheet: unknown, styles: Readonly<Record<string, UniverStyleData>> = {}, pictures?: ReadonlyMap<string, HeaderFooterPicture>): SheetPrintSource {
   const data = (sheet ?? {}) as {
     name?: string
     cellData?: Record<number, Record<number, { v?: unknown; f?: string; s?: string | UniverStyleData } | undefined>>
@@ -269,7 +278,8 @@ export function printSourceFromSnapshotSheet(sheet: unknown, styles: Readonly<Re
     if (isHiddenAxisEntry(row)) hiddenRows.add(index)
     if (row?.h !== undefined) rowHeights[index] = row.h
   }
-  return { name: data.name ?? '', cells, merges, columnWidths, rowHeights, hiddenColumns, hiddenRows }
+  const headerFooterPictures = pictures && new Map([...pictures].map(([position, picture]) => [position, { dataUrl: pictureDataUrl(picture), widthPt: picture.widthPt, heightPt: picture.heightPt }]))
+  return { name: data.name ?? '', cells, merges, columnWidths, rowHeights, hiddenColumns, hiddenRows, ...(headerFooterPictures ? { headerFooterPictures } : {}) }
 }
 
 const columnWidthPx = (source: SheetPrintSource, column: number): number =>
@@ -587,8 +597,13 @@ export function buildSheetPrintHtml(source: SheetPrintSource, setup: SheetPrintS
       if (!parts) return ''
       const fields = { page: jobPage, total: context.totalPages ?? pages.length, date: now,
         fileName: context.fileName ?? '', sheetName: source.name }
-      const sections = [parts.left ?? '', parts.center ?? '', parts.right ?? '']
-        .map(text => escapeHtml(expandHeaderFooterCodes(text, fields)))
+      const suffix = variant === 'odd' ? '' : variant.toUpperCase()
+      const pictureSlots = ['L', 'C', 'R'].map(side => source.headerFooterPictures?.get(`${side}${kind === 'Header' ? 'H' : 'F'}${suffix}`))
+      const sections = [parts.left ?? '', parts.center ?? '', parts.right ?? ''].map((text, index) => {
+        const marker = '\uFFF0'
+        const expanded = expandHeaderFooterCodes(text, { ...fields, picture: pictureSlots[index] ? marker : '' })
+        return expanded.split(marker).map(escapeHtml).join(pictureSlots[index] ? `<img src="${escapeHtml(pictureSlots[index]!.dataUrl)}" style="width:${pictureSlots[index]!.widthPt * (hf?.scaleWithDoc === false ? 1 : scalePercent)}pt;height:${pictureSlots[index]!.heightPt * (hf?.scaleWithDoc === false ? 1 : scalePercent)}pt">` : '')
+      })
       const edge = kind === 'Header' ? `top:${setup.margins.header ?? 0.3}in`
         : `bottom:${setup.margins.footer ?? 0.3}in`
       const fontSize = 9 * (hf?.scaleWithDoc === false ? 1 : scalePercent)

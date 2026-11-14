@@ -6,6 +6,7 @@ import { parseDocxOffThread } from './vendor/genoffice-docs/apps/docs/src/render
 import { notesOperationsOf, projectedDocxNotes, type DocxNotesModel, type DocxNoteKind } from './docx-notes'
 import { measureNoteHeightDom, noteRowMetrics } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/note-dom'
 import { estimateFootnoteHeight, noteRunStyle, resolveNoteStyle } from './vendor/genoffice-docs/apps/docs/src/renderer/line-metrics'
+import { currentRevisionDisplay, noteRunsInView } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/revision-view'
 import { pageOfY, type BlockBox, type BlockMetaOf, type PageNoteItem, type PageSlice } from './vendor/genoffice-docs/apps/docs/src/renderer/pagination'
 
 type Parsed = Awaited<ReturnType<typeof parseDocxOffThread>>
@@ -17,7 +18,7 @@ export async function currentDocxNotes(kind: DocxNoteKind, input: { bytes: Uint8
   const check = () => { if (!stillCurrent()) throw new Error('文档或注释发生变化，请重新打开分页或页眉页脚菜单') }
   check()
   const operations = notesOperationsOf(input.doc.toJSON()).filter(op => op.noteKind === kind)
-  if (!operations.length) return input.parsed[list] ?? []
+  if (!operations.length) return notesInCurrentRevisionView(input.parsed[list] ?? [])
   if (!input.model) throw new Error('当前来源未提供注释编辑身份')
   const notes = projectedDocxNotes(input.model, operations).filter(note => note.kind === kind).map(note => {
     const source = input.parsed[list].find(item => item.id === note.id)
@@ -30,7 +31,31 @@ export async function currentDocxNotes(kind: DocxNoteKind, input: { bytes: Uint8
   zip.file(path, buildNotesXml(kind, notes, original ?? null))
   const bytes = await zip.generateAsync({ type: 'uint8array' }); check()
   const parsed = await parseDocxOffThread(bytes); check()
-  return parsed[list]
+  return notesInCurrentRevisionView(parsed[list])
+}
+
+function notesInCurrentRevisionView(notes: NoteInfo[]): NoteInfo[] {
+  const mode = currentRevisionDisplay()
+  const marker = typeof document === 'undefined' ? null : document.querySelector<HTMLElement>('.app[data-native-docx-review-state]')
+  const hiddenAuthors = new Set<string>(JSON.parse(marker?.dataset.revHiddenAuthors ?? '[]'))
+  const insDel = marker?.dataset.revInsDel !== 'false'
+  if (mode === 'all' && insDel && hiddenAuthors.size === 0) return notes
+  return notes.map(note => {
+    const displayed = noteRunsInView(mode, note.richParas)
+    const richParas = displayed?.map(para => para.flatMap(run => {
+      if (run.del && (!insDel || hiddenAuthors.has(run.del.author))) return []
+      if (run.ins && (!insDel || hiddenAuthors.has(run.ins.author))) {
+        const { ins: _ins, ...plain } = run
+        return [plain]
+      }
+      return [run]
+    }))
+    return {
+      ...note,
+      richParas,
+      ...(richParas ? { text: richParas.map(runs => runs.map(run => run.text).join('')).join('\n') } : {}),
+    }
+  })
 }
 
 export const currentFootnotes = (input: Parameters<typeof currentDocxNotes>[1], stillCurrent: () => boolean) => currentDocxNotes('footnote', input, stillCurrent)

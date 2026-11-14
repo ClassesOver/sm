@@ -67,23 +67,23 @@
 .office-assistant-layout>.office-assistant-header {position:static;flex:none;min-height:54px;margin:0;padding:0 16px;border-bottom:1px solid var(--office-border-soft);}
 .office-assistant-layout>.office-assistant-toolbar {display:block;flex:none;margin:0;padding:12px 16px 0;background:var(--office-chrome);}
 .office-assistant-layout .office-assistant-presets {display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;}
-.office-assistant-layout .office-assistant-presets button {border-radius:16px;font-size:11px;padding:5px 11px;border-color:var(--office-border-soft);}
+.office-assistant-layout .office-assistant-presets button {border-radius:var(--office-radius);font-size:11px;padding:5px 11px;border-color:var(--office-border-soft);}
 .office-assistant-layout .office-assistant-scope {display:flex;justify-content:space-between;margin-bottom:8px;font-size:11px;}
 .office-assistant-layout .office-assistant-details {margin:0 0 8px;font-size:11px;}
-.office-assistant-layout>.office-assistant-body {flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:16px;overflow-wrap:anywhere;background:color-mix(in srgb,var(--office-chrome) 96%,var(--office-accent) 4%);line-height:1.7;}
+.office-assistant-layout>.office-assistant-body {flex:1;min-height:48px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;padding:16px;overflow-wrap:anywhere;background:var(--office-tabbar);line-height:1.7;}
 .office-assistant-layout>.office-assistant-body>form {margin:0;}
-.office-assistant-layout>.office-assistant-composer {flex:none;margin:12px 14px 14px;padding:12px;border:1px solid var(--office-border-strong);border-radius:16px;background:var(--office-chrome);box-shadow:0 3px 12px rgb(0 0 0 / 5%);transition:border-color .15s,box-shadow .15s;}
+.office-assistant-layout>.office-assistant-composer {flex:none;margin:12px 14px 14px;padding:12px;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);transition:border-color .15s,box-shadow .15s;}
 .office-assistant-layout .office-assistant-composer>label {display:block;font-size:11px;color:var(--office-muted);}
 .office-assistant-layout .office-assistant-composer textarea {min-height:76px;max-height:160px;margin:0;padding:6px 0;border:0;border-radius:0;box-shadow:none;outline:none;background:transparent;resize:vertical;font-size:12px;line-height:1.7;}
 .office-assistant-layout .office-assistant-composer textarea::placeholder {color:var(--office-muted);opacity:.8;}
 .office-assistant-layout .office-assistant-composer:focus-within {border-color:var(--office-accent);box-shadow:0 0 0 3px var(--office-accent-soft);}
 .office-assistant-layout .office-assistant-actions {justify-content:flex-end;min-height:34px;margin-top:6px;}
-.office-assistant-layout .office-assistant-actions button {border-radius:10px;font-size:11px;padding:6px 12px;}
+.office-assistant-layout .office-assistant-actions button {border-radius:var(--office-radius);font-size:11px;padding:6px 12px;}
 .office-assistant-layout :is(button,select) {transition:background-color .15s,border-color .15s;}
-.office-assistant-layout .office-assistant-scope select {min-width:110px;border-color:var(--office-border-soft);border-radius:8px;}
-.office-assistant-layout .office-assistant-details[open] {padding:8px 10px;border:1px solid var(--office-border-soft);border-radius:10px;}
+.office-assistant-layout .office-assistant-scope select {min-width:110px;border-color:var(--office-border-soft);border-radius:var(--office-radius);}
+.office-assistant-layout .office-assistant-details[open] {padding:8px 10px;border:1px solid var(--office-border-soft);border-radius:var(--office-radius);}
 .office-assistant-layout .native-ai-context {font-size:11px;color:var(--office-muted);}
-.office-assistant-layout :is(.native-ai-preview,.native-ai-evidence):not(:empty) {margin:12px 0;padding:14px;border:1px solid var(--office-border-soft);border-radius:12px;background:var(--office-chrome);box-shadow:0 2px 5px rgb(0 0 0 / 2%);}
+.office-assistant-layout :is(.native-ai-preview,.native-ai-evidence):not(:empty) {margin:12px 0;padding:14px;border:1px solid var(--office-border-soft);border-radius:var(--office-radius);background:var(--office-chrome);}
 .office-assistant-layout .native-ai-preview strong {display:block;margin-bottom:8px;font-size:13px;}
 .office-assistant-layout .native-ai-preview ul {padding-left:20px;}
 .office-assistant-layout .native-ai-preview li+li {margin-top:6px;}

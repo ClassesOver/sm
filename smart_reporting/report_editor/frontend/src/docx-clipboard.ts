@@ -1,3 +1,4 @@
+import {richPasteControls} from './docx-rich-paste'
 /**
  * Word Home 剪贴板组的 DOCX 接线。对照固定源 genoffice-source-full f8c17004：
  * - Ribbon.tsx:3611 剪贴板组（paste 分体主按钮 + source/merge/text/picture 菜单、cut/copy、格式刷）
@@ -9,8 +10,7 @@
  * - Ribbon.tsx:451-478 PAINTER_* 白名单与 applyPainterFormat:496 的 unset→set 语义
  *
  * 与原版的差异（保存协议限制，均为有意收敛）：
- * - 富文本粘贴无法精确映射到保存协议（协议仅支持整段统一格式），默认与
- *   保留源格式/合并格式均拒绝并说明；仅保留文本走 replaceParagraph/insertParagraph。
+ * - 富文本粘贴通过结构化 pasteRichContent 保存，源格式、合并格式和仅文本可从原上下文重放。
  * - 图片粘贴映射为 insertParagraphImage（media part + 关系 + 内联 drawing 的
  *   严格后端操作）；仅 png/jpeg，≤8MB，与格式刷同属协议内收敛。
  * - 格式刷段落属性只保留保存协议可组合的字段（对齐、缩进、段距、行距）；
@@ -257,7 +257,7 @@ export function createDocxPainter(editor: Editor, options: { report: (error: unk
 }
 
 /** paste-actions.ts readClipboardPayload 的协议内收敛版：text/html/image 三通道。 */
-async function readClipboardPayload(): Promise<{ text: string | null; html: string | null; image: Blob | null }> {
+export async function readClipboardPayload(): Promise<{ text: string | null; html: string | null; image: Blob | null }> {
   const clipboard = navigator.clipboard
   if (!clipboard || typeof clipboard.readText !== 'function') throw new Error('当前浏览器不支持剪贴板读取（需要在 HTTPS 或 localhost 安全上下文中使用）')
   let html: string | null = null
@@ -413,7 +413,12 @@ export async function docxClipboardPaste(editor: Editor, mode?: DocxPasteMode): 
   if (!editor.isEditable) throw new Error('当前文档不可编辑')
   const target = { doc: editor.state.doc, selection: editor.state.selection }
   const { text, html, image } = await readClipboardPayload()
-  if (html && mode !== 'text' && mode !== 'picture') throw new Error('剪贴板是富文本（HTML）内容，无法精确映射到 DOCX 保存协议（仅支持整段统一格式）；请使用"仅保留文本"粘贴')
+  if (html && mode !== 'picture' && mode !== 'text') {
+    const controls=richPasteControls(editor)
+    if(!controls)throw new Error('当前编辑器没有原生富文本粘贴能力')
+    if(!editor.state.doc.eq(target.doc)||!editor.state.selection.eq(target.selection))throw new Error('读取剪贴板期间选区已变化，请重新粘贴')
+    controls.paste({html,text},mode);return
+  }
   const plain = text || (html ? htmlToText(html) : '')
   const normalized = plain.replace(/\r\n?/g, '\n')
   // 图片优先级对照 paste-actions.ts:125：picture 模式直接粘贴位图；默认粘贴

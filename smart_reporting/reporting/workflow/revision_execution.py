@@ -2,10 +2,11 @@
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from ..contract import SHA256_PATTERN, StrictModel
 from ..models import ReportingError
+from ..saved_revision_reference import SavedRevisionExecutionBinding
 from ..semantics.basis import BasisRefreshRevisionReceipt
 from ..semantics.models import Identity, RunIdentity
 from ..trace.contracts_v1 import canonical_sha256
@@ -19,6 +20,7 @@ def execution_run_id(scope, basis_id, report_revision, planning_hash):
 
 
 class ReportRevisionExecution(StrictModel):
+    saved_revision_binding: SavedRevisionExecutionBinding | None = Field(default=None, alias='savedRevisionBinding')
     source_scope: ReportingWorkflowScope = Field(alias='sourceScope')
     execution_run_id: RunIdentity = Field(alias='executionRunId')
     basis_id: Identity = Field(alias='basisId')
@@ -26,8 +28,16 @@ class ReportRevisionExecution(StrictModel):
     parent_report_revision: RunIdentity = Field(alias='parentReportRevision')
     planning_hash: str = Field(alias='planningHash', pattern=SHA256_PATTERN)
     output_revision: int = Field(alias='outputRevision', ge=2)
-    requested_outputs: tuple[Literal['pdf', 'docx', 'pptx', 'xlsx'], ...] = Field(
-        alias='requestedOutputs', min_length=1, max_length=4)
+    requested_outputs: tuple[Literal['md', 'pdf', 'docx', 'pptx', 'xlsx'], ...] = Field(
+        alias='requestedOutputs', min_length=1, max_length=5)
+
+    @model_serializer(mode='wrap')
+    def legacy_serialization(self, handler):
+        payload = handler(self)
+        if self.saved_revision_binding is None:
+            payload.pop('savedRevisionBinding', None)
+            payload.pop('saved_revision_binding', None)
+        return payload
 
     @model_validator(mode='after')
     def identity(self):
@@ -36,6 +46,9 @@ class ReportRevisionExecution(StrictModel):
                 or self.execution_run_id != execution_run_id(self.source_scope, self.basis_id,
                     self.report_revision, self.planning_hash)):
             raise ValueError('新修订执行必须绑定独立状态及精确分析身份')
+        if (self.saved_revision_binding is not None and self.saved_revision_binding.reference.source != 'markdown_editor'
+                and self.requested_outputs != (self.saved_revision_binding.reference.format,)):
+            raise ValueError('原生保存稿刷新必须绑定当前唯一二进制目标格式')
         return self
 
 
@@ -85,7 +98,6 @@ async def load_revision_materials(runtime, scope, source):
         raise ReportingError('report_revision_materials_unavailable', '原运行冻结材料登记无效。') from error
 
 
-
 async def copy_revision_materials(runtime, source_scope, target_scope, materials):
     """新口径工作区只复制授权的冻结材料，保留文件身份与相对位置。"""
     from ...workspace import WorkspaceError
@@ -108,27 +120,7 @@ async def copy_revision_materials(runtime, source_scope, target_scope, materials
         await runtime._read_identity_bytes(target_scope.workspace_key, file, max_bytes=file.size)
 
 
-
-def revision_delivery_paths(execution, child):
-    """只认可本执行固定目录或既有模板哈希目录中的目标文件。"""
-    import re
-
-    execution_id = execution.execution_run_id if isinstance(execution, ReportRevisionExecution) else execution.scope.run_id
-    root = f'报表/智能分析/{execution_id}'
-    directories = {'pdf': 'document-render', 'docx': 'document-render',
-        'pptx': 'slides', 'xlsx': 'workbook'}
-    paths = {output: [f'{root}/{directories[output]}/revision-{execution.output_revision}/report.{output}']
-        for output in execution.requested_outputs}
-    if child.payload.get('requestMaterials', {}).get('templateInput'):
-        for output in execution.requested_outputs:
-            pattern = re.escape(f'{root}/template/revision-{execution.output_revision}/') + r'[0-9a-f]{20}/report\.' + output
-            paths[output] = [item['path'] for item in child.payload.get('artifacts', ())
-                if re.fullmatch(pattern, item.get('path', ''))]
-    return paths
-
-
-
-async def prepare_revision_execution(runtime, run_context, *, report_revision):
+async def prepare_revision_execution(runtime, run_context, *, report_revision, task=None):
     """实际CSV/清单验证后预留唯一交付编号，再登记独立Reporting状态，重复调用只恢复。"""
     from ...management.models import ManagementScope
     from ...report_editor.revisions import apply_editor_command
@@ -143,6 +135,14 @@ async def prepare_revision_execution(runtime, run_context, *, report_revision):
     if len(manifests) != 1 or manifests[0].basis_id != view.basis_id:
         raise ReportingError('report_revision_execution_unavailable', '新执行需要完整登记的刷新分析清单。')
     manifest = manifests[0]
+    materials = await load_revision_materials(runtime, scope, source)
+    saved_binding = None
+    if task is not None and task.saved_revision_reference is not None:
+        from ..saved_revision_reference import read_saved_revision_reference
+        saved_binding = SavedRevisionExecutionBinding(taskId=task.task_id, inputHash=task.input_hash,
+            contextSha256=task.context_sha256, reference=task.saved_revision_reference)
+        await _require_saved_revision_task(runtime, scope, source, saved_binding, report_revision)
+        await read_saved_revision_reference(runtime, scope.workspace_key, saved_binding.reference)
     child_id = execution_run_id(scope, view.basis_id, report_revision, manifest.planning_hash)
     reservation = await apply_editor_command(runtime.state_repository, scope.run_id, ReportingCommand(
         name='reserve_report_editor_revision', commandId=child_id,
@@ -150,11 +150,12 @@ async def prepare_revision_execution(runtime, run_context, *, report_revision):
     output_revision = reservation.state.payload['reportEditorRevisionReservations'][child_id]
     execution = ReportRevisionExecution(sourceScope=scope, executionRunId=child_id, basisId=view.basis_id,
         reportRevision=report_revision, parentReportRevision=manifest.parent_report_revision,
-        planningHash=manifest.planning_hash, outputRevision=output_revision, requestedOutputs=view.request.requested_outputs)
+        planningHash=manifest.planning_hash, outputRevision=output_revision, requestedOutputs=((saved_binding.reference.format,) if saved_binding is not None
+            and saved_binding.reference.source != 'markdown_editor' else view.request.requested_outputs),
+        savedRevisionBinding=saved_binding)
     from ...preferences.runtime import inherit_execution_preferences
 
     await inherit_execution_preferences(runtime, scope, child_id, 'report_revision')
-    materials = await load_revision_materials(runtime, scope, source)
     await runtime.state_repository.register_run(report_run_id=child_id, external_run_id=child_id,
         entrypoint='report_revision', workflow_id=registered['workflow_id'], agno_session_id=child_id,
         agno_run_id=child_id, caller_session_id=scope.session_id, caller_run_id=scope.run_id,
@@ -165,6 +166,59 @@ async def prepare_revision_execution(runtime, run_context, *, report_revision):
         payload={'reportRevisionExecution': execution.model_dump(mode='json', by_alias=True), 'requestMaterials': materials})
     await require_revision_execution(runtime, run_context, execution)
     return execution
+
+
+async def _require_saved_revision_task(runtime, scope, source, binding, report_revision):
+    """只核对耐久绑定；文件读取只在生成前做，不能成为完成文件下载门禁。"""
+    from types import SimpleNamespace
+
+    from ...report_editor.recalculation import read_task_by_id
+    from ...report_editor.service import ReportEditorContext
+
+    try:
+        context = ReportEditorContext.model_validate(source.payload.get('reportEditorContexts', {}).get(
+            str(binding.reference.revision)))
+        task = await read_task_by_id(SimpleNamespace(state_repository=runtime.state_repository), context, binding.task_id)
+        if (context.scope != scope.as_state() or context.workflow_run_id != scope.run_id or task is None
+                or task.input_hash != binding.input_hash or task.context_sha256 != binding.context_sha256
+                or task.saved_revision_reference != binding.reference or task.refresh_binding is None
+                or task.refresh_binding.report_revision != report_revision):
+            raise ValueError('父任务输入不一致')
+        if binding.reference.office_source is not None:
+            from ...report_editor.office_refresh import (
+                office_selection,
+                registered_office_source,
+                require_office_run,
+            )
+            require_office_run(scope, await runtime.state_repository.get_run(scope.run_id))
+            calculation_source = registered_office_source(source, context)
+            if binding.reference.office_source != office_selection(context, calculation_source):
+                raise ValueError('Office 正式计算来源与保存任务不一致')
+            retired = source.payload.get('reportEditorRetiredSources', {})
+            if (not isinstance(retired, dict) or str(context.revision) in retired
+                    or str(calculation_source.revision) in retired):
+                raise ReportingError('snapshot_expired', 'Office 正式计算来源已退休，不能用于新计算。')
+    except (ValueError, TypeError, AttributeError, ReportingError) as error:
+        raise ReportingError('report_revision_execution_mismatch', '保存参考与父任务、上下文或输入摘要不一致。') from error
+    return task
+
+
+def revision_delivery_paths(execution, child):
+    """只认可本执行固定目录或既有模板哈希目录中的目标文件。"""
+    import re
+
+    execution_id = execution.execution_run_id if isinstance(execution, ReportRevisionExecution) else execution.scope.run_id
+    root = f'报表/智能分析/{execution_id}'
+    directories = {'md': 'document', 'pdf': 'document-render', 'docx': 'document-render',
+        'pptx': 'slides', 'xlsx': 'workbook'}
+    paths = {output: [f'{root}/{directories[output]}/revision-{execution.output_revision}/report.{output}']
+        for output in execution.requested_outputs}
+    if child.payload.get('requestMaterials', {}).get('templateInput'):
+        for output in execution.requested_outputs:
+            pattern = re.escape(f'{root}/template/revision-{execution.output_revision}/') + r'[0-9a-f]{20}/report\.' + output
+            paths[output] = [item['path'] for item in child.payload.get('artifacts', ())
+                if re.fullmatch(pattern, item.get('path', ''))]
+    return paths
 
 
 async def require_revision_execution(runtime, run_context, execution, *, report_revision=None, revision=None, restore_only=False):
@@ -184,6 +238,49 @@ async def require_revision_execution(runtime, run_context, execution, *, report_
             or report_revision is not None and execution.report_revision != report_revision
             or revision is not None and execution.output_revision != revision):
         raise ReportingError('report_revision_execution_mismatch', '产物或检查点与已登记新修订执行不一致。')
+    if execution.saved_revision_binding is None and not restore_only:
+        import re
+        if re.fullmatch(r'editor-refresh-[0-9a-f]{32}', execution.report_revision):
+            from types import SimpleNamespace
+
+            from ...report_editor.recalculation import RecalculationTask, read_task_by_id
+            from ...report_editor.service import ReportEditorContext
+            task_id = 'recalc-' + execution.report_revision.removeprefix('editor-refresh-')
+            try:
+                registered_task = RecalculationTask.model_validate(source.payload.get('reportEditorRecalculations', {}).get(task_id))
+                context = ReportEditorContext.model_validate(source.payload.get('reportEditorContexts', {}).get(
+                    str(registered_task.request.parent_revision)))
+                task = await read_task_by_id(SimpleNamespace(state_repository=runtime.state_repository), context, task_id)
+                if (context.scope != scope.as_state() or context.workflow_run_id != scope.run_id
+                        or task is None or task.saved_revision_reference is not None or task.refresh_binding is None
+                        or task.refresh_binding.report_revision != execution.report_revision
+                        or task.refresh_binding.parent_report_revision != execution.parent_report_revision
+                        or task.basis_id != execution.basis_id):
+                    raise ValueError('缺保存参考绑定的执行不是已登记旧任务')
+            except (ValueError, TypeError, ReportingError) as error:
+                raise ReportingError('report_revision_execution_mismatch', '刷新执行缺少可验证的父任务或保存参考绑定。') from error
+    if execution.saved_revision_binding is not None:
+        try:
+            await _require_saved_revision_task(runtime, scope, source, execution.saved_revision_binding, execution.report_revision)
+        except Exception:
+            if not restore_only:
+                raise
+            # 生成前仍严格拒绝；已生成的服务端目标文件不依赖参考追溯继续存在。
+            # 仅精确执行路径且实际身份可读的目标允许进入既有发布，后续返回具体追溯告警。
+            expected = {path for paths in revision_delivery_paths(execution, child).values() for path in paths}
+            verified = False
+            from .checkpoint import FileIdentity
+            for item in child.payload.get('artifacts', ()):
+                if item.get('path') in expected:
+                    try:
+                        identity = FileIdentity.model_validate(item)
+                        await runtime._read_identity_bytes(scope.workspace_key, identity, max_bytes=identity.size)
+                        verified = True
+                        break
+                    except Exception:
+                        pass
+            if not verified:
+                raise ReportingError('report_revision_execution_mismatch', '保存参考父任务身份无效且没有可恢复的可信目标。')
     return child
 
 
@@ -583,8 +680,8 @@ async def run_revision_section(runtime, run_context, execution, *, section_code)
     runtime = await execution_runtime(runtime, run_context, execution=execution)
     checkpoint = ReportingCheckpoint.model_validate(child.payload.get('workflowCheckpoint'))
     section = next((item for item in outline.sections if item.code == section_code), None)
-    if (not set(execution.requested_outputs) <= {'pdf', 'docx'}
-            or child.payload.get('deliveryFormat') != 'document'
+    if (not ((execution.requested_outputs == ('md',) and child.payload.get('deliveryFormat') == 'md')
+            or (set(execution.requested_outputs) <= {'pdf', 'docx'} and child.payload.get('deliveryFormat') == 'document'))
             or section is None or checkpoint.narrative_outline_file is None or checkpoint.analysis_manifest_file is None):
         raise ReportingError('report_revision_execution_mismatch', '章节生成需要当前文档修订的完整已登记分析和提纲。')
     plan = DetailedAnalysisPlan.model_validate(child.payload.get('detailedAnalysisPlan'))
@@ -817,10 +914,10 @@ async def continue_revision_delivery(runtime, run_context, execution):
     delivery = child.payload.get('deliveryFormat')
     root = f'报表/智能分析/{execution.execution_run_id}'
     output_root = (f'{root}/document-render' if delivery == 'document'
-        else f'{root}/{"slides" if delivery == "pptx" else "workbook"}')
+        else f'{root}/{"document" if delivery == "md" else "slides" if delivery == "pptx" else "workbook"}')
     final_paths = {f'{output_root}/revision-{execution.output_revision}/report.{output}'
         for output in execution.requested_outputs}
-    template = child.payload.get('requestMaterials', {}).get('templateInput')
+    template = child.payload.get('requestMaterials', {}).get('templateInput') and delivery != 'md'
     if template:
         prefix = f'{root}/template/revision-{execution.output_revision}/'
         final_paths = {item['path'] for item in child.payload.get('artifacts', ()) if item['path'].startswith(prefix)}
@@ -842,7 +939,7 @@ async def continue_revision_delivery(runtime, run_context, execution):
         if checkpoint.narrative_outline_file is None:
             await runtime.generate_narrative_outline(step, run_context, execution=execution)
         outline = await load_revision_outline(runtime, run_context, execution)
-        if delivery == 'document':
+        if delivery in {'document', 'md'}:
             for section in outline.sections:
                 checkpoint, _, rework = await run_revision_section(runtime, run_context, execution,
                     section_code=section.code)
@@ -868,7 +965,7 @@ async def continue_revision_delivery(runtime, run_context, execution):
             raise ReportingError('report_revision_execution_mismatch', '新修订没有可信交付格式。')
     if template:
         rendered = await runtime._render_revision_document(run_context, execution)
-    elif delivery == 'document':
+    elif delivery in {'document', 'md'}:
         rendered = await runtime._render_and_validate(run_context, execution=execution)
     elif delivery == 'pptx':
         rendered = (await runtime.validate_slides(step, run_context, execution=execution)).content
@@ -892,18 +989,29 @@ async def continue_revision_delivery(runtime, run_context, execution):
     return published
 
 
-async def prepare_refresh_delivery(runtime, run_context, *, parent_report_revision, report_revision):
+async def prepare_refresh_delivery(runtime, run_context, *, parent_report_revision, report_revision, task=None):
     """按原授权范围刷新并准备子执行；重复调用不回退已有生成检查点。"""
     from ...management.models import ManagementScope
 
     scope = _source_scope(runtime, run_context)
-    await _source_state(runtime, scope)
+    source, _ = await _source_state(runtime, scope)
+    if task is not None and task.saved_revision_reference is not None:
+        from ..saved_revision_reference import read_saved_revision_reference
+        binding = SavedRevisionExecutionBinding(taskId=task.task_id, inputHash=task.input_hash,
+            contextSha256=task.context_sha256, reference=task.saved_revision_reference)
+        await _require_saved_revision_task(runtime, scope, source, binding, report_revision)
+        await read_saved_revision_reference(runtime, scope.workspace_key, binding.reference)
+    if task is not None and task.saved_revision_reference is not None and task.saved_revision_reference.source != 'markdown_editor':
+        reference = task.saved_revision_reference
+        retired = source.payload.get('reportEditorRetiredSources', {})
+        if not isinstance(retired, dict) or str(reference.revision) in retired:
+            raise ReportingError('snapshot_expired', '原报告来源不可再用于计算；已生成文件仍可只读下载。')
     await runtime.report_basis_service.refresh_revision(scope.run_id,
         ManagementScope(scope.database, scope.company_id), user_id=scope.user_id,
         thread_id=scope.caller_thread_id, parent_report_revision=parent_report_revision,
         report_revision=report_revision, vault=runtime.configuration_provider.vault,
         dataset_store=runtime.datasets, run_context=runtime._tool_context(run_context), workflow_scope=scope)
-    execution = await prepare_revision_execution(runtime, run_context, report_revision=report_revision)
+    execution = await prepare_revision_execution(runtime, run_context, report_revision=report_revision, task=task)
     if execution.parent_report_revision != parent_report_revision:
         raise ReportingError('report_revision_execution_mismatch', '刷新执行与请求父修订不一致。')
     child = await require_revision_execution(runtime, run_context, execution)

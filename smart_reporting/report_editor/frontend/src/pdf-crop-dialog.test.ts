@@ -93,6 +93,17 @@ it('connects the real crop dialog handles to margins and one existing crop draft
   f.draft.undo(); expect(f.draft.operations).toEqual([])
 })
 
+it('裁切百分比字段提供分组及等效键盘路径说明', async () => {
+  const f = await fixture(); f.open.click()
+  await vi.waitFor(() => expect(f.dialog.querySelector('[data-pdf-crop-canvas]')).not.toBeNull())
+  const group = f.inputs[0]!.closest('fieldset')!
+  expect(group.querySelector('legend')!.textContent).toBe('裁切边距（百分比）')
+  for (const input of f.inputs) {
+    const help = document.getElementById(input.getAttribute('aria-describedby')!)!
+    expect(help.textContent).toContain('键盘操作可直接填写四个百分比字段，与拖动等效')
+  }
+})
+
 it.each(['close', 'draft', 'dispose'])('discards a late crop screenshot after %s without changing the draft', async reason => {
   const f = await fixture(); fixtureState.pending = true; f.open.click()
   await vi.waitFor(() => expect(fixtureState.renders).toHaveLength(1))

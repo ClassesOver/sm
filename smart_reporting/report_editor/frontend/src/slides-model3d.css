@@ -1,0 +1,20 @@
+/* 固定源m3d-turn样式，使用现有office tokens。 */
+.slides-model3d-layer{position:fixed;transform-origin:top left;z-index:35;pointer-events:none}
+.m3d-turn{position:absolute;z-index:20;pointer-events:none}
+.m3d-turn canvas{width:100%;height:100%;visibility:hidden}
+.m3d-turn.turning canvas{visibility:visible}
+.m3d-turn-handle{position:absolute;top:50%;left:50%;display:flex;align-items:center;justify-content:center;width:36px;height:36px;padding:0;transform:translate(-50%,-50%);border:1px solid var(--office-border-strong);border-radius:50%;background:var(--office-chrome);color:var(--office-ink);box-shadow:0 2px 6px #0003;cursor:grab;pointer-events:auto;touch-action:none}
+.m3d-turn.turning .m3d-turn-handle{cursor:grabbing}
+
+.slides-model3d-layer[data-pending="true"] .m3d-turn-handle{pointer-events:none}
+/* 固定源模型 Ribbon 排列，作用域仅此面板。 */
+.slides-model3d-panel .ribbon-group{display:flex;flex-direction:column;justify-content:center;padding:2px 4px;flex-shrink:0}
+.slides-model3d-panel .ribbon-group-items{display:flex;align-items:center;gap:2px;flex:1}
+.slides-model3d-panel .ribbon-group-label{display:none}
+.slides-model3d-panel .rb-big{display:flex;flex-direction:column;align-items:center;gap:4px;border:none;background:none;border-radius:4px;padding:4px 7px 6px;font-size:12px;cursor:pointer;color:inherit;flex-shrink:0;white-space:nowrap}
+.slides-model3d-panel .rb-big-icon{min-height:28px;flex:1;display:flex;align-items:center;padding:3px 4px;margin:0 -4px}
+.slides-model3d-panel .rb-col{display:flex;flex-direction:column;justify-content:center;gap:4px}
+.slides-model3d-panel .rb-small{display:flex;align-items:center;gap:5px;border:none;background:none;border-radius:3px;padding:3px 8px;font-size:12px;text-align:left;cursor:pointer;color:inherit;white-space:nowrap}
+.slides-model3d-panel .rb-small svg{flex-shrink:0;width:14px;height:14px;color:var(--office-ink);stroke-width:2.15}
+.slides-model3d-panel button:hover:not(:disabled){background:var(--office-hover-bg)}
+.slides-model3d-panel button:disabled{opacity:.4;cursor:default}

@@ -69,28 +69,30 @@ export function headerFooterEditorPatch(state: HeaderFooterEditorState, values: 
 
 export function createHeaderFooterDialog(root: HTMLElement, apply: (patch: HeaderFooterEditorPatch, target: HeaderFooterEditorTarget) => void) {
   let state: HeaderFooterEditorState | undefined, target: HeaderFooterEditorTarget | undefined, disposed = false
+  let onClose: (() => void) | undefined
+  const close = () => { const notify = onClose; onClose = undefined; modal.close(); notify?.() }
   const labels = { header: '页眉', footer: '页脚', left: '左侧', center: '中间', right: '右侧' }
-  const fields = halves.map(half => `<fieldset style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:12px 0;padding:12px"><legend>${labels[half]}</legend>${keys.map(key => `<label style="display:flex;flex-direction:column;gap:6px;min-width:0">${labels[key]}<textarea style="width:100%;min-width:0;box-sizing:border-box;resize:vertical" rows=3 data-header-footer-field="${half}-${key}" aria-label="${labels[half]}${labels[key]}"></textarea></label>`).join('')}</fieldset>`).join('')
-  const modal = createModal({ root, label: '页眉页脚', overlayClass: 'workbook-header-footer-overlay', cardClass: 'workbook-ribbon-format-dialog workbook-header-footer-dialog', content: `<h2>页眉页脚</h2><form novalidate><p>编辑默认/奇数页文本。&P 页码，&N 总页数，&F 文件名，&A 工作表名；&& 表示 &。保留已有字段和格式代码。图片仅保留代码，打印暂不显示。</p><p data-header-footer-variants></p>${fields}<p class=workbook-ribbon-format-error role=alert></p><div class=workbook-ribbon-format-actions><button type=button data-header-footer-cancel>取消</button><button type=submit data-header-footer-apply>确定</button></div></form>` })
+  const fields = halves.map(half => `<fieldset class="workbook-header-footer-group"><legend>${labels[half]}</legend>${keys.map(key => `<label>${labels[key]}<textarea rows=3 data-header-footer-field="${half}-${key}" aria-label="${labels[half]}${labels[key]}"></textarea></label>`).join('')}</fieldset>`).join('')
+  const modal = createModal({ root, label: '页眉页脚', overlayClass: 'workbook-header-footer-overlay', cardClass: 'workbook-ribbon-format-dialog workbook-header-footer-dialog', onRequestClose: close, content: `<h2>页眉页脚</h2><form class="workbook-ribbon-format-form" novalidate><p>编辑默认/奇数页文本。&P 页码，&N 总页数，&F 文件名，&A 工作表名；&& 表示 &。保留已有字段和格式代码。图片仅保留代码，打印暂不显示。</p><p data-header-footer-variants></p>${fields}<p class=workbook-ribbon-format-error role=alert></p><div class=workbook-ribbon-format-actions><button type=button data-header-footer-cancel>取消</button><button type=submit data-header-footer-apply>确定</button></div></form>` })
   const input = (half: typeof halves[number], key: typeof keys[number]) => modal.card.querySelector<HTMLTextAreaElement>(`[data-header-footer-field="${half}-${key}"]`)!
   const error = modal.card.querySelector<HTMLElement>('[role=alert]')!
-  modal.card.querySelector('[data-header-footer-cancel]')!.addEventListener('click', modal.close)
+  modal.card.querySelector('[data-header-footer-cancel]')!.addEventListener('click', close)
   modal.card.querySelector('form')!.addEventListener('submit', event => {
     event.preventDefault()
     if (disposed || modal.overlay.hidden || !state || !target) return
     const values: HeaderFooterEditorValues = { header: empty(), footer: empty() }
     for (const half of halves) for (const key of keys) values[half][key] = input(half, key).value
-    try { const patch = headerFooterEditorPatch(state, values); if (patch) apply(patch, target); modal.close() }
+    try { const patch = headerFooterEditorPatch(state, values); if (patch) apply(patch, target); close() }
     catch (cause) { error.textContent = (cause as Error).message }
   })
   return {
-    open(value: HeaderFooterEditorState, captured: HeaderFooterEditorTarget) {
+    open(value: HeaderFooterEditorState, captured: HeaderFooterEditorTarget, closed?: () => void) {
       if (disposed) return
-      state = structuredClone(value); target = captured; error.textContent = ''
+      state = structuredClone(value); target = captured; onClose = closed; error.textContent = ''
       for (const half of halves) for (const key of keys) input(half, key).value = state.values[half][key]
       modal.card.querySelector('[data-header-footer-variants]')!.textContent = [state.hasFirstPage ? '文件已启用不同首页；此处不修改首页。' : '', state.hasEvenPages ? '文件已启用不同偶数页；此处不修改偶数页。' : ''].filter(Boolean).join(' ')
       modal.open(input('header', 'left'))
     },
-    dispose() { disposed = true; state = undefined; target = undefined; modal.remove() },
+    dispose() { disposed = true; state = undefined; target = undefined; const notify = onClose; onClose = undefined; modal.remove(); notify?.() },
   }
 }

@@ -23,7 +23,7 @@ export function openDocxSpecialIndentDialog(root: HTMLElement, editor: Editor, a
   const target = targetParagraph(editor, anchors)
   if (!target || !editor.isEditable) throw new Error(docxSpecialIndentUnavailable(editor, anchors)!)
   const doc = editor.state.doc, selection = editor.state.selection
-  const modal = createModal({ root, label: '特殊缩进', closeLabel: '关闭特殊缩进', onRequestClose: () => modal.remove(), content: `
+  const modal = createModal({ root, label: '特殊缩进', cardClass: 'docx-settings-dialog', closeLabel: '关闭特殊缩进', onRequestClose: () => modal.remove(), content: `
     <h2>特殊缩进</h2><form novalidate>
       <label>类型<select aria-label="特殊缩进类型"><option value="none">无</option><option value="firstLine">首行</option><option value="hanging">悬挂</option></select></label>
       <label>单位<select aria-label="特殊缩进单位"><option value="pt">pt</option><option value="chars">字符</option></select></label>

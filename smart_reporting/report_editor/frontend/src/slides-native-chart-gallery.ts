@@ -79,9 +79,9 @@ export function createNativeChartGallery(host: HTMLElement, onAction: (command: 
     menu.querySelector('button')?.focus()
   }
   const outside = (event: Event) => { if (event.target instanceof Node && !menu.contains(event.target) && !toggle.contains(event.target)) close() }
-  const dismiss = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); close(true) } }
+  const dismiss = (event: KeyboardEvent) => { if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return; if (event.key === 'Escape') { event.preventDefault(); close(true) } }
   toggle.addEventListener('click', open)
-  toggle.addEventListener('keydown', event => { if (event.key === 'ArrowDown') { event.preventDefault(); if (!opened) open() } })
+  toggle.addEventListener('keydown', event => { if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return; if (event.key === 'ArrowDown') { event.preventDefault(); if (!opened) open() } })
   menu.addEventListener('keydown', dismiss)
   document.addEventListener('pointerdown', outside, true)
   // 只在实际位移后关闭；打开前的焦点滚动/resize事件可能延迟送达。

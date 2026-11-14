@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import secrets
 from datetime import UTC, datetime
 from pathlib import Path
@@ -20,14 +22,44 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, Strict
 
 from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.docx_native import inspect_docx
+from ..reporting.delivery.pdf_native import inspect_pdf, read_pdf_image_background, read_pdf_image_pixels, shrink_pdf
 from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.models import ReportingError
 from .api import EDITOR_SESSION_COOKIE
 from .native import NativeEditorService, bind_native_workspace
+from .native_mail_merge import decode_mail_merge_csv
 from .native_models import NATIVE_ARTIFACT_MEDIA, NativeScope
+from .native_refresh import (
+    NativeRefreshRequest,
+    native_refresh_capability,
+    native_refresh_delivery,
+    native_refresh_status,
+    start_native_refresh,
+)
 from .service import ReportEditorGrantService
 
 NATIVE_SESSION_COOKIE = "native_editor_session"
+
+
+class NativeImagePixelsPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    sourceSha256: str = Field(pattern=SHA256_PATTERN)
+    pageId: str = Field(min_length=1, max_length=256)
+    imageId: str = Field(pattern=SHA256_PATTERN)
+    expectedImageSha256: str = Field(pattern=SHA256_PATTERN)
+
+
+class NativeImageBackgroundClip(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    x: float = Field(ge=0, strict=True, allow_inf_nan=False)
+    y: float = Field(ge=0, strict=True, allow_inf_nan=False)
+    width: float = Field(gt=0, strict=True, allow_inf_nan=False)
+    height: float = Field(gt=0, strict=True, allow_inf_nan=False)
+
+
+class NativeImageBackgroundPayload(NativeImagePixelsPayload):
+    clip: NativeImageBackgroundClip
+    pxWidth: StrictInt = Field(ge=1, le=2400)
 
 
 class NativeOpenPayload(BaseModel):
@@ -45,6 +77,15 @@ class NativeSavePayload(BaseModel):
     confirmed_preview_digest: str | None = Field(default=None, alias="confirmedPreviewDigest", pattern=SHA256_PATTERN)
 
 
+class NativeMailMergeSourcePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=256)
+    filename: str = Field(default="recipients.csv", min_length=1, max_length=256)
+    bytes_base64: str = Field(alias="bytesBase64", min_length=4, max_length=6 * 1024 * 1024)
+
+
+
+
 class NativePreviewPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
@@ -57,6 +98,26 @@ class NativeExtractPayload(BaseModel):
     request_id: str = Field(alias="requestId", min_length=1, max_length=256)
     expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
     pages: list[StrictInt] = Field(min_length=1, max_length=10000)
+
+
+class NativeSplitPdfPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=256)
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
+    chunk_size: StrictInt = Field(alias="chunkSize", ge=1, le=10000)
+
+
+class NativeMergePdfInput(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    sha256: str = Field(pattern=SHA256_PATTERN)
+    bytes_base64: str = Field(alias='bytesBase64', min_length=8, max_length=8*1024*1024)
+
+
+class NativeMergePdfPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    request_id: str = Field(alias='requestId', min_length=1, max_length=256)
+    expected_sha256: str = Field(alias='expectedSha256', pattern=SHA256_PATTERN)
+    files: list[NativeMergePdfInput] = Field(min_length=1)
 
 
 class NativeExternalPagesPayload(BaseModel):
@@ -86,6 +147,11 @@ class NativePdfImagesPayload(BaseModel):
     dpi: StrictInt = Field(default=144,ge=72,le=216)
 
 
+class NativePdfShrinkPayload(BaseModel):
+    model_config=ConfigDict(extra='forbid',populate_by_name=True)
+    expected_sha256:str=Field(alias='expectedSha256',pattern=SHA256_PATTERN)
+
+
 class NativePdfConvertPayload(BaseModel):
     model_config = ConfigDict(extra='forbid',populate_by_name=True)
     request_id: str = Field(alias='requestId',min_length=1,max_length=256)
@@ -113,9 +179,9 @@ def _error(error: ReportingError) -> HTTPException:
         status = 404
     elif code == "native_file_too_large":
         status = 413
-    elif code in ("native_engine_unavailable", "native_feature_disabled", "native_pdf_text_disabled"):
+    elif code in ("native_engine_unavailable", "native_feature_disabled", "native_pdf_text_disabled", "report_editor_recalculation_unavailable"):
         status = 503
-    elif code in ("native_source_changed", "native_revision_conflict", "report_download_file_changed", "native_pdf_text_preview_changed"):
+    elif code in ("native_source_changed", "native_revision_conflict", "report_download_file_changed", "native_pdf_text_preview_changed", "report_editor_conflict"):
         status = 409
     elif code in ("native_format_invalid", "native_operations_invalid", "native_pdf_text_confirmation_required", "native_pdf_image_export_invalid"):
         status = 422
@@ -278,10 +344,14 @@ def create_native_editor_router(
     @router.get("/reports/v1/native/{document_id}/{revision}/api/context")
     async def native_context(document_id: str, revision: int, request: Request):
         session, context = await session_context(request, document_id, revision)
+        from .native_xlsx_threads import xlsx_thread_actor
         return {
+            "threadActor": xlsx_thread_actor(context.scope) if context.format == "xlsx" else None,
             "context": context.model_dump(mode="json", by_alias=True),
+            "contextSha256": context.digest(),
             "csrfToken": grants.csrf_token(request.cookies.get(NATIVE_SESSION_COOKIE, "")),
             "capabilities": session.capabilities,
+            "dataRefresh": await native_refresh_capability(editor, context),
             "aiEnabled": ai_enabled and (
                 context.format == "docx" and editor.docx_enabled
                 or context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled
@@ -296,6 +366,38 @@ def create_native_editor_router(
             "pdfTextEnabled": editor.pdf_text_enabled and editor.pdf_enabled and context.format == "pdf",
         }
 
+    @router.post("/reports/v1/native/{document_id}/{revision}/api/recalculations")
+    async def native_refresh_submit(document_id: str, revision: int, request: Request, payload: NativeRefreshRequest):
+        _, context = await session_context(request, document_id, revision, write=True)
+        try:
+            return await start_native_refresh(editor, context, payload)
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/by-request/{request_id}")
+    async def native_refresh_request_status(document_id: str, revision: int, request_id: str, request: Request):
+        _, context = await session_context(request, document_id, revision)
+        try:
+            return await native_refresh_status(editor, context, request_id=request_id)
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/{task_id}")
+    async def native_refresh_task_status(document_id: str, revision: int, task_id: str, request: Request):
+        _, context = await session_context(request, document_id, revision)
+        try:
+            return await native_refresh_status(editor, context, task_id=task_id)
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/{task_id}/delivery")
+    async def native_refresh_task_delivery(document_id: str, revision: int, task_id: str, request: Request):
+        _, context = await session_context(request, document_id, revision)
+        try:
+            return await native_refresh_delivery(editor, context, task_id)
+        except ReportingError as error:
+            raise _error(error) from None
+
     @router.get("/reports/v1/native/{document_id}/{revision}/api/file")
     async def native_file(document_id: str, revision: int, request: Request):
         _, context = await session_context(request, document_id, revision)
@@ -309,14 +411,46 @@ def create_native_editor_router(
             headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
         )
 
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/image-pixels')
+    async def native_image_pixels(document_id: str, revision: int, request: Request, payload: NativeImagePixelsPayload):
+        _, context = await session_context(request, document_id, revision, write=True)
+        if context.format != 'pdf':
+            raise HTTPException(422, detail={'code': 'native_format_invalid'})
+        if payload.sourceSha256 != context.source_file.sha256:
+            raise HTTPException(409, detail={'code': 'native_source_changed'})
+        try:
+            editor.require_enabled('pdf')
+            content = await editor.read_file(context)
+            return await run_office_engine(read_pdf_image_pixels, content, payload.model_dump())
+        except ReportingError as error:
+            raise _error(error) from None
+        except ValueError as error:
+            raise HTTPException(422, detail={'code': 'native_image_pixels_invalid', 'message': str(error)}) from None
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/image-background')
+    async def native_image_background(document_id: str, revision: int, request: Request, payload: NativeImageBackgroundPayload):
+        _, context = await session_context(request, document_id, revision, write=True)
+        if context.format != 'pdf':
+            raise HTTPException(422, detail={'code': 'native_format_invalid'})
+        if payload.sourceSha256 != context.source_file.sha256:
+            raise HTTPException(409, detail={'code': 'native_source_changed'})
+        try:
+            editor.require_enabled('pdf')
+            content = await editor.read_file(context)
+            return await run_office_engine(read_pdf_image_background, content, payload.model_dump())
+        except ReportingError as error:
+            raise _error(error) from None
+        except ValueError as error:
+            raise HTTPException(422, detail={'code': 'native_image_background_invalid', 'message': str(error)}) from None
+
     @router.get("/reports/v1/native/{document_id}/{revision}/api/read-model")
     async def native_read_model(document_id: str, revision: int, request: Request):
         _, context = await session_context(request, document_id, revision)
         try:
-            if context.format != "docx":
-                raise ReportingError("native_format_invalid", "只读内容模型仅支持 Word。")
+            if context.format not in {"docx", "pdf"}:
+                raise ReportingError("native_format_invalid", "只读内容模型仅支持 Word 和 PDF。")
             content = await editor.read_file(context)
-            model = await run_office_engine(inspect_docx, content)
+            model = await run_office_engine(inspect_docx if context.format == "docx" else inspect_pdf, content)
             return {"sourceSha256": context.source_file.sha256, "model": model}
         except ReportingError as error:
             raise _error(error) from None
@@ -380,6 +514,33 @@ def create_native_editor_router(
         except ReportingError as error:
             raise _error(error) from None
 
+    @router.post("/reports/v1/native/{document_id}/{revision}/api/mail-merge/source")
+    async def native_mail_merge_source(
+        document_id: str, revision: int, request: Request, payload: NativeMailMergeSourcePayload
+    ):
+        _, context = await session_context(request, document_id, revision, write=True)
+        if context.format != "docx":
+            raise HTTPException(status_code=422, detail={"code": "native_format_invalid", "message": "邮件合并来源仅支持 DOCX。"})
+        try:
+            content, parsed = decode_mail_merge_csv(payload.bytes_base64)
+            key = bind_native_workspace(editor.workspace, context.scope)
+            path = f"native/mailmerge/{parsed['sourceSha256']}.csv"
+            try:
+                await editor.workspace.awrite_bytes(key, path, content)
+            except Exception:
+                existing, _ = await editor.workspace.afile_bytes(key, path)
+                if hashlib.sha256(existing).hexdigest() != parsed['sourceSha256']:
+                    raise ReportingError('native_mail_merge_source_conflict', '收件人文件身份冲突，请重新选择来源。')
+            stored, _ = await editor.workspace.afile_bytes(key, path)
+            if hashlib.sha256(stored).hexdigest() != parsed['sourceSha256']:
+                raise ReportingError('native_mail_merge_source_changed', '收件人文件回读身份不一致，请重新选择来源。')
+            return {"source": {"name": payload.filename, "path": path,
+                "sourceSha256": parsed['sourceSha256'], "fields": parsed['fields'], "records": parsed['records'],
+                "recordCount": parsed['recordCount']}}
+        except ReportingError as error:
+            raise _error(error) from None
+
+
     @router.post("/reports/v1/native/{document_id}/{revision}/api/extract-pages")
     async def native_extract_pages(document_id: str, revision: int, request: Request, payload: NativeExtractPayload):
         _, context = await session_context(request, document_id, revision, write=True)
@@ -387,6 +548,31 @@ def create_native_editor_router(
             if payload.expected_sha256 != context.source_file.sha256:
                 raise ReportingError("native_source_changed", "PDF 来源已变化，请重新打开。")
             return await editor.extract_pages(context, pages=payload.pages, request_id=payload.request_id)
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/split-pdf')
+    async def native_split_pdf(document_id: str, revision: int, request: Request, payload: NativeSplitPdfPayload):
+        from .native_pdf_extract import split_pdf
+
+        _, context = await session_context(request, document_id, revision, write=True)
+        try:
+            if payload.expected_sha256 != context.source_file.sha256:
+                raise ReportingError("native_source_changed", "PDF 来源已变化，请重新打开。")
+            return await split_pdf(editor, context, chunk_size=payload.chunk_size, request_id=payload.request_id)
+        except ReportingError as error:
+            raise _error(error) from None
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/merge-pdf')
+    async def native_merge_pdf(document_id: str, revision: int, request: Request, payload: NativeMergePdfPayload):
+        from .native_pdf_merge import merge_pdf
+
+        _, context = await session_context(request, document_id, revision, write=True)
+        try:
+            if payload.expected_sha256 != context.source_file.sha256:
+                raise ReportingError('native_source_changed', 'PDF 来源已变化，请重新打开。')
+            return await merge_pdf(editor, context, request_id=payload.request_id,
+                files=[value.model_dump(by_alias=True) for value in payload.files])
         except ReportingError as error:
             raise _error(error) from None
 
@@ -429,6 +615,26 @@ def create_native_editor_router(
             'Content-Disposition':f'attachment; filename="{receipt["filename"]}"',
             'X-Native-Export-Sha256':receipt['sha256'],'X-Native-Export-Size':str(receipt['size']),
             'X-Native-Source-Sha256':receipt['sourceSha256'],
+        })
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/shrink-pdf')
+    async def native_shrink_pdf(document_id: str,revision: int,request: Request,payload: NativePdfShrinkPayload):
+        from ..reporting.delivery.office_engine import run_office_engine
+
+        _,context=await session_context(request,document_id,revision,write=True)
+        if context.format!='pdf':raise HTTPException(422,detail={'code':'native_format_invalid'})
+        if payload.expected_sha256!=context.source_file.sha256:raise HTTPException(409,detail={'code':'native_source_changed'})
+        try:
+            editor.require_enabled('pdf');content=await editor.read_file(context)
+            if hashlib.sha256(content).hexdigest()!=payload.expected_sha256:raise ReportingError('native_source_changed','PDF 实际文件身份已变化。')
+            receipt=await run_office_engine(shrink_pdf,content)
+        except ReportingError as error:raise _error(error) from None
+        except ValueError:raise HTTPException(422,detail={'code':'native_operations_invalid','message':'PDF 压缩失败；请检查文件是否受保护或损坏。'}) from None
+        return Response(receipt['content'],media_type='application/pdf',headers={
+            'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Disposition':'attachment; filename="document-small.pdf"',
+            'X-Native-Export-Sha256':receipt['sha256'],'X-Native-Export-Size':str(receipt['size']),
+            'X-Native-Source-Sha256':receipt['sourceSha256'],'X-Native-Shrink-Streams':str(receipt.get('streamsRecompressed',0)),
+            'X-Native-Shrink-Images':str(receipt.get('imagesDownsampled',0)),'X-Native-Shrink-Warnings':json.dumps(receipt.get('reviewIssues',[]),ensure_ascii=False),
         })
 
     @router.post('/reports/v1/native/{document_id}/{revision}/api/convert-office')

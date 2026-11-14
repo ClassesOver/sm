@@ -25,7 +25,8 @@ export function bindPdfExportTextDialog(options:PdfTextExportOptions){
   const title=owner.createElement('h3'),hint=owner.createElement('p'),apply=owner.createElement('button'),close=owner.createElement('button'),status=owner.createElement('p'),links=owner.createElement('div')
   hint.textContent='先生成并核验独立 Word，再使用 GenOffice 文档序列化导出。扫描页保留图片，不执行 OCR；内容、字体和版式需人工核对。'
   apply.type=close.type='button';apply.dataset.pdfExportTextApply='';close.textContent='关闭';status.setAttribute('role','status')
-  dialog.append(title,hint,apply,close,status,links);options.root.append(dialog)
+  const actions=owner.createElement('div');actions.className='pdf-layout-actions';actions.append(close,apply)
+  dialog.append(title,hint,status,links,actions);options.root.append(dialog)
   let disposed=false,busy=false,generation=0,format:PdfTextExportFormat='markdown',blobUrl:string|undefined
   function release(){if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=undefined}links.replaceChildren()}
   function wordLink(result:PdfTextOfficeResult){const href=result.artifacts.word?.downloadUrl;if(!href)return;try{const url=new URL(href,owner.baseURI);if(url.origin!==new URL(owner.baseURI).origin||!['http:','https:'].includes(url.protocol))return;const link=owner.createElement('a');link.href=url.href;link.textContent='下载已生成的 Word';link.rel='noopener';links.append(link)}catch{}}

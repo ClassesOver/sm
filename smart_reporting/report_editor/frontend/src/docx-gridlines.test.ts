@@ -5,7 +5,7 @@ import { undoDepth, redoDepth } from '@tiptap/pm/history'
 import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions'
 import { createDocxOutlineView } from './docx-outline-view'
 import { NativeDraft } from './native-draft'
-import { createDocxGridlines } from './docx-gridlines'
+import { createDocxGridlines, createDocxTableGridlines } from './docx-gridlines'
 
 const cleanups: Array<() => void> = []
 afterEach(() => { cleanups.splice(0).forEach(cleanup => cleanup()); document.body.replaceChildren() })
@@ -38,6 +38,63 @@ it('toggles only the source screen grid class without document, transactions, dr
   expect(f.editor.getJSON()).toEqual(doc); expect(f.editor.getHTML()).toBe(html)
   expect(f.updates()).toBe(0); expect(f.transactions()).toBe(0); expect(f.draft.operations).toEqual([]); expect([...f.memory]).toEqual([])
   expect(f.visibility).toEqual([true, false]); expect(undoDepth(f.editor.state)).toBe(0); expect(redoDepth(f.editor.state)).toBe(0)
+})
+
+it('toggles the source table-only screen grid independently of the page alignment grid', () => {
+  const f = setup(), pageGrid = f.grid, tableGrid = createDocxTableGridlines({ editor: f.editor, root: f.root, storage: {
+    getItem: key => f.memory.get(key) ?? null,
+    setItem: (key, value) => { f.memory.set(key, value) },
+  } })
+  const doc = f.editor.getJSON(), html = f.editor.getHTML()
+  expect(tableGrid.visible).toBe(false)
+  expect(tableGrid.reason()).toBeNull()
+  tableGrid.toggle()
+  expect(tableGrid.visible).toBe(true)
+  expect(f.root.classList.contains('show-table-gridlines')).toBe(true)
+  expect(pageGrid.visible).toBe(false)
+  tableGrid.toggle()
+  expect(f.root.classList.contains('show-table-gridlines')).toBe(false)
+  expect(f.editor.getJSON()).toEqual(doc)
+  expect(f.editor.getHTML()).toBe(html)
+  expect(f.updates()).toBe(0)
+  expect(f.transactions()).toBe(0)
+  expect(f.draft.operations).toEqual([])
+  tableGrid.dispose()
+})
+
+it('restores and persists the table gridline view preference without changing the document', () => {
+  const f = setup(), storage = new Map<string, string>([['aidocs.tableGridlines', 'true']])
+  const preference = { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storage.set(key, value) } }
+  const firstRoot = document.createElement('div')
+  const first = createDocxTableGridlines({ editor: f.editor, root: firstRoot, storage: preference })
+  const doc = f.editor.getJSON(), html = f.editor.getHTML()
+  expect(first.visible).toBe(true)
+  expect(firstRoot.classList.contains('show-table-gridlines')).toBe(true)
+  first.toggle()
+  expect(storage.get('aidocs.tableGridlines')).toBe('false')
+  first.dispose()
+  const nextRoot = document.createElement('div')
+  const reloaded = createDocxTableGridlines({ editor: f.editor, root: nextRoot, storage: preference })
+  expect(reloaded.visible).toBe(false)
+  expect(nextRoot.classList.contains('show-table-gridlines')).toBe(false)
+  expect(f.editor.getJSON()).toEqual(doc)
+  expect(f.editor.getHTML()).toBe(html)
+  expect(f.transactions()).toBe(0)
+  expect(f.updates()).toBe(0)
+  reloaded.dispose()
+})
+
+it('keeps the table gridline view usable when preference storage is unavailable', () => {
+  const f = setup(), root = document.createElement('div')
+  const grid = createDocxTableGridlines({ editor: f.editor, root, storage: {
+    getItem: () => { throw new Error('storage unavailable') },
+    setItem: () => { throw new Error('storage unavailable') },
+  } })
+  expect(grid.visible).toBe(false)
+  grid.toggle()
+  expect(grid.visible).toBe(true)
+  expect(root.classList.contains('show-table-gridlines')).toBe(true)
+  grid.dispose()
 })
 
 it('keeps existing draft and real UndoRedo history independent of display switching', () => {

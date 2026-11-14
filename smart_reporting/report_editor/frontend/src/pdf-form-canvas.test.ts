@@ -16,6 +16,22 @@ function fixture(rotation=0,scale=1){
  return {editor,host,draft,options,get controller(){return controller},get errors(){return errors},get selected(){return selected},get commits(){return commits},get model(){return m},disable(){enabled=false;controller.sync()},enable(){enabled=true;controller.sync()},setModel(value:PdfFormCreateModel){m=value;controller.sync()},remount(){controller.dispose();controller=mountPdfFormCanvas(options);controllers.push(controller)},pick(){const rect=host.querySelector('[data-pdf-form-canvas-widget]')!;rect.dispatchEvent(new MouseEvent('pointerdown',{bubbles:true,cancelable:true,button:0}));controller.sync();return rect}}
 }
 function key(target:EventTarget,key:string,extra:KeyboardEventInit={}){const event=new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...extra});target.dispatchEvent(event);return event}
+it.each(['composing','legacy229','consumed'].flatMap(mode=>['ArrowRight','ArrowUp','Escape'].map(name=>[mode,name])))('keeps selected widget geometry for %s %s',(mode,name)=>{
+  const f=fixture(),rect=f.pick()
+  if(mode==='consumed')rect.addEventListener('keydown',event=>event.preventDefault(),{once:true})
+  const event=key(rect,name,{isComposing:mode==='composing',keyCode:mode==='legacy229'?229:0,shiftKey:name==='ArrowUp'})
+  expect(f.selected).toEqual(selection);expect(f.draft.operations).toEqual([]);expect(f.commits).toBe(0);expect(f.errors).toEqual([])
+  if(mode!=='consumed')expect(event.defaultPrevented).toBe(false)
+  key(rect,'ArrowRight');expect(f.draft.operations[0].rect).toEqual([21,30,61,50]);key(rect,'Escape');expect(f.selected).toBeUndefined()
+})
+it.each(['composing','legacy229','consumed'].flatMap(mode=>['Enter',' '].map(name=>[mode,name])))('does not select a widget on %s %s',(mode,name)=>{
+  const f=fixture(),rect=f.host.querySelector('[data-pdf-form-canvas-widget]')!
+  if(mode==='consumed')rect.addEventListener('keydown',event=>event.preventDefault(),{once:true,capture:true})
+  const event=key(rect,name,{isComposing:mode==='composing',keyCode:mode==='legacy229'?229:0})
+  expect(f.selected).toBeUndefined();expect(rect.getAttribute('aria-pressed')).toBe('false');expect(f.draft.operations).toEqual([])
+  if(mode!=='consumed')expect(event.defaultPrevented).toBe(false)
+  key(rect,name);expect(f.selected).toEqual(selection);expect(rect.getAttribute('aria-pressed')).toBe('true')
+})
 it('selects the exact source widget on canvas and accumulates normal/shift keys into one undoable operation',()=>{
  const f=fixture(),rect=f.pick();expect(f.selected).toEqual(selection);expect(rect.classList.contains('is-selected')).toBe(true);expect(key(rect,'ArrowRight').defaultPrevented).toBe(true);key(rect,'ArrowUp',{shiftKey:true});expect(f.draft.operations).toEqual([{kind:'editFormWidget',sourceSha256:sha,fieldName:'customer',widgetId:'7R',widgetIdentity:widget.widgetIdentity,expectedWidgetSha256:widget.expectedWidgetSha256,rect:[21,40,61,60]}]);expect(f.commits).toBe(2);f.draft.undo();f.controller.sync();expect(f.draft.operations[0].rect).toEqual([21,30,61,50]);f.draft.redo();f.controller.sync();expect(f.draft.operations[0].rect).toEqual([21,40,61,60]);expect(f.errors).toEqual([])
 })

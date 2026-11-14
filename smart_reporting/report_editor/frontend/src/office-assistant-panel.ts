@@ -37,7 +37,12 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   composer.append(inputLabel && !inputLabel.querySelector('select') ? inputLabel : input)
   actions.append(start,cancel);composer.append(actions)
   const body = document.createElement('div'); body.className = 'office-assistant-body'
-  body.setAttribute('aria-label','助手结果与工具进度')
+  body.tabIndex=0;body.setAttribute('role','region');body.setAttribute('aria-label','助手结果与工具进度')
+  const readKeys=(event:KeyboardEvent)=>{
+    if(event.target!==body||event.isComposing||event.altKey||event.ctrlKey||event.metaKey||event.shiftKey||body.scrollHeight<=body.clientHeight||!['Home','End'].includes(event.key))return
+    event.preventDefault();body.scrollTop=event.key==='Home'?0:body.scrollHeight
+  }
+  body.addEventListener('keydown',readKeys)
   for (const node of [...panel.childNodes]) if (node !== header) body.append(node)
   panel.append(toolbar,body,composer)
   // 部分控制器在绑定外壳后才挂载工具进度，仍归入中间滚动区。
@@ -65,6 +70,6 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
       const active = document.activeElement
       if (active instanceof HTMLElement && active !== document.body && !panel.contains(active)) trigger = active
     },
-    dispose() {observer.disconnect();close.removeEventListener('click',closePanel);panel.removeEventListener('keydown',onKeyDown)},
+    dispose() {observer.disconnect();close.removeEventListener('click',closePanel);panel.removeEventListener('keydown',onKeyDown);body.removeEventListener('keydown',readKeys)},
   }
 }

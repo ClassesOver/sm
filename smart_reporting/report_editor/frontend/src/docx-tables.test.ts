@@ -2,8 +2,9 @@ import { afterEach, expect, it } from 'vitest'
 import { Editor, Extension, Node } from '@tiptap/core'
 import { UndoRedo } from '@tiptap/extensions'
 import { Plugin } from '@tiptap/pm/state'
+import { NodeSelection } from '@tiptap/pm/state'
 import { TableMap, selectedRect, addRowAfter, CellSelection } from '@tiptap/pm/tables'
-import { NativeTableStructure, TABLE_ACTIONS, TABLE_KINDS, createDocxTableCommands, projectDocxTable } from './docx-tables'
+import { NativeTableStructure, TABLE_ACTIONS, TABLE_KINDS, TABLE_SELECTION_ACTIONS, createDocxTableCommands, projectDocxTable } from './docx-tables'
 import { docxOperations, replayDocxOperations, type DocxAnchor, type DocxPmNode } from './docx-operations'
 import { createDocxRibbon } from './docx-ribbon'
 import { NativeDraft } from './native-draft'
@@ -82,6 +83,28 @@ it('dispatches source commands, chains steps with typed text, supports real PM u
   for (let i = 0; i < undone; i++) f.draft.redo()
   expect(replayDocxOperations(f.baseline, f.draft.operations, f.anchors, undefined, f.editor.schema)).toEqual(pending)
 })
+it.each([
+  ['table-select-cell', CellSelection, 'cell'],
+  ['table-select-row', CellSelection, 'row'],
+  ['table-select-column', CellSelection, 'column'],
+  ['table-select-all', NodeSelection, 'table'],
+] as const)('selects the current table %s without changing its document or draft', (action, SelectionType, kind) => {
+  const f = setup(); f.select(1, 1)
+  const before = f.editor.getJSON()
+  expect(f.commands.reason(action)).toBeNull()
+  f.commands.run(action)
+  expect(f.editor.state.selection).toBeInstanceOf(SelectionType)
+  if (f.editor.state.selection instanceof CellSelection) {
+    expect(f.editor.state.selection.isRowSelection()).toBe(kind === 'row')
+    expect(f.editor.state.selection.isColSelection()).toBe(kind === 'column')
+    expect(f.editor.state.selection.ranges.length).toBe(kind === 'cell' ? 1 : 3)
+  } else {
+    expect((f.editor.state.selection as NodeSelection).node.type.name).toBe('docTable')
+  }
+  expect(f.editor.getJSON()).toEqual(before)
+  expect(f.draft.operations).toEqual([])
+  expect(f.errors).toEqual([])
+})
 it('keeps raw upstream structure commands out of the save protocol and carries earlier text edits through structure', () => {
   const f = setup(); f.select(0, 0)
   addRowAfter(f.editor.state, f.editor.view.dispatch)
@@ -100,6 +123,14 @@ it('exposes six structure controls plus repeat headers and refreshes pending/rea
   ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
   const button = (action: string) => ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!
   for (const action of Object.keys(TABLE_ACTIONS)) expect(button(action).disabled).toBe(false)
+  for (const action of Object.keys(TABLE_SELECTION_ACTIONS)) expect(button(action).disabled).toBe(false)
+  const beforeSelection = f.editor.getJSON()
+  button('table-select-row').click()
+  expect(f.editor.state.selection).toBeInstanceOf(CellSelection)
+  expect((f.editor.state.selection as CellSelection).isRowSelection()).toBe(true)
+  expect(f.editor.getJSON()).toEqual(beforeSelection)
+  expect(f.draft.operations).toEqual([])
+  f.select()
   expect(button('table-merge-cells').disabled).toBe(true)
   expect(button('table-repeat-header-rows').disabled).toBe(false)
   expect(button('table-repeat-header-rows').getAttribute('aria-pressed')).toBe('true')
@@ -116,6 +147,9 @@ it('exposes six structure controls plus repeat headers and refreshes pending/rea
   expect(button('table-delete-column').disabled).toBe(false)
   f.editor.setEditable(false); f.editor.commands.setMeta('lock', true)
   expect(button('table-delete-column').disabled).toBe(true)
+  expect(button('table-select-cell').disabled).toBe(false)
+  button('table-select-cell').click()
+  expect(f.editor.state.selection).toBeInstanceOf(CellSelection)
   f.editor.setEditable(true); f.anchor.structureEditable = false; f.anchor.structureReadOnlyReason = 'complex source'; f.editor.commands.setMeta('lock', false)
   expect(button('table-delete-column').title).toMatch(/complex source/)
 })

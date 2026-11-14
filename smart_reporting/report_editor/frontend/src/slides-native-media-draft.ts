@@ -1,3 +1,4 @@
+import { validInkIdentity } from '../../../reporting/slides_engine/bridge/pptx-ink'
 /** 恢复媒体草稿前整批校验；此函数不修改输入或编辑器状态。 */
 import { imageSizeFromBytes } from '../../../reporting/slides_engine/packages/pptx-render/src/image-dpi'
 import { NATIVE_CHART_TYPES, CHART_STYLE_FIELDS, validChartStyle } from './slides-native-chart-edit'
@@ -61,15 +62,18 @@ export function validateNativeMediaDraft(changes:unknown,slides:readonly NativeM
   return elements[0]!
  }
  for(const item of images){
-  fields(item,['slideIndex','bytesBase64','extension','geometry','descr']);slide(item)
+  fields(item,['slideIndex','bytesBase64','extension','geometry','descr','name']);slide(item)
   fields(item.geometry,['x','y','width','height'])
+  const ink=item.name!==undefined&&validInkIdentity(item.name,item.descr,item.extension)
+  if(item.name!==undefined&&!ink)fail('墨迹身份无效')
   const g=item.geometry
-  if(['x','y','width','height'].some(key=>typeof g[key]!=='number'||!Number.isFinite(g[key])||(g[key] as number)<0||(g[key] as number)>100000)||(g.width as number)<=0||(g.height as number)<=0)fail('图片位置无效')
+  if(['x','y','width','height'].some(key=>typeof g[key]!=='number'||!Number.isFinite(g[key])||(g[key] as number)<(ink?-100000:0)||(g[key] as number)>100000)||(g.width as number)<=0||(g.height as number)<=0)fail('图片位置无效')
   if(item.descr!==undefined&&(typeof item.descr!=='string'||item.descr.length>10000))fail('图片描述无效')
   bytes+=imageBytes(item)
  }
  for(const item of pictures){
-  fields(item,['slideIndex','elementId','expectedSha256','expectedSize','bytesBase64','extension'])
+  fields(item,['slideIndex','elementId','expectedSha256','expectedSize','bytesBase64','extension','keepSrcRect'])
+  if(item.keepSrcRect!==undefined&&item.keepSrcRect!==true)fail('保留裁切参数无效')
   const source=target(item)
   if(source.type!=='picture'||source.pictureReplaceable!==true||typeof item.expectedSha256!=='string'||!/^[a-f0-9]{64}$/.test(item.expectedSha256)||!Number.isSafeInteger(item.expectedSize)||(item.expectedSize as number)<=0||item.expectedSha256!==source.pictureSha256||item.expectedSize!==source.pictureSize)fail('图片来源身份已变化或暂不支持替换')
   bytes+=imageBytes(item)

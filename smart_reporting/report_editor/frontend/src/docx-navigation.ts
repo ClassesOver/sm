@@ -27,6 +27,7 @@ export function createDocxNavigation(options: {
   const empty = panel.querySelector<HTMLElement>('.docx-navigation-empty')!
   let disposed = false, headings: HeadingRef[] = [], rows: NavRow[] = [], allRows: NavRow[] = []
   let collapsed = new Set<number>(), searching = false, tab: 'headings' | 'pages' = 'headings'
+  let opener: HTMLElement | null = null
   const pages = options.pages ? createDocxNavigationPages({ ...options.pages, editor, onError: options.onError }) : undefined
   if (pages) {
     const tabs = document.createElement('div'); tabs.className = 'docx-navigation-tabs'; tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', '导航内容')
@@ -88,10 +89,15 @@ export function createDocxNavigation(options: {
   }
   const setVisible = (visible: boolean) => {
     if (disposed || visible === !panel.hidden) return
+    const restore = !visible && panel.contains(document.activeElement)
+    if (visible) opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     panel.hidden = !visible
     search.setVisible(visible && tab === 'headings')
     pages?.setVisible(visible && tab === 'pages')
-    if (visible) refresh()
+    if (visible) {
+      refresh()
+      panel.querySelector<HTMLElement>(tab === 'pages' ? '[data-navigation-tab=pages]' : '[data-navigation-query]')?.focus({ preventScroll:true })
+    } else if (restore && opener?.isConnected) opener.focus({ preventScroll:true })
     options.onVisibilityChange?.()
   }
   const selectTab = (next: 'headings' | 'pages') => {
@@ -127,6 +133,7 @@ export function createDocxNavigation(options: {
     else if (button.dataset.navigationHeading != null) navigate(Number(button.dataset.navigationHeading))
   }
   const keydown = (event: KeyboardEvent) => {
+    if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
     if (event.key === 'Escape') { event.preventDefault(); setVisible(false); return }
     const tabButton = (event.target as Element).closest<HTMLButtonElement>('[data-navigation-tab]')
     if (tabButton && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
@@ -148,7 +155,7 @@ export function createDocxNavigation(options: {
       else { const parent = rows.findIndex(item => item.node.index === row.node.parent); if (parent >= 0) target = parent }
     } else return
     event.preventDefault()
-    treeElement.querySelectorAll<HTMLButtonElement>('[data-navigation-heading]')[target]?.focus({ preventScroll: true })
+    treeElement.querySelectorAll<HTMLButtonElement>('[data-navigation-heading]')[target]?.focus()
   }
   const transaction = ({ transaction: tr }: { transaction: Transaction }) => {
     if (disposed) return

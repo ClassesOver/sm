@@ -16,6 +16,7 @@ const source: Record<string, ComponentType<{size?: number}>> = {
   theme: IconTheme, 'theme-fonts': IconThemeFonts, 'theme-colors': IconThemeColors,
   'header-footer-open': IconHeader, 'zoom-in': IconZoomIn, 'zoom-out': IconZoomOut, 'zoom-reset': IconZoom100,
   'zoom-open': IconZoom, 'zoom-to-selection': IconPageWidth, translate: IconTranslate,
+  'chart-descriptions': IconTextBox,
 }
 const glyphs: Record<string,string> = {
   'forecast-sheet':'📈', 'chart-title':'🗎', 'chart-axis-cat':'↔', 'chart-axis-val':'↕', 'chart-legend':'▤', 'chart-labels':'🏷', 'chart-type-column':'📊', 'chart-type-bar':'▮▬', 'chart-type-line':'📈', 'chart-type-area':'◪', 'chart-type-pie':'◔', 'chart-type-doughnut':'◍', 'chart-select-data':'▦', 'chart-switch-row-col':'⇄', 'chart-format-pane':'🎨', 'chart-delete':'🗑',

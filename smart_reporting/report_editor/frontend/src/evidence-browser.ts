@@ -58,6 +58,7 @@ export interface EvidenceBrowserOptions {
   locateSubject: (subjectId: string) => void
   /** 当前草稿（引用状态校验用）。 */
   getDraft?: () => { markdown: string; sha256: string } | null
+  saveMarkdown?: () => Promise<string>
   downloadEnabled?: boolean
   drilldownEnabled?: boolean
   /** 下载当前草稿的溯源清单（CSV）；未提供时不显示入口。 */
@@ -1107,10 +1108,10 @@ export function createEvidenceBrowser(root: HTMLElement, options: EvidenceBrowse
 
   const verifyButton = shell.querySelector<HTMLButtonElement>('.evidence-verify')!
   const refreshPanel = mountDataRefresh(shell.querySelector<HTMLElement>('.evidence-refresh')!, {
-    client: options.client, storageKey, getDraft: options.getDraft,
+    client: options.client, storageKey, getDraft: options.getDraft, saveMarkdown: options.saveMarkdown,
   })
   mountPolicyAdoption(shell.querySelector<HTMLElement>('.evidence-policy-adoption')!, {
-    client: options.client, storageKey, getDraft: options.getDraft,
+    client: options.client, storageKey, getDraft: options.getDraft, saveMarkdown: options.saveMarkdown,
   })
   mountReportIssues(shell.querySelector<HTMLElement>('.evidence-report-issues')!, {
     client: options.client, storageKey,

@@ -447,7 +447,7 @@ class ReportEditorContext(BaseModel):
     source: str = Field(default="published", pattern=r"^(published|manual)$")
     created_at: datetime | None = Field(default=None, alias="createdAt")
     note: str = Field(default="", max_length=200)
-    delivery_format: Literal["document", "pdf", "docx", "pptx", "xlsx"] = Field(
+    delivery_format: Literal["document", "md", "pdf", "docx", "pptx", "xlsx"] = Field(
         default="document", alias="deliveryFormat"
     )
     pptx_path: str | None = Field(default=None, alias="pptxPath", max_length=1024)
@@ -457,6 +457,10 @@ class ReportEditorContext(BaseModel):
     xlsx_path: str | None = Field(default=None, alias="xlsxPath", max_length=1024)
     xlsx_size: int | None = Field(default=None, alias="xlsxSize", gt=0)
     xlsx_sha256: str | None = Field(default=None, alias="xlsxSha256", pattern=SHA256_PATTERN)
+
+    md_path: str | None = Field(default=None, alias="mdPath", max_length=1024)
+    md_size: int | None = Field(default=None, alias="mdSize", gt=0)
+    md_sha256: str | None = Field(default=None, alias="mdSha256", pattern=SHA256_PATTERN)
 
     @model_validator(mode="after")
     def validate_job_identity(self) -> ReportEditorContext:
@@ -474,6 +478,12 @@ class ReportEditorContext(BaseModel):
                 raise ValueError("XLSX 编辑上下文必须绑定完整文件身份")
         elif any(item is not None for item in xlsx_identity):
             raise ValueError("其他编辑上下文不能携带 XLSX 文件身份")
+        md_identity = (self.md_path, self.md_size, self.md_sha256)
+        if self.delivery_format == "md":
+            if any(item is None for item in md_identity) or self.md_path != self.markdown_path:
+                raise ValueError("MD 编辑上下文必须绑定正文完整文件身份")
+        elif any(item is not None for item in md_identity):
+            raise ValueError("其他编辑上下文不能携带 MD 文件身份")
         return self
 
     def digest(self) -> str:
@@ -1768,10 +1778,12 @@ class ReportEditorService:
         return await read_policy_adoption_preparation(self, expected, task_id, runtime=self.recalculation_runtime)
 
     async def recalculation_delivery(self, expected: ReportEditorContext, task_id: str) -> dict[str, Any]:
+        from ..reporting.workflow.policy_adoption import PolicyAdoptionExecution
         from ..reporting.workflow.scope import REPORT_WORKFLOW_SCOPE_DEPENDENCY
         from .recalculation import (
             read_policy_adoption_delivery,
             read_refresh_delivery,
+            read_registered_recalculation_execution,
             read_task_by_id,
         )
 
@@ -1779,8 +1791,16 @@ class ReportEditorService:
         if self.recalculation_runtime is None:
             raise ReportingError("report_editor_recalculation_unavailable", "重算交付读取服务尚未启用。")
         context = await self._restore(expected)
-        registered = await read_task_by_id(self, context, task_id)
-        if registered is not None and registered.request.operation == 'adopt_policy':
+        try:
+            registered = await read_task_by_id(self, context, task_id)
+        except (ValueError, ReportingError):
+            # 仅交付读取分流可降级，按当前授权context的唯一精确child识别操作。
+            registered = None
+        adoption = registered is not None and registered.request.operation == 'adopt_policy'
+        if registered is None:
+            candidate = await read_registered_recalculation_execution(self, context, task_id)
+            adoption = isinstance(candidate, PolicyAdoptionExecution)
+        if adoption:
             task, published, execution = await read_policy_adoption_delivery(
                 self, context, task_id, runtime=self.recalculation_runtime)
             scope = execution.scope.as_state()
@@ -2102,7 +2122,7 @@ class ReportEditorService:
         await self._ensure_sources_retained(source_context)
         if not secrets.compare_digest(document.sha256, expected_sha256):
             raise ReportingError("report_editor_conflict", "报告草稿已变化，请重新载入。")
-        if self.report_tools is None:
+        if self.report_tools is None and context.delivery_format != "md":
             raise RuntimeError("报告编辑导出依赖配置不完整")
         if self.artifact_persistence is None:
             raise RuntimeError("报告编辑导出依赖配置不完整")
@@ -2246,15 +2266,30 @@ class ReportEditorService:
                 public_base_url=public_base_url,
             )
             try:
-                from .template_render import render_editor_document
+                if context.delivery_format == "md":
+                    md_path = str(PurePosixPath(output_path).with_name(PurePosixPath(context.markdown_path).name))
+                    await self.workspace.awrite_text(scope.workspace_key, md_path, document.markdown)
+                    cleanup_revision = True
+                    current = await self.workspace.ahash_file(scope.workspace_key, md_path)
+                    if current.get("sha256") != document.sha256 or current.get("size") != len(document.markdown.encode()):
+                        raise ReportingError("report_artifact_changed", "Markdown 产物身份已变化。")
+                    target_job = session_state[REPORT_JOBS_STATE_KEY][context.job_id]
+                    target_job["render"] = {
+                        "markdown": {"path": md_path, **current},
+                        "md": {"path": md_path, **current},
+                        "images": copy.deepcopy(target_job.get("render", {}).get("images", [])),
+                    }
+                    rendered = {"validation": {"ok": True, "issues": []}}
+                else:
+                    from .template_render import render_editor_document
 
-                rendered = await render_editor_document(
-                    self, context=context, source_context=source_context, document=document,
-                    snapshot_path=snapshot_path, output_path=output_path,
-                    formats=_document_delivery_artifacts(context), render_manifest=render_manifest,
-                    management_overview=overview_projection,
-                    run_context=run_context,
-                )
+                    rendered = await render_editor_document(
+                        self, context=context, source_context=source_context, document=document,
+                        snapshot_path=snapshot_path, output_path=output_path,
+                        formats=_document_delivery_artifacts(context), render_manifest=render_manifest,
+                        management_overview=overview_projection,
+                        run_context=run_context,
+                    )
                 cleanup_revision = True
             except WorkspacePathConflict as error:
                 raise ReportingError(
@@ -2284,7 +2319,8 @@ class ReportEditorService:
                 )
             word_path = str(PurePosixPath(output_path).with_suffix(".docx"))
             artifact_identities: dict[str, dict[str, Any]] = {}
-            paths = {"pdf": output_path, "word": word_path}
+            paths = {"pdf": output_path, "word": word_path,
+                     "md": str(PurePosixPath(output_path).with_name(PurePosixPath(context.markdown_path).name))}
             for label in _document_delivery_artifacts(context):
                 path = paths[label]
                 try:
@@ -2305,9 +2341,10 @@ class ReportEditorService:
                 PurePosixPath(output_path).with_name(PurePosixPath(context.markdown_path).name)
             )
             try:
-                await self.workspace.awrite_text(
-                    scope.workspace_key, markdown_path, document.markdown
-                )
+                if context.delivery_format != "md":
+                    await self.workspace.awrite_text(
+                        scope.workspace_key, markdown_path, document.markdown
+                    )
             except WorkspacePathConflict as error:
                 cleanup_revision = False
                 raise ReportingError(
@@ -2362,7 +2399,7 @@ class ReportEditorService:
                 )
             # 渲染快照随后即被删除；新 revision 的权威 Markdown 是刚写入的 markdown_path。
             render_record["markdown"] = {**rendered_markdown, "path": markdown_path}
-            for label in ("pdf", "word"):
+            for label in ("pdf", "word", "md"):
                 render_record.pop(label, None)
                 if label in rendered_identities:
                     render_record[label] = rendered_identities[label]
@@ -2455,6 +2492,9 @@ class ReportEditorService:
                 createdAt=datetime.now(UTC),
                 note=note,
                 deliveryFormat=context.delivery_format,
+                **({"mdPath": markdown_path, "mdSize": rendered_identities["md"]["size"],
+                    "mdSha256": rendered_identities["md"]["sha256"]}
+                   if context.delivery_format == "md" else {}),
             )
             durable = await self.state_repository.get(context.workflow_run_id)
             if durable is None:
@@ -2529,7 +2569,7 @@ class ReportEditorService:
 
         artifacts = tuple(
             ReportArtifactSpec(
-                artifact=cast(Literal["pdf", "word"], label), path=str(identity["path"]),
+                artifact=cast(Literal["pdf", "word", "md"], label), path=str(identity["path"]),
                 size=int(identity["size"]), sha256=str(identity["sha256"]),
             )
             for label, identity in identities.items()
@@ -3453,13 +3493,13 @@ def _lineage_unavailable_issue(error: BaseException, *, rendered: bool) -> dict[
 
 
 def _document_delivery_artifacts(context: ReportEditorContext) -> tuple[str, ...]:
-    return {"document": ("pdf", "word"), "pdf": ("pdf",), "docx": ("word",)}[context.delivery_format]
+    return {"document": ("pdf", "word"), "pdf": ("pdf",), "docx": ("word",), "md": ("md",)}[context.delivery_format]
 
 
 def _next_pdf_path(context: ReportEditorContext, *, revision: int | None = None) -> str:
     render = context.job.get("render")
     # Word-only revisions remain editable/re-exportable; never borrow an older PDF.
-    artifact = next((
+    artifact = ("md", {"path": context.md_path}) if context.delivery_format == "md" else next((
         (label, render.get(label)) for label in _document_delivery_artifacts(context)
         if isinstance(render, dict) and isinstance(render.get(label), dict)
         and isinstance(render[label].get("path"), str)
@@ -3470,7 +3510,7 @@ def _next_pdf_path(context: ReportEditorContext, *, revision: int | None = None)
     if not isinstance(identity, dict):
         raise ReportingError("report_editor_job_invalid", "报告编辑 job 缺少当前产物 revision。")
     path = PurePosixPath(identity["path"])
-    suffix = ".pdf" if label == "pdf" else ".docx"
+    suffix = {"pdf": ".pdf", "word": ".docx", "md": ".md"}[label]
     if path.parent.name != f"revision-{context.revision}":
         markdown = PurePosixPath(context.markdown_path)
         if (re.fullmatch(r'[0-9a-f]{20}', path.parent.name)

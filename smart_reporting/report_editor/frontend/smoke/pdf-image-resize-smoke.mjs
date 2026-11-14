@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { observePdfBuiltAssets, inspectPdfObjectDialog } from './pdf-object-dialog-checks.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_IMAGE_RESIZE_SMOKE_PORT ?? 4215), base = `http://127.0.0.1:${port}`, sha = bytes => createHash('sha256').update(bytes).digest('hex')
 function python(input) {
@@ -56,8 +57,9 @@ let browser, readonly = false
 const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ?? '/usr/bin/chromium' })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? {executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE} : {}) })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = []
+  const verifyAssets=await observePdfBuiltAssets(page)
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
   const revision = route => Number(route.request().url().match(/image-resize-fixture\/(\d+)\/api/)[1]), active = route => revisions.get(revision(route))
   const inspect = bytes => python({ mode: 'inspect', bytes: bytes.toString('base64') }), patch = (bytes, operations) => python({ mode: 'patch', bytes: bytes.toString('base64'), operations })
@@ -108,6 +110,7 @@ try {
   await page.evaluate(()=>window.__oldImageSelection.click());assert.match(await panel.innerText(),/已选择草稿操作 #2/)
   const dialog=page.getByRole('dialog',{name:'缩放待保存图像',exact:true})
   const resize=panel.getByRole('button',{name:'缩放所选图像',exact:true})
+  const objectLayouts=await inspectPdfObjectDialog(page,{opener:resize,title:'缩放待保存图像',operations:ops,directory:process.env.PDF_IMAGE_RESIZE_EVIDENCE_DIR})
   await resize.click();await dialog.locator('form').evaluate(node=>{window.__cancelledResize=node})
   await dialog.getByRole('button',{name:'取消',exact:true}).click()
   await page.evaluate(()=>window.__cancelledResize.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})))
@@ -116,6 +119,7 @@ try {
   await resize.evaluate(node=>node.click())
   await page.evaluate(()=>window.__replacedResize.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})))
   assert.deepEqual(await ops(),original);assert.equal(await page.locator('.pdf-pending-drawing-dialog[open]').count(),1)
+  assert.ok(await dialog.getByLabel('缩放百分比',{exact:true}).evaluate(node=>document.activeElement===node),'replacing a dialog must retain focus in the new dialog')
   await dialog.getByLabel('缩放百分比',{exact:true}).fill('9999')
   await dialog.getByRole('button',{name:'应用缩放',exact:true}).click()
   assert.match(await dialog.getByRole('alert').innerText(),/页面内/);assert.deepEqual(await ops(),original)
@@ -147,7 +151,7 @@ try {
   readonly=true;await open(1);await page.locator('[data-pdf-ribbon-tab="annotate"]').click()
   await addImage();assert.deepEqual(await ops(),[])
   assert.deepEqual(errors,[])
-  const evidence={ok:true,independent,browserVersion:browser.version(),revisions:[...revisions].map(([revision,bytes])=>({revision,sha256:sha(bytes),size:bytes.length})),operations:payloads.map(input=>input.operations),exactTwinResize:true,aspectAndFixedCorner:true,cancelReplacedAndStaleModalRefused:true,undoRedoReload:true,rotatedReordered:true,previewActualDownloadReopen:true,readonlyIsolation:true,provenance:'production static Web percentage/anchor modal; substituted auth/revision routes; actual packed engine/PDF.js/download and independent pypdf AP/image pixels; no desktop corner-drag equivalence or production acceptance'}
+  const evidence={ok:true,...await verifyAssets(),objectLayouts,independent,browserVersion:browser.version(),revisions:[...revisions].map(([revision,bytes])=>({revision,sha256:sha(bytes),size:bytes.length})),operations:payloads.map(input=>input.operations),exactTwinResize:true,aspectAndFixedCorner:true,cancelReplacedAndStaleModalRefused:true,undoRedoReload:true,rotatedReordered:true,previewActualDownloadReopen:true,readonlyIsolation:true,provenance:'production static Web percentage/anchor modal; substituted auth/revision routes; actual packed engine/PDF.js/download and independent pypdf AP/image pixels; no desktop corner-drag equivalence or production acceptance'}
   if (process.env.PDF_IMAGE_RESIZE_EVIDENCE_DIR) { const dir = process.env.PDF_IMAGE_RESIZE_EVIDENCE_DIR; await mkdir(dir, { recursive: true }); for (const [n, bytes] of revisions) await writeFile(`${dir}/revision-${n}.pdf`, bytes); await writeFile(`${dir}/evidence.json`, JSON.stringify(evidence, null, 2)); await page.screenshot({ path: `${dir}/readonly-reopen.png`, fullPage: true }) }
   console.log(JSON.stringify(evidence))
 } finally { await browser?.close(); server.kill('SIGTERM') }

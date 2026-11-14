@@ -4,10 +4,18 @@ import { withMeasuredPaginationSnapshot, slicePaginationSnapshot } from './vendo
 import type { CurrentDocxPaginationInput } from './docx-measure-current-pagination'
 import { columnLayoutSpecs, sectionWidthSpecs, newWidthPassState, widthPassGate, wrapWidthSig, paperWidthPx, pageLeftPx, mirrorMarginSpecs, type WidthPassState } from './vendor/genoffice-docs/apps/docs/src/renderer/pagination-sections'
 import { setColumnLayout, type ColumnBlockSpec } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/column-layout'
-import { LayoutBatch, setPageGaps, gapLedgerOf, type PageGapSpec } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/pagination-gaps'
+import { LayoutBatch, setPageGaps, gapLedgerOf, pageBorderStyleOf, syncPageBorders, type PageGapSpec } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/pagination-gaps'
 import { applyGapLedger, pagePaperEdges, effectiveTopPx, effectiveBottomPx } from './vendor/genoffice-docs/apps/docs/src/renderer/pagination'
 import { pageMargins } from './vendor/genoffice-docs/apps/docs/src/renderer/page-margins'
 import { lineStartAnchor, nextLineAnchor, createLineRectsCache } from './vendor/genoffice-docs/apps/docs/src/renderer/pagination-lines'
+
+const twipsToPx = (twips: number) => (twips / 1440) * 96
+
+export function renderDocxCanvasPageBorders(wrap: HTMLElement, section: CurrentDocxPaginationInput['section'], zoomFactor: number, cuts?: PageLayout['cuts']) {
+  const paperWidth = twipsToPx(section.pageWidth)
+  syncPageBorders(wrap, pageBorderStyleOf(section), zoomFactor,
+    { left: pageLeftPx(section, paperWidth), width: paperWidth }, cuts)
+}
 
 /** 源App 5395/5411/5441布局通道：列宽优先，位移相加；source widthPassGate负责窄宽循环钉住。 */
 export function mergeDocxColumnSpecs(widths: ColumnBlockSpec[], columns: ColumnBlockSpec[]): ColumnBlockSpec[] {
@@ -71,6 +79,9 @@ export function layoutMixedDocxColumns(view: EditorView, input: CurrentDocxPagin
       setColumnLayout(view, specs, batch)
       batch.commit()
       applyGapLedger(snapshot.cuts, gapLedgerOf(gaps, []))
+      const firstSection = measured.live[0]?.settings ?? input.section
+      const wrap = (input.pm.closest('.page-wrap') as HTMLElement) ?? input.pm
+      renderDocxCanvasPageBorders(wrap, firstSection, measured.factor, snapshot.cuts)
       const last = snapshot.cuts.at(-1)
       if (last) {
         const lastSec = measured.live[last.section]?.settings ?? input.section

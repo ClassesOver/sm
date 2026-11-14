@@ -19,6 +19,21 @@ it('empty sheets are skipped and text remains escaped',()=>{
  expect(new DOMParser().parseFromString(result.html,'text/html').querySelector('script')).toBeNull()
 })
 const settle=()=>new Promise(resolve=>setTimeout(resolve,0))
+it('keeps the static preview outside the Tab order and discards a build after Escape',async()=>{
+ const opener=document.createElement('button');document.body.append(opener);opener.focus()
+ const root=document.createElement('div');document.body.append(root);let resolve!:(value:WorkbookPrintJob)=>void
+ const dialog=createPrintPreviewDialog(root,{buildJob:()=>new Promise(r=>{resolve=r}),print:vi.fn()})
+ dialog.open({hasSelection:true,sheetCount:2})
+ const frame=root.querySelector('iframe')!
+ expect(frame.tabIndex).toBe(-1)
+ const pane=root.querySelector<HTMLElement>('[data-print-pane]')!
+ expect(pane.tabIndex).toBe(0)
+ expect(pane.getAttribute('aria-label')).toBe('打印预览区域')
+ window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))
+ expect(root.querySelector<HTMLElement>('[role=dialog]')!.hidden).toBe(true)
+ expect(document.activeElement).toBe(opener)
+ resolve(job());await settle();expect(frame.srcdoc).toBe('');dialog.dispose()
+})
 it('previews active scope, browses pages, rebuilds scope and refreshes before print',async()=>{
  const root=document.createElement('div');document.body.append(root);const buildJob=vi.fn(async()=>job()),print=vi.fn(()=>true)
  const dialog=createPrintPreviewDialog(root,{buildJob,print});dialog.open({hasSelection:true,sheetCount:2});await settle()

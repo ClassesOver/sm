@@ -3,7 +3,7 @@ import { hasWorkbookModal, isWorkbookGridKeyTarget } from './workbook-shortcut-t
 
 export function installFunctionShortcuts(host: HTMLElement, editable: () => boolean, open: () => void): { dispose(): void } {
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.isComposing || event.code !== 'F3' || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.code !== 'F3' || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey
       || !editable() || !isWorkbookGridKeyTarget(event.target) || hasWorkbookModal(host.ownerDocument)) return
     event.preventDefault()
     open()

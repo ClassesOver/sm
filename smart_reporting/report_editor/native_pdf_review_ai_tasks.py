@@ -406,3 +406,6 @@ class NativePDFReviewService(NativePDFReadService):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        for job in self._jobs.values():
+            if job.status == "cancelled":
+                await job.event_log.finish(job.status)

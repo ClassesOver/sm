@@ -1,5 +1,6 @@
 // API route 为显式 fixture；保存实际调用生产 Python/Node bridge，鉴权另有真实 HTTP 专项。
 import assert from 'node:assert/strict'
+import {inspectReplyComposer} from './office-docx-comment-reply-layout.mjs'
 import {createHash} from 'node:crypto'
 import {readFile,writeFile,mkdir} from 'node:fs/promises'
 import {createServer} from 'node:http'
@@ -8,6 +9,7 @@ import {dirname,resolve,extname} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {chromium} from 'playwright'
 const frontend=resolve(dirname(fileURLToPath(import.meta.url)),'..'),repo=resolve(frontend,'../../..'),staticRoot=resolve(frontend,'../static')
+const layoutEnabled=process.env.DOCX_COMMENT_REPLY_LAYOUT==='1',layout={cases:[],failures:[]}
 const statusOnly=process.env.DOCX_COMMENT_REPLY_STATUS_ONLY==='1',switchOnly=process.env.DOCX_COMMENT_REPLY_SWITCH_ONLY==='1'
 assert.ok(!(statusOnly&&switchOnly),'choose one narrow mode')
 const output=process.env.DOCX_COMMENT_REPLY_EVIDENCE??'/tmp/word-comment-reply-browser-20261111',port=Number(process.env.DOCX_COMMENT_REPLY_PORT??4310)
@@ -25,6 +27,9 @@ const python=[
  'p=json.load(sys.stdin)',
  "if p['mode']=='create':",
  " data=modern_source()",
+ " if p.get('longParent'):",
+ "  with ZipFile(BytesIO(data)) as z:changes={'word/comments.xml':z.read('word/comments.xml').replace(b'Original note',b'Original note '+b'Long parent comment '*100)}",
+ "  data=rewrite(data,changes)",
  " if p.get('twoRoots'):",
  "  with ZipFile(BytesIO(data)) as z:changes={'word/comments.xml':z.read('word/comments.xml').replace(b'Existing reply',b'Second root comment'),'word/commentsExtended.xml':z.read('word/commentsExtended.xml').replace(b' w15:paraIdParent=\"AA000001\"',b'')}",
  "  data=rewrite(data,changes)",
@@ -52,7 +57,7 @@ const python=[
  " print(json.dumps({'changedParts':changed,'sharedAnchor':'Anchor text','newParents':parents,'ids':ids,'allXmlValid':True,'modernPartsPreserved':True}))",
 ].join(String.fromCharCode(10))
 function engine(payload){const r=spawnSync(resolve(repo,'.venv/bin/python'),['-c',python],{cwd:repo,env:{...process.env,PYTHONPATH:repo,AGENT_REPORTING_DOC_ENGINE_DIR:runtime},input:JSON.stringify(payload),encoding:'utf8',maxBuffer:20*1024*1024,timeout:120000});assert.equal(r.status,0,r.stderr);return JSON.parse(r.stdout)}
-const revisions={1:engine({mode:'create',path:resolve(output,'revision-1.docx'),twoRoots:switchOnly})},sourceSha256=revisions[1].model.sourceSha256,parentTarget=revisions[1].model.commentReplies.targets.find(t=>t.originalCommentId==='1')
+const revisions={1:engine({mode:'create',path:resolve(output,'revision-1.docx'),twoRoots:switchOnly,longParent:process.env.DOCX_COMMENT_REPLY_LONG_PARENT==='1'})},sourceSha256=revisions[1].model.sourceSha256,parentTarget=revisions[1].model.commentReplies.targets.find(t=>t.originalCommentId==='1')
 assert.ok(parentTarget?.canReply)
 const requests=[],pageErrors=[],consoleErrors=[],failedResponses=[],chunks=new Map(),identities=[]
 let payload,browser,page
@@ -61,8 +66,8 @@ const server=createServer(async(req,res)=>{try{const path=new URL(req.url,base).
 await new Promise((done,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',done)})
 try{
  browser=await chromium.launch({headless:true,...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE?{executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE}:{})});page=await browser.newPage({viewport:{width:1600,height:1100}})
- page.on('pageerror',e=>pageErrors.push(e.message));page.on('console',m=>{if(m.type()==='error')consoleErrors.push(m.text())})
- page.on('response',r=>{const path=new URL(r.url()).pathname;if(r.status()>=400)failedResponses.push({path,status:r.status()});if(r.ok()&&path.endsWith('.js'))identities.push(r.body().then(async bytes=>{const disk=await readFile(resolve(staticRoot,path.replace(/^\/reports\/v1\/editor\/assets\//,'')));assert.equal(sha(bytes),sha(disk),path);chunks.set(path,{path,size:bytes.length,sha256:sha(bytes)})}))})
+ page.on('crash',()=>pageErrors.push('Chromium renderer crashed'));page.on('pageerror',e=>pageErrors.push(e.message));page.on('console',m=>{if(m.type()==='error')consoleErrors.push(m.text())})
+ page.on('response',r=>{const path=new URL(r.url()).pathname;if(r.status()>=400)failedResponses.push({path,status:r.status()});if(r.ok()&&/\.(js|css)$/.test(path))identities.push(r.body().then(async bytes=>{const disk=await readFile(resolve(staticRoot,path.replace(/^\/reports\/v1\/editor\/assets\//,'')));assert.equal(sha(bytes),sha(disk),path);chunks.set(path,{path,size:bytes.length,sha256:sha(bytes)})}).catch(error=>failedResponses.push({path,error:String(error)})))})
  await page.route('**/favicon.ico',route=>route.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg"/>'}))
  const mediaType='application/vnd.openxmlformats-officedocument.wordprocessingml.document'
  await page.route('**/reports/v1/native/fixture-comment-reply/*/api/**',async route=>{
@@ -131,21 +136,33 @@ try{
   const evidence={ok:true,mode:'built-browser-comment-reply-status-only',apiRoutesAreFixtures:true,realPythonNodeBridgeInspect:true,browserVersion:browser.version(),port,manifestSha256,nodeBridgeSha256,sourceSha256,draftSeededLocally:true,recoveredOperations:seeded,statusAfterUnlock:await status.textContent(),inputEnabled:true,documentUnchangedByLock:true,saveRequests:0,exportRequests:0,requests,runtimeJavaScript:[...chunks.values()],pageErrors,consoleErrors,failedResponses}
   await writeFile(resolve(output,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({ok:true,mode:evidence.mode,output,manifestSha256,nodeBridgeSha256,javascriptCount:chunks.size,statusAfterUnlock:evidence.statusAfterUnlock,saveRequests:0,exportRequests:0}))
  }else{
- let input=await reply();await input.fill('取消的回复');await page.locator('[data-comment-reply-cancel]').click();assert.deepEqual(await draft(),[])
+ let input=await reply();
+ if(layoutEnabled){
+  await input.fill('长回复内容😀\n'.repeat(100));await inspectReplyComposer(page,{output,phase:'editing-long',evidence:layout,draft})
+  if(process.env.DOCX_COMMENT_REPLY_BASELINE)throw new Error('baseline layout defects: '+layout.failures.join('; '))
+  assert.deepEqual(layout.failures,[])
+  await page.locator('[data-comment-reply-close]').click();assert.equal(await page.locator('[data-comment-reply]').evaluate(node=>document.activeElement===node),true);assert.deepEqual(await draft(),[])
+  input=await reply()
+ }
+ await input.fill('取消的回复');await page.locator('[data-comment-reply-cancel]').click();assert.deepEqual(await draft(),[])
  input=await reply();await input.fill('历史恢复的回复😀');await page.locator('[data-comment-reply-submit]').click();assert.equal((await draft()).length,1)
+ if(layoutEnabled){await inspectReplyComposer(page,{output,phase:'draft',evidence:layout,draft});assert.deepEqual(layout.failures,[])}
  await page.locator('.tiptap').evaluate(el=>el.editor.commands.undo());assert.deepEqual(await draft(),[]);await page.locator('.tiptap').evaluate(el=>el.editor.commands.redo());assert.equal((await draft()).length,1)
  await page.screenshot({path:resolve(output,'reply-history.png'),fullPage:true});await page.reload();await page.locator('.docx-source-home').waitFor({timeout:60000});assert.equal((await draft())[0].text,'历史恢复的回复😀')
  input=await reply();await input.fill('未失焦保存的回复😀');assert.equal(await input.evaluate(el=>document.activeElement===el),true);await page.screenshot({path:resolve(output,'reply-unblurred.png'),fullPage:true})
  await page.locator('[data-action=save]').dispatchEvent('click');await page.waitForFunction(()=>document.querySelector('.save-state-label')?.textContent.includes('已保存修订 2'),null,{timeout:60000})
  assert.equal(await input.isDisabled(),true);assert.equal(await page.getByText('批注回复版式验收待复核',{exact:true}).count(),1);assert.equal(await page.getByRole('link',{name:'下载 Word',exact:true}).count(),1)
- const downloaded=Buffer.from(await page.evaluate(async()=>Array.from(new Uint8Array(await(await fetch('/comment-reply-download.docx')).arrayBuffer()))));assert.equal(sha(downloaded),revisions[2].model.sourceSha256);await writeFile(resolve(output,'downloaded.docx'),downloaded)
+ if(layoutEnabled){await inspectReplyComposer(page,{output,phase:'saved',evidence:layout,draft});assert.deepEqual(layout.failures,[])}
+ const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('link',{name:'下载 Word',exact:true}).click()]);await download.saveAs(resolve(output,'downloaded.docx'))
+ const downloaded=await readFile(resolve(output,'downloaded.docx'));assert.equal(sha(downloaded),revisions[2].model.sourceSha256);await writeFile(resolve(output,'downloaded.docx'),downloaded)
  const verified=engine({mode:'verify',source:resolve(output,'revision-1.docx'),bytes:downloaded.toString('base64'),expected:['历史恢复的回复😀','未失焦保存的回复😀']});await page.screenshot({path:resolve(output,'reply-delivery.png'),fullPage:true})
  await open(2);await openExisting();const finalTarget=revisions[2].model.commentReplies.targets.find(t=>t.text==='未失焦保存的回复😀');assert.equal(finalTarget?.parentId,'1');await page.locator('[data-comment-target]').selectOption(finalTarget.targetId)
  assert.equal(await page.locator('[data-comment-text]').inputValue(),'未失焦保存的回复😀');assert.equal(await page.locator('[data-comment-thread]').textContent(),'回复根批注 #1');assert.equal(await page.locator('[data-comment-reply]').isDisabled(),true);await page.screenshot({path:resolve(output,'reply-revision-2.png'),fullPage:true})
  assert.equal(engine({mode:'stale',source:resolve(output,'revision-2.docx'),operations:payload.operations}).rejected,true);assert.equal(sha(await readFile(resolve(output,'revision-1.docx'))),sourceSha256)
  await page.waitForLoadState('networkidle');await Promise.all(identities);assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(failedResponses,[])
- const evidence={ok:true,mode:'built-browser-comment-reply',apiRoutesAreFixtures:true,realPythonNodeBridge:true,browserVersion:browser.version(),port,manifestSha256,nodeBridgeSha256,sourceSha256,outputSha256:revisions[2].model.sourceSha256,verified,payload,requests,runtimeJavaScript:[...chunks.values()],pageErrors,consoleErrors,failedResponses}
- await writeFile(resolve(output,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({ok:true,output,manifestSha256,nodeBridgeSha256,javascriptCount:chunks.size,verified}))
+ assert.equal(sha(await readFile(resolve(staticRoot,'.vite/manifest.json'))),manifestSha256)
+ const evidence={ok:true,mode:'built-browser-comment-reply',layout,actualBrowserDownload:true,apiRoutesAreFixtures:true,realPythonNodeBridge:true,browserVersion:browser.version(),port,manifestSha256,nodeBridgeSha256,sourceSha256,outputSha256:revisions[2].model.sourceSha256,verified,payload,requests,runtimeJavaScript:[...chunks.values()],pageErrors,consoleErrors,failedResponses}
+ await writeFile(resolve(output,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({ok:true,output,manifestSha256,nodeBridgeSha256,assetCount:chunks.size,verified}))
  }
-}catch(error){await page?.screenshot({path:resolve(output,'failure.png'),fullPage:true}).catch(()=>{});await writeFile(resolve(output,'failure.json'),JSON.stringify({error:error.message,stack:error.stack,saved:!!payload,pageErrors,consoleErrors,failedResponses},null,2));throw error}
+}catch(error){if(page&&!page.isClosed())await page.content().then(html=>writeFile(resolve(output,'failure.html'),html)).catch(()=>{});await page?.screenshot({path:resolve(output,'failure.png'),fullPage:true}).catch(()=>{});await writeFile(resolve(output,'failure.json'),JSON.stringify({error:error.message,stack:error.stack,saved:!!payload,requests,pageErrors,consoleErrors,failedResponses},null,2));throw error}
 finally{await browser?.close();await new Promise(done=>server.close(done))}

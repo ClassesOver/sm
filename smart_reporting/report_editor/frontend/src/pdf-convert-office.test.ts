@@ -28,6 +28,18 @@ it('rechecks dirty guard and rejects cross origin download links',async()=>{
  await vi.waitFor(()=>expect(second.root.textContent).toContain('请人工核对版式'))
  expect(second.root.querySelectorAll('a')).toHaveLength(1)
 })
+it('keeps keyboard focus on the available close action while converting and permits dismissal',async()=>{
+ const root=document.createElement('div');document.body.append(root)
+ const panel=bindPdfConvertOfficeDialog({root,sourceSha256:'a'.repeat(64),unavailable:()=>null,submit:()=>new Promise(()=>{})})
+ panel.open();root.querySelector<HTMLButtonElement>('[data-pdf-convert-office-apply]')!.click()
+ const dialog=root.querySelector('dialog')!,close=[...root.querySelectorAll('button')].find(button=>button.textContent==='关闭')!
+ close.focus()
+ for(const shiftKey of [false,true]){
+  const tab=new KeyboardEvent('keydown',{key:'Tab',shiftKey,bubbles:true,cancelable:true});close.dispatchEvent(tab)
+  expect(tab.defaultPrevented).toBe(true);expect(document.activeElement).toBe(close)
+ }
+ close.click();expect(dialog.open).toBe(false);panel.dispose()
+})
 it.each([['docx','word'],['xlsx','xlsx']] as const)('creates %s as a separate editable document with a warning download',async(format,artifact)=>{
  const root=document.createElement('div');document.body.append(root)
  const submit=vi.fn(async()=>({documentId:'child',revision:1,parentRevision:null,revisionRegistered:true,artifacts:{[artifact]:{downloadUrl:'/download/converted.'+format}},editor:{openUrl:'/reports/v1/native/child/1/open'},validation:{ok:false,issues:[{code:'manual_review',message:'请人工核对内容与版式'}]}}))

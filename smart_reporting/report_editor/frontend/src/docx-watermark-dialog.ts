@@ -5,22 +5,23 @@
  */
 import { DOCX_WATERMARK_DEFAULT_COLOR, DOCX_WATERMARK_DEFAULT_FONT, DOCX_WATERMARK_FONTS, DOCX_WATERMARK_PRESETS, DOCX_WATERMARK_SIZES, docxWatermarkInkBoxPt, validDocxWatermarkSpec, type DocxWatermarkSpec } from './docx-watermark'
 
-export function openDocxWatermarkDialog(host: HTMLElement, current: DocxWatermarkSpec | null, onApply: (spec: DocxWatermarkSpec | null) => void): HTMLDialogElement {
+export function openDocxWatermarkDialog(host: HTMLElement, current: DocxWatermarkSpec | null, onApply: (spec: DocxWatermarkSpec | null) => void, returnFocus?: HTMLElement): HTMLDialogElement {
+  const opener = returnFocus ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
   const dialog = document.createElement('dialog')
   dialog.className = 'docx-watermark-dialog'; dialog.setAttribute('aria-label', '插入水印')
   const fonts = current?.fontFamily && !DOCX_WATERMARK_FONTS.includes(current.fontFamily) ? [current.fontFamily, ...DOCX_WATERMARK_FONTS] : DOCX_WATERMARK_FONTS
-  dialog.innerHTML = '<h2>插入水印</h2>'
+  dialog.innerHTML = '<header><h2>插入水印</h2><button type="button" aria-label="关闭水印设置">×</button></header><div class="docx-watermark-body"><div role="radiogroup" aria-label="水印类型">'
     + '<label class="docx-watermark-mode"><input type="radio" name="mode" value="none"> 无水印</label>'
     + '<label class="docx-watermark-mode"><input type="radio" name="mode" value="text"> 文字</label>'
-    + '<fieldset class="docx-watermark-text"><legend class="sr-only">文字水印</legend>'
+    + '</div><fieldset class="docx-watermark-text"><legend class="sr-only">文字水印</legend>'
     + `<label>文字 <input name="text" list="docx-watermark-presets" maxlength="255" aria-label="水印文字"></label><datalist id="docx-watermark-presets">${DOCX_WATERMARK_PRESETS.map(text => `<option value="${text}"></option>`).join('')}</datalist>`
     + `<label>字体: <select name="font" aria-label="水印字体">${fonts.map(font => `<option value="${font}">${font}</option>`).join('')}</select></label>`
     + `<label>字号: <select name="size" aria-label="水印字号"><option value="auto">自动</option>${DOCX_WATERMARK_SIZES.map(size => `<option value="${size}">${size}</option>`).join('')}</select></label>`
     + '<label class="docx-watermark-check"><input type="checkbox" name="bold"> 粗体</label><label class="docx-watermark-check"><input type="checkbox" name="italic"> 斜体</label>'
     + '<label>透明度: <input name="transparency" type="number" min="0" max="100" step="1" aria-label="水印透明度"> %</label>'
     + '<label>字体颜色: <input name="color" type="color" aria-label="水印字体颜色"></label>'
-    + '<span class="docx-watermark-layout">版式: <label><input type="radio" name="layout" value="diagonal"> 斜式</label><label><input type="radio" name="layout" value="horizontal"> 水平</label></span>'
-    + '</fieldset><p role="alert"></p><div class="docx-watermark-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></div>'
+    + '<fieldset class="docx-watermark-layout"><legend>版式</legend><label><input type="radio" name="layout" value="diagonal"> 斜式</label><label><input type="radio" name="layout" value="horizontal"> 水平</label></fieldset>'
+    + '</fieldset><p role="alert" aria-label="水印设置错误" tabindex="0" hidden></p></div><footer><div class="docx-watermark-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></div></footer>'
   const field = <T extends HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!
   const radio = (name: string, value: string) => field<HTMLInputElement>(`input[name=${name}][value=${value}]`)
   radio('mode', current ? 'text' : 'none').checked = true
@@ -38,7 +39,8 @@ export function openDocxWatermarkDialog(host: HTMLElement, current: DocxWatermar
   const resolved = (): DocxWatermarkSpec | null => {
     if (radio('mode', 'none').checked) return null
     const text = field<HTMLInputElement>('input[name=text]').value.trim()
-    const transparency = Number(field<HTMLInputElement>('input[name=transparency]').value)
+    const transparencyValue = field<HTMLInputElement>('input[name=transparency]').value
+    const transparency = transparencyValue.trim() === '' ? NaN : Number(transparencyValue)
     if (!text) throw new Error('请输入水印文字')
     if (!Number.isInteger(transparency) || transparency < 0 || transparency > 100) throw new Error('透明度须为 0–100 的整数')
     const spec: DocxWatermarkSpec = {
@@ -52,11 +54,19 @@ export function openDocxWatermarkDialog(host: HTMLElement, current: DocxWatermar
     return spec
   }
   host.append(dialog)
-  dialog.addEventListener('close', () => dialog.remove())
+  dialog.addEventListener('close', () => {
+    dialog.remove()
+    if (opener?.isConnected && !document.querySelector('dialog[open]')) opener.focus({ preventScroll: true })
+  })
+  dialog.addEventListener('cancel', event => { event.preventDefault(); dialog.close() })
+  field<HTMLButtonElement>('[aria-label="关闭水印设置"]').addEventListener('click', () => dialog.close())
   field<HTMLButtonElement>('button[value=cancel]').addEventListener('click', () => dialog.close())
   field<HTMLButtonElement>('button[value=ok]').addEventListener('click', () => {
-    try { const spec = resolved(); dialog.close(); onApply(spec) } catch (error) { field('[role=alert]').textContent = error instanceof Error ? error.message : String(error) }
+    try { onApply(resolved()); dialog.close() } catch (error) {
+      const alert = field<HTMLElement>('[role=alert]'); alert.textContent = error instanceof Error ? error.message : String(error); alert.hidden = false; alert.focus()
+    }
   })
   dialog.showModal()
+  field<HTMLInputElement>('input[name=mode]:checked').focus()
   return dialog
 }

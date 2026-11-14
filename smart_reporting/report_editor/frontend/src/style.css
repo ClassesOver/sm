@@ -5903,6 +5903,9 @@ button.ai-review-summary-item { padding-block: 3px; }
 .evidence-refresh:not([hidden]) { display: grid; gap: 8px; margin: 8px 12px; flex-shrink: 0; }
 .evidence-refresh p { margin: 0; color: var(--text-secondary, #526176); font-size: 14px; line-height: 1.6; }
 .evidence-refresh > div { display: grid; gap: 6px; }
+.delivery-layout-provenance { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
+.delivery-layout-provenance summary { cursor: pointer; line-height: 1.6; }
+.delivery-layout-provenance p { margin: 4px 0 0; font-size: 12px; }
 
 .evidence-policy-adoption:not([hidden]) { margin: 8px 12px; flex-shrink: 0; font-size: 14px; }
 .evidence-policy-adoption [hidden] { display: none !important; }

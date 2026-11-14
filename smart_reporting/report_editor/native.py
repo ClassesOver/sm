@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import subprocess
+from .native_xlsx_threads import xlsx_thread_actor
 from time import perf_counter
 from typing import Any, Literal
 
@@ -105,8 +106,8 @@ class NativeEditorService:
         ).full or session.workflow_run_id.startswith("native:"):
             raise ReportingError("native_permission_denied", "分享会话不能创建独立原生编辑分支。")
         context = await self.report_editor.context_for_session(session)
-        if context.delivery_format != "document":
-            raise ReportingError("native_format_invalid", "仅文档报告可以派生 Word/PDF 分支。")
+        if context.delivery_format not in {"document", format}:
+            raise ReportingError("native_format_invalid", "只能打开报告已选择的 Word/PDF 交付格式。")
         try:
             scope = NativeScope.model_validate(
                 {key: context.scope[key] for key in ("database", "companyId", "userId", "threadId")}
@@ -165,6 +166,7 @@ class NativeEditorService:
             reportId=context.report_id,
             workflowRunId=context.workflow_run_id,
             revision=context.revision,
+            reportContextSha256=context.digest(),
         )
         document = await self.repository.create_from_source(
             source, scope=scope, request_id=request_id
@@ -242,10 +244,14 @@ class NativeEditorService:
         if text_edits and not self.pdf_text_enabled:
             raise ReportingError("native_pdf_text_disabled", "PDF 原位文字编辑尚未开放。")
         content = await self.read_file(context)
+        if context.format == 'docx' and any(op.get('kind') == 'mailMergeSingle' for op in operations):
+            from .native_mail_merge import verify_mail_merge_sources
+
+            await verify_mail_merge_sources(self.workspace, bind_native_workspace(self.workspace, context.scope), operations)
         if not secrets.compare_digest(context.source_file.sha256, expected_sha256):
             raise ReportingError("native_source_changed", "原生草稿来源已变化，请刷新后重试。")
-        engines: dict[NativeFormat, Literal["slides", "workbook", "pdf"]] = {
-            "docx": "slides", "pdf": "pdf", "xlsx": "workbook", "pptx": "slides",
+        engines: dict[NativeFormat, Literal["doc", "slides", "workbook", "pdf"]] = {
+            "docx": "doc", "pdf": "pdf", "xlsx": "workbook", "pptx": "slides",
         }
         script = {"docx": "edit-docx", "pdf": "cli", "xlsx": "cli", "pptx": "edit-pptx"}[context.format]
         root = engine_dir(engines[context.format])
@@ -256,12 +262,16 @@ class NativeEditorService:
             raise ReportingError("native_engine_unavailable", "原生编辑引擎尚未部署。")
         inspect = inspect_docx if context.format == "docx" else inspect_pdf
         patch = patch_docx if context.format == "docx" else patch_pdf
+        if context.format == "docx" and any(op.get("kind") == "recordTextRevision" for op in operations):
+            from functools import partial
+
+            patch = partial(patch_docx, revision_author=context.scope.user_id)
         if context.format in {"xlsx", "pptx"}:
             from functools import partial
 
             from .native_office import inspect_office, patch_office
             inspect = partial(inspect_office, context.format)
-            patch = partial(patch_office, context.format)
+            patch = partial(patch_office, context.format, thread_actor=xlsx_thread_actor(context.scope) if context.format == "xlsx" else None)
         try:
             receipt = None
             # PDF 预览一律走回执路径：每种修改（含绘图、图章、空白页、涂黑、合并/拆分页面）都返回绑定实际输出的确认摘要。

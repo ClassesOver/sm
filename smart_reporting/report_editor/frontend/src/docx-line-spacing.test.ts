@@ -141,3 +141,19 @@ it.each([
   const original: DocxPmNode = { type: 'doc', content: [{ type: 'docParagraph', attrs: { docxIndex: 0 }, content: [{ type: 'text', text: '正文' }] }] }
   expect(() => replayDocxOperations(original, [{ kind: 'setParagraphSpacing', blockId: 'p0', expectedObjectSha256: 'hash0', ...values }], anchors)).toThrow()
 })
+
+it.each([
+  { lineSpacing: 1.04, lineRule: 'auto', lineRawTwips: 250 },
+  { lineSpacing: null, lineRule: null, lineRawTwips: null },
+])('confirms unchanged displayed spacing without rewriting the source %j', attrs => {
+  const { editor, root, open } = setup()
+  editor.view.dispatch(editor.state.tr.setNodeMarkup(0, undefined, { ...editor.state.doc.firstChild!.attrs, ...attrs }))
+  const original = editor.getJSON(), before = editor.state.doc
+  open()
+  expect(root.querySelector<HTMLInputElement>('[aria-label="行距倍数"]')!.value).toBe(String(attrs.lineSpacing ?? 1))
+  flushSync(() => root.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+  expect(root.querySelector('[role="dialog"]')).toBeNull()
+  expect(editor.state.doc).toBe(before)
+  expect(editor.getJSON()).toEqual(original)
+  expect(docxOperations(original, editor.getJSON(), anchors)).toEqual([])
+})

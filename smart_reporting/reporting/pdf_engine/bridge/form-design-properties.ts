@@ -1,5 +1,5 @@
 /** 精确已有控件设计；字段名与下拉选项是限定安全范围的原生属性增量。 */
-import {PDFDocument,PDFDict,PDFName,PDFRawStream,PDFDropdown,PDFRadioGroup} from 'pdf-lib'
+import {PDFDocument,PDFDict,PDFName,PDFRawStream,PDFDropdown,PDFRadioGroup,PDFSignature} from 'pdf-lib'
 import {applyFormWidgetEdits} from '../src/main/save-pdf'
 import {inspectDesignWidgets,inspectDesignChoiceOptions,type DesignWidgetIdentity} from './form-design'
 import {formDesignCreateAvailability,validSource,bodySnapshot,annotationsSnapshot,receipt,designRectPage,validDesignFieldName} from './form-design-create'
@@ -7,6 +7,7 @@ import {FORM_ARRANGEMENTS,arrangeDesignRects,type FormArrangement} from './form-
 export interface FormWidgetTarget {fieldName:string;widgetId:string;widgetIdentity:string;expectedWidgetSha256:string}
 export interface EditFormWidgetOperation extends FormWidgetTarget {kind:'editFormWidget';sourceSha256:string;rect?:[number,number,number,number];required?:boolean;newFieldName?:string;choiceOptions?:string[]}
 export interface ArrangeFormWidgetsOperation {kind:'arrangeFormWidgets';sourceSha256:string;targets:FormWidgetTarget[];alignment:FormArrangement}
+export interface EditFormWidgetRectsOperation {kind:'editFormWidgetRects';sourceSha256:string;changes:(FormWidgetTarget&{rect:[number,number,number,number]})[]}
 const targetKeys=['fieldName','widgetId','widgetIdentity','expectedWidgetSha256']
 const digest=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)
 function validateTarget(target:FormWidgetTarget){if(!target||typeof target.fieldName!=='string'||!target.fieldName||typeof target.widgetId!=='string'||!/^[0-9]+R[0-9]*$/.test(target.widgetId)||!digest(target.widgetIdentity)||!digest(target.expectedWidgetSha256))throw Error('pdf_form_widget_identity_invalid')}
@@ -57,16 +58,19 @@ async function changeRadioRequired(content:Uint8Array,d:PDFDocument,target:Desig
 async function writeWidgets(content:Uint8Array,expected:string,op:{kind:string},edits:{target:DesignWidgetIdentity;rect?:[number,number,number,number];required?:boolean}[],preserveUntouchedWidgets=false){
  const d=await PDFDocument.load(content,{updateMetadata:false}),body=bodySnapshot(d),annotations=annotationsSnapshot(d),affected=new Set(edits.map(e=>e.target.fieldName)),modified=new Set(edits.map(e=>e.target.widgetId))
  const widgetId=(ref:unknown)=>String(ref).replace(/^(\d+) (\d+) R$/,(_,n,g)=>n+'R'+(g==='0'?'':g))
- const originalState=(doc:PDFDocument)=>new Map(doc.context.enumerateIndirectObjects().map(([ref,obj])=>[String(ref),obj instanceof PDFDict&&modified.has(widgetId(ref))?JSON.stringify(obj.entries().filter(([key])=>!['/Rect','/AP'].includes(String(key))).map(([k,v])=>[String(k),String(v)])):obj instanceof PDFRawStream?obj.dict.toString()+Buffer.from(obj.contents).toString('hex'):String(obj)]))
- const originals=preserveUntouchedWidgets?originalState(d):null,modifiedDicts=new Set(d.context.enumerateIndirectObjects().filter(([ref])=>modified.has(widgetId(ref))).map(([,obj])=>obj)),appearances=preserveUntouchedWidgets?d.getForm().getFields().flatMap(f=>f.acroField.getWidgets()).map(w=>({dict:w.dict,ap:w.dict.get(PDFName.of('AP'))})):[],untouched=appearances.filter(({dict})=>!modifiedDicts.has(dict))
+ const originalState=(doc:PDFDocument)=>new Map(doc.context.enumerateIndirectObjects().map(([ref,obj])=>[String(ref),obj instanceof PDFDict&&modified.has(widgetId(ref))?JSON.stringify(obj.entries().filter(([key])=>!['/Rect',...(edits.some(edit=>edit.required!==undefined&&edit.target.widgetId===widgetId(ref))?['/Ff']:[])].includes(String(key))).map(([k,v])=>[String(k),String(v)])):obj instanceof PDFRawStream?obj.dict.toString()+Buffer.from(obj.contents).toString('hex'):String(obj)]))
+ const preserveOriginals=preserveUntouchedWidgets||edits.every(edit=>edit.target.fieldKind==='signature')
+ const originals=preserveOriginals?originalState(d):null
  applyFormWidgetEdits(d,edits.map(e=>({fieldName:e.target.fieldName,widgetId:e.target.widgetId,...(e.rect?{rect:e.rect}:{}),...(e.required!==undefined?{required:e.required}:{})})))
  const expectedState=widgetState(d,affected)
- // Native appearance updates mutate /AP dictionaries in place; detach them first so original references/streams survive.
- if(preserveUntouchedWidgets){for(const {dict}of appearances){const ap=dict.lookupMaybe(PDFName.of('AP'),PDFDict);if(ap)dict.set(PDFName.of('AP'),ap.clone())}d.getForm().updateFieldAppearances();for(const {dict,ap}of untouched){if(ap)dict.set(PDFName.of('AP'),ap);else dict.delete(PDFName.of('AP'))}}
- const bytes=await d.save({useObjectStreams:false,updateFieldAppearances:!preserveUntouchedWidgets});let reason:string|null=null
+ // Geometry-only operations retain original /AP and /DA. PDF viewers map the
+ // existing appearance BBox into the new Widget Rect; regenerating all fields
+ // would silently substitute fonts/colors (notably escaped ReportLab /DA).
+
+ const bytes=await d.save({useObjectStreams:false,updateFieldAppearances:!preserveOriginals});let reason:string|null=null
  try{const out=await PDFDocument.load(bytes,{updateMetadata:false}),census=(await inspectDesignWidgets(bytes)).widgets;if(JSON.stringify(bodySnapshot(out))!==JSON.stringify(body)||JSON.stringify(annotationsSnapshot(out))!==JSON.stringify(annotations)||JSON.stringify(widgetState(out,affected))!==JSON.stringify(expectedState))throw Error('original body, field tree or surviving widgets changed')
-  if(originals){const actual=originalState(out);for(const [ref,value]of originals)if(actual.get(ref)!==value)throw Error('original object changed outside arranged Widget geometry/appearance: '+ref)}
-  for(const edit of edits){const f=out.getForm().getField(edit.target.fieldName),w=census.find(w=>w.widgetId===edit.target.widgetId&&w.fieldName===edit.target.fieldName);if(!w?.designEditable||edit.rect&&JSON.stringify(w.rect)!==JSON.stringify(edit.rect)||edit.required!==undefined&&f.isRequired()!==edit.required||f.acroField.getWidgets().some(w=>!w.dict.lookupMaybe(PDFName.of('AP'),PDFDict)))throw Error('widget geometry required flag or appearance changed')}
+  if(originals){const actual=originalState(out);for(const [ref,value]of originals)if(actual.get(ref)!==value)throw Error('original object changed outside Widget geometry: '+ref)}
+  for(const edit of edits){const f=out.getForm().getField(edit.target.fieldName),w=census.find(w=>w.widgetId===edit.target.widgetId&&w.fieldName===edit.target.fieldName);if(!w?.designEditable||edit.rect&&JSON.stringify(w.rect)!==JSON.stringify(edit.rect)||edit.required!==undefined&&f.isRequired()!==edit.required||f.acroField.getWidgets().some(w=>f instanceof PDFSignature?w.dict.has(PDFName.of('AP'))||w.dict.has(PDFName.of('V')):!w.dict.lookupMaybe(PDFName.of('AP'),PDFDict)))throw Error('widget geometry required flag or appearance changed')}
  }catch(error){reason='pdf_form_widget_output_review_failed: '+String(error)}
  return receipt(content,bytes,op,reason)
 }
@@ -75,7 +79,14 @@ export async function editDesignWidget(content:Uint8Array,expected:string,op:Edi
  if(op.kind!=='editFormWidget'||Object.keys(op).some(k=>!['kind','sourceSha256',...targetKeys,'rect','required','newFieldName','choiceOptions'].includes(k))||op.rect===undefined&&op.required===undefined&&op.newFieldName===undefined&&op.choiceOptions===undefined||op.required!==undefined&&typeof op.required!=='boolean')throw Error('pdf_form_widget_properties_invalid')
  const availability=await formDesignCreateAvailability(content);if(!availability.createFormField)throw Error(availability.createFormFieldReason||'pdf_form_widget_source_unsupported')
  const census=(await inspectDesignWidgets(content)).widgets,target=resolveTarget(census,op),d=await PDFDocument.load(content,{updateMetadata:false});if(op.required!==undefined&&d.getForm().getField(target.fieldName) instanceof PDFRadioGroup)return changeRadioRequired(content,d,target,op,census);if(op.choiceOptions!==undefined)return changeChoiceOptions(content,d,target,op);if(op.newFieldName!==undefined)return renameWidget(content,d,target,op,census);if(op.rect!==undefined)designRectPage(d,expected,'sha256:'+expected+':page:'+target.pageIndex,op.rect)
- return writeWidgets(content,expected,op,[{target,rect:op.rect,required:op.required}])
+ return writeWidgets(content,expected,op,[{target,rect:op.rect,required:op.required}],op.rect!==undefined&&op.required===undefined)
+}
+export async function editDesignWidgetRects(content:Uint8Array,expected:string,op:EditFormWidgetRectsOperation){
+ validSource(content,expected,op.sourceSha256)
+ if(op.kind!=='editFormWidgetRects'||Object.keys(op).some(k=>!['kind','sourceSha256','changes'].includes(k))||!Array.isArray(op.changes)||op.changes.length<1||op.changes.length>64||op.changes.some(c=>!c||Object.keys(c).some(k=>![...targetKeys,'rect'].includes(k)))||new Set(op.changes.map(c=>c.widgetId)).size!==op.changes.length)throw Error('pdf_form_widget_rects_invalid')
+ const availability=await formDesignCreateAvailability(content);if(!availability.createFormField)throw Error(availability.createFormFieldReason||'pdf_form_widget_source_unsupported')
+ const census=(await inspectDesignWidgets(content)).widgets,d=await PDFDocument.load(content,{updateMetadata:false}),edits=op.changes.map(change=>{const target=resolveTarget(census,change);designRectPage(d,expected,'sha256:'+expected+':page:'+target.pageIndex,change.rect);return {target,rect:change.rect}})
+ return writeWidgets(content,expected,op,edits,true)
 }
 export async function arrangeDesignWidgets(content:Uint8Array,expected:string,op:ArrangeFormWidgetsOperation){
  validSource(content,expected,op.sourceSha256)

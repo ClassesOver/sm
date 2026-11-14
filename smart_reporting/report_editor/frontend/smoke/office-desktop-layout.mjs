@@ -131,6 +131,18 @@ export async function auditOfficeDesktopLayout(page, format) {
       await tab.click()
       await page.waitForTimeout(80)
       const title=(await tab.textContent())?.trim()
+      const controls = await page.locator('[role=tabpanel]:not([hidden])').evaluate(panel =>
+        [...panel.querySelectorAll('button,input,select,textarea,a[href]')]
+          .filter(control => control.getClientRects().length)
+          .map(control => ({
+            tag: control.tagName.toLowerCase(), type: control.getAttribute('type'),
+            command: control.getAttribute('data-ribbon-command') || control.getAttribute('data-command') || control.getAttribute('data-action') || control.getAttribute('data-source-command-id'),
+            sourceAction: control.getAttribute('data-source-action'),
+            label: control.getAttribute('aria-label') || control.getAttribute('title') || control.labels?.[0]?.textContent.trim() || control.textContent.trim(),
+            title: control.getAttribute('title'), disabled: control.matches(':disabled') || control.getAttribute('aria-disabled') === 'true',
+            pressed: control.getAttribute('aria-pressed'), expanded: control.getAttribute('aria-expanded'),
+            icons: control.querySelectorAll('svg').length,
+          })))
       const missing = await page.locator('[role=tabpanel]:not([hidden]) button').evaluateAll(buttons => buttons.filter(button => button.getBoundingClientRect().height && button.textContent.trim() && !button.querySelector('svg')).map(button => ({ command: button.dataset.ribbonCommand || button.dataset.command || button.dataset.action || button.dataset.sourceCommandId, label: button.textContent.trim() })))
       for (const item of missing) missingIcons.add(JSON.stringify(item))
       const layouts = []
@@ -150,11 +162,12 @@ export async function auditOfficeDesktopLayout(page, format) {
           return {overlaps,unnamed,pageOverflow:document.documentElement.scrollWidth>innerWidth+1}
         })
         layouts.push({width,...layout})
+        await page.screenshot({path:join(directory, `${format}-tab-${index}-${width}.png`)})
         if(layout.overlaps.length)failures.push(format+' '+title+' '+width+' 控件覆盖组名：'+layout.overlaps.join('、'))
         if(layout.pageOverflow)failures.push(format+' '+title+' '+width+' 页面横向溢出')
       }
       await page.setViewportSize({width:1280,height:720})
-      tabChecks.push({title, missingIcons:missing, layouts})
+      tabChecks.push({title, controls, missingIcons:missing, layouts})
       const dimensions=await page.locator('.editor-scroll, .workbook-grid, .pdf-layout, .slides-stage').first().boundingBox()
       if (!dimensions || dimensions.height<100) failures.push(format + ' 功能标签「' + title + '」挤占画布高度')
       await page.screenshot({path:join(directory, format + '-tab-' + index + '.png')})

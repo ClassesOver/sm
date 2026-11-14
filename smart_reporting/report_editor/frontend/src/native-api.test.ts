@@ -38,6 +38,19 @@ describe('native HTTP client', () => {
     expect(fetcher.mock.calls[0][1].signal).toBe(signal)
   })
 
+  it('requests a clipped identity-bound PDF image background with cancellable authorization', async () => {
+    const target = { sourceSha256: 'a'.repeat(64), pageId: `sha256:${'a'.repeat(64)}:page:0`, imageId: 'b'.repeat(64), expectedImageSha256: 'c'.repeat(64), clip: { x: 4, y: 8, width: 20, height: 10 }, pxWidth: 20 }
+    const response = { ...target, image: 'iVBORw0KGgoAAA', width: 20, height: 10, sha256: 'd'.repeat(64) }
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(response)))
+    vi.stubGlobal('fetch', fetcher)
+    const signal = new AbortController().signal
+    await expect(createNativeApi('document', 3, 'csrf').imageBackground(target, signal)).resolves.toEqual(response)
+    expect(fetcher.mock.calls[0][0]).toBe('/reports/v1/native/document/3/api/image-background')
+    expect(JSON.parse(fetcher.mock.calls[0][1].body)).toEqual(target)
+    expect(fetcher.mock.calls[0][1].signal).toBe(signal)
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('X-CSRF-Token')).toBe('csrf')
+  })
+
   it('preserves server status/code and meaningful failure detail', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: { code: 'native_source_changed', message: '来源已变化' } }), { status: 409 })))
     const error = await createNativeApi('document', 1, 'csrf').save(request).catch(error => error)
@@ -74,9 +87,12 @@ it('AI写入使用原生会话CSRF、状态轮询可取消且完整草稿随采�
   await api.aiStatus('job/id',signal)
   await api.aiAccept('job/id',{...payload,snapshotSha256:'b'.repeat(64)})
   await api.aiCancel('job/id')
+  await api.aiCancelRequest('request-1')
   expect(fetcher.mock.calls[1][0]).toBe('/reports/v1/native/doc/1/api/ai/job%2Fid?waitMs=20000')
   expect(fetcher.mock.calls[1][1].signal).toBe(signal)
-  for(const index of [0,2,3]) expect(new Headers(fetcher.mock.calls[index][1].headers).get('X-CSRF-Token')).toBe('token')
+  for(const index of [0,2,3,4]) expect(new Headers(fetcher.mock.calls[index][1].headers).get('X-CSRF-Token')).toBe('token')
+  expect(fetcher.mock.calls[4][0]).toBe('/reports/v1/native/doc/1/api/ai/cancel-request')
+  expect(JSON.parse(fetcher.mock.calls[4][1].body)).toEqual({clientRequestId:'request-1'})
   expect(JSON.parse(fetcher.mock.calls[2][1].body).operations).toEqual(payload.operations)
 })
 

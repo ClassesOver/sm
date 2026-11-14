@@ -3593,6 +3593,66 @@ async def test_measure_label_crop_review_never_blocks_applied_pdf_http_download(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['review_failed', 'after_preview_review_failed', 'metadata_write_failed'])
+async def test_static_fill_review_never_blocks_actual_pdf_http_download(tmp_path, monkeypatch, fault):
+    """静态填写新复读步骤故障登记：验收告警保留内容图像及真实下载身份。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from smart_reporting.report_editor import native, native_publication
+    from smart_reporting.report_editor.native import bind_native_workspace
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE, create_native_editor_router
+    from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf_with_receipt
+    from smart_reporting.reporting.tests.test_native_pdf_text_service import fixture
+
+    editor, context, _, downloads = await fixture(tmp_path)
+    source = await editor.read_file(context)
+    model = inspect_pdf(source)
+    operation = {'kind': 'setStaticFill', 'sourceSha256': context.source_file.sha256,
+        'pageId': model['pages'][0]['pageId'], 'id': 'static-review-control', 'fillKind': 'text',
+        'rect': [30, 100, 130, 130], 'text': '静态填写回读', 'fontSize': 14,
+        'color': '#111111', 'align': 'left',
+        'image': 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAGElEQVR4nAXBAQEAAAjDIN7c5hNEciOlBz3iB3usnU7kAAAAAElFTkSuQmCC'}
+    issue = {'operationIndex': 0, 'kind': 'setStaticFill', 'fieldName': '',
+        'code': 'pdf_static_fill_metadata_write_failed' if fault == 'metadata_write_failed' else 'pdf_static_fill_output_review_failed', 'message': '静态填写输出复核失败；实际生成 PDF 已保留。'}
+    def failed_review(content, operations):
+        result = patch_pdf_with_receipt(content, operations)
+        return {**result, 'reviewIssues': [issue]}
+    if fault == 'review_failed':
+        monkeypatch.setattr(native, 'patch_pdf_with_receipt', failed_review)
+    monkeypatch.setattr(native_publication, 'patch_pdf_with_receipt', failed_review)
+    editor.context_for_session = AsyncMock(return_value=context)
+    raw, _ = await editor.grants.issue(context, capabilities=editor.capabilities(context))
+    token, _ = await editor.grants.exchange(raw)
+    app = FastAPI()
+    app.include_router(create_native_editor_router(editor.grants, editor=editor,
+        download_service=downloads, cookie_secure=False, allowed_origin='http://test'))
+    base = f'/reports/v1/native/{context.document_id}/{context.revision}'
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE, token, path=base)
+        headers = {'Origin': 'http://test', 'X-CSRF-Token': editor.grants.csrf_token(token)}
+        payload = {'expectedSha256': context.source_file.sha256, 'operations': [operation]}
+        preview = await client.post(base + '/api/preview', headers=headers, json=payload)
+        assert preview.status_code == 200, preview.text
+        result = preview.json()
+        saved_response = await client.post(base + '/api/save', headers=headers,
+            json={**payload, 'requestId': 'static-fill-' + fault, 'confirmedPreviewDigest': result['previewDigest']})
+        assert saved_response.status_code == 200, saved_response.text
+        saved = saved_response.json()
+        assert saved['validation']['ok'] is False
+        assert issue['code'] in {item['code'] for item in saved['validation']['issues']}
+        artifact = saved['artifacts']['pdf']
+        actual = await client.get(artifact['downloadUrl'])
+        assert actual.status_code == 200
+        assert hashlib.sha256(actual.content).hexdigest() == artifact['sha256']
+        assert len(actual.content) == artifact['size']
+        reader = PdfReader(BytesIO(actual.content))
+        records = json.loads(str(reader.trailer['/Root']['/GenOfficeStaticFormFills']))
+        assert records[0]['text'] == '静态填写回读'
+        assert list(reader.pages[0].images)
+        assert await editor.read_file(context) == source
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('anyio_backend', ['asyncio'])
 async def test_editor_caption_snapshot_fault_keeps_actual_word_pdf_http_downloads(tmp_path, monkeypatch):
     """登记新增渲染前索引步骤：真实导出继续，实际文件经正式HTTP链下载。"""
@@ -3741,3 +3801,145 @@ async def test_editor_template_bridge_faults_keep_verified_word_http_download(tm
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://reports.test') as client:
         response = await client.get(published['word']['downloadUrl'])
     assert response.status_code == 200 and response.content == raw
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['part_generation', 'registration', 'receipt_identity', 'postwrite', 'review', 'identity', 'missing'])
+async def test_pdf_split_http_preserves_other_parts_and_verified_downloads_on_faults(tmp_path, monkeypatch, fault):
+    """拆分第二份故障：保留实际可核验文件，拒绝伪造身份，继续生成第三份。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from smart_reporting.report_editor import native_pdf_extract
+    from smart_reporting.reporting.delivery import pdf_native
+    from .test_native_pdf_extract import extract_fixture
+    from .test_native_pdf_split import split_client
+
+    f = await extract_fixture(tmp_path)
+    def is_second(content):
+        return PdfReader(BytesIO(content)).pages[0].extract_text().strip() == 'source page two'
+
+    if fault == 'part_generation':
+        original = native_pdf_extract.extract_pdf_pages
+        def fail_second(content, pages):
+            if pages == [1]:
+                raise ValueError('injected second part generation failure')
+            return original(content, pages)
+        monkeypatch.setattr(native_pdf_extract, 'extract_pdf_pages', fail_second)
+    elif fault == 'registration':
+        original = f.repository.create_from_source
+        async def fail_registration(source, **kwargs):
+            content, _ = await f.workspace.afile_bytes(f.thread, source.source_file.path)
+            if is_second(content):
+                raise OSError('injected second registration failure')
+            return await original(source, **kwargs)
+        monkeypatch.setattr(f.repository, 'create_from_source', fail_registration)
+    elif fault == 'receipt_identity':
+        original = pdf_native._invoke
+        def wrong_receipt(payload, *args, **kwargs):
+            receipt = original(payload, *args, **kwargs)
+            if payload.get('kind') == 'extractPages' and payload.get('pages') == [1]:
+                return {**receipt, 'sha256': 'f' * 64, 'pageCount': 999}
+            return receipt
+        monkeypatch.setattr(pdf_native, '_invoke', wrong_receipt)
+    elif fault == 'review':
+        monkeypatch.setattr(native_pdf_extract, 'read_verified_file', AsyncMock(side_effect=OSError('injected postwrite review failure')))
+    else:
+        original = f.workspace.awrite_bytes
+        async def fail_write(key, path, content, **kwargs):
+            if path.endswith('/extracted.pdf') and is_second(content):
+                if fault != 'missing':
+                    await original(key, path, b'foreign bytes' if fault == 'identity' else content, **kwargs)
+                raise OSError('injected second write receipt failure')
+            return await original(key, path, content, **kwargs)
+        monkeypatch.setattr(f.workspace, 'awrite_bytes', fail_write)
+    client, headers = await split_client(f)
+    async with client:
+        response = await client.post('/reports/v1/native/parent-document/4/api/split-pdf', headers=headers,
+            json={'requestId': 'split-fault', 'expectedSha256': f.original_identity.sha256, 'chunkSize': 1})
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert [part['pages'] for part in result['parts']] == [[1], [2], [3]]
+        assert result['validation']['ok'] is False
+        for index, part in enumerate(result['parts']):
+            if index == 1 and fault in {'part_generation', 'identity', 'missing'}:
+                assert 'result' not in part and part['error']['code']
+                continue
+            saved = part['result']
+            assert saved['validation']['ok'] is False
+            if index == 1 and fault in {'registration', 'receipt_identity', 'postwrite', 'review'}:
+                expected = {'registration': 'native_derived_registration_failed', 'receipt_identity': 'native_pdf_extract_receipt_warning',
+                    'postwrite': 'native_pdf_extract_postwrite_warning', 'review': 'native_pdf_extract_review_failed'}[fault]
+                assert expected in {issue['code'] for issue in saved['validation']['issues']}
+            artifact = saved['artifacts']['pdf']
+            downloaded = await client.get(artifact['downloadUrl'])
+            assert downloaded.status_code == 200
+            assert len(downloaded.content) == artifact['size']
+            assert hashlib.sha256(downloaded.content).hexdigest() == artifact['sha256']
+            assert [p.extract_text().strip() for p in PdfReader(BytesIO(downloaded.content)).pages] == [
+                ['source page one', 'source page two', 'source page three'][index]]
+    original_after, _ = await f.workspace.afile_bytes(f.thread, f.original_identity.path)
+    assert original_after == f.original
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('fault', ['registration', 'receipt_identity', 'receipt_error', 'review_metadata', 'review_length', 'postwrite', 'review', 'identity', 'missing'])
+async def test_pdf_merge_http_preserves_verified_downloads_on_lineage_faults(tmp_path, monkeypatch, fault):
+    """多来源合并复用原派生链：可核验文件继续下载，仅拒绝缺失/伪造实际身份。"""
+    from io import BytesIO
+    from pypdf import PdfReader
+    from smart_reporting.report_editor import native_pdf_extract
+    from smart_reporting.reporting.delivery import pdf_native
+    from .test_native_pdf_extract import extract_fixture
+    from .test_native_pdf_merge import merge_upload
+    from .test_native_pdf_split import split_client
+
+    f = await extract_fixture(tmp_path)
+    if fault == 'registration':
+        monkeypatch.setattr(f.repository, 'create_from_source', AsyncMock(side_effect=OSError('injected registration failure')))
+    elif fault in {'receipt_identity', 'receipt_error', 'review_metadata', 'review_length'}:
+        original = pdf_native._invoke
+        def fail_receipt(payload, *args, **kwargs):
+            receipt = original(payload, *args, **kwargs)
+            if payload.get('kind') == 'mergePdf':
+                if fault == 'receipt_error':
+                    raise OSError('injected receipt after output exists')
+                if fault in {'review_metadata', 'review_length'}:
+                    return {**receipt, 'reviewIssues': 123 if fault == 'review_metadata' else ['x' * 2001]}
+                return {**receipt, 'sha256': 'f' * 64}
+            return receipt
+        monkeypatch.setattr(pdf_native, '_invoke', fail_receipt)
+    elif fault == 'review':
+        monkeypatch.setattr(native_pdf_extract, 'read_verified_file', AsyncMock(side_effect=OSError('injected output review failure')))
+    else:
+        original = f.workspace.awrite_bytes
+        async def fail_write(key, path, content, **kwargs):
+            if path.endswith('/merged.pdf'):
+                if fault != 'missing':
+                    await original(key, path, b'foreign bytes' if fault == 'identity' else content, **kwargs)
+                raise OSError('injected write receipt failure')
+            return await original(key, path, content, **kwargs)
+        monkeypatch.setattr(f.workspace, 'awrite_bytes', fail_write)
+    client, headers = await split_client(f)
+    async with client:
+        response = await client.post('/reports/v1/native/parent-document/4/api/merge-pdf', headers=headers,
+            json={'requestId': 'merge-fault', 'expectedSha256': f.original_identity.sha256,
+                  'files': [merge_upload('external page')]})
+        if fault in {'identity', 'missing'}:
+            assert response.status_code == 403, response.text
+            assert response.json()['detail']['code'] == 'native_merge_output_unavailable'
+        else:
+            assert response.status_code == 200, response.text
+            saved = response.json()
+            assert saved['validation']['ok'] is False
+            expected = {'registration': 'native_derived_registration_failed', 'receipt_identity': 'native_pdf_merge_receipt_warning',
+                'receipt_error': 'native_pdf_merge_receipt_warning', 'review_metadata': 'native_pdf_merge_receipt_warning',
+                'review_length': 'native_pdf_merge_receipt_warning', 'postwrite': 'native_pdf_merge_postwrite_warning',
+                'review': 'native_pdf_merge_review_failed'}[fault]
+            assert expected in {issue['code'] for issue in saved['validation']['issues']}
+            artifact = saved['artifacts']['pdf']
+            downloaded = await client.get(artifact['downloadUrl'])
+            assert downloaded.status_code == 200
+            assert hashlib.sha256(downloaded.content).hexdigest() == artifact['sha256']
+            assert [page.extract_text().strip() for page in PdfReader(BytesIO(downloaded.content)).pages] == [
+                'source page one', 'source page two', 'source page three', 'external page']
+    assert (await f.workspace.afile_bytes(f.thread, f.original_identity.path))[0] == f.original

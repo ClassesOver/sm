@@ -11,7 +11,7 @@
 .workbook-ribbon-group .workbook-ribbon-number-format { max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .workbook-ribbon-group:first-child { padding-left:0; }
 .workbook-ribbon-group:last-child { border-right:0; }
-.workbook-ribbon-group h3 { position:absolute; bottom:0; left:12px; right:12px; margin:0; color:var(--color-text-muted); font-size:var(--font-size-xs); font-weight:500; text-align:center; }
+.workbook-ribbon-group h2 { position:absolute; bottom:0; left:12px; right:12px; margin:0; color:var(--color-text-muted); font-size:var(--font-size-xs); font-weight:500; text-align:center; }
 .workbook-ribbon-group button { display:inline-flex; flex:0 0 auto; align-items:center; justify-content:center; gap:4px; min-height:var(--office-control-height); padding:4px 8px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
 .workbook-ribbon-group button:hover:not(:disabled) { background:var(--office-hover-bg); border-color:var(--office-hover-border); }
 .workbook-ribbon-group button:is([aria-pressed="true"],[aria-expanded="true"]) { background:var(--office-pressed-bg); border-color:var(--office-pressed-border); color:var(--office-pressed-ink); }
@@ -25,24 +25,50 @@
 .workbook-ribbon-color input { width:20px; height:20px; min-height:0; flex:none; padding:0; border:0; background:transparent; cursor:pointer; }
 .workbook-ribbon-color:has(input:disabled) { background:var(--color-bg-soft); }
 .workbook-ribbon-color[data-mixed="true"] { border-style:dashed; }
-.workbook-ribbon-group button .workbook-ribbon-icon { display:inline-grid; width:18px; height:18px; place-items:center; flex:0 0 18px; }
-.workbook-ribbon-group button .workbook-ribbon-icon svg { width:18px; height:18px; }
+.workbook-ribbon-chart-menu { display:inline-flex; align-items:center; gap:4px; }
+.workbook-ribbon-group :is(button,.workbook-ribbon-chart-menu) .workbook-ribbon-icon { display:inline-grid; width:18px; height:18px; place-items:center; flex:0 0 18px; }
+.workbook-ribbon-group :is(button,.workbook-ribbon-chart-menu) .workbook-ribbon-icon svg { width:18px; height:18px; }
 .workbook-ribbon-color-state { max-width:56px; overflow:hidden; color:var(--color-text-muted); font-size:var(--font-size-xs); text-overflow:ellipsis; white-space:nowrap; }
 .workbook-ribbon-color[data-format-state="mixed"],
 .workbook-ribbon-select[data-format-state="mixed"] { border-style:dashed; }
-.workbook-ribbon-format-dialog { width:min(480px,calc(100vw - 32px)); box-sizing:border-box; }
+.workbook-ribbon-format-dialog { width:min(480px,calc(100vw - 32px)); box-sizing:border-box; font-size:var(--font-size-md); line-height:1.5; }
 .workbook-ribbon-format-dialog h2 { margin:0 32px 20px 0; font-size:var(--font-size-lg); color:var(--color-ink); }
 .workbook-ribbon-format-form { display:grid; gap:12px; }
 .workbook-ribbon-format-form label { display:grid; gap:8px; color:var(--color-ink-2); font-size:var(--font-size-md); font-weight:500; }
+.workbook-ribbon-format-form :is(label,fieldset,div) { min-width:0; }
+.workbook-ribbon-format-form :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { width:100%; min-width:0; min-height:36px; box-sizing:border-box; padding:7px 10px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink); font:inherit; }
+.workbook-ribbon-format-form label:has(> input:is([type=checkbox],[type=radio])) { display:flex; align-items:center; gap:8px; }
+.workbook-ribbon-format-form input:is([type=checkbox],[type=radio]) { flex:0 0 16px; width:16px; height:16px; margin:0; accent-color:var(--color-primary); }
+.workbook-ribbon-format-dialog .workbook-ribbon-format-form [hidden] { display:none; }
+.workbook-ribbon-format-form button { min-height:36px; padding:6px 12px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink-2); font:inherit; cursor:pointer; }
+.workbook-ribbon-format-form :is(button,input,select,textarea):disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
+.workbook-ribbon-format-dialog > p { color:var(--color-text-muted); font-size:var(--font-size-sm); overflow-wrap:anywhere; }
+.workbook-ribbon-sort-level { display:grid; grid-template-columns:80px minmax(0,1fr) minmax(0,1fr); align-items:center; gap:8px; }
+.workbook-ribbon-numfmt-cats { display:flex; flex-wrap:wrap; gap:6px; }
+.workbook-ribbon-numfmt-cats button[aria-selected=true] { border-color:var(--color-primary); background:var(--color-primary-soft); color:var(--color-primary); font-weight:600; }
+.workbook-ribbon-numfmt-preview { padding:10px 12px; border:1px solid var(--color-border-soft); border-radius:var(--radius-sm); background:var(--color-bg-soft); }
+.workbook-ribbon-format-form [data-ranges] { display:grid; gap:12px; }
+.workbook-ribbon-format-form [data-range] { display:grid; gap:10px; padding:12px; border:1px solid var(--color-border-soft); border-radius:var(--radius-sm); }
+.workbook-ribbon-format-form [data-range] > button { justify-self:end; }
+@media(max-width:480px) {
+  .workbook-ribbon-sort-level { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  .workbook-ribbon-sort-level > span { grid-column:1 / -1; }
+}
 .workbook-ribbon-format-code { width:100%; min-height:38px; box-sizing:border-box; padding:8px 10px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink); font:inherit; }
 .workbook-ribbon-format-form p { margin:0; color:var(--color-text-muted); font-size:var(--font-size-sm); line-height:1.6; overflow-wrap:anywhere; }
 .workbook-ribbon-format-form .workbook-ribbon-format-error { color:var(--color-danger); }
 .workbook-ribbon-format-code[aria-invalid="true"] { border-color:var(--color-danger); }
 .workbook-ribbon-format-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:8px; }
 .workbook-ribbon-format-actions button { min-height:36px; padding:6px 16px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink-2); font:inherit; cursor:pointer; }
-.workbook-ribbon-format-actions .workbook-ribbon-format-apply { border-color:var(--color-primary); background:var(--color-primary); color:var(--color-surface); }
+.workbook-ribbon-format-actions :is(.workbook-ribbon-format-apply, button[type=submit]) { border-color:var(--color-primary); background:var(--color-primary); color:var(--color-surface); }
 .workbook-ribbon-format-actions button:hover:not(:disabled) { filter:brightness(.96); }
-.workbook-ribbon-format-dialog :is(button,input):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.workbook-ribbon-format-dialog :is(button,input,select,textarea):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+@media(min-width:769px) {
+  .workbook-ribbon-format-form label { grid-template-columns:112px minmax(0,1fr); align-items:center; }
+  .workbook-ribbon-format-form label > :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { grid-column:2; }
+  .workbook-ribbon-format-form :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { min-height:32px; padding:5px 8px; }
+  .workbook-ribbon-format-dialog .workbook-ribbon-format-form button { min-height:32px; padding:5px 12px; }
+}
 .workbook-ribbon-note-dialog { width:min(520px,calc(100vw - 32px)); box-sizing:border-box; }
 .workbook-ribbon-note-dialog h2 { margin:0 32px 18px 0; color:var(--color-ink); font-size:var(--font-size-lg); }
 .workbook-ribbon-note-form { display:grid; gap:12px; }
@@ -55,6 +81,36 @@
 .workbook-ribbon-note-actions button { min-height:36px; padding:6px 16px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink-2); font:inherit; cursor:pointer; }
 .workbook-ribbon-note-actions button[type=submit] { background:var(--color-primary); border-color:var(--color-primary); color:var(--color-surface); }
 .workbook-ribbon-note-dialog :is(button,textarea):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+.workbook-ribbon-note-author { overflow-wrap:anywhere; }
+.workbook-defined-names-dialog { width:min(720px,calc(100vw - 32px)); }
+.workbook-defined-names-dialog .workbook-defined-name-list { height:160px; min-height:160px; }
+.workbook-ribbon-goto-names { display:grid; gap:6px; min-width:0; max-height:240px; margin:0; padding:2px; overflow:auto; list-style:none; }
+.workbook-ribbon-goto-names li { min-width:0; }
+.workbook-ribbon-goto-names button { display:grid; gap:4px; width:100%; box-sizing:border-box; text-align:left; white-space:normal; overflow-wrap:anywhere; }
+.workbook-ribbon-goto-names :is(strong,span) { min-width:0; }
+.workbook-ribbon-goto-names span { color:var(--color-text-muted); font-size:var(--font-size-sm); }
+.workbook-ribbon-fill-dialog { width:min(600px,calc(100vw - 32px)); }
+.workbook-ribbon-fill-group,.workbook-header-footer-group { display:grid; gap:8px; margin:0; padding:12px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); }
+.workbook-ribbon-fill-group { align-content:start; }
+.workbook-ribbon-fill-group legend,.workbook-header-footer-group legend { padding:0 4px; color:var(--color-ink-2); font-weight:600; }
+.workbook-header-footer-dialog { width:min(780px,calc(100vw - 32px)); }
+.workbook-header-footer-group { grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.workbook-header-footer-dialog .workbook-ribbon-format-form label { display:flex; flex-direction:column; align-items:stretch; gap:6px; }
+.workbook-header-footer-group textarea { height:80px; resize:vertical; }
+.workbook-ribbon-format-unit { display:flex; align-items:center; gap:8px; min-width:0; }
+.workbook-ribbon-format-unit input { flex:1; }
+.workbook-print-preview-dialog { width:min(980px,calc(100vw - 32px)); }
+.workbook-print-preview-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; }
+.workbook-print-preview-toolbar [data-print-page] { flex:1 1 160px; overflow-wrap:anywhere; }
+.workbook-print-preview-pane { display:flex; justify-content:center; align-items:flex-start; height:52vh; overflow:auto; background:var(--color-bg-soft); border:1px solid var(--color-border-soft); }
+.workbook-print-preview-pane:focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
+@media(min-width:769px) {
+  .workbook-ribbon-fill-dialog .workbook-ribbon-format-form { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .workbook-ribbon-fill-dialog .workbook-ribbon-format-form > :not(fieldset) { grid-column:1 / -1; }
+}
+@media(max-width:700px) {
+  .workbook-header-footer-group { grid-template-columns:minmax(0,1fr); }
+}
 @media(max-width:768px) {
   .workbook-ribbon-tabs { padding-inline:8px; }
   .workbook-ribbon-tabs button { min-height:40px; padding-inline:12px; }
@@ -68,6 +124,48 @@
 
 .workbook-ai > form[hidden] { display: none; }
 
+/* 框架规则面板沿用桌面 Office 外壳；规则预览保留源颜色。 */
+.editor-format-xlsx [data-u-comp=sidebar] {
+  --univer-primary-50:var(--office-accent-soft);
+  --univer-primary-100:var(--office-accent-soft);
+  --univer-primary-500:var(--office-accent);
+  --univer-primary-600:var(--office-accent);
+  --univer-primary-700:var(--office-accent-hover);
+  max-width:min(100%,100vw);
+  min-width:0;
+  color:var(--office-ink);
+  background:var(--office-chrome);
+}
+.editor-format-xlsx [data-u-comp=sidebar] > section { min-width:0; grid-template-columns:minmax(0,1fr); scrollbar-width:thin; }
+.editor-format-xlsx [data-u-comp=sidebar] > section > section { min-width:0; }
+.editor-format-xlsx [data-u-comp=sidebar] header { gap:8px; padding:8px 12px; border-bottom:1px solid var(--office-border-soft); font-size:var(--office-font-size); }
+.editor-format-xlsx [data-u-comp=sidebar] button[aria-label="Close sidebar"] { display:inline-flex; align-items:center; justify-content:center; flex:0 0 32px; width:32px; height:32px; border-radius:var(--office-radius); color:var(--office-muted); }
+.editor-format-xlsx [data-u-comp=sidebar] button[aria-label="Close sidebar"]:hover { background:var(--office-hover-bg); color:var(--office-ink); }
+.editor-format-xlsx [data-u-comp=sidebar] :is(button,input,textarea,[data-u-comp=select]) { font-family:inherit; }
+.editor-format-xlsx [data-u-comp=sidebar] :is([data-u-comp=input],[data-u-comp=select]) { min-height:32px; border-radius:var(--office-radius); }
+.editor-format-xlsx [data-u-comp=sidebar] [data-u-comp=input] input { min-height:30px; box-sizing:border-box; }
+.editor-format-xlsx [data-u-comp=sidebar] textarea { min-height:64px; }
+.editor-format-xlsx [data-u-comp=sidebar] :is(button,input,textarea,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:1px; }
+.editor-format-xlsx [data-u-comp=sidebar] [data-u-comp=form-layout] { min-width:0; }
+.editor-format-xlsx [data-u-comp=sidebar] [class~="univer-w-[287px]"] { max-width:100%; box-sizing:border-box; }
+.editor-format-xlsx [data-u-comp=sidebar] .univer-justify-between:has(> div > span > [data-u-comp=select]) { flex-wrap:wrap; }
+/* Radix 菜单挂载在 body，单独限制于 XLSX 宿主。 */
+body:has(.editor-format-xlsx) [data-radix-menu-content] {
+  --univer-primary-50:var(--office-accent-soft);
+  --univer-primary-100:var(--office-accent-soft);
+  --univer-primary-500:var(--office-accent);
+  --univer-primary-600:var(--office-accent);
+  --univer-primary-700:var(--office-accent-hover);
+  font-family:inherit;
+  border-radius:var(--office-radius);
+  max-height:min(var(--radix-dropdown-menu-content-available-height,100dvh),calc(100dvh - 16px));
+  max-width:calc(100vw - 16px);
+}
+@media(max-height:480px) {
+  .editor-format-xlsx [data-u-comp=sidebar][aria-expanded=true] { position:fixed; z-index:1000; top:82px; right:0; bottom:36px; height:auto; }
+  .editor-format-xlsx [data-u-comp=sidebar][aria-expanded=true] > section { height:100%; min-height:0; }
+}
+
 @media screen {
   .editor-format-xlsx .workbook-grid-frame { display:grid; flex:1; min-width:0; min-height:0; }
   .editor-format-xlsx .workbook-ai { flex:none; max-height:30dvh; overflow:auto; padding:8px 12px; }
@@ -75,11 +173,125 @@
   .editor-format-xlsx .workbook-ai:has(form[hidden]) .workbook-feedback { padding:4px 0; font-size:var(--office-label-size); }
 }
 
-/* 插入符号对话框（固定源 SymbolDialog）：分类页签 + 符号网格，外壳沿用 --office-* 交互色。 */
-.workbook-symbol-dialog .workbook-symbol-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
-.workbook-symbol-dialog .workbook-symbol-tabs button { min-height: var(--office-control-height); padding: 0 10px; border: 1px solid var(--office-border); border-radius: var(--office-radius); background: #fff; color: var(--office-ink); font: inherit; cursor: pointer; }
+/* 插入符号：紧凑分类页签、键盘网格，标题和关闭操作始终可见。 */
+.workbook-ribbon-format-dialog.workbook-symbol-dialog { display:flex;flex-direction:column;box-sizing:border-box;width:min(480px,calc(100vw - 24px));max-height:calc(100dvh - 24px);padding:0;overflow:hidden;color:var(--office-ink);font:inherit;font-size:13px;line-height:1.5; }
+.workbook-symbol-dialog > header { flex:none;padding:12px 48px 12px 16px;border-bottom:1px solid var(--office-border-soft); }
+.workbook-symbol-dialog > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.workbook-ribbon-format-dialog.workbook-symbol-dialog > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0;border-radius:var(--office-radius); }
+.workbook-symbol-dialog .workbook-symbol-body { display:grid;grid-auto-rows:max-content;gap:12px;min-height:0;padding:12px 16px;overflow:auto;scroll-padding:6px;scrollbar-width:thin; }
+.workbook-symbol-dialog .workbook-symbol-body > * { min-width:0; }
+.workbook-symbol-dialog .workbook-symbol-tabs { display:flex;flex-wrap:wrap;gap:4px; }
+.workbook-ribbon-format-dialog.workbook-symbol-dialog button { box-sizing:border-box;height:28px;min-height:28px;padding:0 10px;border:1px solid var(--office-border);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink);font:inherit;cursor:pointer; }
 .workbook-symbol-dialog .workbook-symbol-tabs button[aria-selected=true] { background: var(--office-pressed-bg); border-color: var(--office-pressed-border); color: var(--office-pressed-ink); }
-.workbook-symbol-dialog .workbook-symbol-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 4px; max-width: 420px; }
-.workbook-symbol-dialog .workbook-symbol-grid button { height: 36px; border: 1px solid var(--office-border); border-radius: var(--office-radius); background: #fff; color: var(--office-ink); font-size: 18px; cursor: pointer; }
+.workbook-symbol-dialog .workbook-symbol-grid { display:grid;grid-template-columns:repeat(10,minmax(0,1fr));gap:4px;max-width:420px; }
+.workbook-ribbon-format-dialog.workbook-symbol-dialog .workbook-symbol-grid button { height:36px;min-height:36px;padding:0;border-radius:2px;font-size:18px; }
+.workbook-symbol-dialog .workbook-symbol-body p { margin:0;max-height:90px;padding:2px;overflow:auto;overflow-wrap:anywhere;color:var(--office-muted);scrollbar-width:thin; }
+.workbook-symbol-dialog .workbook-symbol-body [role=alert] { color:var(--color-danger); }
+.workbook-symbol-dialog :is([role=alert],[role=status]):empty { display:none; }
+.workbook-symbol-dialog > footer.workbook-ribbon-format-actions { flex:none;flex-wrap:wrap;margin:0;padding:8px 16px 12px;border-top:1px solid var(--office-border-soft); }
 .workbook-symbol-dialog button:hover { background: var(--office-hover-bg); border-color: var(--office-hover-border); }
-.workbook-symbol-dialog button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
+.workbook-ribbon-format-dialog.workbook-symbol-dialog :is(button,[tabindex]) { scroll-margin:6px; }
+.workbook-ribbon-format-dialog.workbook-symbol-dialog :is(button,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:1px; }
+@media(max-width:480px) {
+ .workbook-symbol-dialog .workbook-symbol-grid { grid-template-columns:repeat(6,minmax(0,1fr)); }
+ .workbook-symbol-dialog .workbook-symbol-body { padding:10px 12px; }
+}
+
+/* 模拟分析：保留运行期间锁定规则，固定标题/操作区，长提示在主体内阅读。 */
+.workbook-ribbon-format-dialog:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) { display:flex;flex-direction:column;width:min(480px,100%);max-height:calc(100dvh - 40px);padding:0;overflow:hidden;font:inherit;font-size:13px;line-height:1.5;color:var(--office-ink); }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) > header { flex:none;padding:10px 44px 10px 16px;border-bottom:1px solid var(--office-border-soft); }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.workbook-ribbon-format-dialog:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0;border-radius:var(--office-radius); }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) > form { display:flex;flex:1;flex-direction:column;gap:0;min-height:0; }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) .workbook-analysis-body { display:grid;grid-auto-rows:max-content;gap:10px;min-height:0;padding:12px 16px;overflow:auto;scroll-padding:6px;scrollbar-width:thin; }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) .workbook-analysis-body label { display:grid;grid-template-columns:112px minmax(0,1fr);align-items:center;gap:8px;font:inherit; }
+.workbook-ribbon-format-dialog:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) .workbook-analysis-body input { grid-column:2;width:100%;min-width:0;box-sizing:border-box;height:28px;min-height:28px;padding:3px 6px;border-radius:var(--office-radius);font:inherit; }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) .workbook-analysis-body p { max-height:96px;min-width:0;margin:0;padding:2px;overflow:auto;font:inherit;line-height:1.5;overflow-wrap:anywhere;scrollbar-width:thin; }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) :is([role=status],[role=alert]):empty { display:none; }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) footer.workbook-ribbon-format-actions { flex:none;flex-wrap:wrap;margin:0;padding:8px 16px 12px;border-top:1px solid var(--office-border-soft); }
+.workbook-ribbon-format-dialog:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) button { box-sizing:border-box;height:28px;min-height:28px;padding:0 10px;border-radius:var(--office-radius);font:inherit; }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) :is(button,input,[tabindex]) { scroll-margin:6px; }
+:is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) :is(button,input,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:1px; }
+@media(max-width:420px) {
+  :is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) .workbook-analysis-body { padding:10px 12px; }
+  :is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) .workbook-analysis-body label { grid-template-columns:104px minmax(0,1fr); }
+  :is(.workbook-goal-seek-dialog,.workbook-data-table-dialog) footer.workbook-ribbon-format-actions { padding:8px 12px 10px; }
+}
+
+/* 高级筛选：固定标题/操作区，条件与说明在主体内滚动。 */
+.workbook-ribbon-format-dialog.workbook-advanced-filter-dialog { display:flex;flex-direction:column;width:min(480px,100%);max-height:calc(100dvh - 40px);padding:0;overflow:hidden;font:inherit;font-size:13px;line-height:1.5;color:var(--office-ink); }
+.workbook-advanced-filter-dialog > header { flex:none;padding:10px 44px 10px 16px;border-bottom:1px solid var(--office-border-soft); }
+.workbook-advanced-filter-dialog > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.workbook-ribbon-format-dialog.workbook-advanced-filter-dialog > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0;border-radius:var(--office-radius); }
+.workbook-advanced-filter-dialog > form { display:flex;flex:1;flex-direction:column;gap:0;min-height:0; }
+.workbook-advanced-filter-body { display:grid;grid-auto-rows:max-content;gap:10px;min-height:0;padding:12px 16px;overflow:auto;scroll-padding:6px;scrollbar-width:thin; }
+.workbook-advanced-filter-body label { display:grid;grid-template-columns:104px minmax(0,1fr);align-items:center;gap:8px;font:inherit; }
+.workbook-advanced-filter-body label.workbook-advanced-filter-condition { grid-template-columns:104px 100px minmax(0,1fr); }
+.workbook-ribbon-format-dialog.workbook-advanced-filter-dialog .workbook-advanced-filter-body :is(input,select) { grid-column:2;width:100%;min-width:0;box-sizing:border-box;height:28px;min-height:28px;padding:3px 6px;border-radius:var(--office-radius);font:inherit; }
+.workbook-ribbon-format-dialog.workbook-advanced-filter-dialog .workbook-advanced-filter-body .workbook-advanced-filter-condition input { grid-column:3; }
+.workbook-advanced-filter-body p { max-height:96px;min-width:0;margin:0;padding:2px;overflow:auto;font:inherit;line-height:1.5;overflow-wrap:anywhere;scrollbar-width:thin; }
+.workbook-advanced-filter-dialog :is([role=status],[role=alert]):empty { display:none; }
+.workbook-advanced-filter-dialog footer.workbook-ribbon-format-actions { flex:none;flex-wrap:wrap;margin:0;padding:8px 16px 12px;border-top:1px solid var(--office-border-soft); }
+.workbook-ribbon-format-dialog.workbook-advanced-filter-dialog button { box-sizing:border-box;height:28px;min-height:28px;padding:0 10px;border-radius:var(--office-radius);font:inherit; }
+.workbook-advanced-filter-dialog :is(button,input,select,[tabindex]) { scroll-margin:6px; }
+.workbook-advanced-filter-dialog :is(button,input,select,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:1px; }
+@media(max-width:480px) {
+  .workbook-advanced-filter-body { padding:10px 12px; }
+  .workbook-advanced-filter-body label,.workbook-advanced-filter-body label.workbook-advanced-filter-condition { grid-template-columns:104px minmax(0,1fr); }
+  .workbook-ribbon-format-dialog.workbook-advanced-filter-dialog .workbook-advanced-filter-body .workbook-advanced-filter-condition input { grid-column:2; }
+  .workbook-advanced-filter-dialog footer.workbook-ribbon-format-actions { padding:8px 12px 10px; }
+}
+
+/* 合并计算：固定操作区，引用列表与长提示各自在主体内阅读。 */
+.workbook-ribbon-format-dialog.workbook-consolidate-dialog { display:flex;flex-direction:column;width:min(520px,100%);max-height:calc(100dvh - 40px);padding:0;overflow:hidden;font:inherit;font-size:13px;line-height:1.5;color:var(--office-ink); }
+.workbook-consolidate-dialog > header { flex:none;padding:10px 44px 10px 16px;border-bottom:1px solid var(--office-border-soft); }
+.workbook-consolidate-dialog > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.workbook-ribbon-format-dialog.workbook-consolidate-dialog > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0;border-radius:var(--office-radius); }
+.workbook-consolidate-dialog > form { display:flex;flex:1;flex-direction:column;gap:0;min-height:0; }
+.workbook-consolidate-body { display:grid;grid-auto-rows:max-content;gap:10px;min-height:0;padding:12px 16px;overflow:auto;scroll-padding:6px;scrollbar-width:thin; }
+.workbook-consolidate-body label { display:grid;grid-template-columns:104px minmax(0,1fr);align-items:center;gap:8px;font:inherit; }
+.workbook-consolidate-reference { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px; }
+.workbook-ribbon-format-dialog.workbook-consolidate-dialog .workbook-consolidate-body :is(input:not([type=checkbox]),select) { width:100%;min-width:0;box-sizing:border-box;height:28px;min-height:28px;padding:3px 6px;border-radius:var(--office-radius);font:inherit; }
+.workbook-consolidate-body .workbook-consolidate-list { display:grid;gap:4px; }
+.workbook-consolidate-list ul { min-height:88px;max-height:160px;min-width:0;margin:0;padding:4px;overflow:auto;list-style:none;border:1px solid var(--office-border);border-radius:var(--office-radius);scroll-padding:4px;scrollbar-width:thin; }
+.workbook-consolidate-list li { display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:3px; }
+.workbook-consolidate-list code { min-width:0;font:inherit;overflow-wrap:anywhere; }
+.workbook-consolidate-body label:has(> input[type=checkbox]) { display:flex;align-items:center;gap:8px;font:inherit; }
+.workbook-consolidate-body input[type=checkbox] { flex:none;width:16px;height:16px;margin:0;font:inherit; }
+.workbook-consolidate-body p { max-height:96px;min-width:0;margin:0;padding:2px;overflow:auto;font:inherit;line-height:1.5;overflow-wrap:anywhere;scrollbar-width:thin; }
+.workbook-consolidate-dialog [role=alert]:empty { display:none; }
+.workbook-consolidate-dialog footer.workbook-ribbon-format-actions { flex:none;flex-wrap:wrap;margin:0;padding:8px 16px 12px;border-top:1px solid var(--office-border-soft); }
+.workbook-ribbon-format-dialog.workbook-consolidate-dialog button { box-sizing:border-box;height:28px;min-height:28px;padding:0 10px;border-radius:var(--office-radius);font:inherit; }
+.workbook-consolidate-dialog :is(button,input,select,[tabindex]) { scroll-margin:6px; }
+.workbook-consolidate-dialog :is(button,input,select,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:1px; }
+@media(max-width:480px) {
+  .workbook-consolidate-body { padding:10px 12px; }
+  .workbook-consolidate-reference > label { grid-column:1 / -1; }
+  .workbook-consolidate-reference > button { grid-column:2; }
+  .workbook-consolidate-dialog footer.workbook-ribbon-format-actions { padding:8px 12px 10px; }
+}
+
+/* 允许用户编辑区域：固定标题/操作，中部列表与提示独立滚动。 */
+.workbook-ribbon-format-dialog.workbook-editable-ranges-dialog { display:flex;flex-direction:column;width:min(600px,100%);max-height:calc(100dvh - 40px);padding:0;overflow:hidden;font:inherit;font-size:13px;line-height:1.5;color:var(--office-ink); }
+.workbook-editable-ranges-dialog > header { flex:none;padding:10px 44px 10px 16px;border-bottom:1px solid var(--office-border-soft); }
+.workbook-editable-ranges-dialog > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.workbook-ribbon-format-dialog.workbook-editable-ranges-dialog > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0; }
+.workbook-editable-ranges-dialog > form { display:flex;flex:1;flex-direction:column;gap:0;min-height:0; }
+.workbook-editable-ranges-body { display:grid;grid-auto-rows:max-content;gap:10px;min-height:0;padding:12px 16px;overflow:auto;scroll-padding:6px;scrollbar-width:thin; }
+.workbook-editable-ranges-body [data-ranges] { gap:8px; }
+.workbook-editable-ranges-body [data-range] { gap:6px;padding:8px; }
+.workbook-editable-ranges-body label { display:grid;grid-template-columns:88px minmax(0,1fr);align-items:center;gap:8px;font:inherit; }
+.workbook-ribbon-format-dialog.workbook-editable-ranges-dialog .workbook-editable-ranges-body input { height:28px;min-height:28px;padding:3px 6px;border-radius:var(--office-radius);font:inherit; }
+.workbook-ribbon-format-dialog.workbook-editable-ranges-dialog button { box-sizing:border-box;height:28px;min-height:28px;padding:0 10px;border-radius:var(--office-radius);font:inherit; }
+.workbook-editable-ranges-body > [data-action=add] { justify-self:start; }
+.workbook-editable-ranges-body p { max-height:96px;min-width:0;margin:0;padding:2px;overflow:auto;font:inherit;line-height:1.5;overflow-wrap:anywhere;scrollbar-width:thin; }
+.workbook-editable-ranges-dialog [role=alert]:empty { display:none; }
+.workbook-editable-ranges-dialog footer.workbook-ribbon-format-actions { flex:none;flex-wrap:wrap;margin:0;padding:8px 16px 12px;border-top:1px solid var(--office-border-soft); }
+.workbook-editable-ranges-dialog :is(button,input,[tabindex]) { scroll-margin:6px; }
+.workbook-editable-ranges-dialog :is(button,input,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:1px; }
+@media(max-width:480px) {
+  .workbook-editable-ranges-body { padding:10px 12px; }
+  .workbook-editable-ranges-body label { grid-template-columns:minmax(0,1fr);gap:4px; }
+  .workbook-editable-ranges-body label > input { grid-column:1; }
+  .workbook-editable-ranges-dialog footer.workbook-ribbon-format-actions { padding:8px 12px 10px; }
+}

@@ -1,0 +1,22 @@
+/* Fixed-source SignaturesDialog structure; host theme and viewport constraints. */
+.pdf-digital-signatures-dialog{width:min(640px,calc(100vw - 24px));--border:var(--office-border);--text:var(--office-ink);--text-dim:var(--office-ink-2);--pdf-ok:#147d41;--pdf-sig-warn:#8b5e00;--danger:var(--office-danger,#b42318)}
+.pdf-digital-signatures-dialog>div{max-height:calc(100dvh - 28px);overflow:auto}
+.pdf-digital-signatures-dialog .pdf-modal{max-height:none;overflow:visible;min-width:0}
+.pdf-digital-signatures-dialog .pdf-signature-source-notice{font-size:12px;padding:12px 16px 0;margin:0;color:var(--office-ink-2);overflow-wrap:anywhere}
+.pdf-digital-signatures-dialog .pdf-sig-card{display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--border);border-inline-start:3px solid var(--pdf-ok);border-radius:8px}
+.pdf-digital-signatures-dialog .pdf-sig-card:is(.warning,.untrusted){border-inline-start-color:var(--pdf-sig-warn)}
+.pdf-digital-signatures-dialog .pdf-sig-card.invalid{border-inline-start-color:var(--danger)}
+.pdf-digital-signatures-dialog .pdf-sig-head{display:flex;align-items:center;gap:8px;font-size:13px;flex-wrap:wrap}
+.pdf-digital-signatures-dialog .pdf-sig-head>strong{flex:1;min-width:100px;overflow-wrap:anywhere}
+.pdf-digital-signatures-dialog .pdf-sig-pill{flex-shrink:0;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;color:var(--pdf-ok);border:1px solid var(--pdf-ok)}
+.pdf-digital-signatures-dialog .pdf-sig-pill:is(.warning,.untrusted){color:var(--pdf-sig-warn);border-color:var(--pdf-sig-warn)}
+.pdf-digital-signatures-dialog .pdf-sig-pill.invalid{color:var(--danger);border-color:var(--danger)}
+.pdf-digital-signatures-dialog .pdf-sig-problems{margin:0;padding-inline-start:18px;font-size:12px;color:var(--text)}
+.pdf-digital-signatures-dialog .pdf-sig-chain{font-size:12px;color:var(--text-dim)}
+.pdf-digital-signatures-dialog .pdf-sig-chain>summary{cursor:pointer;margin-bottom:6px;overflow-wrap:anywhere}
+.pdf-digital-signatures-dialog .pdf-sig-chain .pdf-prop-table+.pdf-prop-table{margin-top:6px}
+.pdf-digital-signatures-dialog .pdf-prop-table{display:flex;flex-direction:column;gap:5px;min-width:0}
+.pdf-digital-signatures-dialog .pdf-prop-row{display:grid;grid-template-columns:minmax(64px,100px) minmax(0,1fr);gap:8px;align-items:start;font-size:12px}
+.pdf-digital-signatures-dialog .pdf-prop-row em{font-style:normal;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
+.pdf-digital-signatures-dialog .pdf-modal-hint{color:var(--office-ink-2);font-size:12px;overflow-wrap:anywhere}
+.pdf-digital-signatures-dialog summary:focus-visible{outline:2px solid var(--office-focus-ring);outline-offset:2px}

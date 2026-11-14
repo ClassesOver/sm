@@ -59,17 +59,24 @@ async def create_app(directory: Path, port: int, *, source: bytes | None = None)
             # authorization, real writer, candidate service or publication chain.
             instruction = prompt.split('用户要求：', 1)[1].split('\n', 1)[0]
             operation = deletion() if '删除' in instruction else edit(title='Updated', chartType='bar', legend='bottom')
-            if '轴标题' in instruction and operation['kind'] == 'applyChartEdits':
+            if os.environ.get('WORKBOOK_AI_CHARTS_SOURCE_DATA') == '1':
+                operation = ({'op': 'add_chart', 'sheetId': 'Sheet', 'chartType': 'line', 'dataRange': 'A1:B3',
+                              'title': '实际来源收入', 'anchorCell': 'E20'} if '新增' in instruction else {
+                    'op': 'edit_chart', 'chartPath': 'xl/charts/chart3.xml', 'title': '第二季度收入',
+                    'seriesData': [{'index': 0, 'name': '收入', 'valuesRange': 'B3', 'categoriesRange': 'A3'}],
+                })
+            if '轴标题' in instruction and operation.get('kind') == 'applyChartEdits':
                 operation['arguments']['edits'][0]['axisTitles'] = {'category': 'Quarter', 'value': 'Amount (USD)'}
-            if '数值范围' in instruction and operation['kind'] == 'applyChartEdits':
+            if '数值范围' in instruction and operation.get('kind') == 'applyChartEdits':
                 operation['arguments']['edits'][0]['valueAxis'] = {'min': 5, 'max': 25}
-            if '恢复自动范围' in instruction and operation['kind'] == 'applyChartEdits':
+            if '恢复自动范围' in instruction and operation.get('kind') == 'applyChartEdits':
                 operation['arguments']['edits'][0]['valueAxis'] = {'min': None, 'max': None}
-            if '数据标签' in instruction and operation['kind'] == 'applyChartEdits':
+            if '数据标签' in instruction and operation.get('kind') == 'applyChartEdits':
                 operation['arguments']['edits'][0].update(dataLabels='value', dataLabelPosition='center', dataLabelFormat='0.0')
             scripted = ScriptedModel(id='chart-browser', responses=[
                 call('read_sheet_features', {'sheetId': 'Sheet'}, 'features'),
                 call('load_guide', {'guides': ['charts']}, 'guide'),
+                *([call('read_range', {'sheetId': 'Sheet', 'range': 'A1:B3'}, 'data')] if os.environ.get('WORKBOOK_AI_CHARTS_SOURCE_DATA') == '1' else []),
                 call('propose_operations', {'operations': [operation], 'summary': instruction}, 'proposal'),
                 ModelResponse(content='候选等待明确采纳和保存。'),
             ])

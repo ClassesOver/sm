@@ -1,5 +1,7 @@
+import { readSheetThreads, type SheetThreadsModel } from './thread-read'
 import type { SheetTableSource } from './table-source'
 import { SaxesParser } from 'saxes'
+import { columnWidthToPixels, rowHeightToPixels } from './geometry'
 /// Workbook importer: bytes → editor model (sheets, cells with style
 /// indexes, geometry, styles, theme palette). Values/formulas follow the
 /// genoffice reader; styles and geometry are read here because the web app
@@ -79,6 +81,8 @@ export interface SheetHeaderFooterModel {
 
 export interface SheetModel {
   name: string
+  /// workbook sheet@state 的 hidden/veryHidden；可见表保持旧模型缺省。
+  hidden?: boolean
   /// worksheet part path (xl/worksheets/sheetN.xml)
   path: string
   cells: Readonly<Record<string, ModelCell>>
@@ -86,6 +90,9 @@ export interface SheetModel {
   merges: readonly string[]
   columns: readonly ColumnDef[]
   rows: readonly RowDef[]
+  /// 源sheetFormatPr默认尺寸，与图片锚点及SDK使用同一像素转换。
+  defaultColumnWidthPx?: number
+  defaultRowHeightPx?: number
   outlineSummaryBelow?: boolean
   outlineSummaryRight?: boolean
   freeze: { frozenRows: number; frozenColumns: number } | null
@@ -130,6 +137,7 @@ export interface SheetModel {
   sparklines?: ReadonlyArray<SparklineSpec>
   /// anchored charts read back for grid rendering (column/bar/line/pie v1)
   charts?: ReadonlyArray<ChartReadSpec>
+  threads?: SheetThreadsModel
   notes?: SheetNotesModel
   /// worksheet-level autoFilter: range + per-column criteria (values/blank/
   /// customs/dateGroups); readOnlyReason marks structures (color/icon/top10/
@@ -341,6 +349,16 @@ function readHeaderFooter(worksheetXml: string): SheetHeaderFooterModel | undefi
 }
 
 function parseGeometry(worksheetXml: string) {
+  let defaultColumnWidthPx=columnWidthToPixels(8.43),defaultRowHeightPx=rowHeightToPixels(15),depth=0
+  const formatParser=new SaxesParser({xmlns:true})
+  formatParser.on('opentag',tag=>{
+    depth++
+    if(depth!==2||tag.uri!=='http://schemas.openxmlformats.org/spreadsheetml/2006/main'||tag.local!=='sheetFormatPr')return
+    const attr=(name:string)=>Object.values(tag.attributes).find(a=>!a.uri&&a.local===name)?.value
+    defaultColumnWidthPx=columnWidthToPixels(Number(attr('defaultColWidth')??8.43))
+    defaultRowHeightPx=rowHeightToPixels(Number(attr('defaultRowHeight')??15))
+  })
+  formatParser.on('closetag',()=>{depth--});formatParser.write(worksheetXml).close()
   const { outlineSummaryBelow, outlineSummaryRight } = readOutlineSummary(worksheetXml)
   const dimension = worksheetXml.match(/<dimension\b[^>]*\bref="([^"]+)"/)?.[1] ?? null
 
@@ -446,7 +464,7 @@ function parseGeometry(worksheetXml: string) {
   }
 
   return {
-    dimension, merges, columns, rows, outlineSummaryBelow, outlineSummaryRight, freeze, showGridlines, showHeadings, rightToLeft, zoomScale, ...(showFormulas ? { showFormulas } : {}),
+    dimension, merges, columns, rows, defaultColumnWidthPx, defaultRowHeightPx, outlineSummaryBelow, outlineSummaryRight, freeze, showGridlines, showHeadings, rightToLeft, zoomScale, ...(showFormulas ? { showFormulas } : {}),
     margins, printGridlines, printHeadings, pageSetup,
     rowBreaks: manualBreaks('rowBreaks'), colBreaks: manualBreaks('colBreaks'),
   }
@@ -501,8 +519,10 @@ export async function readWorkbook(bytes: Uint8Array): Promise<WorkbookModel> {
     }
     const protection = readSheetProtection(worksheetXml)
     sheets.push({
+      threads: await readSheetThreads(source, path),
       notes: { notes, sourceIdentity, ...(readOnlyReason ? { readOnlyReason } : {}) },
       name: element.name,
+      ...(element.hidden ? { hidden: true } : {}),
       path,
       cells: parseWorksheetCells(worksheetXml, sharedStrings),
       ...geometry,

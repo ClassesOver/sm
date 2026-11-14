@@ -49,6 +49,8 @@ class NativeSlidesAIService(NativeAIService):
         self._requests = {key: value for key, value in self._requests.items() if value in self._jobs}
 
     def _reserve(self, *, cancelled=False):
+        if self._closed and not cancelled:
+            raise _invalid("native_ai_closed", "AI 候选服务已关闭。")
         self._prune()
         # 提前取消的墓碑同样保留一小时，不能为腾容量而重启迟到请求。
         if len(self._jobs) >= 128 or not cancelled and sum(job.status == "running" for job in self._jobs.values()) >= 32:
@@ -71,6 +73,7 @@ class NativeSlidesAIService(NativeAIService):
             status="cancelled", client_request_id=request_id)
         self._jobs[job.edit_id] = job
         self._requests[key] = job.edit_id
+        await job.event_log.finish(job.status)
         return self._serialize(job)
 
     async def _context(self, session):

@@ -1,0 +1,25 @@
+{
+  "ref": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": {
+    "ink.ts": {
+      "sourceSha256": "486f34a18f952a87a6bfa2ac032442015d7ec76f1f63b638a3ec4de2c5e3f44e",
+      "localSha256": "486f34a18f952a87a6bfa2ac032442015d7ec76f1f63b638a3ec4de2c5e3f44e"
+    },
+    "ink-presets.ts": {
+      "sourceSha256": "faa3112bd00f925e8ce28339930818dde6db733e20545653ace7c75912967f12",
+      "localSha256": "faa3112bd00f925e8ce28339930818dde6db733e20545653ace7c75912967f12"
+    },
+    "InkOverlay.tsx": {
+      "sourceSha256": "22afa5356026d72489a99c31d81c2428f60624d7b5ef9dff2b5c27abc6cf0a91",
+      "localSha256": "6bf35c2b7b0efe81b3d1843cd9aaf844a19987f256ab4b8ac92c52f96d04176c"
+    },
+    "components/DrawTab.tsx": {
+      "sourceSha256": "d84dceac08815d8ad850a93ce504b6a2ab012e5db2bbe9cf81853af8445ffe9c",
+      "localSha256": "91656af5e69e8bf17b84dd4b97858c8cb6aa872bfb445aaf62038cee110d7161"
+    }
+  },
+  "adaptations": [
+    "DrawTab local display/i18n adapter",
+    "pointercancel discards in-progress ink rather than commits"
+  ]
+}

@@ -2,7 +2,13 @@ export type NotesEdit={slideIndex:number;text:string}
 export type NotesSource={notesText?:string;notesEditable?:boolean;notesReason?:string|null}
 export type NotesPaneState={slideIndex:number;text:string;editable:boolean;reason?:string|null;visible:boolean}
 export type NotesPaneOptions={onChange:(slideIndex:number,text:string)=>void;onError?:(message:string)=>void;onVisibleChange?:(visible:boolean)=>void}
+let notesPaneSequence=0
 const record=(value:unknown):value is Record<string,unknown>=>!!value&&typeof value==='object'&&!Array.isArray(value)
+export function slidesNotesReadOnlyReason(reason?:string|null):string{
+ if(reason?.startsWith('notes_edit_master_'))return '备注母版结构暂不支持编辑；可查看或复制现有备注。'
+ if(reason?.startsWith('notes_edit_'))return '此文件的备注结构暂不支持编辑；可查看或复制现有备注。'
+ return reason||'当前页面备注仅可读'
+}
 function normalize(value:unknown):string{
  if(typeof value!=='string'||value.length>20000)throw Error('每页演讲者备注最多20000个UTF16字符')
  for(let index=0;index<value.length;index++){
@@ -23,7 +29,7 @@ export function validateSlidesNotesDraft(changes:unknown,slides:readonly NotesSo
  for(const item of edits){
   if(!record(item)||Object.keys(item).sort().join()!=='slideIndex,text'||typeof item.slideIndex!=='number'||!Number.isInteger(item.slideIndex)||item.slideIndex<0||item.slideIndex>=slides.length)throw Error('演讲者备注来源或字段无效；原草稿已保留')
   const index=item.slideIndex
-  if(seen.has(index)||slides[index]?.notesEditable!==true||deleted.includes(index)||created.some(value=>record(value)&&value.duplicateOf===index))throw Error(slides[index]?.notesReason||'演讲者备注来源重复、只读、删除或存在复制冲突；原草稿已保留')
+  if(seen.has(index)||slides[index]?.notesEditable!==true||deleted.includes(index)||created.some(value=>record(value)&&value.duplicateOf===index))throw Error(slides[index]?.notesReason?slidesNotesReadOnlyReason(slides[index]?.notesReason):'演讲者备注来源重复、只读、删除或存在复制冲突；原草稿已保留')
   const text=normalize(item.text);total+=(item.text as string).length
   if(total>200000)throw Error('每批演讲者备注原始文本合计最多200000个UTF16字符')
   seen.add(index);result.push({slideIndex:index,text})
@@ -36,7 +42,7 @@ export function createSlidesNotesPane(host:HTMLElement,options:NotesPaneOptions)
  pane.className='slides-notes-pane';pane.dataset.notesPanel='';pane.setAttribute('aria-label','演讲者备注面板')
  heading.className='slides-notes-heading';title.textContent='演讲者备注';toggle.type='button'
  textarea.dataset.notesText='';textarea.setAttribute('aria-label','演讲者备注');textarea.placeholder='单击添加演讲者备注';textarea.rows=3;textarea.readOnly=true;textarea.spellcheck=false
- reason.className='slides-notes-reason';error.className='slides-notes-error';error.setAttribute('role','alert')
+ reason.className='slides-notes-reason';reason.id='slides-notes-reason-'+(++notesPaneSequence);textarea.setAttribute('aria-describedby',reason.id);error.className='slides-notes-error';error.setAttribute('role','alert')
  heading.append(title,toggle);pane.append(heading,textarea,reason,error);host.append(pane)
  let current:NotesPaneState|undefined,committed='',composing=false,submitting=false,disposed=false,visible=true
  const report=(message:string)=>{error.textContent=message;options.onError?.(message)}
@@ -67,7 +73,7 @@ export function createSlidesNotesPane(host:HTMLElement,options:NotesPaneOptions)
    if(state.editable)try{baseline=normalize(state.text)}catch(cause){report(cause instanceof Error?cause.message:'演讲者备注来源无效');return false}
    textarea.value=state.text;committed=baseline;error.textContent=''
   }
-  current={...state};textarea.readOnly=!state.editable;reason.textContent=state.editable?'':state.reason||'当前页面备注仅可读'
+  current={...state};textarea.readOnly=!state.editable;reason.textContent=state.editable?'':slidesNotesReadOnlyReason(state.reason)
   if(state.visible!==visible&&!setVisible(state.visible))return false
   show(state.visible);return true
  }

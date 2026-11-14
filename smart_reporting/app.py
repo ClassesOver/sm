@@ -409,6 +409,7 @@ report_slides_editor = ReportSlidesEditorService(
     artifact_persistence=report_artifact_persistence,
     download_grants=report_download_grants,
     public_base_url=settings.report_public_base_url,
+    report_editor=report_editor,
 )
 report_workbook_editor = ReportWorkbookEditorService(
     state_repository=report_runtime.state_repository,
@@ -418,6 +419,7 @@ report_workbook_editor = ReportWorkbookEditorService(
     artifact_persistence=report_artifact_persistence,
     download_grants=report_download_grants,
     public_base_url=settings.report_public_base_url,
+    report_editor=report_editor,
 )
 report_workbook_ai = create_report_workbook_ai_service(
     reporting_agent_template.model, report_workbook_editor

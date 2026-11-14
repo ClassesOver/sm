@@ -1,0 +1,16 @@
+.pdf-measure-source-dialog{border:1px solid #d8dfeb;border-radius:12px;padding:0;width:min(480px,calc(100vw - 28px));max-width:none;max-height:calc(100dvh - 28px);color:#17263c;background:#fff;box-shadow:0 20px 64px #16233a40}
+.pdf-measure-source-dialog::backdrop{background:#18243a66}
+.pdf-measure-source-dialog .pdf-modal-mask{background:none;position:static;padding:0}
+.pdf-measure-source-dialog .pdf-modal{padding:22px;max-height:calc(100dvh - 30px);overflow:auto;box-sizing:border-box;scroll-padding-block:12px 84px}
+.pdf-measure-source-dialog .pdf-modal-title{font-weight:650;font-size:17px;margin-bottom:14px}
+.pdf-measure-source-dialog .pdf-modal-hint{font-size:13px;line-height:1.6;color:#56657b;margin-bottom:18px}
+.pdf-measure-source-dialog .pdf-field{display:grid;gap:16px}
+.pdf-measure-source-dialog .pdf-perm-row{display:grid;grid-template-columns:140px minmax(0,1fr);align-items:center;gap:12px}
+.pdf-measure-source-dialog input{width:100%;min-width:0;box-sizing:border-box;border:1px solid #c7d3e6;border-radius:5px;padding:9px 10px;font:inherit;scroll-margin-block:12px 84px}
+.pdf-measure-source-dialog :is(input,button):focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+.pdf-measure-source-dialog .pdf-cert-error{color:#b42318;font-size:13px;overflow-wrap:anywhere}
+.pdf-measure-source-dialog .pdf-modal-actions{display:flex;justify-content:flex-end;gap:8px;position:sticky;bottom:-22px;background:#fff;padding-block:18px 2px;margin-top:10px}
+.pdf-measure-source-dialog .pdf-modal-btn{border:1px solid #c7d3e6;border-radius:5px;padding:8px 16px;background:#fff;color:inherit;font:inherit;cursor:pointer}
+.pdf-measure-source-dialog .pdf-modal-btn.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+.pdf-measure-source-dialog :disabled{opacity:.55;cursor:wait}
+@media(max-width:440px){.pdf-measure-source-dialog .pdf-perm-row{grid-template-columns:1fr;gap:6px}.pdf-measure-source-dialog .pdf-modal{padding:16px}.pdf-measure-source-dialog .pdf-modal-actions{bottom:-16px}}

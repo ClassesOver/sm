@@ -25,7 +25,15 @@ class InMemoryDownloadGrantRepository:
     async def get(self, grant_hash: str) -> ReportDownloadGrant | None:
         return self.records.get(grant_hash)
 
-    async def replace(self, grant: ReportDownloadGrant, *, now: datetime) -> None:
+    async def replace(
+        self, grant: ReportDownloadGrant, *, now: datetime, retain_previous: bool = False
+    ) -> None:
+        if retain_previous:
+            from ..delivery.publishing import _require_retained_markdown
+
+            _require_retained_markdown(grant)
+            self.records[grant.grant_hash] = grant
+            return
         active = [
             current
             for current in self.records.values()

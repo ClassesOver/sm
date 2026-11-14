@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
+import type { ComponentProps } from 'react'
 import { Editor } from '@tiptap/core'
 import { PAGE_MARK, TOTAL_PAGES_MARK } from '@genoffice/docx-engine'
 import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions'
@@ -9,7 +10,7 @@ import type { DocxHeaderFooterController, DocxPreparedHfEdges } from './docx-hf-
 
 const cleanups: (() => void)[] = []
 afterEach(() => { cleanups.splice(0).forEach(cleanup => cleanup()); document.body.replaceChildren() })
-function setup(editable = true) {
+function setup(editable = true, pageNumber?: ComponentProps<typeof DocxInsertSource>['pageNumber']) {
   const editor = new Editor({ extensions: editorExtensions, editable, editorProps: { handleScrollToSelection: () => true }, content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'Body' }] }] } })
   const controller = (sectionId: string): DocxHeaderFooterController => ({ editable, anchor: { sectionId, expectedSectionSha256: 'sha' },
     model: { titlePg: true, evenAndOddHeaders: true, pageNumberFmt: null, pageNumberStart: null, parts: {} },
@@ -19,14 +20,46 @@ function setup(editable = true) {
   const edges: DocxPreparedHfEdges = { header: { controller: header, part: 'header', variant: 'first' }, footer: { controller: footer, part: 'footer', variant: 'even' }, assertCurrent }
   const prepare = vi.fn(async () => edges)
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
-  flushSync(() => root.render(<DocxInsertSource editor={editor} editable={editable} headerFooter={{ prepare, edit }} />))
+  const render = (editable = true, current = pageNumber) => flushSync(() => root.render(<DocxInsertSource editor={editor} editable={editable} headerFooter={{ prepare, edit }} pageNumber={current} />))
+  render(editable)
   cleanups.push(() => { flushSync(() => root.unmount()); editor.destroy(); host.remove() })
   const click = (button: HTMLButtonElement) => flushSync(() => button.click())
   const trigger = (kind: string) => host.querySelector<HTMLButtonElement>(`[data-action="insert-${kind}"]`)!
   const open = async (kind: string) => { click(trigger(kind)); await vi.waitFor(() => expect(host.querySelector('[data-rb-panel] [role="status"]')).toBeNull()) }
   const item = (label: string) => [...host.querySelectorAll<HTMLButtonElement>('[data-rb-panel] button')].find(button => button.textContent === label)!
-  return { host, header, footer, prepare, edit, edges, assertCurrent, click, trigger, open, item }
+  return { host, header, footer, prepare, edit, edges, assertCurrent, click, trigger, open, item, render }
 }
+
+it('retains the page-number dialog during saving and reports a stale captured commit inside it', async () => {
+  const commit = vi.fn(() => { throw new Error('当前节发生变化，请重新打开页码格式') })
+  const current = setup(true, { format: 'upperRoman', start: 3, label: '第 1 节', commit })
+  await current.open('page-number'); current.click(current.item('设置页码格式…'))
+  const input = current.host.querySelector<HTMLInputElement>('[aria-label="起始页码"]')!
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '12')
+  flushSync(() => input.dispatchEvent(new Event('input', { bubbles: true })))
+  current.render(false)
+  const confirm = current.host.querySelector<HTMLButtonElement>('[type="submit"]')!
+  expect(confirm.disabled).toBe(true)
+  flushSync(() => current.host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+  expect(commit).not.toHaveBeenCalled()
+  expect(input.value).toBe('12')
+  current.render(true)
+  current.click(confirm)
+  const dialog = current.host.querySelector('[role=dialog]')!
+  expect(dialog).not.toBeNull()
+  expect(dialog.querySelector('[role=alert]')?.textContent).toContain('当前节发生变化')
+  expect(input.value).toBe('12')
+})
+
+it('preserves a controlled main-editor failure receipt from the captured page-number commit', async () => {
+  const commit = vi.fn(() => ({ error: '此节已插入分节符，请先保存，再调整页面设置' }))
+  const current = setup(true, { format: 'upperRoman', start: 3, commit })
+  await current.open('page-number'); current.click(current.item('设置页码格式…'))
+  current.click(current.host.querySelector<HTMLButtonElement>('[type="submit"]')!)
+  const dialog = current.host.querySelector('[role=dialog]')
+  expect(dialog).not.toBeNull()
+  expect(dialog?.querySelector('[role=alert]')?.textContent).toContain('此节已插入分节符')
+})
 
 it.each((['header', 'footer'] as const).flatMap(part => (['left', 'center', 'right'] as const).map(align => [part, align] as const)))('applies source %s/%s page-number gallery to its captured part and variant', async (part, align) => {
   const current = setup(); await current.open('page-number')

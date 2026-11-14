@@ -1,0 +1,11 @@
+.docx-settings-dialog.docx-font-dialog { box-sizing:border-box;width:min(680px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto; }
+.docx-font-dialog [role=tablist] { display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--office-border-strong); }
+.docx-font-dialog [role=tab] { padding:6px 12px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--office-ink);font:inherit; }
+.docx-font-dialog [role=tab][aria-selected=true] { border-bottom-color:var(--office-focus-ring); }
+.docx-font-dialog form > [role=tabpanel] { grid-column:1 / -1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px; }
+.docx-font-dialog [role=tabpanel][hidden] { display:none; }
+.docx-font-dialog .docx-font-check { display:flex;align-items:center;gap:8px; }
+.docx-font-dialog .docx-font-check input { width:auto; }
+.docx-font-dialog .docx-font-preview { grid-column:1 / -1;border:1px solid var(--office-border-strong);padding:16px;min-height:64px;overflow:auto; }
+.docx-font-dialog form > [data-font-cancel] { grid-column:2; }
+@media(max-width:600px) { .docx-font-dialog form > [role=tabpanel] { grid-template-columns:1fr; } }

@@ -8,6 +8,14 @@ import '../packages/pptx-ops/src/ops/slide-ops.ts'
 import { lookup, type OpContext } from '../packages/pptx-ops/src/ops/registry.ts'
 
 type Slide = OpenedPptx['deck']['slides'][number]
+/** 同源规范纯色操作同步全幅底板；避免只改 p:bg 被旧底板遮挡。 */
+export function applyBackgroundColors(opened: OpenedPptx, slides: readonly Slide[], colors: { slideIndex: number; color: string }[]) {
+  const def = lookup('setBackground'), ctx: OpContext = { opened, parts: new Map(), touchedParts: new Set() }
+  for (const item of colors) {
+    const op = { op: 'setBackground', target: { slide: slideDurableId(slides[item.slideIndex]!) }, kind: 'solid', color: item.color.toUpperCase() }
+    def.validate(op as never, ctx); def.apply(op as never, ctx)
+  }
+}
 export type BackgroundGradient = { slideIndices: number[]; from: string; to: string; angleDeg: 0 | 45 | 90; radial: boolean }
 export type BackgroundGraphics = { slideIndex: number; hidden: boolean }
 const hex = /^#[0-9A-Fa-f]{6}$/

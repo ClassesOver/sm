@@ -4,13 +4,18 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
+import { inspectWorkbookThemeMenus } from './office-workbook-theme-layout.mjs'
 
 const frontend = process.cwd(), repo = new URL('../../../', `file://${frontend}/`).pathname
 const port = Number(process.env.WORKBOOK_SMOKE_PORT ?? 4209), preview = process.env.WORKBOOK_SMOKE_PREVIEW === '1'
 const base = `http://127.0.0.1:${port}`, media = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+const output = process.env.WORKBOOK_THEME_EVIDENCE_DIR
+if (output) await mkdir(output, { recursive: true })
+const staticRoot = process.env.WORKBOOK_THEME_STATIC_ROOT
 const sha = data => createHash('sha256').update(data).digest('hex')
 function py(payload) {
   const result = spawnSync(process.env.SMOKE_PYTHON ?? `${repo}/.venv/bin/python`, ['-c', `
@@ -20,13 +25,15 @@ from zipfile import ZipFile
 from openpyxl import Workbook,load_workbook
 from openpyxl.styles import Font,PatternFill
 from openpyxl.styles.colors import Color
+from openpyxl.chart import BarChart,Reference
 from smart_reporting.report_editor.native_office import patch_office
 p=json.load(sys.stdin)
 if p['mode']=='create':
  b=Workbook();s=b.active;s.title='Data'
  s['A1']='主题强调色';s['A1'].font=Font(color=Color(theme=4),scheme='minor',bold=True);s['A1'].fill=PatternFill('solid',fgColor=Color(theme=5))
  s['B1']='显式 RGB';s['B1'].font=Font(color='FF123456')
- s['A2']=42
+ s['A2']=42;s['A3']=84
+ chart=BarChart();chart.add_data(Reference(s,min_col=1,min_row=1,max_row=3),titles_from_data=True);s.add_chart(chart,'D2')
  f=BytesIO();b.save(f);print(base64.b64encode(f.getvalue()).decode())
 elif p['mode']=='patch':print(base64.b64encode(patch_office('xlsx',base64.b64decode(p['bytes']),p['operations'])).decode())
 else:
@@ -44,15 +51,27 @@ else:
   return result.stdout.trim()
 }
 const bytes = Buffer.from(py({ mode: 'create' }), 'base64')
-let saved, payload, browser
+let saved, payload, browser, layouts = []
+const manifestSha256 = staticRoot ? sha(await readFile(join(staticRoot, '.vite/manifest.json'))) : null
+if (process.env.WORKBOOK_THEME_EXPECTED_MANIFEST_SHA256) assert.equal(manifestSha256, process.env.WORKBOOK_THEME_EXPECTED_MANIFEST_SHA256)
+const assets = new Map(), assetChecks = [], focusChecks = []
 const ctx = (data, revision) => ({ documentId: 'theme', format: 'xlsx', revision, parentRevision: revision === 1 ? null : 1, scope: { database: 'f', companyId: 'f', userId: 'f', threadId: 'f' },
   sourceFile: { path: 'theme.xlsx', size: data.length, sha256: sha(data), mediaType: media }, origin: 'upload' })
-const server = spawn('./node_modules/.bin/vite', [...(preview ? ['preview'] : []), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+const server = spawn('./node_modules/.bin/vite', [...(staticRoot ? ['preview', '--outDir', staticRoot] : preview ? ['preview'] : []), '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let i = 0; i < 120; i++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
   browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? { executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE } : {}) })
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } }), errors = []
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } })
+  const page = await context.newPage(), errors = []
   page.on('pageerror', error => errors.push(error.message))
+  page.on('response', response => {
+    const path = new URL(response.url()).pathname, prefix = '/reports/v1/editor/assets/'
+    if (!staticRoot || !path.startsWith(prefix) || !path.endsWith('.js')) return
+    assetChecks.push((async () => {
+      const data = await response.body(), local = await readFile(join(staticRoot, path.slice(prefix.length)))
+      assert.equal(sha(data), sha(local), path); assets.set(path, { path, sha256: sha(data), size: data.length })
+    })())
+  })
   for (const rev of [1, 2]) {
     await page.route(`**/reports/v1/native/theme/${rev}/api/context`, route => route.fulfill({ json: { context: ctx(rev === 1 ? bytes : saved, rev), csrfToken: 'csrf', capabilities: { xlsx_editor: true }, editingEnabled: true } }))
     await page.route(`**/reports/v1/native/theme/${rev}/api/file`, route => route.fulfill({ body: rev === 1 ? bytes : saved, contentType: media }))
@@ -70,7 +89,16 @@ try {
   const themeOps = async () => (await draft()).filter(op => op.kind === 'setThemePart')
   const feedback = () => page.locator('.workbook-feedback').textContent()
   const menu = id => page.locator(`[data-ribbon-menu="${id}"]`)
-  const pick = async (id, value) => { await menu(id).selectOption(value); await settled() }
+  const pick = async (id, value) => {
+    const index = await menu(id).evaluate((node, value) => [...node.options].findIndex(option => option.value === value), value)
+    assert.ok(index > 0)
+    await menu(id).focus(); await menu(id).press('Alt+ArrowDown'); await page.keyboard.press('Home')
+    for (let step = 0; step < index; step++) await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter'); await settled()
+    const focus = await menu(id).evaluate(node => ({ retained: node === document.activeElement, connected: node.isConnected, disabled: node.disabled, active: document.activeElement?.outerHTML.slice(0, 400) }))
+    assert.equal(focus.retained, true, `应用 ${id} 后键盘焦点丢失：${JSON.stringify(focus)}`)
+    focusChecks.push({ id, value, retained: focus.retained })
+  }
   await page.goto(`${base}/reports/v1/native/theme/1`); await ready()
 
   await page.locator('[data-ribbon-tab="Page Layout"]').click()
@@ -78,6 +106,22 @@ try {
   assert.equal(await menu('theme-colors').getAttribute('title'), '颜色（当前：Office）')
   assert.equal(await page.locator('[data-ribbon-command="theme-effects"]').isDisabled(), true)
   assert.equal(await page.locator('[data-ribbon-command="theme-effects"]').getAttribute('title'), '固定源未提供主题效果写入')
+  if (output) layouts = await inspectWorkbookThemeMenus(page, { output, draft })
+
+  // 重放锁定后用户仍可把焦点移到外部工具栏；恢复入口不能覆盖用户的新焦点。
+  await menu('theme-colors').focus()
+  const busyFocus = await menu('theme-colors').evaluate(node => {
+    node.value = 'forest'; node.dispatchEvent(new Event('change', { bubbles: true }))
+    const busy = document.querySelector('#report-editor').inert, save = document.querySelector('[data-action=save]')
+    save.focus(); return { busy, movedOutside: document.activeElement === save }
+  })
+  assert.deepEqual(busyFocus, { busy: true, movedOutside: true })
+  await settled()
+  assert.equal(await page.locator('[data-action=save]').evaluate(node => node === document.activeElement), true)
+  focusChecks.push({ id: 'theme-colors', movedOutsidePreserved: true, busy: busyFocus.busy })
+  await page.locator('[data-ribbon-tab="File"]').click(); await page.locator('[data-ribbon-command="undo"]').click(); await settled()
+  assert.deepEqual(await themeOps(), [])
+  await page.locator('[data-ribbon-tab="Page Layout"]').click()
 
   // 主题 ▸ Ember：配色 + 字体（固定源 FONT_BY_THEME：Ember → Trebuchet MS）
   await pick('theme', 'ember')
@@ -131,5 +175,12 @@ try {
   assert.equal(await menu('theme-colors').getAttribute('title'), '颜色（当前：Forest）')
   if (process.env.WORKBOOK_SMOKE_SCREENSHOT) await page.screenshot({ path: process.env.WORKBOOK_SMOKE_SCREENSHOT.replace(/\.png$/, '-revision-2.png') })
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ ok: true, preview, operations: payload.operations.map(item => item.kind), file, downloadedSha256: sha(downloaded) }))
+  await Promise.all(assetChecks)
+  if (staticRoot) assert.equal(sha(await readFile(join(staticRoot, '.vite/manifest.json'))), manifestSha256)
+  const evidence = { ok: true, preview: !!staticRoot || preview, operations: payload.operations.map(item => item.kind), file, sourceSha256: sha(bytes), downloadedSha256: sha(downloaded), errors, layouts, focusChecks, manifestSha256, runtimeJavaScript: [...assets.values()] }
+  if (output) {
+    await writeFile(join(output, 'source.xlsx'), bytes); await writeFile(join(output, 'downloaded.xlsx'), downloaded)
+    await writeFile(join(output, 'evidence.json'), JSON.stringify(evidence, null, 2))
+  }
+  console.log(JSON.stringify(evidence))
 } finally { await browser?.close(); server.kill() }

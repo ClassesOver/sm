@@ -27,6 +27,16 @@ function setup(content = [block('章一'), block('子标题', 2), block('正文'
   disposals.push(() => { navigation.dispose(); editor.destroy() })
   return { editor, navigation, buttons, collapse, draft, updates: () => updates, visibilityChanges: () => visibilityChanges }
 }
+it.each(['composition', 'legacy', 'handled'])('导航树保留受保护方向键与Escape：%s', protection => {
+  const f = setup(); f.navigation.open(); const child = f.buttons()[1]; child.focus()
+  for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Escape']) {
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, isComposing: protection === 'composition', keyCode: protection === 'legacy' ? 229 : 0 })
+    if (protection === 'handled') event.preventDefault()
+    child.dispatchEvent(event); expect(f.navigation.visible).toBe(true); expect(document.activeElement).toBe(child); expect(f.buttons()).toHaveLength(3)
+  }
+  child.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })); expect(document.activeElement).toBe(f.buttons()[2])
+  child.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); expect(f.navigation.visible).toBe(false); expect(f.draft.dirty).toBe(false)
+})
 
 it('列出层级标题、空标题、继承标题样式的正文和列表，排除正文大纲关闭样式', () => {
   const f = setup([block('章一'), block('', 3), block('编号标题', 1, 'docListItem', 'HeadingList'), block('样式标题', 1, 'docParagraph', 'HeadingBody'), block('排除', 1, 'docParagraph', 'OutlineOff')])
@@ -42,6 +52,25 @@ it('点击标题只移动真实选区，不修改文档、草稿、存储或撤�
   expect(f.buttons()[2].getAttribute('aria-current')).toBe('location'); expect(document.activeElement).toBe(target)
   expect(f.editor.getJSON()).toEqual(before); expect(f.updates()).toBe(0)
   expect(undoDepth(f.editor.state)).toBe(0); expect(f.draft.dirty).toBe(false); expect(JSON.stringify(localStorage)).toBe(storageBefore)
+})
+
+it('长标题树的首尾和逐项焦点不改变活动标题或文档，确认后才跳转', () => {
+  const f = setup(Array.from({ length: 45 }, (_, index) => block(`标题 ${index + 1}`)))
+  f.navigation.open(); f.buttons()[0].click(); f.buttons()[0].focus()
+  const before = f.editor.getJSON(), storageBefore = JSON.stringify(localStorage)
+  const press = (key: string) => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+  press('End'); expect(document.activeElement).toBe(f.buttons()[44])
+  press('ArrowDown'); expect(document.activeElement).toBe(f.buttons()[44])
+  expect(f.buttons()[0].getAttribute('aria-current')).toBe('location')
+  press('ArrowUp'); expect(document.activeElement).toBe(f.buttons()[43])
+  press('Home'); expect(document.activeElement).toBe(f.buttons()[0])
+  press('ArrowUp'); expect(document.activeElement).toBe(f.buttons()[0])
+  press('End'); f.buttons()[44].click()
+  expect(f.editor.state.selection.$from.parent.textContent).toBe('标题 45')
+  expect(f.buttons()[44].getAttribute('aria-current')).toBe('location')
+  expect(f.editor.getJSON()).toEqual(before); expect(f.updates()).toBe(0)
+  expect(undoDepth(f.editor.state)).toBe(0); expect(f.draft.dirty).toBe(false)
+  expect(JSON.stringify(localStorage)).toBe(storageBefore)
 })
 
 it.each(['readonly', 'saving'])('%s 仍可打开折叠和跳转且不产生写入', state => {
@@ -78,6 +107,15 @@ it('无标题显示空状态，关闭按钮和 Escape 生效，dispose 解绑旧
   f.navigation.open(); const panel = f.navigation.panel; f.navigation.dispose()
   expect(panel.isConnected).toBe(false); f.editor.commands.setContent({ type: 'doc', content: [block('新章')] })
   f.navigation.open(); f.navigation.refresh(); expect(f.navigation.visible).toBe(false); expect(panel.textContent).not.toContain('新章')
+})
+
+it('打开聚焦搜索，面板内关闭后恢复入口焦点，不把焦点从正文抢走', () => {
+  const opener = document.body.appendChild(document.createElement('button')); opener.focus()
+  const f = setup(); f.navigation.open()
+  expect(document.activeElement).toBe(f.navigation.panel.querySelector('[data-navigation-query]'))
+  f.navigation.close(); expect(document.activeElement).toBe(opener)
+  opener.focus(); f.navigation.open(); f.editor.view.dom.focus()
+  f.navigation.close(); expect(document.activeElement).toBe(f.editor.view.dom)
 })
 
 it('页面标签先准备页面视图，切回标题与关闭后不接受旧测量', async () => {

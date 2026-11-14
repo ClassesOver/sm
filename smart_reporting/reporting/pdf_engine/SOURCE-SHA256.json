@@ -92,5 +92,24 @@
   "vendor/font-metrics/src/sfnt.ts": {
     "upstreamPath": "packages/font-metrics/src/sfnt.ts",
     "sha256": "dc143fcd8ea26b1963e10050280fa4cc13f23f9cd910ce3f919ba54703431068"
+  },
+  "vendor/bates/bates.ts": {
+    "upstreamPath": "apps/pdf/src/renderer/bates.ts",
+    "sha256": "ba7a20dfa1f4ff604512615c2d968f3e12af24d78303c832a565a2ecf799cb2c",
+    "adaptation": "import-path adaptation"
+  },
+  "vendor/bates/geometry.ts": {
+    "upstreamPath": "apps/pdf/src/renderer/annotations.ts",
+    "sha256": "81fa2dab6398d6b74b011fd8a4d19629c7036cd98a72a5d21bf2679ecc9bb9aa",
+    "adaptation": "PageGeom/normRot/viewToPdf excerpt"
+  },
+  "vendor/bates/types.ts": {
+    "upstreamPath": "apps/pdf/src/shared/ipc.ts",
+    "sha256": "c60ce0c653ccdb6a1e6825d7e0c3a0b78a9b937c78a351deac4360767b89d620",
+    "adaptation": "TextInsertInput excerpt"
+  },
+  "src/main/pdf-signatures.ts": {
+    "upstreamPath": "apps/pdf/src/main/pdf-signatures.ts",
+    "sha256": "4899b954e780eedc08dcecaf1f699399ccb395e0f8b3cbd8db16d41059c46af3"
   }
 }

@@ -22,12 +22,14 @@ class WorkbookBuildResult:
 
 
 _OPERATION_KINDS = frozenset({
-    'applyStaticImages', 'applyChartAdditions', 'applyChartDeletions', 'applyChartEdits', 'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyCellShift', 'applyDvRules',
+    'applyStaticImages', 'applyChartAdditions', 'applyChartDeletions', 'applyChartEdits', 'applyChartAnchors', 'applyChartSource', 'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyCellShift', 'applyDvRules',
     'applyCfRules', 'replaceSheetConditionalFormats', 'applySheetNotes', 'patchSheetNotes', 'applySheetFilter', 'replaceSheetDataValidations', 'addPivot',
     'applyColumnWidths', 'applyRowHeights', 'applySheetOutline', 'applyPageSetups', 'applyTableAdditions', 'applyTableEdits', 'sortRange',
     'refreshPivotCaches', 'applyPivotLayoutExpansions', 'expandPivotOutputs', 'upsertPivotControl', 'removePivotControl',
     'applyDefinedNames', 'protectSheet', 'protectWorkbookStructure', 'setSheetEditableRanges', 'setThemePart',
     'appendSheetSparklines', 'applySheetHyperlinks',
+    'retargetExternalLink', 'breakExternalLink', 'bindExternalLinkSource', 'updateExternalLinkCaches',
+    'setNotePicture', 'patchThreadedComments', 'insertPicture', 'editPicture',
 })
 
 

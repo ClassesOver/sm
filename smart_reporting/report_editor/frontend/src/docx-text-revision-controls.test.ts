@@ -1,7 +1,7 @@
 import {afterEach,expect,it,vi} from 'vitest'
 import {Editor,Extension,Mark,Node} from '@tiptap/core'
 import {UndoRedo} from '@tiptap/extensions'
-import {Plugin,PluginKey} from '@tiptap/pm/state'
+import {Plugin,PluginKey,TextSelection} from '@tiptap/pm/state'
 import {createDocxTextRevisionControls} from './docx-text-revision-controls'
 import {normalizeDocxTextRevisions,replayDocxTextRevisions} from './docx-text-revisions'
 import {TRACK_IGNORE,TrackChangesExtension} from './vendor/genoffice-docs/apps/docs/src/renderer/editor/revisions'
@@ -50,6 +50,15 @@ it('locates precise UTF16 range, next navigates unresolved targets, locking bloc
  document.querySelector<HTMLButtonElement>('[data-action="next"]')!.click();expect(f.editor.state.selection.from).toBe(1);expect(f.editor.state.selection.to).toBe(4)
  f.lock();expect(row('a').querySelector<HTMLButtonElement>('[data-action="accept"]')!.disabled).toBe(true);click('a','accept');expect(f.editor.getJSON()).toEqual(f.baseline)
  expect(document.querySelector('[role="dialog"]')!.textContent).toContain('正在保存')
+})
+it('navigates supported unresolved revisions by cursor, wraps in both directions, and works read-only',()=>{
+ const f=fixture();f.editor.view.dispatch(f.editor.state.tr.setSelection(TextSelection.create(f.editor.state.doc,1)))
+ expect(f.controls.navigateRevision(1)).toBe(true);expect(f.editor.state.selection.from).toBe(4);expect(f.editor.state.selection.to).toBe(5)
+ expect(f.controls.navigateRevision(1)).toBe(true);expect(f.editor.state.selection.from).toBe(1);expect(f.editor.state.selection.to).toBe(4)
+ expect(f.controls.navigateRevision(-1)).toBe(true);expect(f.editor.state.selection.from).toBe(4);expect(f.editor.state.selection.to).toBe(5)
+ f.controls.open();click('a','accept');f.editor.view.dispatch(f.editor.state.tr.setSelection(TextSelection.create(f.editor.state.doc,1)));f.lock()
+ expect(f.controls.navigateRevision(1)).toBe(true);expect(f.editor.state.selection.from).toBe(4);expect(f.editor.state.selection.to).toBe(5)
+ expect(f.errors).toEqual([])
 })
 it('refreshes restored batch intent and refuses unverified current projection',()=>{
  const f=fixture(),operation={kind:'resolveTextRevision',blockId:'body',expectedObjectSha256:'sha',revisionId:'a',action:'reject'}

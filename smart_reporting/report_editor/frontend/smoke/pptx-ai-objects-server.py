@@ -48,6 +48,7 @@ from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 
 async def create_app(directory: Path, port: int) -> FastAPI:
     directory.mkdir(parents=True, exist_ok=True)
+    presets = os.environ.get('PPTX_AI_PRESETS_SMOKE') == '1'
     deck = Presentation()
     slide = deck.slides.add_slide(deck.slide_layouts[6])
     slide.shapes.add_textbox(Inches(.4), Inches(.2), Inches(6), Inches(.5)).text = '经营数据：收入42，费用17。'
@@ -55,6 +56,9 @@ async def create_app(directory: Path, port: int) -> FastAPI:
     table.name = '经营表'
     for (row, col), value in {(0, 0): '项目', (0, 1): '金额', (1, 0): '收入', (1, 1): '42'}.items():
         table.table.cell(row, col).text = value
+    if presets:
+        other = deck.slides.add_slide(deck.slide_layouts[6])
+        other.shapes.add_textbox(Inches(.4), Inches(.2), Inches(6), Inches(.5)).text = '第二页错别自：收入42。'
     if os.environ.get('PPTX_AI_NOTES_SMOKE') == '1':
         slide.notes_slide.notes_text_frame.text = '原演讲者备注：收入42，费用17。'
         other = deck.slides.add_slide(deck.slide_layouts[6])
@@ -101,6 +105,21 @@ async def create_app(directory: Path, port: int) -> FastAPI:
             if chart:
                 proposal['chartEdits'] = [{'slideIndex': 0, 'elementId': chart['id'],
                     'categories': ['收入', '费用'], 'series': [{'name': '本期', 'values': [84, 17]}]}]
+            if presets:
+                # 测试模型只产生冻结文字候选；仍经真实 Agno 工具及引擎独立预览。
+                proposal = {'summary': '整稿校对候选' if scope == 'deck' else '当前页英语翻译候选',
+                            'edits': [], 'order': current_order}
+                for source_slide in deck['slides']:
+                    for element in source_slide['elements']:
+                        if element.get('editable') is not True or element['type'] not in ('text', 'shape'):
+                            continue
+                        text = element.get('text', '')
+                        replacement = text.replace('错别自', '错别字') if scope == 'deck' else 'Draft revenue 42, expenses 17.'
+                        if replacement != text:
+                            proposal['edits'].append({'slideIndex': source_slide['slideIndex'],
+                                'elementId': element['id'], 'text': replacement})
+                with (directory / 'planner-calls.jsonl').open('a') as output:
+                    output.write(json.dumps({'scope': scope, 'prompt': prompt, 'deck': deck}, ensure_ascii=False) + '\n')
 
             def call(identity, name, arguments):
                 return ModelResponse(tool_calls=[{'id': identity, 'type': 'function', 'function': {
@@ -108,7 +127,8 @@ async def create_app(directory: Path, port: int) -> FastAPI:
 
             model = ScriptedModel(id='pptx-ai-objects-browser', responses=[
                 call('objects-context', 'get_presentation_context', {}),
-                call('objects-read', 'read_slide', {'slide_index': 0}),
+                *(call('objects-read' + ('-' + str(index) if presets else ''), 'read_slide', {'slide_index': index})
+                  for index in (sorted({0, *(edit['slideIndex'] for edit in proposal['edits'])}) if presets else [0])),
                 call('objects-propose', 'propose_operations', {'proposal': proposal}),
                 ModelResponse(content='候选已预览，等待用户采纳。'),
             ])
@@ -173,7 +193,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
         return {'sourceSha256': hashlib.sha256(current).hexdigest(), 'jobs': jobs, 'requests': requests}
 
     paths = {}
-    for name in (('notes',) if os.environ.get('PPTX_AI_NOTES_SMOKE') == '1' else ('table', 'chart')):
+    for name in (('presets',) if presets else ('notes',) if os.environ.get('PPTX_AI_NOTES_SMOKE') == '1' else ('table', 'chart')):
         raw, _ = await grants.issue(context, capabilities=editor.capabilities(context))
         paths[name] = f'/reports/v1/native/open/{raw}'
     (directory / 'server-info.json').write_text(json.dumps({'openPaths': paths,

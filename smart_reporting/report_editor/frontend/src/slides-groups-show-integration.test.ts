@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createEditorShell } from './shell'
 import { createSlidesEditorView } from './slides-main'
 import { NativeDraft } from './native-draft'
@@ -6,13 +6,14 @@ const show=vi.hoisted(()=>({open:vi.fn(()=>({dispose:vi.fn()})),canvas:undefined
 vi.mock('./slides-show',()=>({openSlidesShow:show.open}))
 vi.mock('./slides-canvas',()=>({mountSlidesCanvas:()=>({update(state:any){show.canvas=state},destroy(){}})}))
 const views:ReturnType<typeof createSlidesEditorView>[]=[]
-afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();show.open.mockClear();show.canvas=undefined})
+beforeEach(()=>vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}}))
+afterEach(()=>{vi.unstubAllGlobals();views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();show.open.mockClear();show.canvas=undefined})
 const source={revision:1,sha256:'a'.repeat(64),size:{cx:9144000,cy:5143500},slides:[{slideIndex:0,elements:[{id:'a',type:'text',name:'甲',text:'甲',editable:true,deletable:true,groupEditable:true},{id:'b',type:'shape',name:'乙',text:'乙',editable:true,deletable:true,groupEditable:true},{id:'g',type:'group',name:'来源组合',text:'',editable:false,ungroupEditable:true}]},{slideIndex:1,elements:[{id:'other',type:'text',name:'另一页',text:'另一页',editable:true,deletable:true}]},{slideIndex:2,hidden:true,elements:[]}]}
 async function open(operations:any[]=[],tree?:()=>Promise<unknown>){
  const draft=new NativeDraft({documentId:'groups-show',revision:1,sourceSha256:source.sha256,scope:{database:'fixture',companyId:'c',userId:'u',threadId:'t'}},{getItem:()=>null,setItem(){},removeItem(){}})
  if(operations.length)draft.setOperations(operations)
  const shell=createEditorShell(document.body.appendChild(document.createElement('main')),'full','pptx')
- const request=vi.fn(async(path:string,init?:RequestInit)=>path==='deck'?source:path==='render-tree'?(tree?tree():{slides:source.slides.map(s=>({slideIndex:s.slideIndex,widthPx:960,heightPx:540,hidden:s.hidden,nodes:[]}))}):{revision:2,revisionRegistered:true,validation:{issues:[]}})
+ const request=vi.fn(async(path:string,init?:RequestInit)=>path==='deck'?source:path==='preview'?{sourceSha256:source.sha256,model:source}:path==='render-tree'?(tree?tree():{slides:source.slides.map(s=>({slideIndex:s.slideIndex,widthPx:960,heightPx:540,hidden:s.hidden,nodes:[]}))}):{revision:2,revisionRegistered:true,validation:{issues:[]}})
  const view=createSlidesEditorView(shell.editor,{native:true,draft,request:request as any,save:shell.save,download:shell.exportPptx});views.push(view);await view.ready
  await vi.waitFor(()=>expect(show.canvas).toBeDefined())
  const command=(id:string)=>shell.editor.querySelector<HTMLButtonElement>(`[data-command="${id}"]`)!
@@ -40,7 +41,7 @@ it('放映使用完整草稿快照及真实顺序，隐藏页跳过且不修改�
  const operations=[{kind:'editSlides',order:[1,0,2],edits:[{slideIndex:0,elementId:'a',text:'保留草稿'}]}]
  const app=await open(operations,async()=>({slides:[{slideIndex:0,widthPx:960,heightPx:540,nodes:[]},{slideIndex:1,widthPx:960,heightPx:540,nodes:[]},{slideIndex:2,hidden:true,widthPx:960,heightPx:540,nodes:[]}]}))
  const before=structuredClone(app.draft.operations);app.command('startShowCurrent').click();await vi.waitFor(()=>expect(show.open).toHaveBeenCalledOnce())
- const options=(show.open.mock.calls[0] as any[])[1];expect(options.slides).toHaveLength(2);expect(options.startIndex).toBe(1)
+ const options=(show.open.mock.calls[0] as any[])[1];expect(options.slides).toHaveLength(3);expect(options.slides[2].hidden).toBe(true);expect(options.startIndex).toBe(1)
  expect(app.draft.operations).toEqual(before);expect(app.request.mock.calls.some(([path])=>path==='save')).toBe(false)
  const request=app.request.mock.calls.filter(([path,init])=>path==='render-tree'&&init).at(-1)!
  expect(JSON.parse(request[1]!.body as string).operations).toEqual(before)

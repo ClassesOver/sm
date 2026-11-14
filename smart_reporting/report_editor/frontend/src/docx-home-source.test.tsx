@@ -9,19 +9,21 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
-function renderHome() {
+function renderHome(editable = true) {
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
   roots.push(root)
   const noop = () => {}
   const onSpacing = vi.fn()
-  flushSync(() => root.render(<DocxHomeSource editable onMark={noop} onFontSize={noop}
+  const onToggleFormattingMarks = vi.fn()
+  flushSync(() => root.render(<DocxHomeSource editable={editable} onToggleFormattingMarks={onToggleFormattingMarks} onMark={noop} onFontSize={noop}
     onFontFamily={noop} onFontSizeValue={noop} onColor={noop} onAlignment={noop}
     onIndent={noop} onList={noop} onSpacing={onSpacing} />))
   return {
     host,
     onSpacing,
+    onToggleFormattingMarks,
     trigger: host.querySelector<HTMLButtonElement>('[data-source-action="line-spacing-menu"]')!,
     panel: host.querySelector<HTMLDivElement>('[data-source-action="line-spacing-options-menu"]')!,
   }
@@ -44,6 +46,14 @@ it.each(['outside pointerdown', 'Escape', 'window blur'])('dismisses the spacing
   expect(trigger.getAttribute('aria-expanded')).toBe('false')
   expect(panel.hidden).toBe(true)
   expect(onSpacing).not.toHaveBeenCalled()
+})
+
+it('keeps the formatting marks view toggle available when the document is read-only', () => {
+  const { host, onToggleFormattingMarks } = renderHome(false)
+  const toggle = host.querySelector<HTMLButtonElement>('[data-action="formatting-marks"]')!
+  expect(toggle.disabled).toBe(false)
+  flushSync(() => toggle.click())
+  expect(onToggleFormattingMarks).toHaveBeenCalledOnce()
 })
 
 it('keeps the spacing popup open for internal presses and other keys, and lets its trigger toggle it closed', () => {

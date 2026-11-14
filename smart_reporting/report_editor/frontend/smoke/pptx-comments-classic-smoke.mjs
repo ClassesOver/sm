@@ -9,6 +9,7 @@ import {dirname,resolve,extname} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {chromium} from 'playwright'
 import {verifyBrowserTextInput} from './browser-input-preflight.mjs'
+import {commentsLongText,commentsLongAuthor,inspectPptxCommentsLayout} from './office-pptx-comments-layout.mjs'
 const frontend=resolve(dirname(fileURLToPath(import.meta.url)),'..'),repo=resolve(frontend,'../../..'),staticRoot=resolve(process.env.PPTX_COMMENTS_STATIC_ROOT??resolve(frontend,'../static'))
 const helper=process.env.PPTX_COMMENTS_FIXTURE_SCRIPT??resolve(repo,'smart_reporting/reporting/tests/pptx_comments_fixture.py')
 const output=process.env.PPTX_COMMENTS_EVIDENCE??'/tmp/pptx-comments-built-20261111',port=Number(process.env.PPTX_COMMENTS_PORT??4311)
@@ -18,7 +19,7 @@ assert.equal(manifestSha256,process.env.PPTX_EXPECTED_MANIFEST_SHA256);await mkd
 const bridgePath=resolve(process.env.AGENT_REPORTING_SLIDES_ENGINE_DIR??resolve(repo,'smart_reporting/reporting/slides_engine'),'dist/edit-pptx.mjs'),nodeBridgeSha256=sha(await readFile(bridgePath)),fixtureScriptSha256=sha(await readFile(helper))
 function engine(payload){const r=spawnSync(resolve(repo,'.venv/bin/python'),[helper],{cwd:repo,env:{...process.env,PYTHONPATH:repo},input:JSON.stringify(payload),encoding:'utf8',maxBuffer:30*1024*1024,timeout:120000});assert.equal(r.status,0,r.stderr);return JSON.parse(r.stdout)}
 const variants=mode==='classic'?['classic']:['modern','broken'],sources={}
-for(const variant of variants){const path=resolve(output,variant+'-revision-1.pptx'),created=engine({mode:'create',variant,path}),entry=engine({mode:'inspect',path});sources[variant]={path,readback:created.readback,...entry};await writeFile(resolve(output,variant+'-source-readback.json'),JSON.stringify(created.readback,null,2))}
+for(const variant of variants){const path=resolve(output,variant+'-revision-1.pptx'),created=engine({mode:'create',variant,path,...(process.env.PPTX_COMMENTS_LAYOUT_VIEWPORTS?{longText:commentsLongText,longAuthor:commentsLongAuthor}:{})}),entry=engine({mode:'inspect',path});sources[variant]={path,readback:created.readback,...entry};await writeFile(resolve(output,variant+'-source-readback.json'),JSON.stringify(created.readback,null,2))}
 const requests=[],pageErrors=[],consoleErrors=[],failedResponses=[],chunks=new Map(),identities=[],routeErrors=[]
 let browser,page,payload,verified,downloaded,active=sources[variants[0]],revision=1
 const base='http://127.0.0.1:'+port,documentId='fixture-pptx-classic-comments',pathBase='/reports/v1/native/'+documentId+'/'
@@ -74,13 +75,14 @@ try{
  const newComment=async()=>{await page.locator('[data-command="newComment"]').click();await input().waitFor({state:'visible'})}
  const undo=()=>page.locator('[data-source-action="onUndo"]').click(),redo=()=>page.locator('[data-source-action="onRedo"]').click()
  const auditRibbon=async()=>{for(const [command,label] of [['commentsPane','批注窗格'],['newComment','新建批注']]){const b=page.locator('[data-command="'+command+'"]');assert.equal(await b.locator('svg').count(),1);assert.equal(await b.locator('svg').getAttribute('aria-hidden'),'true');assert.ok((await b.textContent()).includes(label),await b.textContent())}}
- const boundaryEvidence=[],layoutEvidence=[]
+ const boundaryEvidence=[],layoutEvidence=[],componentLayouts=[]
  const geometry=async label=>{const value=await pane().evaluate(el=>{const r=el.getBoundingClientRect();return{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,viewportWidth:innerWidth,scrollWidth:document.documentElement.scrollWidth}});assert.ok(value.width>0&&value.left>=0&&value.right<=value.viewportWidth+2,JSON.stringify(value));assert.ok(value.scrollWidth<=value.viewportWidth+2,JSON.stringify(value));layoutEvidence.push({label,...value})}
  if(mode==='boundaries'){
   for(const variant of variants){
    active=sources[variant];await page.evaluate(()=>localStorage.clear()).catch(()=>{});await open();await openPane();await auditRibbon()
    const state=active.model.slides[0].comments;assert.equal(typeof state.readOnlyReason,'string');assert.ok(state.readOnlyReason.trim());assert.ok((await pane().textContent()).includes(state.readOnlyReason));assert.equal(await page.locator('[data-command="newComment"]').isDisabled(),true)
    assert.equal(await pane().locator('[data-comment-action="delete"]:enabled').count(),0);assert.deepEqual(await draft(),[])
+   if(process.env.PPTX_COMMENTS_LAYOUT_VIEWPORTS)componentLayouts.push(await inspectPptxCommentsLayout(page,{output,viewports:process.env.PPTX_COMMENTS_LAYOUT_VIEWPORTS,phase:variant,readonly:true,draft}))
    await geometry(variant+'-readonly');await page.screenshot({path:resolve(output,variant+'-readonly.png'),fullPage:true});boundaryEvidence.push({variant,readOnlyReason:state.readOnlyReason,items:state.items,sourceSha256:active.model.sha256})
   }
   assert.equal(payload,undefined);assert.ok(requests.every(r=>!r.path.endsWith('/save')))
@@ -88,6 +90,7 @@ try{
   assert.deepEqual(active.model.slides.map(s=>s.comments.items.map(c=>[c.authorId,c.idx,c.text])),active.readback.slides.map(s=>s.comments.map(c=>[c.authorId,c.idx,c.text])))
   assert.ok(active.model.slides.every(s=>s.comments.readOnlyReason===null))
   await open();await openPane();await auditRibbon()
+  if(process.env.PPTX_COMMENTS_LAYOUT_VIEWPORTS)componentLayouts.push(await inspectPptxCommentsLayout(page,{output,viewports:process.env.PPTX_COMMENTS_LAYOUT_VIEWPORTS,phase:'classic',draft}))
   assert.ok((await sourceCard(0,1).textContent()).includes(active.readback.slides[0].comments[0].text));assert.ok((await sourceCard(1,1).textContent()).includes(active.readback.slides[0].comments[1].text))
   await page.locator('.slide-open').nth(1).click();assert.equal(await sourceCard(0,2).count(),1);assert.equal(await sourceCard(0,1).count(),0)
   await page.locator('.slide-open').nth(0).click();assert.equal(await sourceCard(0,1).count(),1)
@@ -120,7 +123,7 @@ try{
  assert.equal(sha(await readFile(resolve(staticRoot,'.vite/manifest.json'))),manifestSha256)
  for(const source of Object.values(sources))assert.equal(sha(await readFile(source.path)),source.model.sha256)
  for(const name of ['lazy-unified-main-','lazy-native-main-','lazy-slides-main-'])assert.ok([...chunks.keys()].some(path=>path.includes(name)),name)
- const evidence={ok:true,mode:'built-browser-pptx-comments-'+mode,apiRoutesAreFixtures:true,realPythonNodeBridge:true,realZipLxmlReadback:true,inputBaseline,browserVersion:browser.version(),manifestSha256,nodeBridgeSha256,fixtureScriptSha256,sources:Object.fromEntries(Object.entries(sources).map(([k,s])=>[k,{sha256:s.model.sha256,path:s.path,readback:s.readback}])),payload,verified,boundaryEvidence,layoutEvidence,requests,runtimeJavaScript:[...chunks.values()],pageErrors,consoleErrors,failedResponses,routeErrors}
+ const evidence={ok:true,mode:'built-browser-pptx-comments-'+mode,apiRoutesAreFixtures:true,realPythonNodeBridge:true,realZipLxmlReadback:true,inputBaseline,browserVersion:browser.version(),manifestSha256,nodeBridgeSha256,fixtureScriptSha256,sources:Object.fromEntries(Object.entries(sources).map(([k,s])=>[k,{sha256:s.model.sha256,path:s.path,readback:s.readback}])),payload,verified,boundaryEvidence,layoutEvidence,componentLayouts,requests,runtimeJavaScript:[...chunks.values()],pageErrors,consoleErrors,failedResponses,routeErrors}
  await writeFile(resolve(output,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify({ok:true,mode:evidence.mode,output,manifestSha256,nodeBridgeSha256,javascriptCount:chunks.size,saveRequests:requests.filter(r=>r.path.endsWith('/save')).length}))
 }catch(error){await page?.screenshot({path:resolve(output,'failure.png'),fullPage:true}).catch(()=>{});await writeFile(resolve(output,'failure.json'),JSON.stringify({error:error.message,stack:error.stack,saved:!!payload,requests,pageErrors,consoleErrors,failedResponses,routeErrors},null,2));throw error}
 finally{await browser?.close();await new Promise(done=>server.close(done))}

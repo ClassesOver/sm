@@ -1,0 +1,39 @@
+.workbook-ribbon-format-dialog.workbook-pivot-filter-dialog { display:flex;flex-direction:column;box-sizing:border-box;width:min(820px,calc(100vw - 24px));max-height:calc(100dvh - 24px);padding:0;overflow:hidden;color:var(--office-ink);font:inherit;font-size:13px;line-height:1.5; }
+.workbook-pivot-filter-dialog > header { flex:none;padding:12px 48px 12px 16px;border-bottom:1px solid var(--office-border-soft); }
+.workbook-pivot-filter-dialog > header h2 { margin:0;font:inherit;font-size:14px;font-weight:600; }
+.workbook-pivot-filter-dialog > .modal-close { top:8px;right:10px;width:28px;height:28px;min-height:28px;padding:0;border-radius:var(--office-radius); }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form { display:flex;flex-direction:column;gap:0;min-height:0;overflow:hidden; }
+.workbook-pivot-filter-dialog .workbook-pivot-filter-body { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;min-height:0;padding:12px 16px;overflow:auto;scroll-padding:6px;scrollbar-width:thin; }
+.workbook-pivot-filter-body > * { min-width:0; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form label { grid-template-columns:100px minmax(0,1fr);align-items:center;gap:8px;margin:0 0 8px;font:inherit;overflow-wrap:anywhere; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form fieldset { min-width:0;margin:0 0 8px;padding:8px;border:1px solid var(--office-border-soft);border-radius:var(--office-radius); }
+.workbook-pivot-filter-dialog legend { padding:0 4px;font-weight:600; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form :is(input:not([type=checkbox]),select) { min-width:0;height:28px;min-height:28px;padding:3px 6px;background:var(--office-chrome);color:var(--office-ink);border-color:var(--office-border-strong);border-radius:var(--office-radius);font:inherit; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form button { box-sizing:border-box;min-height:28px;padding:3px 10px;border-color:var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);color:var(--office-ink);font:inherit;line-height:20px;white-space:normal;overflow-wrap:anywhere; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form [data-action=all] { margin-bottom:6px; }
+.workbook-pivot-filter-dialog [data-members] { box-sizing:border-box;max-height:min(240px,30dvh);padding:4px;overflow:auto;scrollbar-width:thin;border:1px solid var(--office-border-soft);background:var(--office-chrome); }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form [data-members] label { align-items:flex-start;gap:8px;min-height:28px;margin:0;padding:4px; }
+.workbook-pivot-filter-dialog [data-members] input { margin-top:2px; }
+.workbook-pivot-filter-dialog [data-members] label:has(input:checked) { background:var(--office-selected-bg,var(--office-sidebar)); }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form footer { flex:none;min-width:0;padding:8px 16px 12px;border-top:1px solid var(--office-border-soft); }
+.workbook-pivot-filter-dialog details { min-width:0;color:var(--office-muted); }
+.workbook-pivot-filter-dialog summary { min-height:28px;cursor:pointer;overflow-wrap:anywhere; }
+.workbook-pivot-filter-dialog [data-notice] { max-height:min(96px,18dvh);padding:4px;overflow:auto;scrollbar-width:thin; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form p { margin:0;line-height:1.5; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form [role=alert] { max-height:60px;overflow:auto; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-actions { flex-wrap:wrap;margin-top:8px; }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-actions [type=submit] { border-color:var(--office-accent);background:var(--office-accent);color:var(--office-chrome); }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-form :is(button,input,select):disabled { opacity:var(--office-disabled-opacity);cursor:not-allowed; }
+.workbook-pivot-filter-dialog :is(button,input,select,summary,[tabindex]) { scroll-margin:6px; }
+.workbook-pivot-filter-dialog :is(button,input,select,summary,[tabindex]):focus-visible { outline:2px solid var(--office-focus-ring);outline-offset:2px; }
+.workbook-pivot-filter-dialog button:hover:not(:disabled) { background:var(--office-hover-bg); }
+.workbook-pivot-filter-dialog .workbook-ribbon-format-actions [type=submit]:hover:not(:disabled) { background:var(--office-accent-hover); }
+@media(max-width:700px) {
+ .workbook-pivot-filter-dialog .workbook-pivot-filter-body { grid-template-columns:minmax(0,1fr);gap:12px; }
+}
+@media(max-width:420px) {
+ .workbook-pivot-filter-dialog .workbook-ribbon-format-form label { grid-template-columns:minmax(0,1fr);gap:4px; }
+ .workbook-pivot-filter-dialog .workbook-ribbon-format-form label > :is(input:not([type=checkbox]),select) { grid-column:1; }
+ .workbook-pivot-filter-dialog .workbook-pivot-filter-body { padding:8px; }
+ .workbook-pivot-filter-dialog .workbook-ribbon-format-form footer { padding:6px 8px 8px; }
+}

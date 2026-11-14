@@ -20,6 +20,9 @@ class Workbooks:
     def __init__(self):
         self.snapshots = []
 
+    async def refresh_context_for_session(self, session):
+        return await self.context_for_session(session)
+
     async def context_for_session(self, session):
         if session.capabilities != {'xlsx_editor': True}:
             raise ReportingError('report_workbook_permission_denied', '没有工作簿编辑权限')

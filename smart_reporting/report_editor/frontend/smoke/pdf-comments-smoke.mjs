@@ -5,6 +5,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { observePdfBuiltAssets } from './pdf-object-dialog-checks.mjs'
+import { inspectPdfSidebar } from './pdf-sidebar-checks.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_COMMENTS_SMOKE_PORT ?? 4207), base = `http://127.0.0.1:${port}`, sha = bytes => createHash('sha256').update(bytes).digest('hex')
 function python(input) {
@@ -21,7 +23,7 @@ if p['mode']=='create':
  w=PdfWriter(clone_from=PdfReader(BytesIO(b)));annots=w.pages[0]['/Annots'];root=next(ref for ref in annots if ref.get_object().get('/Subtype')=='/Text');root.get_object()[NameObject('/T')]=TextStringObject('Alice');root.get_object()[NameObject('/CreationDate')]=TextStringObject('D:20200101000000Z')
  for ref in annots:
   if ref.get_object().get('/Contents')=='control note':ref.get_object()[NameObject('/T')]=TextStringObject('Carol')
- reply=DictionaryObject({NameObject('/Type'):NameObject('/Annot'),NameObject('/Subtype'):NameObject('/Text'),NameObject('/Rect'):ArrayObject([NumberObject(x) for x in [80,80,100,98]]),NameObject('/Contents'):TextStringObject('reply needle'),NameObject('/T'):TextStringObject('Bob'),NameObject('/IRT'):root,NameObject('/RT'):NameObject('/R'),NameObject('/P'):w.pages[0].indirect_reference})
+ reply=DictionaryObject({NameObject('/Type'):NameObject('/Annot'),NameObject('/Subtype'):NameObject('/Text'),NameObject('/Rect'):ArrayObject([NumberObject(x) for x in [80,80,100,98]]),NameObject('/Contents'):TextStringObject('reply needle '+('长回复正文用于核验滚动与保留。'*60 if p.get('longText') else '')),NameObject('/T'):TextStringObject('Bob'),NameObject('/IRT'):root,NameObject('/RT'):NameObject('/R'),NameObject('/P'):w.pages[0].indirect_reference})
  annots.append(w._add_object(reply));out=BytesIO();w.write(out);b=out.getvalue();print(json.dumps({'bytes':base64.b64encode(b).decode(),'model':inspect_pdf(b)}))
 elif p['mode']=='inspect':print(json.dumps(inspect_pdf(base64.b64decode(p['bytes']))))
 elif p['mode']=='patch':
@@ -30,13 +32,14 @@ elif p['mode']=='patch':
   if (result.status !== 0) throw Error(result.stderr)
   return JSON.parse(result.stdout)
 }
-const fixture = python({ mode: 'create' }), source = Buffer.from(fixture.bytes, 'base64'), revisions = new Map([[1, source]]), payloads = []
+const fixture = python({ mode: 'create',longText:process.env.PDF_SIDEBAR_LONG_TEXT==='1' }), source = Buffer.from(fixture.bytes, 'base64'), revisions = new Map([[1, source]]), payloads = []
 let browser, readonly = false
 const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ?? '/usr/bin/chromium' })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? {executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE} : {}) })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = []
+  const verifyAssets=await observePdfBuiltAssets(page),sidebarLayouts=[]
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
   await page.addInitScript(() => {
     window.__annotationReads = []; window.__firstDoc = null; window.__delayPreview = false; window.__failFar = true; window.__released = false
@@ -88,6 +91,7 @@ try {
   await toggle.click(); assert.equal(await panel.isVisible(), false); await page.evaluate(() => window.__releaseAnnotationRead()); await page.waitForFunction(() => window.__released); await toggle.click()
   await page.waitForFunction(() => document.querySelector('.pdf-comments-sidebar [role="status"]')?.textContent?.includes('1 页未能读取'))
   assert.equal(await roots.count(), 2)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'comments',phase:'read-error',operations:ops,directory:process.env.PDF_COMMENTS_EVIDENCE_DIR}))
   await panel.getByRole('button', { name: '重试未读页面', exact: true }).click(); await loaded(); assert.equal(await roots.count(), 3)
   const readCounts = await page.evaluate(() => window.__annotationReads)
   const docName = readCounts[0].doc
@@ -95,13 +99,15 @@ try {
   await toggle.click(); assert.equal(await panel.isVisible(), false); await toggle.click(); await loaded()
   assert.deepEqual(await page.evaluate(() => window.__annotationReads), readCounts)
   assert.equal(await page.locator('.pdf-thumbnails').isVisible(), false); assert.equal(await page.locator('.pdf-outline').isVisible(), false)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'comments',phase:'threads',operations:ops,directory:process.env.PDF_COMMENTS_EVIDENCE_DIR,reopen:async()=>{await toggle.click();await loaded()}}))
   await filter.fill('BOB'); assert.equal(await roots.count(), 1); await roots.first().locator('summary').click()
   assert.ok((await roots.first().locator('.pdf-comment-row').allTextContents()).some(text => text.includes('reply needle')))
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'comments',phase:'reply-filter',operations:ops,directory:process.env.PDF_COMMENTS_EVIDENCE_DIR}))
   await roots.first().locator('.pdf-comment-row').first().click()
   const selected = page.locator('.pdf-comment-selected'); await selected.waitFor(); assert.ok((await selected.innerText()).includes('keep note'))
   assert.equal(await selected.getByRole('button', { name: '编辑便签' }).isDisabled(), true)
   await filter.fill('Carol'); await roots.first().locator('.pdf-comment-row').first().click(); await page.waitForFunction(() => document.querySelector('.pdf-comment-selected p')?.textContent === 'control note')
-  await selected.getByRole('button', { name: '编辑便签' }).click(); await page.getByLabel('编辑便签正文').fill('edited through sidebar'); await page.getByRole('button', { name: '应用便签修改', exact: true }).click(); await loaded()
+  await selected.getByRole('button', { name: '编辑便签' }).click(); await page.getByRole('textbox',{name:'编辑便签正文',exact:true}).fill('edited through sidebar'); await page.getByRole('button', { name: '应用便签修改', exact: true }).click(); await loaded()
   await filter.fill('edited through'); assert.equal(await roots.count(), 1)
   await page.locator('[data-pdf-ribbon-tab="home"]').click(); await page.getByRole('button', { name: /^(撤销|Undo)$/ }).click(); await loaded(); assert.equal(await roots.count(), 0)
   await page.getByRole('button', { name: /^(重做|Redo)$/ }).click(); await loaded(); assert.equal(await roots.count(), 1)
@@ -111,7 +117,7 @@ try {
   await page.locator('[data-pdf-ribbon-tab="annotate"]').click(); await page.locator('[data-source-command-id="genoffice.pdf.annotate.drawTools.note"]').click(); await page.getByLabel('文字批注内容').fill('pending via sidebar')
   await page.locator('.pdf-page-content').nth(1).click({ position: { x: 120, y: 90 } }); await page.waitForFunction(() => document.querySelectorAll('.pdf-pending-note').length === 1); await loaded()
   await filter.fill('pending via'); assert.equal(await roots.count(), 1); await roots.first().locator('.pdf-comment-row').first().click(); await page.waitForFunction(() => document.querySelector('.pdf-comment-selected')?.classList.contains('pdf-pending-note'))
-  await selected.getByRole('button', { name: '编辑便签' }).click(); await page.getByLabel('编辑便签正文').fill('pending updated'); await page.getByRole('button', { name: '应用便签修改', exact: true }).click(); await loaded()
+  await selected.getByRole('button', { name: '编辑便签' }).click(); await page.getByRole('textbox',{name:'编辑便签正文',exact:true}).fill('pending updated'); await page.getByRole('button', { name: '应用便签修改', exact: true }).click(); await loaded()
   await filter.fill('far note'); assert.equal(await roots.count(), 1); await roots.first().locator('.pdf-comment-row').first().click(); assert.equal(await page.locator('.pdf-page.is-active').getAttribute('data-page-id'), fixture.model.pages[2].pageId)
   await page.locator('[data-pdf-ribbon-tab="page"]').click(); await page.locator('[data-source-command-id="genoffice.pdf.page.reverse"]').click(); await loaded(); await roots.first().locator('.pdf-comment-row').first().click()
   assert.match(await roots.first().innerText(), /第 1 页/)
@@ -131,9 +137,11 @@ try {
   readonly = true; await page.goto(`${base}/reports/v1/native/comments-fixture/2`); await page.waitForFunction(() => document.querySelectorAll('.pdf-page').length === 2)
   await page.locator('[data-pdf-ribbon-tab="view"]').click(); await toggle.click(); await loaded(); await filter.fill('edited through'); await roots.first().locator('.pdf-comment-row').first().click()
   assert.equal(await selected.getByRole('button', { name: '编辑便签' }).isDisabled(), true)
+  sidebarLayouts.push(...await inspectPdfSidebar(page,{panel,kind:'comments',phase:'readonly',operations:ops,directory:process.env.PDF_COMMENTS_EVIDENCE_DIR}))
   await page.setViewportSize({ width: 390, height: 844 }); assert.ok(await panel.getByRole('button', { name: '关闭批注侧栏' }).isVisible()); await panel.getByRole('button', { name: '关闭批注侧栏' }).click(); assert.equal(await panel.isVisible(), false)
   assert.deepEqual(errors, [])
   const evidence = { ok: true, browserVersion: browser.version(), sourceSha256: sha(source), downloadedSha256: sha(downloaded), initialReads: readCounts, wholeDocumentThreads: true, failureRetryAndCache: true, filterReplyAndAuthor: true, exactNativeAndPendingCardNavigation: true, safeEditUndoRedo: true, reverseDeletePageProjection: true, actualPreviewReadonlyAndReturn: true, viewDoesNotMutateDraft: true, readonlyReopenAndMobileClose: true, operations: payloads[0].operations, provenance: 'production static UI, real packed engine/PDF.js and worker-message failure injection; substituted authorization/revision routes; no production/desktop/full-image claim' }
+  evidence.sidebarLayouts=sidebarLayouts;Object.assign(evidence,await verifyAssets())
   if (process.env.PDF_COMMENTS_EVIDENCE_DIR) { const dir = process.env.PDF_COMMENTS_EVIDENCE_DIR; await mkdir(dir, { recursive: true }); await writeFile(`${dir}/source.pdf`, source); await writeFile(`${dir}/downloaded.pdf`, downloaded); await writeFile(`${dir}/evidence.json`, JSON.stringify(evidence, null, 2)); await page.screenshot({ path: `${dir}/mobile.png`, fullPage: true }) }
   console.log(JSON.stringify(evidence))
 } finally { await browser?.close(); server.kill('SIGTERM') }

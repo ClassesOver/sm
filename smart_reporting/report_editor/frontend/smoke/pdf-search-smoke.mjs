@@ -2,12 +2,19 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, writeFile, readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import { chromium } from 'playwright'
+import { inspectPdfNavigation } from './office-cross-format-navigation.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_SEARCH_SMOKE_PORT ?? 4203), base = `http://127.0.0.1:${port}`
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
+const staticRoot=resolve(process.env.PDF_SMOKE_STATIC_DIRECTORY ?? resolve(frontend,'../static'))
+const manifestPath=resolve(staticRoot,'.vite/manifest.json'), manifestSha256=sha(await readFile(manifestPath))
+if(process.env.PDF_EXPECTED_MANIFEST_SHA256)assert.equal(manifestSha256,process.env.PDF_EXPECTED_MANIFEST_SHA256)
+const output=resolve(process.env.PDF_SEARCH_EVIDENCE_DIR ?? '/tmp/pdf-search-smoke')
+await mkdir(output,{recursive:true})
 function python(input) {
   const result = spawnSync(`${repo}/.venv/bin/python`, ['-c', `
 import json,sys,base64
@@ -30,13 +37,16 @@ else:
   return JSON.parse(result.stdout)
 }
 const fixture = python({ mode: 'create' }), source = Buffer.from(fixture.bytes, 'base64')
-let browser, previewBytes
-const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
+let browser, page, previewBytes
+const resources=new Map(), identityReads=[]
+const server = spawn('./node_modules/.bin/vite', ['preview', '--outDir',staticRoot,'--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ?? '/usr/bin/chromium' })
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = []
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? {executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE} : {}) })
+  const browserContext=await browser.newContext({viewport:{width:1440,height:1000}}), errors=[]
+  page=await browserContext.newPage()
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
+  page.on('response',response=>{const path=new URL(response.url()).pathname,prefix='/reports/v1/editor/assets/';if(response.status()>=400)errors.push(`${response.status()} ${path}`);if(response.ok()&&path.startsWith(prefix)&&/\.(js|css)$/.test(path))identityReads.push((async()=>{const bytes=await response.body();assert.equal(sha(bytes),sha(await readFile(resolve(staticRoot,path.slice(prefix.length)))));resources.set(path,{sha256:sha(bytes),size:bytes.length})})())})
   let readonly = false
   await page.route('**/reports/v1/native/search-fixture/1/api/context', route => route.fulfill({ json: {
     context: { documentId: 'search-fixture', revision: 1, parentRevision: null, format: 'pdf', origin: 'upload', scope: { database: 'fixture', companyId: 'fixture', userId: 'fixture', threadId: 'fixture' }, sourceFile: { path: 'search.pdf', size: source.length, sha256: sha(source), mediaType: 'application/pdf' } }, csrfToken: 'fixture', capabilities: { pdf_editor: true }, editingEnabled: !readonly,
@@ -59,6 +69,7 @@ try {
   const waitActive = pageId => page.waitForFunction(pageId => document.querySelector('.pdf-page.is-active')?.dataset.pageId === pageId, pageId)
   const ops = () => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.includes('search-fixture')).map(([, value]) => JSON.parse(value).operations))
   await open(); const beforeDraft = await ops()
+  const editableNavigation=await inspectPdfNavigation(page,{output,phase:'editable',waitCount,waitActive,pages:fixture.model.pages,ops})
   await search.fill('cat'); await waitCount('1 / 6')
   await page.waitForFunction(() => document.querySelector('.pdf-page')?.querySelectorAll('.pdf-search-match').length === 5)
   const firstBox = await page.locator('.pdf-search-match.is-current').first().evaluate(node => ({ left: parseFloat(node.style.left), width: parseFloat(node.style.width), top: parseFloat(node.style.top) }))
@@ -92,10 +103,13 @@ try {
   await page.keyboard.press('Control+f'); await search.fill('invoice'); await waitCount('1 / 1'); await waitActive(fixture.model.pages[1].pageId)
   await search.fill('cat'); await waitCount('1 / 6'); await waitActive(fixture.model.pages[1].pageId)
   await page.locator('[data-pdf-ribbon-tab="edit"]').click(); await page.getByRole('button', { name: '返回原稿编辑', exact: true }).click(); await waitCount('1 / 6')
-  await page.evaluate(() => localStorage.clear()); readonly = true; await open(); await search.fill('cat'); await waitCount('1 / 6'); await next.click(); await waitCount('2 / 6')
+  await page.evaluate(() => localStorage.clear()); readonly = true; await open()
+  const readonlyNavigation=await inspectPdfNavigation(page,{output,phase:'readonly',waitCount,waitActive,pages:fixture.model.pages,ops})
+  await search.fill('cat'); await waitCount('1 / 6'); await next.click(); await waitCount('2 / 6')
   assert.ok((await ops()).every(ops => !ops.length))
   const downloaded = Buffer.from(await page.evaluate(async () => [...new Uint8Array(await (await fetch('/reports/v1/native/search-fixture/1/api/file')).arrayBuffer())])); assert.equal(sha(downloaded), sha(source)); assert.deepEqual(errors, [])
-  const evidence = { ok: true, browserVersion: browser.version(), sourceSha256: sha(source), downloadedSha256: sha(downloaded), firstBox, secondBox, perOccurrenceAndWrap: true, caseAndWholeWord: true, originalPageIdentityAfterDeleteUndoReorderAndPreview: true, readonlyAndDraftInvariant: true, previewSha256: sha(previewBytes), provenance: 'production static UI; substituted auth/revision routes; real packed engine and PDF.js rendering; no desktop or production acceptance' }
-  if (process.env.PDF_SEARCH_EVIDENCE_DIR) { const dir = process.env.PDF_SEARCH_EVIDENCE_DIR; await mkdir(dir, { recursive: true }); await writeFile(`${dir}/source.pdf`, source); await writeFile(`${dir}/preview.pdf`, previewBytes); await writeFile(`${dir}/evidence.json`, JSON.stringify(evidence, null, 2)); await page.screenshot({ path: `${dir}/search.png`, fullPage: true }) }
+  await Promise.all(identityReads);assert.equal(sha(await readFile(manifestPath)),manifestSha256)
+  const evidence = { ok: true, manifestSha256, resources:Object.fromEntries(resources), editableNavigation, readonlyNavigation, errors, browserVersion: browser.version(), sourceSha256: sha(source), downloadedSha256: sha(downloaded), firstBox, secondBox, perOccurrenceAndWrap: true, caseAndWholeWord: true, originalPageIdentityAfterDeleteUndoReorderAndPreview: true, readonlyAndDraftInvariant: true, previewSha256: sha(previewBytes), provenance: 'frozen static UI; substituted auth/revision routes; real Python patch engine and PDF.js rendering; no desktop or production acceptance' }
+  await writeFile(`${output}/source.pdf`, source); await writeFile(`${output}/preview.pdf`, previewBytes); await writeFile(`${output}/evidence.json`, JSON.stringify(evidence, null, 2)); await page.screenshot({ path: `${output}/search.png`, fullPage: true })
   console.log(JSON.stringify(evidence))
-} finally { await browser?.close(); server.kill('SIGTERM') }
+} catch(error){await page?.screenshot({path:`${output}/failure.png`,fullPage:true}).catch(()=>{});throw error} finally { await browser?.close(); server.kill('SIGTERM') }

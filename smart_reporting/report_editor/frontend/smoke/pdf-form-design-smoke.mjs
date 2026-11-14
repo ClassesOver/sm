@@ -51,7 +51,7 @@ try {
   const operations = () => page.evaluate(() => JSON.parse(Object.entries(localStorage).find(([key]) => key.startsWith('native-editor-draft:'))?.[1] ?? '{"operations":[]}').operations)
   assert.deepEqual(await operations(), [])
   stage = 'stage-undo-redo'
-  await panel.locator('li').filter({ hasText: 'remove_me' }).getByRole('button', { name: '删除字段', exact: true }).click()
+  await panel.locator('li').filter({ hasText: 'remove_me' }).locator('[data-pdf-form-widget-remove]').click()
   await page.waitForFunction(() => JSON.parse(Object.entries(localStorage).find(([key]) => key.startsWith('native-editor-draft:'))?.[1] ?? '{"operations":[]}').operations.length === 1)
   const staged = await operations(); assert.equal(staged[0].kind, 'removeFormWidget'); assert.equal(staged[0].fieldName, 'remove_me'); assert.equal(staged[0].sourceSha256, info.sourceSha256)
   await page.locator('[data-pdf-ribbon-tab="home"]').click()

@@ -39,6 +39,9 @@ class SlidesService:
         self.saved_images = []
         self.saved_chart_replacements = []
 
+    async def refresh_context_for_session(self, session):
+        return await self.context_for_session(session)
+
     async def context_for_session(self, session):
         if not session.capabilities or session.capabilities.get("pptx_editor") is not True:
             raise ReportingError("report_slides_permission_denied", "该会话没有幻灯片编辑权限。")

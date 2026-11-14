@@ -57,20 +57,24 @@ export function replayDocxCrossReferences(doc:DocxPmNode,operations:readonly Nat
 interface Options {editor:Editor;container:HTMLElement;model?:DocxCrossReferencesModel;collectOperations:(doc:DocxPmNode)=>NativeOperation[];readOnlyReason:()=>string|null;onError:(e:unknown)=>void}
 export function createDocxCrossReferenceControls(options:Options){
  const {editor,model:m}=options,panel=document.createElement('section');panel.className='docx-comment-panel docx-cross-references';panel.hidden=true;panel.setAttribute('aria-label','交叉引用')
- panel.innerHTML='<h2>交叉引用</h2><p>插入已保存单段书签的 REF 域；缓存不自动更新，可在 Word 中更新。每次插入一个并独立保存。</p><button type="button" data-cross-reference-close>关闭交叉引用</button><p role="status" aria-live="polite"></p><ul data-cross-reference-list></ul>';options.container.append(panel)
- const status=panel.querySelector<HTMLElement>('[role=status]')!;let disposed=false
+ panel.innerHTML='<header><h2>交叉引用</h2><button type="button" data-cross-reference-close>关闭交叉引用</button></header><div class="docx-cross-reference-body"><div class="docx-reference-fields"><p>插入已保存单段书签的 REF 域；缓存不自动更新，可在 Word 中更新。每次插入一个并独立保存。</p><p role="status" aria-label="交叉引用状态" aria-live="polite" tabindex="0"></p></div><ul data-cross-reference-list aria-label="已保存书签" tabindex="0"></ul></div>';options.container.append(panel)
+ const status=panel.querySelector<HTMLElement>('[role=status]')!,close=panel.querySelector<HTMLButtonElement>('[data-cross-reference-close]')!;let disposed=false,listSignature='',previous:HTMLElement|null=null
  const reason=()=>options.readOnlyReason()??(!editor.isEditable?'当前文档不可编辑或正在保存':null)??m?.readOnlyReason??(!m?.sourceId?'当前来源未提供交叉引用能力':null)??(docxCrossReferencesOf(editor.getJSON(),m).length?'请先保存或撤销当前交叉引用':null)
- const show=(e:unknown)=>{status.textContent=e instanceof Error?e.message:String(e);options.onError(e)}
+ const show=(e:unknown)=>{status.textContent=e instanceof Error?e.message:String(e);status.scrollIntoView?.({block:'nearest'});options.onError(e)}
  const insert=(bookmarkId:string)=>{if(reason())throw new Error(reason()!);if(!m)fail();if(options.collectOperations(editor.getJSON()).length)throw new Error('交叉引用需独立保存，请先保存或撤销其它修改')
   const {empty,$from}=editor.state.selection;if(!empty||$from.depth!==1)throw new Error('请把光标放在普通正文或标题段落中')
   const t=m!.targets.find(t=>t.blockIndex===$from.parent.attrs.docxIndex);if(!t||t.text!==$from.parent.textContent)fail()
   const operations=checked([{kind:'insertCrossReference',sourceId:m!.sourceId,bookmarkId,targetId:t!.targetId,expectedParagraphSha256:t!.expectedParagraphSha256,offset:$from.parentOffset}],m!),book=m!.bookmarks.find(b=>b.bookmarkId===bookmarkId)!
   const field=editor.schema.nodeFromJSON({type:nodeType,attrs:{bookmarkId,name:book.name,text:book.ranges[0].text}}),tr=closeHistory(editor.state.tr.insert($from.pos,field).setDocAttribute(intent,operations));options.collectOperations(tr.doc.toJSON());editor.view.dispatch(tr);if(!editor.state.doc.eq(tr.doc))fail();status.textContent='交叉引用已加入草稿，可撤销和重做';editor.view.focus()
  }
- const refresh=()=>{if(disposed)return;const blocked=reason(),list=panel.querySelector('[data-cross-reference-list]')!;list.replaceChildren();if(!m){status.textContent=blocked;return}
-  for(const b of m.bookmarks){const li=document.createElement('li'),button=document.createElement('button');button.type='button';button.dataset.crossReferenceInsert=b.bookmarkId;button.textContent=b.name;button.disabled=!!blocked||!!b.readOnlyReason;button.addEventListener('mousedown',e=>e.preventDefault());button.addEventListener('click',()=>{try{insert(b.bookmarkId)}catch(e){show(e)}});li.append(button,document.createTextNode('：'+(b.readOnlyReason??b.ranges[0]?.text??'')));list.append(li)}
-  if(blocked)status.textContent=blocked;else if(status.dataset.blocked==='true')status.textContent='';status.dataset.blocked=String(!!blocked)
+ const refresh=()=>{if(disposed)return;const blocked=reason(),list=panel.querySelector('[data-cross-reference-list]')!;if(!m){list.replaceChildren();status.textContent=blocked;return}
+  if(blocked)status.textContent=blocked;else if(!m.bookmarks.length)status.textContent='当前文档没有可插入的已保存书签';else if(status.dataset.blocked==='true'||status.dataset.empty==='true')status.textContent='';status.dataset.blocked=String(!!blocked);status.dataset.empty=String(!m.bookmarks.length)
+  const signature=JSON.stringify({blocked,bookmarks:m.bookmarks});if(signature===listSignature)return;listSignature=signature
+  const active=document.activeElement instanceof HTMLButtonElement&&list.contains(document.activeElement)?document.activeElement:null,id=active?.dataset.crossReferenceInsert
+  list.replaceChildren()
+  for(const b of m.bookmarks){const li=document.createElement('li'),button=document.createElement('button'),note=document.createElement('span');button.type='button';button.dataset.crossReferenceInsert=b.bookmarkId;button.textContent=b.name;button.disabled=!!blocked||!!b.readOnlyReason;button.addEventListener('mousedown',e=>e.preventDefault());button.addEventListener('click',()=>{try{insert(b.bookmarkId)}catch(e){show(e)}});note.textContent=b.readOnlyReason??b.ranges[0]?.text??'';li.append(button,note);list.append(li)}
+  if(active){const target=Array.from(list.querySelectorAll<HTMLButtonElement>('[data-cross-reference-insert]')).find(button=>button.dataset.crossReferenceInsert===id&&!button.disabled)??close;target.focus({preventScroll:true});target.scrollIntoView?.({block:'nearest'})}
  }
- panel.querySelector('[data-cross-reference-close]')!.addEventListener('click',()=>{panel.hidden=true});editor.on('transaction',refresh)
- return{open(){panel.hidden=false;refresh();panel.scrollIntoView?.({block:'nearest'})},refresh,dispose(){disposed=true;editor.off('transaction',refresh);panel.remove()}}
+ close.addEventListener('click',()=>{panel.hidden=true;if(previous?.isConnected)previous.focus({preventScroll:true})});editor.on('transaction',refresh)
+ return{open(event?:Event){if(panel.hidden)previous=event?.currentTarget instanceof HTMLElement?event.currentTarget:document.activeElement instanceof HTMLElement?document.activeElement:null;panel.hidden=false;refresh();panel.scrollIntoView?.({block:'nearest'});const target=panel.querySelector<HTMLButtonElement>('[data-cross-reference-insert]:not(:disabled)')??close;target.focus({preventScroll:true});target.scrollIntoView?.({block:'nearest'})},refresh,dispose(){disposed=true;editor.off('transaction',refresh);panel.remove()}}
 }

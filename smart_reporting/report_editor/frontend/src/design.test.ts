@@ -147,3 +147,37 @@ describe('design API', () => {
     bodies.forEach(body => expect(body.expectedDesignSha256).toBe('design-a'))
   })
 })
+
+const provenance = () => ({ version: 1, template: { filename: '<img src=x onerror=alert(1)>.docx', size: 42, sha256: 'a'.repeat(64) }, contentSha256: 'b'.repeat(64), layoutValidation: 'unverified', undeclaredSamples: 'not_assessed', previewSourceFormat: 'word', formats: { word: { artifact: { size: 25, sha256: 'c'.repeat(64) }, layoutSource: 'uploaded_template', signatureSource: 'frozen_revision_preferences', generatedDate: '2026-11-13', dateFormatSource: 'editor_design', descriptionSource: 'editor_reset', placement: 'declared_template_slot', signatureLayoutSource: 'template', templateSampleStatus: 'replaced', signatureReadback: 'passed', bodyReadback: 'structure_verified' }, pdf: { artifact: { size: 26, sha256: 'd'.repeat(64) }, layoutSource: 'uploaded_template', signatureSource: 'frozen_revision_preferences', generatedDate: null, dateFormatSource: 'frozen_revision_preferences', descriptionSource: 'unavailable', placement: 'body_end', signatureLayoutSource: 'generated_fallback', templateSampleStatus: 'no_declared_slot', signatureReadback: 'unverified', bodyReadback: 'sample_only' } } })
+
+describe('design preview provenance integration', () => {
+  beforeEach(() => { document.body.innerHTML = '<div id="editor"></div>'; localStorage.clear() })
+  it('hides stale provenance on text or design edits and clears it when a new preview starts or resets', async () => {
+    const { panel, client, changeMarkdown } = setup()
+    client.designPreview.mockResolvedValue({ previewId: 'preview-1', status: 'succeeded', validation: { ok: true, issues: [], layoutProvenance: provenance() } } as never)
+    await panel.preview()
+    const host = panel.dialog.querySelector<HTMLElement>('[data-design-provenance]')!
+    expect(host?.querySelector('details')?.open).toBe(false)
+    expect(host.hidden).toBe(false)
+    changeMarkdown()
+    expect(host.hidden).toBe(true)
+    await panel.preview()
+    expect(host.hidden).toBe(false)
+    input('box.size', '31')
+    expect(host.hidden).toBe(true)
+    await panel.flush()
+    await panel.preview()
+    let finish!: (value: never) => void
+    client.startDesignPreview.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const pending = panel.preview()
+    expect(host.childElementCount).toBe(0)
+    await vi.waitFor(() => expect(finish).toBeTypeOf('function'))
+    finish({ previewId: 'preview-2', status: 'succeeded', validation: { ok: false, issues: [], layoutProvenance: { version: 9 } } } as never)
+    await pending
+    expect(host.textContent).toContain('待复核')
+    expect(panel.dialog.querySelector<HTMLAnchorElement>('[data-design-pdf]')!.hidden).toBe(false)
+    panel.reset(state())
+    expect(host.childElementCount).toBe(0)
+    panel.destroy()
+  })
+})

@@ -1,0 +1,13 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": {
+    "renderer/SlideThumb.tsx": {
+      "upstreamPath": "apps/slides/src/renderer/SlideThumb.tsx",
+      "sha256": "79f845305e3297b5500772f01769a452c9a348bd8c1242c537772cf7a907aaaa"
+    },
+    "renderer/use-visible-thumbs.ts": {
+      "upstreamPath": "apps/slides/src/renderer/use-visible-thumbs.ts",
+      "sha256": "ca7a222d87b030b80bb16296b1eaa9fb93aa55c59c27b5af6a07f8740d999e7a"
+    }
+  }
+}

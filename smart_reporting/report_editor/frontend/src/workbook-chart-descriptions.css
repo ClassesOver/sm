@@ -1,0 +1,12 @@
+.workbook-chart-descriptions{box-sizing:border-box;width:min(640px,100%);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;gap:10px;padding:20px;font-size:var(--font-size-md);line-height:1.5;color:var(--office-ink)}
+.workbook-chart-descriptions h2{font-size:18px;margin:0;padding-right:32px}
+.workbook-chart-descriptions p{margin:0;overflow-wrap:anywhere}
+.workbook-chart-descriptions-scroll{min-height:0;overflow:auto;overscroll-behavior:contain;padding:4px}
+.workbook-chart-descriptions ol{margin:0;padding-left:24px}
+.workbook-chart-descriptions [data-chart-description]{padding:10px 0;border-bottom:1px solid var(--office-border);overflow-wrap:anywhere}
+.workbook-chart-descriptions h3{margin:0 0 4px;font-size:14px;font-weight:600}
+.workbook-chart-descriptions ul{margin:8px 0 0;padding-left:20px}
+.workbook-chart-descriptions ul p{font-size:12px;color:var(--office-muted)}
+.workbook-chart-descriptions footer{display:flex;justify-content:flex-end}
+.workbook-chart-descriptions footer button{min-height:32px;padding:4px 16px;border:1px solid var(--office-border-strong);border-radius:var(--radius-sm);background:var(--office-chrome);color:inherit;font:inherit;cursor:pointer}
+.workbook-chart-descriptions :focus-visible{outline:2px solid var(--color-focus);outline-offset:2px}

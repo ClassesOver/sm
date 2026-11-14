@@ -2,19 +2,23 @@ import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync, writeFileSync, mkdtempSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
+import { inspectWatchWindow } from './office-workbook-watch-layout.mjs'
 
 const frontend = fileURLToPath(new URL('../', import.meta.url))
 const repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.WATCH_WINDOW_SMOKE_PORT ?? 4263)
 const base = `http://127.0.0.1:${port}`
-const temporary = mkdtempSync(join(tmpdir(), 'watch-window-built-'))
+const temporary = process.env.WATCH_WINDOW_OUTPUT ?? mkdtempSync(join(tmpdir(), 'watch-window-built-'))
+if(process.env.WATCH_WINDOW_OUTPUT)mkdirSync(temporary)
 const sha = bytes => createHash('sha256').update(bytes).digest('hex')
+const manifest=readFileSync(join(frontend,'../static/.vite/manifest.json'))
+if(process.env.WATCH_WINDOW_EXPECTED_MANIFEST)assert.equal(sha(manifest),process.env.WATCH_WINDOW_EXPECTED_MANIFEST)
 function fixture() {
   const result = spawnSync(`${repo}/.venv/bin/python`, ['-c', `
 import base64
@@ -28,12 +32,16 @@ for name in ['Protected','Editable','Other']:
   for column in range(1,7):s.cell(row,column,row*10+column)
  s['A1']=2;s['B1']='=A1*3';s['C1']=0.125;s['C1'].number_format='0.0%'
  s.protection.sheet=name=='Protected'
+ if ${process.env.WATCH_WINDOW_VIEWPORTS ? 'True' : 'False'}:
+  s['D5']='很长的监视单元格内容，逐字保留用于核对。'*18
+  s['F5']='='+'+'.join(['A1']*60)
 f=BytesIO();b.save(f);print(base64.b64encode(f.getvalue()).decode())
 `], { cwd: repo, encoding: 'utf8' })
   assert.equal(result.status, 0, result.stderr)
   return Buffer.from(result.stdout.trim(), 'base64')
 }
 const bytes = fixture()
+writeFileSync(join(temporary,'source.xlsx'),bytes)
 const media = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const context = { documentId: 'watch-window', format: 'xlsx', revision: 1, parentRevision: null, scope: { database: 'f', companyId: 'f', userId: 'f', threadId: 'f' }, sourceFile: { path: 'watch-window.xlsx', size: bytes.length, sha256: sha(bytes), mediaType: media }, origin: 'upload' }
 const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
@@ -62,15 +70,18 @@ try {
   for (let i = 0; i < 120; i++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
   browser = await chromium.launch({ headless: true })
   page = await browser.newPage({ viewport: { width: 1500, height: 1100 }, colorScheme: 'light', acceptDownloads: true, permissions: ['clipboard-read', 'clipboard-write'] })
-  const errors = [], scripts = [], results = [], assets=[]
+  const errors = [], consoleErrors=[], failedResponses=[], scripts = [], results = [], assets=[], layouts=[]
   page.on('pageerror', error => errors.push(error.message))
+  page.on('console',message=>{if(message.type()==='error')consoleErrors.push(message.text())})
   page.on('dialog',dialog=>dialog.type()==='beforeunload'?dialog.accept():dialog.dismiss())
   page.on('response', response => {
     const url = new URL(response.url())
+    if(response.status()>=400)failedResponses.push({path:url.pathname,status:response.status()})
     if (url.pathname.startsWith('/reports/v1/editor/assets/') && url.pathname.endsWith('.js')) scripts.push((async () => {
       assert.equal(response.status(), 200)
-      assert.equal(sha(await response.body()), sha(readFileSync(join(frontend, '../static', url.pathname.slice('/reports/v1/editor/assets/'.length)))))
-      const asset={path:url.pathname,status:response.status(),sha256:sha(await response.body())};assets.push(asset);writeFileSync(join(temporary,'assets.json'),JSON.stringify(assets,null,2));return asset
+      const data=await response.body()
+      assert.equal(sha(data), sha(readFileSync(join(frontend, '../static', url.pathname.slice('/reports/v1/editor/assets/'.length)))))
+      const asset={path:url.pathname,status:response.status(),size:data.length,sha256:sha(data)};assets.push(asset);writeFileSync(join(temporary,'assets.json'),JSON.stringify(assets,null,2));return asset
     })())
   })
   await page.route('**/reports/v1/native/watch-window/1/api/save', route => { saveCount++; return route.fulfill({ status: 500, json: { detail: 'Reading view must never save' } }) })
@@ -93,19 +104,29 @@ try {
     await page.locator('[data-action="save"]').click();await page.waitForFunction(()=>document.querySelector('.workbook-grid')?.inert===true);assert.equal(saveCount,1)
     assert.equal(await page.locator('#report-editor').evaluate(element=>element.inert),false);const before=await state();await page.locator('[data-watch-remove]').first().click();assert.equal(await rows().count(),1);await add();assert.equal(await rows().count(),2)
     await page.locator('[data-watch-close]').click();await toggle();assert.equal(await rows().count(),2);assert.deepEqual(await state(),before);await checkpoint('saved-host-interactive')
-    assert.deepEqual(errors,[]);await Promise.all(scripts);console.log(JSON.stringify({ok:true,temporary,cases:results.map(item=>item.name),assets:assets.length,saveCount,pageErrors:errors}));
+    assert.deepEqual(errors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(failedResponses,[]);await Promise.all(scripts);assert.deepEqual(readFileSync(join(frontend,'../static/.vite/manifest.json')),manifest)
+    const evidence={ok:true,temporary,mode:'saved-host-fixture',cases:results.map(item=>item.name),assets:assets.length,manifestSha256:sha(manifest),sourceSha256:sha(bytes),saveCount,pageErrors:errors,consoleErrors,failedResponses}
+    writeFileSync(join(temporary,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence));
   }else{
   await page.goto(`${applicationBase}/reports/v1/editor/assets/native.html`);await ready()
   if(process.env.WATCH_WINDOW_FROM!=='tail'){
   stage='protected-add'
   await goto('Protected!A1:F5');const baseline=await state();assert.equal(await download('before'),sha(bytes))
-  await toggle();await add();assert.equal(await rows().count(),20);await checkpoint('protected-first20')
+  await toggle()
+  if(process.env.WATCH_WINDOW_VIEWPORTS)layouts.push(await inspectWatchWindow(page,{output:temporary,phase:'empty',open:toggle,viewports:process.env.WATCH_WINDOW_VIEWPORTS}))
+  await add();assert.equal(await rows().count(),20);await checkpoint('protected-first20')
   await add();assert.equal(await rows().count(),30);await add();assert.equal(await rows().count(),30)
   assert((await rows().allTextContents()).some(row=>row.includes('12.5%')))
   await page.locator('[data-watch-remove]').first().focus();await delay(1000);assert.equal(await page.locator('[data-watch-remove]').first().evaluate(element=>element===document.activeElement),true)
   await checkpoint('protected30-dedupe-focus')
+  if(process.env.WATCH_WINDOW_VIEWPORTS){
+    layouts.push(await inspectWatchWindow(page,{output:temporary,phase:'populated',open:toggle,viewports:process.env.WATCH_WINDOW_VIEWPORTS}))
+    assert.deepEqual(layouts.flatMap(layout=>layout.failures),[])
+  }
   await page.locator('[data-watch-close]').click();await toggle();assert.equal(await rows().count(),30)
+  const nextWatch=await page.locator('[data-watch-remove]').nth(1).getAttribute('data-watch-remove')
   await page.locator('[data-watch-remove]').first().press('Enter');assert.equal(await rows().count(),29)
+  assert.equal(await page.locator(`[data-watch-remove="${nextWatch}"]`).evaluate(node=>node===document.activeElement),true)
   await goto('Other!A1');await delay(900);assert((await rows().allTextContents()).every(row=>row.startsWith('Protected')))
   assert.deepEqual(await state(),baseline);assert.equal(await download('after-reading'),sha(bytes));assert.equal(saveCount,0)
   await checkpoint('protected-reading-unchanged')
@@ -130,8 +151,10 @@ try {
   await page.reload();await ready();await toggle();assert.equal(await rows().count(),0);await checkpoint('reload-clears-session')
   await goto('Other!A1');await add();assert.equal(await rows().count(),1)
   await page.goto(`${applicationBase}/reports/v1/native/watch-window/2`);await ready();await toggle();assert.equal(await rows().count(),0);await checkpoint('revision-isolated')
-  assert.equal(saveCount,0);assert.deepEqual(errors,[]);await Promise.all(scripts);writeFileSync(join(temporary,'source.xlsx'),bytes)
-  console.log(JSON.stringify({ok:true,temporary,cases:results.map(item=>item.name),assets:assets.length,sourceSha256:sha(bytes),saveCount,pageErrors:errors}))
+  assert.equal(saveCount,0);assert.deepEqual(errors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(failedResponses,[]);await Promise.all(scripts);writeFileSync(join(temporary,'source.xlsx'),bytes)
+  assert.deepEqual(readFileSync(join(frontend,'../static/.vite/manifest.json')),manifest)
+  const evidence={ok:true,temporary,cases:results.map(item=>item.name),layouts,assets:assets.length,manifestSha256:sha(manifest),sourceSha256:sha(bytes),saveCount,pageErrors:errors,consoleErrors,failedResponses}
+  writeFileSync(join(temporary,'evidence.json'),JSON.stringify(evidence,null,2));console.log(JSON.stringify(evidence))
   }
 } catch(error){if(page)writeFileSync(join(temporary,'menu-diagnostic.json'),JSON.stringify(await page.locator('.univer-min-w-52.univer-overscroll-contain').evaluateAll(items=>items.map(item=>({html:item.outerHTML,rect:item.getBoundingClientRect().toJSON()}))),null,2));await page?.screenshot({path:join(temporary,'failure.png'),fullPage:true}).catch(()=>{});console.error(JSON.stringify({stage,temporary}));throw error}
 finally{await browser?.close();server.kill();downloadServer.close()}

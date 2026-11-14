@@ -1,12 +1,12 @@
 import { useLayoutEffect, useState } from 'react'
 import type { SectionSettings } from '@genoffice/docx-engine'
-import { type SectionValues } from './docx-operations'
+import { type SectionChangeResult, type SectionValues } from './docx-operations'
 import { DocxPageNumberDialog } from './docx-page-number-dialog'
 import { IconCaret, IconColumns, IconMargins, IconOrientation, IconPageSize, IconPageBreak, IconHeader, IconPageNumber } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 
 type Values = SectionValues
 type BreakType = 'nextPage' | 'continuous' | 'evenPage' | 'oddPage'
-type Props = { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; editable: boolean; settings: SectionSettings | null; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; onChange: (values: Values) => void; onEditHeaderFooter?: () => void; sectionLabel?: string; onSectionBreak?: (type: BreakType) => void }
+type Props = { pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; editable: boolean; settings: SectionSettings | null; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; onChange: (values: Values) => SectionChangeResult; onEditHeaderFooter?: () => void; sectionLabel?: string; onSectionBreak?: (type: BreakType) => void }
 
 // 固定源 ribbon-layout-tab.tsx PAPER_SIZES：纵向 twip，保留 Word 画廊顺序。
 const paperSizes = [
@@ -39,9 +39,9 @@ export function DocxLayoutSource({ pageNumberFmt, pageNumberStart, pageNumberRea
   const marginPreset = settings && settings.marginTop === 1440 && settings.marginBottom === 1440 && settings.marginLeft === 2880 && settings.marginRight === 2880 ? 'wide'
     : settings && [settings.marginRight, settings.marginBottom, settings.marginLeft].every(value => value === settings.marginTop) && [720, 1440].includes(settings.marginTop) ? settings.marginTop : 'custom'
   const change = (values: Values) => {
-    if (!editable || !settings) return
+    if (!editable || !settings) return { error: '当前文档不可编辑或正在保存' }
     setSettings(current => current ? { ...current, ...values } as SectionSettings : current)
-    onChange(values)
+    return onChange(values)
   }
   const source = (id: string, label: string, reason: string) => <button type="button" className="rb-icon docx-source-command" data-source-action={id} disabled title={`${label}：${reason}`} aria-label={`${label}，${reason}`}><IconCaret size={10} /></button>
   const sectionDisabled = !editable || !settings
@@ -98,7 +98,7 @@ export function DocxLayoutSource({ pageNumberFmt, pageNumberStart, pageNumberRea
       {source('page-number-current-position', '当前位置页码', '页码字段写回尚未接入')}
       {source('page-number-total-pages', '总页数', '页码字段写回尚未接入')}
       <button type="button" className="rb-icon docx-source-command" data-source-action="page-number-format" aria-label="页码格式" title={numberReason ?? '设置当前节的页码格式和起始页码'} disabled={sectionDisabled || !!numberReason} onMouseDown={event => event.preventDefault()} onClick={() => { setPageNumberOpen(true) }}><IconPageNumber size={16} />页码格式</button>
-      {pageNumberOpen ? <DocxPageNumberDialog format={pageNumberFmt} start={pageNumberStart} label={sectionLabel} onChange={change} onClose={() => setPageNumberOpen(false)} /> : null}
+      {pageNumberOpen ? <DocxPageNumberDialog format={pageNumberFmt} start={pageNumberStart} label={sectionLabel} disabledReason={!editable ? '当前文档不可编辑或正在保存' : !settings ? '当前节设置不可用' : numberReason} onChange={change} onClose={() => setPageNumberOpen(false)} /> : null}
       {source('page-number-remove', '删除页码', '页码字段与页眉/页脚关系写回尚未接入')}
       {source('header-datetime', '日期和时间', '页眉/页脚字段写回尚未接入')}
       {source('header-date', '插入日期', '页眉/页脚字段写回尚未接入')}

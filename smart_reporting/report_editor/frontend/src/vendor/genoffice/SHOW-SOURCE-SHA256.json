@@ -1,0 +1,103 @@
+{
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": [
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/show-keys.ts",
+      "local": "src/vendor/genoffice/renderer/show-keys.ts",
+      "sourceSha256": "5af260c06211e698360720601999307ca316a046bdd4f941a1dbef8ff9649cb0",
+      "localSha256": "5af260c06211e698360720601999307ca316a046bdd4f941a1dbef8ff9649cb0",
+      "adaptation": "原样"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/show-menu.ts",
+      "local": "src/vendor/genoffice/renderer/show-menu.ts",
+      "sourceSha256": "af60954092295b1eb3af5cd9ba2a6269a546b21a66e1cf8352504bfbd800aa6b",
+      "localSha256": "67c9cc3f947836225c7a2c0581b8a50548eff4843c674b9167777675f8940034",
+      "adaptation": "import/type"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/slideshow-utils.ts",
+      "local": "src/vendor/genoffice/renderer/slideshow-utils.ts",
+      "sourceSha256": "d3cdbbb002ef220a32447c3b1929407448b318993820785d12bc39a3bee1f6fc",
+      "localSha256": "d3cdbbb002ef220a32447c3b1929407448b318993820785d12bc39a3bee1f6fc",
+      "adaptation": "原样"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/SlideThumb.tsx",
+      "local": "src/vendor/genoffice/renderer/SlideThumb.tsx",
+      "sourceSha256": "79f845305e3297b5500772f01769a452c9a348bd8c1242c537772cf7a907aaaa",
+      "localSha256": "79f845305e3297b5500772f01769a452c9a348bd8c1242c537772cf7a907aaaa",
+      "adaptation": "原样"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/components/MorphStage.tsx",
+      "local": "src/vendor/genoffice/renderer/MorphStage.tsx",
+      "sourceSha256": "8ad28cb49d30a1efbda84124ea4d01e972c260b05b0275a0aeb809fa03ef6d98",
+      "localSha256": "3ead7aa92bc208410565e99e5bfd00d934b8acc1b5e94b848c7e7b1b7c0b0cdb",
+      "adaptation": "import/type"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/components/ContextMenu.tsx",
+      "local": "src/vendor/genoffice/renderer/ContextMenu.tsx",
+      "sourceSha256": "1d34cf2bda53587d6c79beb507a9535dc84b1ccfe946caadb02ecc6a5e9683cc",
+      "localSha256": "c4850ab957f99f320cd1f8ed578d14618a6099e6faad6a3c09aacc85f586f30e",
+      "adaptation": "import、焦点限制/恢复、键盘焦点导航"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/components/SlideShowView.tsx",
+      "local": "src/vendor/genoffice/renderer/SlideShowView.tsx",
+      "sourceSha256": "a52121f289769c7d91d12e141a6c10764a141f09087f42c5bb66a5e99d559a79",
+      "localSha256": "8dc82c09138110a115b53003c763362d9bdce0b703272a72db4cbcb85d67ff4e",
+      "adaptation": "真实快照props、浏览器宿主、缺口去执行、焦点和键盘隔离"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/styles.css",
+      "sourceSha256": "4c223aa7cad2fc20d714444fb65f85f2c3f0f01ae64b054686ad0528632a5d6a",
+      "local": "src/slides-show.css",
+      "localSha256": "2e7a0c388a204e5c497dda731d18822f1141358780c3c7e2231797d7bc7be8d2",
+      "adaptation": "源show与context-menu相关CSS段迁入；宿主布局/作用域/焦点和小视口适配"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/renderer/i18n/panes/zh.ts",
+      "sourceSha256": "071ac21956cd1e4fb5a92c11a79ff95582f991af5a2b132ef82fb58f6f6692d8",
+      "local": "src/vendor/genoffice/renderer/show-locale.ts",
+      "localSha256": "7ab1bf073fd27ef5dd9117b9ee6d6b9eb156f0fc727bdf3417646da710d55d58",
+      "adaptation": "仅迁入本组件族使用的9个真实中文标签"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/src/shared/ipc.ts",
+      "local": "src/vendor/genoffice/renderer/show-types.ts",
+      "sourceSha256": "6df15c1bbcc467f93acb27fecae55640f57e1ff3d0710f1a4dce09c1cc62d808",
+      "localSha256": "58775b267ef0542424b3e2ab629c3f15b1d7c8aca457e05c427b392f99955ba7",
+      "adaptation": "TransitionKind/ShapeKey/LinkTargetOp固定源类型摘录；NamedAction复用当前引擎类型"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/tests/show-keys.test.ts",
+      "local": "src/slides-show-keys-source.test.ts",
+      "sourceSha256": "f218f0cc136f91a2da31b822759044b0210c9da1f526956a7b4db50e121ff9c6",
+      "localSha256": "9efbd3d92f4f3b28ae23e5c4b67d7fb418095446b14da5a81616e56c37422911",
+      "adaptation": "仅import路径"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/tests/show-menu.test.ts",
+      "local": "src/slides-show-menu-source.test.ts",
+      "sourceSha256": "8e6cf2c6c80e630b6ee8252a1fdb8e15ef861a9b48b9ff72da618d97ff6a79ae",
+      "localSha256": "776665cbc56b92ea23bca8c133472290718ff1b27c7f5ace6e4e4c45c7fb0859",
+      "adaptation": "仅import路径"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/tests/custom-show-rehearse.test.ts",
+      "local": "src/slides-show-order-source.test.ts",
+      "sourceSha256": "c6ea9a945d8d98794b5eea62befe362346cf877cac19972a1b1b262bf0c1ac77",
+      "localSha256": "b10bc4bcbd224dd1fa20008b60ff25146bc3c232ee84148c1e0cfceb55196b5a",
+      "adaptation": "仅computePlayOrder describe原断言；不跑未接入排练"
+    },
+    {
+      "source": "/home/junge/pros/genoffice-source-full/apps/slides/tests/show-menu-click.test.ts",
+      "local": "src/slides-show-menu-click-source.test.ts",
+      "sourceSha256": "55da12c7eddbc065045df627d7fe02f733979a08187e7a34b2a62ea638ce7f08",
+      "localSha256": "35a3ac9d2fea9ca1ee03b0b8a45f28dc50721e92b41894899303877b9a9110b8",
+      "adaptation": "原断言保留；移除桌面IPC与curtain等待，传真实host props"
+    }
+  ]
+}

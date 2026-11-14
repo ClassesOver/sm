@@ -1,0 +1,21 @@
+.workbook-print-dialog-body { display:grid; grid-template-columns:minmax(220px,260px) minmax(0,1fr); gap:16px; min-height:0; }
+.workbook-print-dialog-settings { display:flex; flex-direction:column; gap:10px; max-height:64vh; overflow:auto; padding-right:4px; }
+.workbook-print-dialog-settings p { margin:0; color:var(--color-text-muted); font-size:12px; }
+.workbook-print-dialog-settings label { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.workbook-print-dialog-settings :is(select,input[type=number]) { width:100%; min-width:0; box-sizing:border-box; }
+.workbook-print-dialog-settings fieldset { display:flex; flex-direction:column; gap:10px; border:1px solid var(--color-border-soft); padding:10px; min-width:0; margin:0; }
+.workbook-print-dialog-settings .workbook-print-check { flex-direction:row; align-items:center; }
+.workbook-print-pages-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.workbook-print-dialog-preview { min-width:0; display:flex; flex-direction:column; gap:8px; }
+.workbook-print-dialog-preview .workbook-print-preview-pane { height:58vh; padding:12px; box-sizing:border-box; }
+.workbook-print-dialog-preview [data-print-paper-box] { flex-shrink:0; position:relative; background:white; box-shadow:0 2px 8px #0002; }
+.workbook-print-dialog-preview iframe { position:absolute; top:0; left:0; }
+.workbook-print-action-spacer { flex:1; }
+.workbook-print-preview-dialog > .workbook-ribbon-format-actions { flex-wrap:wrap; margin-top:12px; }
+.workbook-print-preview-dialog [hidden] { display:none; }
+@media(max-width:640px) {
+  .workbook-print-dialog-body { grid-template-columns:minmax(0,1fr); }
+  .workbook-print-dialog-settings { max-height:32vh; }
+  .workbook-print-dialog-preview .workbook-print-preview-pane { height:34vh; }
+  .workbook-print-preview-dialog > .workbook-ribbon-format-actions { gap:6px; }
+}

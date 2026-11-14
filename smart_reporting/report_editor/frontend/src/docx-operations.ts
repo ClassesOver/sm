@@ -1,3 +1,12 @@
+import {projectDocxTableProperties,type DocxTablePropertiesAnchor} from './docx-table-properties'
+import { projectDocxPicture, type DocxPictureAnchor } from './docx-pictures'
+import { projectStylesPaneActions, type StylesPaneAction } from './docx-styles-pane-operations'
+import { DOCX_FONT_PROPERTIES, DOCX_FONT_DISPLAY, docxFontProperties } from '../../../reporting/doc_engine/bridge/docx-font-properties'
+import { normalizeDocxDropCaps, replayDocxDropCap } from './docx-drop-cap'
+import { docxDropCapAttribute, normalizeDocxDropCap } from '../../../reporting/doc_engine/bridge/docx-drop-cap'
+import { fontDialogMarkAttrs } from './docx-font-properties'
+import { docxParagraphPropertiesOperation, replayDocxParagraphProperties } from './docx-paragraph-properties'
+import { docxTableCellParagraphPropertiesOperation, projectDocxTableCellParagraphProperties } from './docx-table-cell-paragraph-properties'
 import { normalizeDocxTextRevisions, replayDocxTextRevisions, type DocxTextRevisionAnchor } from './docx-text-revisions'
 import { assertDocxTextRevisionBatch } from './docx-text-revisions-core'
 import { projectDocxTableAltText, type DocxTableAltTextAnchor } from './docx-table-alt-text'
@@ -28,6 +37,8 @@ import { projectRibbonStyle } from './docx-style-majority'
 import { docxFontPickAttrs } from '../../../reporting/doc_engine/bridge/docx-font-slots'
 import { DOCX_LINE_SPACING_FIELDS, docxLineSpacingPatch } from '../../../reporting/doc_engine/bridge/docx-line-spacing'
 import { validDocxSpecialIndent } from '../../../reporting/doc_engine/bridge/docx-special-indent'
+import { normalizeDocxCustomList, customListLevel } from '../../../reporting/doc_engine/bridge/docx-custom-list'
+import { normalizeDocxNumberingBinding, docxNumberingBindingId } from '../../../reporting/doc_engine/bridge/docx-numbering-value'
 import { docxRulerIndentOperation, replayDocxRulerIndent, type DocxRulerIndentAnchor } from './docx-ruler-indent'
 import { docxTabStopsOperation, replayDocxTabStops, type DocxTabStopsAnchor } from './docx-tab-stops'
 import { normalizeDocxCellBorders, projectedDocxCellBordersBaseline, replayDocxCellBorders } from './docx-cell-borders'
@@ -43,14 +54,15 @@ import type { Schema } from '@tiptap/pm/model'
 import type { NativeOperation } from './native-draft'
 import type { SectionSettings } from '@genoffice/docx-engine'
 import { validDocxPageBorderValues } from './docx-page-borders'
-export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean; shadingEditable?: boolean; shadingReadOnlyReason?: string }
+export interface DocxCellAnchor { cellId: string; expectedObjectSha256: string; editable: boolean; paragraphs?: { index: number; expectedObjectSha256: string; editable: boolean }[]; shadingEditable?: boolean; shadingReadOnlyReason?: string }
 import { safeParagraphStyle, type DocxStyleInfo } from './docx-styles'
 import { restoredDocxHeaderFooterOperations } from './docx-hf'
-export interface DocxAnchor { nestedTables?: DocxNestedTableAnchor[]; bordersEditable?: boolean; bordersReadOnlyReason?: string; docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; deletable?: boolean; paragraphShadingEditable?: boolean; paragraphBordersEditable?: boolean; paragraphLayoutEditable?: boolean; paragraphStyleEditable?: boolean; paragraphStyleReadOnlyReason?: string | null; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
+export interface DocxAnchor extends DocxPictureAnchor, DocxTablePropertiesAnchor {
+  fontDialogEditable?: boolean; nestedTables?: DocxNestedTableAnchor[]; bordersEditable?: boolean; bordersReadOnlyReason?: string; docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; deletable?: boolean; paragraphShadingEditable?: boolean; paragraphBordersEditable?: boolean; paragraphLayoutEditable?: boolean; paragraphStyleEditable?: boolean; paragraphStyleReadOnlyReason?: string | null; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
 export interface DocxAnchor { cellShapeEditable?: boolean; cellShapeReadOnlyReason?: string | null; cellShapeWidthsTwips?: number[]; cellShapeCells?: DocxCellShapeSource[] }
 export interface DocxAnchor extends DocxTextRevisionAnchor, DocxTableAltTextAnchor, DocxCellWrapAnchor, DocxColumnWidthAnchor, DocxRowHeightAnchor, DocxAutoFitAnchor, DocxCellTextDirectionAnchor, DocxCellAlignmentAnchor, DocxCellMarginsAnchor, DocxCellMarginOverridesAnchor, DocxRowBreakAnchor, DocxTableAlignmentAnchor, DocxRulerIndentAnchor { columnWidthSectionId?: string; rowHeightSectionId?: string; autoFitSectionId?: string; sourceSectionId?: string }
 export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
-export interface DocxAnchor extends DocxTabStopsAnchor {}
+export interface DocxAnchor extends DocxTabStopsAnchor { paragraphPropertiesEditable?: boolean; dropCapEditable?: boolean }
 /** 固定源 ribbon-tabs.tsx clearAllFormatting：先清选区 marks，再应用默认样式及 Ctrl+Q。 */
 export const DOCX_CLEAR_PARAGRAPH_ATTRS: Record<string, unknown> = { ...Object.fromEntries([
   'align', 'lineSpacing', 'lineRule', 'lineRawTwips', 'indentLeft', 'indentRight', 'indentFirstLine',
@@ -133,7 +145,8 @@ export function restoredDocxSectionOperations(operations: NativeOperation[], sec
     return restored ? [restored] : []
   })
 }
-export type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist' | 'pageBorder' | 'pageBorderProps'>> & { titlePg?: boolean; evenAndOddHeaders?: boolean; pageNumberFmt?: string | null; pageNumberStart?: number | null }
+export type SectionValues = Partial<Pick<SectionSettings, 'orientation' | 'pageWidth' | 'pageHeight' | 'marginTop' | 'marginRight' | 'marginBottom' | 'marginLeft' | 'columns' | 'headerDist' | 'footerDist' | 'pageBorder'>> & { pageBorderProps?: SectionSettings['pageBorderProps'] | null; titlePg?: boolean; evenAndOddHeaders?: boolean; pageNumberFmt?: string | null; pageNumberStart?: number | null }
+export type SectionChangeResult = void | { error: string }
 export function restoredDocxSectionOperation(operations: NativeOperation[], section?: DocxSectionAnchor) {
   let values: SectionValues | undefined
   const numericLimits: Record<string, [number, number]> = { pageWidth: [1440, 31680], pageHeight: [1440, 31680],
@@ -174,6 +187,25 @@ export function restoredDocxSectionOperation(operations: NativeOperation[], sect
   if (settings.marginLeft + settings.marginRight >= settings.pageWidth || settings.marginTop + settings.marginBottom >= settings.pageHeight) throw new Error('草稿页边距超出纸张大小')
   return { kind: 'setSectionLayout', sectionId: section.sectionId, expectedSectionSha256: section.expectedSectionSha256, values }
 }
+/** 一次原子更新所选节的页面边框；各节保留自己的其它页面设置。 */
+export function docxPageBorderSectionOperations(operations: NativeOperation[], sections: readonly DocxSectionAnchor[], targetIndexes: readonly number[], props: SectionSettings['pageBorderProps'] | null): NativeOperation[] {
+  const targets = new Set<number>()
+  for (const index of targetIndexes) {
+    if (!Number.isInteger(index) || index < 0 || index >= sections.length || targets.has(index)) throw new Error('草稿页面边框的节身份无效')
+    targets.add(index)
+  }
+  if (!targets.size) throw new Error('草稿页面边框没有目标节')
+  const targetIds = new Set([...targets].map(index => sections[index]!.sectionId))
+  const next = operations.filter(operation => operation.kind !== 'setSectionLayout' || !targetIds.has(String(operation.sectionId)))
+  for (const index of targets) {
+    const section = sections[index]!
+    const prior = restoredDocxSectionOperation(operations.filter(operation => operation.kind === 'setSectionLayout' && operation.sectionId === section.sectionId), section)
+    const values: SectionValues = { ...prior?.values, pageBorder: props !== null, pageBorderProps: props }
+    const layout = restoredDocxSectionOperation([{ kind: 'setSectionLayout', sectionId: section.sectionId, expectedSectionSha256: section.expectedSectionSha256, values }], section)
+    if (layout) next.push(layout)
+  }
+  return restoredDocxSectionOperations(next, sections)
+}
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const textOf = (node: DocxPmNode): string => node.text ?? (node.type === 'docHardBreak' ? '\n' : (node.content ?? []).map(textOf).join(''))
 const paragraph = (node: DocxPmNode) => ['docParagraph', 'docHeading', 'docListItem'].includes(node.type)
@@ -186,7 +218,7 @@ const withoutParagraphSpacing = (attrs: DocxPmNode['attrs']) => Object.fromEntri
 const withoutParagraphShading = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['shadingFill', 'shadingClear'].includes(key)))
 const withoutParagraphBorders = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['borders', 'borderLines'].includes(key)))
 const withoutPageBreakBefore = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => key !== 'pageBreakBefore'))
-const withoutList = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['kind', 'numId', 'ilvl'].includes(key)))
+const withoutList = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => !['kind', 'numId', 'ilvl', 'nativeListDefinition', 'nativeNumberingBinding'].includes(key)))
 const listOf = (node: DocxPmNode) => node.type === 'docListItem' ? { kind: node.attrs?.kind, numId: node.attrs?.numId, ilvl: node.attrs?.ilvl } : null
 function structure(node: DocxPmNode, marks = true): unknown {
   const content: unknown[] = []
@@ -323,7 +355,8 @@ function runStyle(run: DocxPmNode): Record<string, unknown> {
     if (['bold', 'italic', 'underline', 'strike'].includes(mark.type)) style[mark.type] = true
     else if (mark.type === 'textStyle' || mark.type === 'docTextStyle') for (const [key, value] of Object.entries(mark.attrs ?? {})) {
       if (value == null || value === false) continue
-      if (key === 'color') style.color = String(value).replace(/^#/, '')
+      if (key === 'styleId') style.styleId = value
+      else if (key === 'color') style.color = String(value).replace(/^#/, '')
       else if (key === 'sizeHalfPoints' || key === 'fontSize') style.fontSize = key === 'sizeHalfPoints' ? Number(value) / 2 : Number(value)
       else if (key === 'highlight') style.highlight = safeDocxHighlight(value)
       else if (key === 'vertAlign') {
@@ -338,8 +371,50 @@ function runStyle(run: DocxPmNode): Record<string, unknown> {
   }
   return style
 }
+/** FontDialog preserves separate authored slots; computed display twins do not enter the wire style. */
+function fontDialogRunStyle(run: DocxPmNode): Record<string, unknown> {
+  const basic = runStyle({ ...run, marks: (run.marks ?? []).map(mark => !['textStyle', 'docTextStyle'].includes(mark.type) ? mark : { ...mark, attrs: Object.fromEntries(Object.entries(mark.attrs ?? {}).filter(([key]) => ![...DOCX_FONT_PROPERTIES, ...DOCX_FONT_DISPLAY, 'font', 'fontFamily'].includes(key as never))) }) })
+  const attrs = run.marks?.find(mark => ['textStyle', 'docTextStyle'].includes(mark.type))?.attrs ?? {}
+  for (const key of DOCX_FONT_PROPERTIES) basic[key] = attrs[key] ?? (key === 'eastAsiaFont' ? attrs.eaSlotEmpty ? null : attrs.font ?? attrs.fontFamily ?? null : null)
+  return basic
+}
+function fontDialogRangeChanges(node: DocxPmNode, edited: DocxPmNode) {
+  const expand = (paragraph: DocxPmNode) => (paragraph.content ?? []).flatMap(run => run.type === 'text' ? Array.from({ length: (run.text ?? '').length }, () => fontDialogRunStyle(run)) : [])
+  const before = expand(node), after = expand(edited)
+  if (before.length !== after.length) throw new Error('局部格式修改要求段落文字不变')
+  const expandAttrs = (paragraph: DocxPmNode) => (paragraph.content ?? []).flatMap(run => Array.from({ length: (run.text ?? '').length }, () => run.marks?.find(mark => ['docTextStyle','textStyle'].includes(mark.type))?.attrs ?? {}))
+  const beforeAttrs = expandAttrs(node), afterAttrs = expandAttrs(edited)
+  const segments: { from: number; to: number; style: Record<string, unknown> }[] = []
+  after.forEach((value, at) => {
+    const old = before[at]!
+    for (const key of new Set([...Object.keys(old), ...Object.keys(value)])) if ((key.startsWith('unsupported') || key.startsWith('font-slot:')) && !same(old[key], value[key])) throw new Error('此文字样式暂不支持保存')
+    for (const key of ['color','fontSize','styleId']) if (key in old && !(key in value)) value[key] = null
+    if ('highlight' in old && !('highlight' in value)) value.highlight = 'none'
+    const delta = Object.fromEntries(Object.entries(value).filter(([key,v]) => !key.startsWith('unsupported') && !key.startsWith('font-slot:') && !same(old[key],v)))
+    for (const [derived,authored] of [['kern','kernHalfPoints'],['charScaleEm','charScalePct']]) if (!same(beforeAttrs[at]![derived!],afterAttrs[at]![derived!])) delta[authored!] = value[authored!] ?? null
+    if (!Object.keys(delta).length) return
+    docxFontProperties(delta); delta.fontDialog = true
+    const last = segments.at(-1)
+    if (last && last.to === at && same(last.style,delta)) last.to++
+    else segments.push({ from: at, to: at + 1, style: delta })
+  })
+  return segments
+}
+function fontDialogStyleKeys(style: Record<string, unknown>) {
+  if ('fontDialog' in style && style.fontDialog !== true) throw new Error('草稿字体模式无效')
+  if (style.fontDialog === true) docxFontProperties(style)
+  if ('styleId' in style && style.styleId !== null && (typeof style.styleId !== 'string' || !style.styleId || style.styleId.length > 255 || /[\x00-\x1f\x7f]/.test(style.styleId))) throw new Error('字符样式标识无效')
+  return ['bold','italic','underline','strike','fontSize','fontFamily','color','highlight','vertAlign','styleId', ...(style.fontDialog === true ? ['fontDialog', ...DOCX_FONT_PROPERTIES] : [])]
+}
+function replayFontDialog(run: DocxPmNode, style: Record<string, unknown>) {
+  if (style.fontDialog !== true) return
+  let mark = run.marks!.find(item => ['docTextStyle','textStyle'].includes(item.type))
+  if (!mark) { mark = { type: 'docTextStyle', attrs: {} }; run.marks!.push(mark) }
+  mark.attrs = fontDialogMarkAttrs(mark.attrs ?? {}, style, run.text ?? '')
+}
 /** 文字不变时的局部字符格式差分：按 UTF-16 偏移给出最小变化区间（每段变化键与新值相同）。 */
 export function formatRangeChanges(node: DocxPmNode, edited: DocxPmNode): { from: number; to: number; style: Record<string, unknown> }[] {
+  if ((edited.content ?? []).some(run => run.marks?.some(mark => mark.attrs?.nativeFontDialog === true))) return fontDialogRangeChanges(node, edited)
   const expand = (paragraph: DocxPmNode) => (paragraph.content ?? []).flatMap(run => run.type === 'text'
     ? Array.from({ length: (run.text ?? '').length }, () => runStyle(run)) : [])
   const before = expand(node), after = expand(edited)
@@ -354,7 +429,7 @@ export function formatRangeChanges(node: DocxPmNode, edited: DocxPmNode): { from
       && !(style[`font-slot:${key}`] == null && style.fontFamily == null && style['font-slot:fontAscii'] == null && style['font-slot:eastAsiaFont'] == null)) throw new Error('此文字样式暂不支持保存')
     for (const key of new Set([...Object.keys(old), ...Object.keys(style)])) if (key.startsWith('unsupported') && !same(old[key], style[key])) throw new Error('此文字样式暂不支持保存')
     if ('highlight' in old && !('highlight' in style)) style.highlight = 'none'
-    for (const key of ['color', 'fontFamily', 'fontSize']) if (key in old && !(key in style)) style[key] = null
+    for (const key of ['color', 'fontFamily', 'fontSize', 'styleId']) if (key in old && !(key in style)) style[key] = null
     const delta = Object.fromEntries(Object.entries(style).filter(([key, value]) => !key.startsWith('unsupported') && !key.startsWith('font-slot:') && (!same(value, old[key]) || key === 'fontFamily' && changedSlots.length > 0)))
     const last = segments[segments.length - 1]
     if (!Object.keys(delta).length) return
@@ -386,6 +461,8 @@ function styleOf(node: DocxPmNode): Record<string, unknown> {
 }
 /** 原始XML和资源路径从不进入保存协议；变化仅映射为后端允许操作。 */
 export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchors: DocxAnchor[], sectionOperation?: NativeOperation | NativeOperation[], schema?: Schema, styles?: Map<string, DocxStyleInfo>, headerFooterOperations?: NativeOperation[]): NativeOperation[] {
+  const dropCaps = normalizeDocxDropCaps(original, current, anchors)
+  current = dropCaps.current
   const revisions = normalizeDocxTextRevisions(original, current, anchors, schema)
   current = revisions.current
   const nested = normalizeDocxNestedTables(original, current, anchors)
@@ -401,7 +478,7 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
   const positions = retained.map(node => before.findIndex(item => idOf(item) === idOf(node)))
   if (positions.some(index => index < 0) || new Set(retained.map(idOf)).size !== retained.length) throw new Error('文档锚点无效')
   if (positions.some((value, index) => index > 0 && value <= positions[index - 1])) throw new Error('暂不支持改变原对象顺序')
-  const ops: NativeOperation[] = []
+  const ops: NativeOperation[] = [...dropCaps.operations]
   for (let index = 0; index < after.length; index++) {
     const node = after[index]
     if (idOf(node) != null) continue
@@ -468,7 +545,7 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
     const fallback = before.find(item => idOf(item) != null && byIndex.get(Number(idOf(item)))?.editable)
     const target = next ?? previous ?? fallback
     if (!target) throw new Error('新增段落没有可编辑的锚点')
-    ops.push({ kind: 'insertParagraph', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', text: textOf(node), ...(node.attrs?.pageBreakBefore === true ? { pageBreakBefore: true } : {}) })
+    ops.push({ kind: 'insertParagraph', ...baseOp(byIndex.get(Number(idOf(target)))!), position: next || !previous ? 'before' : 'after', text: textOf(node), ...(node.attrs?.pageBreakBefore === true ? { pageBreakBefore: true } : {}), ...(node.attrs?.dropCap != null ? { dropCap: docxDropCapAttribute(node.attrs.dropCap) } : {}) })
   }
   for (const node of before) {
     const anchor = byIndex.get(Number(idOf(node)))
@@ -481,6 +558,14 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       ops.push({ kind: 'deleteParagraph', ...baseOp(anchor) }); continue
     }
     if (node.type === 'docTable' && edited.type === 'docTable') {
+      if (edited.attrs?.nativeTableProperties) {
+        const patch=edited.attrs.nativeTableProperties
+        if(!same(edited,projectDocxTableProperties(node,anchor,patch,schema)))throw new Error('表格属性含未授权的正文或格式修改')
+        ops.push({kind:'formatTableProperties',...baseOp(anchor),patch});continue
+      }
+      if (edited.attrs?.nativeTableCellParagraphProperties) {
+        ops.push(docxTableCellParagraphPropertiesOperation(node, edited, anchor, schema)); continue
+      }
       if (edited.attrs?.nativeTableAltText) {
         const value = edited.attrs.nativeTableAltText as { title: string; description: string }
         if (!same(edited, projectDocxTableAltText(node, anchor, value, schema))) throw new Error('表格标题/说明不能与同表文字、格式或其他修改混用，请先保存')
@@ -571,6 +656,9 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       }
       continue
     }
+    if (edited.attrs?.nativeParagraphProperties != null) {
+      ops.push(docxParagraphPropertiesOperation(node, edited, anchor, schema)); continue
+    }
     if (edited.attrs?.nativeTabStops != null) {
       const operation = docxTabStopsOperation(node, edited, anchor)
       if (operation) ops.push(operation)
@@ -611,26 +699,44 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
     }
     if (!anchor.editable) throw new Error('只读对象不能修改')
     const beforeList = listOf(node), afterList = listOf(edited)
+    const customDefinition = edited.attrs?.nativeListDefinition == null ? null : normalizeDocxCustomList(edited.attrs.nativeListDefinition)
+    const numberingBinding = edited.attrs?.nativeNumberingBinding == null ? null : normalizeDocxNumberingBinding(edited.attrs.nativeNumberingBinding)
+    if (numberingBinding) {
+      if (customDefinition || !paragraph(node) || edited.type !== 'docListItem' || edited.attrs?.numId !== docxNumberingBindingId(numberingBinding)
+        || !Number.isInteger(edited.attrs?.ilvl) || Number(edited.attrs?.ilvl) < 0 || Number(edited.attrs?.ilvl) > 8) throw new Error('编号值段落绑定无效')
+      const previous = ops.find(op => op.kind === 'setParagraphNumberingValue' && (op.binding as { id: string }).id === numberingBinding.id)
+      if (previous && !same(previous.binding, numberingBinding)) throw new Error('同一编号值定义存在冲突')
+      ops.push({ kind: 'setParagraphNumberingValue', ...baseOp(anchor), binding: numberingBinding, ilvl: edited.attrs!.ilvl, listKind: edited.attrs!.kind })
+    }
+    if (customDefinition) {
+      if (!paragraph(node) || edited.type !== 'docListItem' || !same(afterList, customListLevel(customDefinition, edited.attrs?.ilvl))) throw new Error('多级列表段落绑定无效')
+      const previous = ops.find(op => op.kind === 'setParagraphCustomList' && op.definitionId === customDefinition.id)
+      if (previous && !same(previous.levels, customDefinition.levels)) throw new Error('同一多级列表定义存在冲突')
+      ops.push({ kind: 'setParagraphCustomList', ...baseOp(anchor), definitionId: customDefinition.id, levels: customDefinition.levels, ilvl: edited.attrs!.ilvl })
+    }
     const listLevelChanged = node.type === 'docListItem' && edited.type === 'docListItem'
-      && beforeList?.kind === afterList?.kind && beforeList?.numId === afterList?.numId && beforeList?.ilvl !== afterList?.ilvl
+      && beforeList?.numId === afterList?.numId && beforeList?.ilvl !== afterList?.ilvl
     const listChanged = !same(beforeList, afterList) && !listLevelChanged
-    if (listChanged) {
+    if (listChanged && !customDefinition && !numberingBinding) {
       if (!['docParagraph', 'docListItem'].includes(node.type) || !['docParagraph', 'docListItem'].includes(edited.type)) throw new Error('暂不支持标题转换列表')
       const list = edited.type === 'docListItem' ? edited.attrs?.kind : 'none'
       if (!['none', 'bullet', 'ordered'].includes(String(list)) || (list !== 'none' && (edited.attrs?.numId !== `native-${list}` || edited.attrs?.ilvl !== 0))) throw new Error('此列表定义或级别暂不支持保存')
       ops.push({ kind: 'setParagraphList', ...baseOp(anchor), list })
     }
-    if (listLevelChanged) {
+    if (listLevelChanged && !customDefinition && !numberingBinding) {
       const ilvl = edited.attrs?.ilvl
       if (typeof ilvl !== 'number' || !Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8) throw new Error('此列表级别暂不支持保存')
-      ops.push({ kind: 'setParagraphListLevel', ...baseOp(anchor), ilvl })
+      if (!['bullet', 'ordered'].includes(String(afterList?.kind))) throw new Error('此列表类型暂不支持保存')
+      ops.push({ kind: 'setParagraphListLevel', ...baseOp(anchor), ilvl, ...(beforeList?.kind !== afterList?.kind ? { listKind: afterList?.kind } : {}) })
     }
-    // nativeCoverPage 是只在 docParagraph 上声明的本地标记（不入文件）；转成列表项时该键会被 ProseMirror 丢弃，
-    // 空值不代表布局变化。非空封面意图已在上方单独处理。
-    const withoutLocalMarkers = (attrs: DocxPmNode['attrs']) => attrs?.nativeCoverPage == null ? Object.fromEntries(Object.entries(attrs ?? {}).filter(([key]) => key !== 'nativeCoverPage')) : attrs
+    // 这些本地标记并非所有段落类型都有声明；转换列表时 ProseMirror 会丢弃目标类型未声明的键。
+    // 只归一空值，非空操作意图仍由上方对应校验处理。
+    const withoutLocalMarkers = (attrs: DocxPmNode['attrs']) => Object.fromEntries(Object.entries(attrs ?? {}).filter(([key, value]) =>
+      value != null || !['nativeCoverPage', 'nativeRibbonStyle', 'nativeRulerIndent', 'nativeTabStops', 'nativeListDefinition', 'nativeNumberingBinding'].includes(key)))
     const originalAttrs = withoutLocalMarkers(node.type === 'docListItem' ? withoutList(node.attrs) : node.attrs)
+    if ((customDefinition || numberingBinding) && node.type === 'docHeading') { delete originalAttrs.level; delete originalAttrs.outlineOnly }
     const editedAttrs = withoutLocalMarkers(edited.type === 'docListItem' ? withoutList(edited.attrs) : edited.attrs)
-    if ((!listChanged && node.type !== edited.type) || !same(withoutPageBreakBefore(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(originalAttrs)))))), withoutPageBreakBefore(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(editedAttrs)))))))) throw new Error('暂不支持改变段落布局')
+    if ((!listChanged && !customDefinition && node.type !== edited.type) || !same(withoutPageBreakBefore(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(originalAttrs)))))), withoutPageBreakBefore(withoutParagraphBorders(withoutParagraphShading(withoutParagraphSpacing(withoutIndent(withoutAlignment(editedAttrs)))))))) throw new Error('暂不支持改变段落布局')
     const pageBreakChanged = !!node.attrs?.pageBreakBefore !== !!edited.attrs?.pageBreakBefore
     if (pageBreakChanged) {
       // 固定源 page-break.ts：分页符 = 段落 pageBreakBefore；与底纹同规走原 XML 最小修改，
@@ -758,7 +864,7 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
       let next: Record<string, unknown>
       try { next = styleOf(plainAfter) } catch (error) { throw new Error(textChanged && (error as Error).message.includes('局部样式') ? '同一段落修改文字后，局部格式请先保存再设置' : (error as Error).message) }
       const old = (node.content ?? []).some(child => child.type === 'text') ? styleOf(plainBefore) : { bold: false, italic: false, underline: false, strike: false }
-      for (const key of ['color', 'fontFamily', 'fontSize']) if (key in old && !(key in next)) next[key] = null
+      for (const key of ['color', 'fontFamily', 'fontSize', 'styleId']) if (key in old && !(key in next)) next[key] = null
       const changed = Object.fromEntries(Object.entries(next).filter(([key, value]) => !same(value, old[key])))
       if (Object.keys(changed).length) ops.push({ kind: 'formatParagraph', ...baseOp(anchor), style: changed })
     }
@@ -795,6 +901,7 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
   const result = structuredClone(original), originalNodes = new Map((result.content ?? []).map(node => [Number(idOf(node)), node]))
   replayDocxNestedTables(original, result, operations, anchors)
   const byId = new Map(anchors.map(anchor => [anchor.blockId, anchor])), afterCounts = new Map<string, number>()
+  const numberingBindings = new Map<string, ReturnType<typeof normalizeDocxNumberingBinding>>()
   const replaceText = (node: DocxPmNode, value: string) => {
     let remaining = Array.from(value)
     const runs = (node.content ?? []).filter(child => child.type === 'text')
@@ -804,24 +911,48 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
   }
   for (const operation of operations) if (operation.kind === 'setTableCellBorders' && operations.some(other => other !== operation && other.blockId === operation.blockId && other.kind !== 'setCellShading')) throw new Error('同表边框草稿不能与其他修改混合')
   const structural = new Set<string>()
-  for (const operation of operations) if (['setParagraphRulerIndent','setParagraphTabStops'].includes(operation.kind) && operations.filter(other => other.blockId === operation.blockId).length > 1) throw new Error('标尺操作不能与同段其它操作或重复操作混合')
+  for (const operation of operations) if (operation.kind === 'setParagraphDropCap' && operations.filter(other => other.kind === operation.kind && other.blockId === operation.blockId).length > 1) throw new Error('草稿首字下沉重复操作')
+  for (const operation of operations) if (operation.kind === 'setParagraphProperties' && operations.some(other => other !== operation && other.kind !== 'setParagraphDropCap' && other.blockId === operation.blockId)) throw new Error('段落设置不能与同段其它操作或重复操作混合')
+  for (const operation of operations) if (['setParagraphRulerIndent','setParagraphTabStops'].includes(operation.kind) && operations.filter(other => other.blockId === operation.blockId && other.kind !== 'setParagraphDropCap').length > 1) throw new Error('标尺操作不能与同段其它操作或重复操作混合')
   for (const operation of operations) if (operation.kind === 'setCellShading' && operations.some(other => other !== operation && other.blockId === operation.blockId && other.cellId === operation.cellId)) throw new Error('同一单元格底纹不能与正文或重复底纹草稿混合')
-  for (const operation of operations) if (TABLE_KINDS.includes(operation.kind as any) || operation.kind === 'restructureTable' || operation.kind === 'reshapeTableCells' || operation.kind === 'resizeTableColumns' || operation.kind === 'setTableRowHeights' || operation.kind === 'setTableAutoFit' || operation.kind === 'setTableCellTextDirection' || operation.kind === 'setTableCellAlignment' || operation.kind === 'setTableCellMargins' || operation.kind === 'setTableCellMarginOverrides' || operation.kind === 'setTableRowBreaks' || operation.kind === 'setTableAlignment' || operation.kind === 'setTableCellWrap' || operation.kind === 'setTableAltText') {
+  for (const operation of operations) if (operation.kind === 'setTableCellParagraphProperties' && operations.some(other => other !== operation && other.blockId === operation.blockId)) throw new Error('表格段落设置不能与同表文字、格式或重复操作混合')
+  for (const operation of operations) if (operation.kind === 'formatTableProperties' || TABLE_KINDS.includes(operation.kind as any) || operation.kind === 'restructureTable' || operation.kind === 'reshapeTableCells' || operation.kind === 'resizeTableColumns' || operation.kind === 'setTableRowHeights' || operation.kind === 'setTableAutoFit' || operation.kind === 'setTableCellTextDirection' || operation.kind === 'setTableCellAlignment' || operation.kind === 'setTableCellMargins' || operation.kind === 'setTableCellMarginOverrides' || operation.kind === 'setTableRowBreaks' || operation.kind === 'setTableAlignment' || operation.kind === 'setTableCellWrap' || operation.kind === 'setTableAltText') {
     const id = String(operation.blockId)
     if (structural.has(id) || operations.some(other => other !== operation && other.blockId === id)) throw new Error('同表草稿不能混合文字或多次结构操作')
     structural.add(id)
   }
   for (const operation of operations) {
-    if (operation.kind === 'resolveTextRevision' || operation.kind === 'replaceNestedCellText' || operation.kind === 'setSectionLayout' || operation.kind === 'setHeaderFooter' || operation.kind === 'setHeaderFooterLink' || operation.kind === 'setPageColor' || operation.kind === 'setWatermark' || operation.kind === 'setCellShading' || operation.kind === 'setTableCellBorders') continue
+    if (operation.kind === 'resolveTextRevision' || operation.kind === 'replaceNestedCellText' || operation.kind === 'setSectionLayout' || operation.kind === 'setHeaderFooter' || operation.kind === 'setHeaderFooterLink' || operation.kind === 'setPageColor' || operation.kind === 'setWatermark' || operation.kind === 'setTrackRevisions' || operation.kind === 'upsertStyle' || operation.kind === 'setCellShading' || operation.kind === 'setTableCellBorders') continue
     const anchor = byId.get(String(operation.blockId)), node = anchor && originalNodes.get(anchor.docxIndex)
     if (!anchor || !node) throw new Error('草稿对象不属于当前 Word 文件')
+    if (operation.kind === 'replaceImage') {
+      if (operations.some(other => other !== operation && other.blockId === operation.blockId)) throw new Error('图片草稿包含重复或冲突操作')
+      Object.assign(node, projectDocxPicture(node, anchor, operation)); continue
+    }
+    if (operation.kind === 'applyDocumentStyle') {
+      if (!schema || !styles || !anchor.editable || anchor.fontDialogEditable === false || operation.expectedObjectSha256 !== anchor.expectedObjectSha256 || Object.keys(operation).some(key => !['kind','blockId','expectedObjectSha256','actions'].includes(key)) || operations.some(other => other !== operation && other.blockId === operation.blockId)) throw new Error('样式窗格草稿来源无效')
+      Object.assign(node, projectStylesPaneActions(node, operation.actions as StylesPaneAction[], styles as any, schema)); continue
+    }
+    if (operation.kind === 'setParagraphDropCap') { replayDocxDropCap(structuredClone(node), anchor, operation); continue }
+    if (operation.kind === 'setParagraphProperties') { if (!schema) throw new Error('草稿段落属性缺少当前文档模型'); Object.assign(node, replayDocxParagraphProperties(node, anchor, operation, schema)); continue }
+    if (operation.kind === 'setTableCellParagraphProperties') {
+      const position = anchor.cells?.flatMap((cells, r) => cells.map((cell, c) => ({ ...cell, r, c }))).find(cell => cell.cellId === operation.cellId)
+      if (!position || !schema || operation.expectedObjectSha256 !== anchor.expectedObjectSha256 || operation.expectedCellSha256 !== position.expectedObjectSha256
+        || operation.expectedParagraphSha256 !== position.paragraphs?.find(item => item.index === operation.paragraphIndex)?.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind','blockId','expectedObjectSha256','cellId','expectedCellSha256','paragraphIndex','expectedParagraphSha256','values'].includes(key))) throw new Error('草稿表格段落设置的来源身份或字段无效')
+      Object.assign(node, projectDocxTableCellParagraphProperties(node, anchor, position.r, position.c, Number(operation.paragraphIndex), operation.values, schema)); continue
+    }
     if (operation.kind === 'setParagraphRulerIndent') { Object.assign(node, replayDocxRulerIndent(node, anchor, operation)); continue }
     if (operation.kind === 'setParagraphTabStops') { Object.assign(node, replayDocxTabStops(node, anchor, operation)); continue }
     const layoutFields: Record<string, string[]> = { setParagraphAlignment: ['alignment'], setParagraphIndent: ['twips'], setParagraphRightIndent: ['twips'], setParagraphSpecialIndent: ['twips', 'firstLineChars'], setParagraphSpacing: ['spaceBefore', 'spaceAfter', ...DOCX_LINE_SPACING_FIELDS] }
     if (layoutFields[operation.kind] && (!(anchor.paragraphLayoutEditable ?? anchor.editable) || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
       || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', ...layoutFields[operation.kind]!].includes(key))
       || ['setParagraphIndent', 'setParagraphSpecialIndent'].includes(operation.kind) && node.type === 'docListItem')) throw new Error('草稿段落布局字段或来源身份无效')
-    if (operation.kind === 'setTableAltText') {
+    if (operation.kind === 'formatTableProperties') {
+      if(Object.keys(operation).some(key=>!['kind','blockId','expectedObjectSha256','patch'].includes(key))||operation.expectedObjectSha256!==anchor.expectedObjectSha256)throw new Error('表格属性草稿来源身份或字段无效')
+      Object.assign(node,projectDocxTableProperties(node,anchor,operation.patch,schema))
+    }
+    else if (operation.kind === 'setTableAltText') {
       if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'title', 'description'].includes(key)) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256) throw new Error('表格标题/说明草稿的来源身份或字段无效')
       Object.assign(node, projectDocxTableAltText(node, anchor, { title: operation.title as string, description: operation.description as string }, schema))
     }
@@ -876,7 +1007,7 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     else if (operation.kind === 'clearParagraphFormatting') {
       if (!anchor.editable || !schema || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
         || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'ranges'].includes(key))
-        || operations.some(other => other !== operation && other.blockId === operation.blockId)) throw new Error('草稿清除格式字段或来源身份无效')
+        || operations.some(other => other !== operation && other.kind !== 'setParagraphDropCap' && other.blockId === operation.blockId)) throw new Error('草稿清除格式字段或来源身份无效')
       const ranges = docxClearRanges(operation.ranges, textOf(node))
       const styleId = [...(styles?.values() ?? [])].find(style => style.type === 'paragraph' && style.isDefault)?.styleId ?? null
       const projected = projectClearedDocxParagraph(node, ranges, styleId, schema)
@@ -902,14 +1033,14 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
         || (typeof operation.fill !== 'string' && operation.fill !== null)
         || (typeof operation.fill === 'string' && !/^[0-9a-f]{6}$/.test(operation.fill))
         || typeof operation.clear !== 'boolean'
-        || operations.some(other => other.blockId === operation.blockId && other !== operation && other.kind !== 'setParagraphBorders' && !layoutFields[other.kind])) throw new Error('草稿段落底纹字段或来源身份无效')
+        || operations.some(other => other.blockId === operation.blockId && other !== operation && other.kind !== 'setParagraphDropCap' && other.kind !== 'setParagraphBorders' && !layoutFields[other.kind])) throw new Error('草稿段落底纹字段或来源身份无效')
       node.attrs = { ...node.attrs, shadingFill: operation.fill, shadingClear: operation.clear ? true : null }
     }
     else if (operation.kind === 'setParagraphPageBreakBefore') {
       if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
         || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'value'].includes(key))
         || typeof operation.value !== 'boolean'
-        || operations.some(other => other.blockId === operation.blockId && other !== operation && other.kind !== 'insertParagraph' && other.kind !== 'insertParagraphImage')) throw new Error('草稿分页符字段或来源身份无效')
+        || operations.some(other => other.blockId === operation.blockId && other !== operation && other.kind !== 'setParagraphDropCap' && other.kind !== 'insertParagraph' && other.kind !== 'insertParagraphImage')) throw new Error('草稿分页符字段或来源身份无效')
       node.attrs = { ...node.attrs, pageBreakBefore: operation.value }
     }
     else if (operation.kind === 'setParagraphBorders') {
@@ -918,7 +1049,7 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       if (!(anchor.paragraphBordersEditable ?? anchor.editable) || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
         || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'borders'].includes(key))
         || node.attrs?.borderReset || node.attrs?.borderPad
-        || operations.some(other => other.blockId === operation.blockId && other !== operation && other.kind !== 'setParagraphShading' && !layoutFields[other.kind])) throw new Error('草稿段落边框字段或来源身份无效')
+        || operations.some(other => other.blockId === operation.blockId && other !== operation && other.kind !== 'setParagraphDropCap' && other.kind !== 'setParagraphShading' && !layoutFields[other.kind])) throw new Error('草稿段落边框字段或来源身份无效')
       node.attrs = { ...node.attrs, ...docxBorderAttrs(borders) }
     }
     else if (TABLE_KINDS.includes(operation.kind as any)) {
@@ -973,6 +1104,29 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       if (!Number.isInteger(twips) || Number(twips) < -14400 || Number(twips) > 14400) throw new Error('草稿右缩进值无效')
       node.attrs = { ...node.attrs, indentRight: twips || null }
     }
+    else if (operation.kind === 'setParagraphNumberingValue') {
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'binding', 'ilvl', 'listKind'].includes(key))
+        || !Number.isInteger(operation.ilvl) || Number(operation.ilvl) < 0 || Number(operation.ilvl) > 8
+        || operation.listKind !== undefined && !['bullet', 'ordered'].includes(String(operation.listKind))) throw new Error('草稿编号值来源或字段无效')
+      const binding = normalizeDocxNumberingBinding(operation.binding)
+      const previous = numberingBindings.get(binding.id)
+      if (previous && !same(previous, binding)) throw new Error('同一编号值定义存在冲突')
+      numberingBindings.set(binding.id, binding)
+      const source = binding.sourceNumId ? original.content?.find(n => n.type === 'docListItem' && n.attrs?.numId === binding.sourceNumId) : undefined
+      node.type = 'docListItem'
+      node.attrs = { ...withoutList(node.attrs), kind: operation.listKind ?? (binding.custom ? customListLevel(binding.custom, operation.ilvl).kind : binding.defaultNumbering?.kind ?? source?.attrs?.kind ?? 'ordered'), numId: docxNumberingBindingId(binding), ilvl: operation.ilvl, nativeListDefinition: null, nativeNumberingBinding: binding }
+      delete node.attrs.level; delete node.attrs.outlineOnly
+    }
+    else if (operation.kind === 'setParagraphCustomList') {
+      if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
+        || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'definitionId', 'levels', 'ilvl'].includes(key))) throw new Error('草稿多级列表来源或字段无效')
+      const definition = normalizeDocxCustomList({ id: operation.definitionId, levels: operation.levels })
+      node.type = 'docListItem'
+      node.attrs = { ...withoutList(node.attrs), ...customListLevel(definition, operation.ilvl), nativeListDefinition: definition }
+      delete node.attrs.level
+      delete node.attrs.outlineOnly
+    }
     else if (operation.kind === 'setParagraphList') {
       const list = operation.list
       if (!['none', 'bullet', 'ordered'].includes(String(list))) throw new Error('草稿列表类型无效')
@@ -982,7 +1136,8 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     else if (operation.kind === 'setParagraphListLevel') {
       const ilvl = operation.ilvl
       if (!Number.isInteger(ilvl) || Number(ilvl) < 0 || Number(ilvl) > 8 || node.type !== 'docListItem') throw new Error('草稿列表级别无效')
-      node.attrs = { ...node.attrs, ilvl: Number(ilvl) }
+      if (Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'ilvl', 'listKind'].includes(key)) || operation.listKind !== undefined && !['bullet', 'ordered'].includes(String(operation.listKind))) throw new Error('草稿列表类型无效')
+      node.attrs = { ...node.attrs, ilvl: Number(ilvl), ...(operation.listKind ? { kind: operation.listKind } : {}) }
     }
     else if (operation.kind === 'setParagraphAlignment') {
       if (!['left', 'center', 'right', 'justify'].includes(String(operation.alignment))) throw new Error('草稿段落对齐方式无效')
@@ -1008,7 +1163,8 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       if (index < 0) throw new Error('草稿插入锚点已删除')
       const offset = operation.position === 'after' ? (afterCounts.get(anchor.blockId) ?? 0) + 1 : 0
       if (operation.pageBreakBefore !== undefined && operation.pageBreakBefore !== true) throw new Error('草稿新增段落分页字段无效')
-      result.content!.splice(index + offset, 0, { type: 'docParagraph', attrs: { ...node.attrs, docxIndex: null, pageBreakBefore: operation.pageBreakBefore === true }, ...(operation.text ? { content: [{ type: 'text', text: String(operation.text) }] } : {}) })
+      const dropCap = operation.dropCap === undefined ? null : normalizeDocxDropCap(operation.dropCap)
+      result.content!.splice(index + offset, 0, { type: 'docParagraph', attrs: { ...node.attrs, docxIndex: null, pageBreakBefore: operation.pageBreakBefore === true, dropCap: dropCap ? JSON.stringify(dropCap) : null }, ...(operation.text ? { content: [{ type: 'text', text: String(operation.text) }] } : {}) })
       if (operation.position === 'after') afterCounts.set(anchor.blockId, offset)
     }
     else if (operation.kind === 'insertCoverPage') {
@@ -1064,9 +1220,9 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
         || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'style'].includes(key))
         || !style || typeof style !== 'object' || Array.isArray(style) || !Object.keys(style).length
-        || Object.keys(style).some(key => !['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontFamily', 'color', 'highlight', 'vertAlign'].includes(key))) throw new Error('草稿文字格式字段或来源身份无效')
+        || Object.keys(style).some(key => !fontDialogStyleKeys(style).includes(key))) throw new Error('草稿文字格式字段或来源身份无效')
       for (const key of ['bold', 'italic', 'underline', 'strike']) if (key in style && typeof style[key] !== 'boolean') throw new Error('草稿文字格式无效')
-      if ('fontSize' in style && style.fontSize !== null && (typeof style.fontSize !== 'number' || !Number.isFinite(style.fontSize) || style.fontSize < 1 || style.fontSize > 200 || !Number.isInteger(style.fontSize * 2))) throw new Error('草稿字号无效')
+      if ('fontSize' in style && style.fontSize !== null && (typeof style.fontSize !== 'number' || !Number.isFinite(style.fontSize) || style.fontSize < 1 || style.fontSize > (style.fontDialog === true ? 1638 : 200) || !Number.isInteger(style.fontSize * 2))) throw new Error('草稿字号无效')
       if ('fontFamily' in style && style.fontFamily !== null && (typeof style.fontFamily !== 'string' || !style.fontFamily.trim() || style.fontFamily.length > 128 || /[\x00-\x1f]/.test(style.fontFamily))) throw new Error('草稿字体无效')
       if ('highlight' in style) safeDocxHighlight(style.highlight)
       if ('vertAlign' in style && !['baseline', 'superscript', 'subscript'].includes(String(style.vertAlign))) throw new Error('草稿上下标无效')
@@ -1082,11 +1238,12 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
           run.marks = run.marks.filter(mark => mark.type !== key)
           if (style[key]) run.marks.push({ type: key })
         }
-        for (const [key, attr] of Object.entries({ color: 'color', fontSize: 'sizeHalfPoints', fontFamily: 'font', highlight: 'highlight', vertAlign: 'vertAlign' })) if (key in style) {
+        for (const [key, attr] of Object.entries({ color: 'color', fontSize: 'sizeHalfPoints', fontFamily: 'font', highlight: 'highlight', vertAlign: 'vertAlign', styleId: 'styleId' })) if (key in style) {
           let mark = run.marks.find(item => item.type === 'docTextStyle' || item.type === 'textStyle')
           if (!mark) { mark = { type: 'docTextStyle', attrs: {} }; run.marks.push(mark) }
           mark.attrs = { ...mark.attrs, ...(key === 'fontFamily' ? docxFontPickAttrs(style[key] as string | null) : { [attr]: style[key] === null ? null : key === 'fontSize' ? Number(style[key]) * 2 : style[key] }) }
         }
+        replayFontDialog(run, style)
         run.marks = run.marks.filter(mark => !['docTextStyle', 'textStyle'].includes(mark.type) || Object.values(mark.attrs ?? {}).some(value => value != null && value !== false))
       }
     } else if (operation.kind === 'formatRange') {
@@ -1094,10 +1251,10 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       if (!anchor.editable || !paragraph(node) || operation.expectedObjectSha256 !== anchor.expectedObjectSha256
         || Object.keys(operation).some(key => !['kind', 'blockId', 'expectedObjectSha256', 'from', 'to', 'style'].includes(key))
         || !style || typeof style !== 'object' || Array.isArray(style) || !Object.keys(style).length
-        || Object.keys(style).some(key => !['bold', 'italic', 'underline', 'strike', 'fontSize', 'fontFamily', 'color', 'highlight', 'vertAlign'].includes(key))
+        || Object.keys(style).some(key => !fontDialogStyleKeys(style).includes(key))
         || (node.content ?? []).some(run => run.type !== 'text') || !validDocxLinkRange(textOf(node), operation.from, operation.to)) throw new Error('草稿局部格式字段或来源身份无效')
       for (const key of ['bold', 'italic', 'underline', 'strike']) if (key in style && typeof style[key] !== 'boolean') throw new Error('草稿文字格式无效')
-      if ('fontSize' in style && style.fontSize !== null && (typeof style.fontSize !== 'number' || !Number.isFinite(style.fontSize) || style.fontSize < 1 || style.fontSize > 200 || !Number.isInteger(style.fontSize * 2))) throw new Error('草稿字号无效')
+      if ('fontSize' in style && style.fontSize !== null && (typeof style.fontSize !== 'number' || !Number.isFinite(style.fontSize) || style.fontSize < 1 || style.fontSize > (style.fontDialog === true ? 1638 : 200) || !Number.isInteger(style.fontSize * 2))) throw new Error('草稿字号无效')
       if ('fontFamily' in style && style.fontFamily !== null && (typeof style.fontFamily !== 'string' || !style.fontFamily.trim() || style.fontFamily.length > 128 || /[\x00-\x1f]/.test(style.fontFamily))) throw new Error('草稿字体无效')
       if ('highlight' in style) safeDocxHighlight(style.highlight)
       if ('vertAlign' in style && !['baseline', 'superscript', 'subscript'].includes(String(style.vertAlign))) throw new Error('草稿上下标无效')
@@ -1114,11 +1271,12 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
             part.marks = part.marks!.filter(mark => mark.type !== key)
             if (style[key]) part.marks.push({ type: key })
           }
-          for (const [key, attr] of Object.entries({ color: 'color', fontSize: 'sizeHalfPoints', fontFamily: 'font', highlight: 'highlight', vertAlign: 'vertAlign' })) if (key in style) {
+          for (const [key, attr] of Object.entries({ color: 'color', fontSize: 'sizeHalfPoints', fontFamily: 'font', highlight: 'highlight', vertAlign: 'vertAlign', styleId: 'styleId' })) if (key in style) {
             let mark = part.marks!.find(item => item.type === 'docTextStyle' || item.type === 'textStyle')
             if (!mark) { mark = { type: 'docTextStyle', attrs: {} }; part.marks!.push(mark) }
             mark.attrs = { ...mark.attrs, ...(key === 'fontFamily' ? docxFontPickAttrs(style[key] as string | null) : { [attr]: style[key] === null ? null : key === 'fontSize' ? Number(style[key]) * 2 : style[key] }) }
           }
+          replayFontDialog(part, style)
           part.marks = part.marks!.filter(mark => !['docTextStyle', 'textStyle'].includes(mark.type) || Object.values(mark.attrs ?? {}).some(value => value != null && value !== false))
           return part
         })
@@ -1130,6 +1288,11 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
       replaceText(cell.content[0], String(operation.text))
       for (const paragraph of cell.content.slice(1)) replaceText(paragraph, '')
     } else throw new Error('Word 草稿包含不支持的操作')
+  }
+  for (const operation of operations) if (operation.kind === 'setParagraphDropCap') {
+    const anchor = byId.get(String(operation.blockId))!, node = originalNodes.get(anchor.docxIndex)!
+    if (!result.content?.includes(node)) throw new Error('首字下沉目标已删除')
+    replayDocxDropCap(node, anchor, operation)
   }
   return replayDocxTextRevisions(replayDocxCellShading(replayDocxCellBorders(result, operations, anchors), operations, anchors), operations, anchors, schema)
 }

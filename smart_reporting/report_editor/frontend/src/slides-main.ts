@@ -1,4 +1,20 @@
-import {createSlidesNotesPane,validateSlidesNotesDraft,type NotesEdit} from './slides-notes'
+import {validateZoomDraft} from './slides-zoom-model'
+import {mountModel3d} from './slides-model3d-ui'
+import {validateModelDraft,type ModelInsertion,type ModelViewEdit,type ModelSource} from './slides-model3d'
+import {mountSlidesInk} from './slides-ink-controls'
+import {inkSlide,type InkChanges} from './slides-ink-model'
+import {openSlidesCutout} from './slides-cutout-dialog'
+import {verifiedCutoutSource} from './slides-cutout-source'
+import {openSlidesCustomShows,type CustomShow} from './slides-custom-show-dialog'
+import {createSlidesBackgroundPane,type BackgroundPaneOp} from './slides-background-pane'
+import {startSlideScreenRecording,type SlideScreenRecording} from './slides-screen-recording'
+import {pickSlideMedia,prepareSlideMedia,validateSlideMediaInsertions,type SlideMediaInsertion,type SlideMediaSource} from './slides-media'
+import {classifyDroppedFile} from '../../../reporting/slides_engine/bridge/source-media/media-kinds'
+import {openSlideMediaPlayback} from './slides-media-playback'
+import { validateMasterTextDraft, type MasterTextEdit, type MasterTextPart, type MasterTextRenderPart } from './slides-master-text-model'
+import { validateMasterElementDraft, type MasterElementEdit } from './slides-master-elements-model'
+import type { openSlidesMasterText } from './slides-master-text'
+import {createSlidesNotesPane,slidesNotesReadOnlyReason,validateSlidesNotesDraft,type NotesEdit} from './slides-notes'
 import {slidesAIObjects} from './slides-native-ai-context'
 import { SLIDES_TABLE_PRESETS, SLIDES_TABLE_FLAG_FIELDS, type SlidesTablePresetName, type SlidesTableFlags } from './slides-table-presets'
 import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
@@ -9,10 +25,14 @@ import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart
 import { LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS, SHAPE_PRESETS } from './vendor/genoffice-slides/components/shape-gallery-data'
 import { PARAGRAPH_LIST_COMMANDS, BULLET_GLYPHS, paragraphCommandPatch, projectParagraphs, uniformParagraphValue, type ParagraphFormatting, type ParagraphSourceFormatting, type ParagraphList } from './slides-paragraph'
 import { createElement, ArrowDown, ArrowUp, Copy, Download, Redo2, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
+import { binaryRefreshLock, mountOfficeReportRefresh } from './binary-refresh'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
 import type { SlidesCanvasState } from './slides-canvas'
+import type { createSlidesSorter } from './slides-view-modes'
+import type { createSlidesOutline, createSlidesReading } from './slides-outline-reading'
+import { applyCanvasEdits } from './slides-canvas-model'
 import { createSlidesChartTools } from './slides-chart-tools'
 import { createSlidesNativeRibbon, stepNativeFontSize, type NativeSlidesContext, type NativeSlidesRibbon } from './slides-native-ribbon'
 import { slidesLayoutLabel } from './slides-native-ribbon-locales'
@@ -23,6 +43,8 @@ import { mountSlidesNativeAI, type SlidesNativeAIClient } from './slides-native-
 import { openSlidesSizeDialog } from './slides-size-dialog'
 import { mountSlidesRuler } from './slides-ruler'
 import { mountSlidesGuides } from './slides-guides'
+import { showSlidesSettingsDialog } from './slides-settings-dialog'
+import { equationTextBox, openSlidesEquationDialog } from './slides-equation'
 import { EFFECT_LABELS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 import { openSlidesFindReplace } from './slides-find-replace'
@@ -42,13 +64,14 @@ import { captureSlidesBrush, planSlidesBrushApply, type BrushSource } from './sl
 import { validateSlidesClipboardDraft, captureSlidesClipboard, planSlidesClipboardPaste } from './slides-native-clipboard'
 import { validateSlidesLinkDraft, openSlidesLink } from './slides-native-link'
 
-type DeckElement = { id: string; type: string; name: string; text: string; editable: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { model3d?:ModelSource; mediaKind?:'video'|'audio'; id: string; type: string; name: string; text: string; editable: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = SourceAnimation
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
 type BackgroundGradientFill = { from: string; to: string; angleDeg: 0 | 45 | 90; radial: boolean }
-type DeckSlide = { backgroundImage?: { mode: 'stretch' | 'tile' } | null; backgroundOwn?: boolean; backgroundGraphicsHidden?: boolean; backgroundGradient?: BackgroundGradientFill | null; notesText?:string;notesEditable?:boolean;notesReason?:string|null; slideIndex: number; comments?: SlideComments; hidden?: boolean; headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto?: boolean }; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionEditSafe?: boolean; transitionEditReason?: string | null; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
-type Deck = { revision: number; sha256: string; size: { cx: number; cy: number }; layouts?: DeckLayout[]; sections?: { name: string; slideIndices: number[] }[]; masterParts?: { partPath: string; kind: 'master' | 'layout'; name: string }[]; slides: DeckSlide[] }
+type BackgroundImageReuse={sourceSlideIndex:number;expectedSha256:string;expectedSize:number;slideIndices:number[];tile:boolean}
+type DeckSlide = { slideIdentity?: string; backgroundImageSource?:{sha256:string;size:number}|null; backgroundImage?: { mode: 'stretch' | 'tile' } | null; backgroundOwn?: boolean; backgroundGraphicsHidden?: boolean; backgroundGradient?: BackgroundGradientFill | null; notesText?:string;notesEditable?:boolean;notesReason?:string|null; slideIndex: number; comments?: SlideComments; hidden?: boolean; headerFooter?: { footer: string | null; slideNum: boolean; date: string | null; dateAuto?: boolean }; background?: string | null; layoutPath?: string; masterPath?: string; themePath?: string; transition?: SlideTransition; transitionEditSafe?: boolean; transitionEditReason?: string | null; transitionApplyAllSafe?: boolean; transitionApplyAllReason?: string | null; animations?: Animation[]; elements: DeckElement[] }
+type Deck = { customShows?:CustomShow[];customShowsEditable?:boolean;customShowsReason?:string|null; masterTextParts?: MasterTextPart[]; revision: number; sha256: string; size: { cx: number; cy: number }; layouts?: DeckLayout[]; sections?: { name: string; slideIndices: number[] }[]; masterParts?: { partPath: string; kind: 'master' | 'layout'; name: string }[]; slides: DeckSlide[] }
 type Edit = {
   slideIndex: number
   elementId: string
@@ -61,9 +84,9 @@ type AIProposal = { summary: string; edits: Edit[]; order: number[]; theme?: Bus
 type AIStatus = { editId: string; status: string; proposal?: AIProposal; error?: { message: string } }
 type GeneratedImage = { candidateId: string; mediaType: string; previewDataUrl: string }
 type ImageEdit = { candidateId: string; slideIndex: number; geometry: { x: number; y: number; width: number; height: number } }
-type AnimationEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath'
+type AnimationEffect = 'appear' | 'fade' | 'flyIn' | 'wipe' | 'wipeDown' | 'splitIn' | 'bounce' | 'flipIn' | 'zoom' | 'pulse' | 'spin' | 'grow' | 'teeter' | 'disappear' | 'fadeOut' | 'flyOut' | 'wipeOut' | 'shrink' | 'zoomOut' | 'motionPath' | 'mediaPlay' | 'mediaPause' | 'mediaStop'
 type AnimationTrigger = 'onClick' | 'withPrev' | 'afterPrev'
-type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; field?: 'slidenum' | 'datetime1'; italic?: boolean; outline?: { color: string; widthEmu: number }; wordArt?: boolean; watermark: boolean }
+type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y: number; width: number; height: number }; fontSize: number; fontFamily: string; color: string; bold?: boolean; rotation?: number; field?: 'slidenum' | 'datetime1'; italic?: boolean; outline?: { color: string; widthEmu: number }; wordArt?: boolean; equation?: boolean; watermark: boolean }
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 /** 固定源 Shape Format 填充/轮廓（setFill / setStroke） */
@@ -77,7 +100,15 @@ type TableStyleEdit = { cellShadings?: CellShading[]; slideIndex: number; elemen
 type TableStructureEdit = { slideIndex:number; elementId:string; kind:'insert-row'|'delete-row'|'insert-col'|'delete-col'; index:number; before?:boolean }
 type LinkEdit = {slideIndex:number;elementId:string;target:{kind:'url';url:string}|{kind:'slide';slideIndex:number}|null}
 type ClipboardPaste = {sourceSlideIndex:number;elementIds:string[];slideIndex:number;dx:number;dy:number}
+type ZoomInsertion = {slideIdentity:string;targetSlideIdentity:string;bytesBase64:string;geometry:{x:number;y:number;width:number;height:number};mode:'slide'|'section'}
 type SlideChanges = {
+  zoomInsertions?: ZoomInsertion[]
+  customShows?:CustomShow[]
+  modelInsertions?:ModelInsertion[]
+  modelViews?:ModelViewEdit[]
+  mediaInsertions?: SlideMediaInsertion[]
+  masterTextEdits?: MasterTextEdit[]
+  masterElementEdits?: MasterElementEdit[]
   notesEdits?: NotesEdit[]
   linkEdits?: LinkEdit[]
   clipboardPastes?: ClipboardPaste[]
@@ -88,13 +119,14 @@ type SlideChanges = {
   tableStyles?: TableStyleEdit[]
   edits?: Edit[]; order?: number[]; newSlides?: NewSlide[]; deletedSlides?: number[]; resetLayouts?: number[]; shapes?: ShapeEdit[]; shapeStyles?: ShapeStyleEdit[]; shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]; sections?: { slideIndex: number; name: string }[]; headerFooter?: HeaderFooterSetting; tableCells?: { slideIndex: number; elementId: string; row: number; col: number; text: string }[]; charts?: ChartEdit[]; smartArts?: SmartArtEdit[]; tables?: { slideIndex: number; rows: number; cols: number }[]; theme?: BusinessTheme; slideSize?: { cx: number; cy: number }
   textFormatting?: TextFormatting[]; paragraphFormatting?: ParagraphFormatting[]
-  images?: { slideIndex: number; bytesBase64: string; extension: 'png' | 'jpg'; geometry: { x: number; y: number; width: number; height: number }; descr?: string }[]
-  pictureReplacements?: { slideIndex: number; elementId: string; expectedSha256: string; expectedSize: number; bytesBase64: string; extension: 'png' | 'jpg' }[]
+  images?: { slideIndex: number; bytesBase64: string; extension: 'png' | 'jpg'; geometry: { x: number; y: number; width: number; height: number }; descr?: string;name?:string }[]
+  pictureReplacements?: { slideIndex: number; elementId: string; expectedSha256: string; expectedSize: number; bytesBase64: string; extension: 'png' | 'jpg';keepSrcRect?:true }[]
   pictureCrops?: { slideIndex:number; elementId:string; expectedSha256:string; expectedSize:number; srcRect:CropRect|null; geometry:{x:number;y:number;width:number;height:number} }[]
   /** 固定源 Picture Format ▸ Transparency：整图不透明度（0–1，整数百分比），按媒体身份绑定。 */
   pictureOpacities?: { slideIndex: number; elementId: string; expectedSha256: string; expectedSize: number; opacity: number }[]
   /** 固定源 FormatBackgroundPane 图片填充：一张图片应用到若干来源页，拉伸或平铺。 */
   backgroundImages?: { slideIndices: number[]; bytesBase64: string; extension: 'png' | 'jpg'; tile: boolean }[]
+  backgroundImageReuses?: BackgroundImageReuse[]
   backgroundGradients?: (BackgroundGradientFill & { slideIndices: number[] })[]
   backgroundResets?: number[]
   backgroundGraphics?: { slideIndex: number; hidden: boolean }[]
@@ -144,7 +176,7 @@ root.innerHTML = `${embedded ? '' : `
   <div class="slides-workspace">
     <aside class="slides-sidebar" aria-label="幻灯片列表"><div class="sidebar-heading">页面 <span class="slide-count"></span></div><ol class="slide-list"></ol></aside>
     <section class="slides-stage" aria-label="幻灯片预览"><div class="slides-canvas" role="group" aria-label="可编辑幻灯片画布" hidden></div><p class="canvas-status" role="status">画布载入中</p><iframe class="preview-frame" title="幻灯片预览"></iframe></section>
-    <aside class="slides-inspector" aria-label="对象编辑"><div class="inspector-heading">对象</div><div class="slide-lineage"><span class="lineage-label">母版</span><span class="slide-master"></span><span class="lineage-label">版式</span><select id="layout-select" aria-label="当前页版式"></select></div><label class="field-label" for="object-select">可编辑对象</label><select id="object-select"></select><label class="field-label" for="object-text">文字</label><textarea id="object-text" rows="7" spellcheck="false"></textarea><div class="geometry-heading">位置与大小</div><div class="geometry-grid"><label>X <input name="x" type="number" min="0" step="1"></label><label>Y <input name="y" type="number" min="0" step="1"></label><label>宽 <input name="width" type="number" min="1" step="1"></label><label>高 <input name="height" type="number" min="1" step="1"></label></div><div class="structure-controls"><label class="field-label" for="background-color">页面背景</label><div class="structure-row"><input id="background-color" type="color" value="#ffffff" aria-label="当前页背景颜色"><button class="background-reset" type="button">恢复原背景</button></div><div class="field-label">页面对象</div><div class="structure-row"><button class="text-add" type="button">新增文本</button><button class="watermark-add" type="button">新增水印</button><button class="object-delete" type="button">删除对象</button></div><ul class="structure-pending" aria-label="待保存的页面结构修改"></ul></div><label class="field-label" for="theme-select">商务主题</label><select id="theme-select"><option value="">保持当前主题</option><option value="executive">执行汇报</option><option value="clinical">临床医疗</option><option value="modern">现代商务</option></select><label class="field-label" for="transition-select">页面转场</label><select id="transition-select"><option value="none">无</option><option value="fade">淡化</option><option value="push">推进</option><option value="wipe">擦除</option><option value="split">分割</option><option value="circle">圆形</option><option value="cover">覆盖</option><option value="pull">拉伸</option><option value="dissolve">溶解</option><option value="zoom">缩放</option><option value="morph">变形</option><option value="random">随机</option></select><div class="animation-controls"><label class="field-label" for="animation-effect">动画效果</label><select id="animation-effect"><option value="fade">淡化</option><option value="appear">出现</option><option value="flyIn">飞入</option><option value="wipe">擦除</option><option value="wipeDown">向下擦除</option><option value="splitIn">分割进入</option><option value="bounce">弹跳</option><option value="flipIn">翻转进入</option><option value="zoom">缩放进入</option><option value="pulse">脉冲</option><option value="spin">旋转</option><option value="grow">放大</option><option value="teeter">摇摆</option><option value="disappear">消失</option><option value="fadeOut">淡出</option><option value="flyOut">飞出</option><option value="wipeOut">擦除退出</option><option value="shrink">缩小退出</option><option value="zoomOut">缩小退出</option><option value="motionPath">路径</option></select><label class="field-label" for="animation-trigger">触发方式</label><select id="animation-trigger"><option value="onClick">点击时</option><option value="withPrev">与上一动画同时</option><option value="afterPrev">上一动画后</option></select><div class="animation-timing"><label>持续 <input id="animation-duration" type="number" min="1" max="120000" step="50" value="500"> ms</label><label>延迟 <input id="animation-delay" type="number" min="0" max="120000" step="50" value="0"> ms</label></div><button class="animation-add" type="button">添加对象动画</button></div><p class="animation-state"></p><p class="object-note">未编辑对象会保留在原始 PPTX 中。</p></aside>
+    <aside class="slides-inspector" aria-label="对象编辑"><div class="inspector-heading">对象</div><div class="slide-lineage"><span class="lineage-label">母版</span><span class="slide-master"></span><span class="lineage-label">版式</span><select id="layout-select" aria-label="当前页版式"></select></div><label class="field-label" for="object-select">可编辑对象</label><select id="object-select"></select><label class="field-label" for="object-text">文字</label><textarea id="object-text" rows="7" spellcheck="false"></textarea><div class="geometry-heading">位置与大小</div><div class="geometry-grid"><label>X <input name="x" type="number" min="0" step="1"></label><label>Y <input name="y" type="number" min="0" step="1"></label><label>宽 <input name="width" type="number" min="1" step="1"></label><label>高 <input name="height" type="number" min="1" step="1"></label></div><div class="structure-controls"><label class="field-label" for="background-color">页面背景</label><div class="structure-row"><input id="background-color" type="color" value="#ffffff" aria-label="当前页背景颜色"><button class="background-reset" type="button">恢复原背景</button></div><div class="field-label">页面对象</div><div class="structure-row"><button class="text-add" type="button">新增文本</button><button class="watermark-add" type="button">新增水印</button><button class="object-delete" type="button">删除对象</button></div><ul class="structure-pending" aria-label="待保存的页面结构修改"></ul></div><label class="field-label" for="theme-select">商务主题</label><select id="theme-select"><option value="">保持当前主题</option><option value="executive">执行汇报</option><option value="clinical">临床医疗</option><option value="modern">现代商务</option></select><label class="field-label" for="transition-select">页面转场</label><select id="transition-select"><option value="none">无</option><option value="fade">淡化</option><option value="push">推进</option><option value="wipe">擦除</option><option value="split">分割</option><option value="circle">圆形</option><option value="cover">覆盖</option><option value="pull">拉伸</option><option value="dissolve">溶解</option><option value="zoom">缩放</option><option value="morph">变形</option><option value="random">随机</option></select><div class="animation-controls"><label class="field-label" for="animation-effect">动画效果</label><select id="animation-effect"><option value="fade">淡化</option><option value="appear">出现</option><option value="flyIn">飞入</option><option value="wipe">擦除</option><option value="wipeDown">向下擦除</option><option value="splitIn">分割进入</option><option value="bounce">弹跳</option><option value="flipIn">翻转进入</option><option value="zoom">缩放进入</option><option value="pulse">脉冲</option><option value="spin">旋转</option><option value="grow">放大</option><option value="teeter">摇摆</option><option value="disappear">消失</option><option value="fadeOut">淡出</option><option value="flyOut">飞出</option><option value="wipeOut">擦除退出</option><option value="shrink">缩小退出</option><option value="zoomOut">缩小退出</option><option value="motionPath">路径</option><option value="mediaPlay">播放媒体</option><option value="mediaPause">暂停媒体</option><option value="mediaStop">停止媒体</option></select><label class="field-label" for="animation-trigger">触发方式</label><select id="animation-trigger"><option value="onClick">点击时</option><option value="withPrev">与上一动画同时</option><option value="afterPrev">上一动画后</option></select><div class="animation-timing"><label>持续 <input id="animation-duration" type="number" min="1" max="120000" step="50" value="500"> ms</label><label>延迟 <input id="animation-delay" type="number" min="0" max="120000" step="50" value="0"> ms</label></div><button class="animation-add" type="button">添加对象动画</button></div><p class="animation-state"></p><p class="object-note">未编辑对象会保留在原始 PPTX 中。</p></aside>
   </div>
   <footer class="slides-statusbar"><span class="status-dot"></span><span class="status-message">读取 PPTX…</span><span class="status-spacer"></span><span>编辑器</span></footer>
 `
@@ -245,13 +277,27 @@ let brushMode: 'once' | 'continuous' | undefined
 let linkDialog: ReturnType<typeof openSlidesLink> | undefined
 let showOverlay: { dispose(): void } | undefined
 let showOpening = false
+let animationPreviewOverlay: { dispose(): void } | undefined
+let animationPreviewGeneration = 0
 const pendingGroup = (slideIndex: number) => groupEdits.some(item => item.slideIndex === slideIndex)
 const pictureCrops: NonNullable<SlideChanges['pictureCrops']> = []
 const pictureOpacities: NonNullable<SlideChanges['pictureOpacities']> = []
 let cropOverlay: ReturnType<typeof openSlidesPictureCrop> | undefined
 const nativeImages: NonNullable<SlideChanges['images']> = []
+const zoomInsertions: ZoomInsertion[] = []
+let zoomController:AbortController|undefined
+let zoomDialog:HTMLDialogElement|undefined
+const modelInsertions:ModelInsertion[]=[],modelViews:ModelViewEdit[]=[]
+let modelControls:ReturnType<typeof mountModel3d>|undefined
+const mediaInsertions: SlideMediaInsertion[] = []
+let mediaPlayback: {dispose():void}|undefined
+let mediaPickerController:AbortController|undefined
+let screenRecording:SlideScreenRecording|undefined
+let screenRecordingController:AbortController|undefined
 const pictureReplacements: NonNullable<SlideChanges['pictureReplacements']> = []
 const nativeChartEdits: NonNullable<SlideChanges['chartEdits']> = []
+let masterTextDialog: ReturnType<typeof openSlidesMasterText> | undefined
+let masterTextDialogGeneration = 0
 let findDialog: ReturnType<typeof openSlidesFindReplace> | undefined
 let chartDialog: ReturnType<typeof createNativeChartEditDialog> | undefined
 const chartFormatPane = native ? createSlidesChartFormatPane(applyNativeChartPointColors) : undefined
@@ -275,23 +321,22 @@ let headerFooterEdit: HeaderFooterSetting | undefined
 function openHeaderFooterDialog() {
   const initial = headerFooterEdit ?? { ...(slideAt(selectedSlide).headerFooter ?? { footer: null, slideNum: false, date: null }), dateAuto: slideAt(selectedSlide).headerFooter?.dateAuto ?? !slideAt(selectedSlide).headerFooter?.date }
   const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-hf-dialog'; dialog.setAttribute('aria-label', '页眉和页脚')
-  dialog.innerHTML = '<h3>页眉和页脚</h3><label class="check"><input name="dateOn" type="checkbox"> 日期和时间</label><label class="check indent"><input name="dateAuto" type="checkbox"> 自动更新</label><label class="indent">日期文字 <input name="date" type="text" maxlength="500"></label><label class="check"><input name="slideNum" type="checkbox"> 幻灯片编号</label><label class="check"><input name="footerOn" type="checkbox"> 页脚</label><label class="indent">页脚文字 <input name="footer" type="text" maxlength="500" placeholder="页脚文字"></label><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">全部应用</button></div>'
+  dialog.innerHTML = '<header><h3>页眉和页脚</h3></header><div class="slides-settings-body"><label class="check"><input name="dateOn" type="checkbox"> 日期和时间</label><label class="check indent"><input name="dateAuto" type="checkbox"> 自动更新</label><label class="indent">日期文字 <input name="date" type="text" maxlength="500"></label><label class="check"><input name="slideNum" type="checkbox"> 幻灯片编号</label><label class="check"><input name="footerOn" type="checkbox"> 页脚</label><label class="indent">页脚文字 <input name="footer" type="text" maxlength="500" placeholder="页脚文字"></label><p role="alert" aria-label="页眉和页脚错误" tabindex="0"></p></div><footer class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">全部应用</button></footer>'
   host.append(dialog)
   const field = (name: string) => dialog.querySelector<HTMLInputElement>(`input[name=${name}]`)!
   field('dateOn').checked = !!initial.date; field('dateAuto').checked = initial.dateAuto; field('date').value = initial.date ?? new Date().toLocaleDateString('zh-CN')
   field('slideNum').checked = initial.slideNum; field('footerOn').checked = !!initial.footer; field('footer').value = initial.footer ?? ''
-  dialog.addEventListener('close', () => dialog.remove())
   dialog.querySelector<HTMLButtonElement>('button[value=cancel]')!.addEventListener('click', () => dialog.close())
   dialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListener('click', () => {
     headerFooterEdit = { footer: field('footerOn').checked && field('footer').value.trim() ? field('footer').value.trim() : null, slideNum: field('slideNum').checked, date: field('dateOn').checked && field('date').value.trim() ? field('date').value.trim() : null, dateAuto: field('dateAuto').checked }
     dialog.close(); canvasStatus.textContent = '页眉页脚将在保存并打开新修订后显示在画布中。'
     renderStructurePending(); markDirty()
   })
-  dialog.showModal()
+  showSlidesSettingsDialog(dialog)
 }
 /** 同一页只保留最新一种背景填充：清除这些页待保存的图片/渐变/重置（纯色由调用方处理）。 */
 function dropBackgroundImages(slideIndices: number[]) {
-  for (const list of [backgroundImageEdits, backgroundGradientEdits] as { slideIndices: number[] }[][]) {
+  for (const list of [backgroundImageEdits, backgroundImageReuseEdits, backgroundGradientEdits] as { slideIndices: number[] }[][]) {
     for (let index = list.length - 1; index >= 0; index--) {
       const item = list[index]!
       item.slideIndices = item.slideIndices.filter(slideIndex => !slideIndices.includes(slideIndex))
@@ -300,6 +345,54 @@ function dropBackgroundImages(slideIndices: number[]) {
   }
   for (const index of slideIndices) backgroundResetEdits.delete(index)
 }
+function backgroundPaneKey(){return `${deck?.sha256}:${selectedSlide}`}
+function backgroundPaneSlide():RenderSlide|undefined {
+ const source=slideForView(selectedSlide);if(!source)return undefined
+ const gradient=backgroundGradientEdits.find(item=>item.slideIndices.includes(selectedSlide)),image=backgroundImageEdits.find(item=>item.slideIndices.includes(selectedSlide)),reuse=backgroundImageReuseEdits.find(item=>item.slideIndices.includes(selectedSlide)),color=backgroundEdits.get(selectedSlide)
+ const background:RenderSlide['background']=gradient?{kind:'gradient',stops:[{pos:0,color:gradient.from},{pos:1,color:gradient.to}],angleDeg:gradient.angleDeg,radial:gradient.radial}:image?{kind:'image',dataUrl:`data:image/${image.extension};base64,${image.bytesBase64}`,mode:image.tile?'tile':'stretch'}:reuse&&source.background.kind==='image'?{...source.background,mode:reuse.tile?'tile':'stretch'}:color?{kind:'solid',color}:source.background
+ return {...source,background,bgOwn:!backgroundResetEdits.has(selectedSlide)&&(!!slideAt(selectedSlide).backgroundOwn||!!gradient||!!image||!!reuse||!!color),bgGraphicsHidden:backgroundGraphicsEdits.get(selectedSlide)??source.bgGraphicsHidden}
+}
+let customShowEdits:CustomShow[]|undefined
+let customShowDialog:ReturnType<typeof openSlidesCustomShows>|undefined
+function openCustomShowDialog(){
+ if(!nativeDraft||locked()||deck.customShowsEditable===false){statusMessage.textContent=deck.customShowsReason??'当前来源不能修改自定义放映';return}
+ if(newSlides.length||deletedSlides.size){statusMessage.textContent='请先保存页面增删，再设置自定义放映';return}
+ customShowDialog?.dispose()
+ let snapshot=JSON.stringify(nativeDraft.operations)
+ const current=()=>!disposed&&!locked()&&JSON.stringify(nativeDraft!.operations)===snapshot
+ customShowDialog=openSlidesCustomShows(root,{shows:customShowEdits??deck.customShows??[],slideCount:deck.slides.length,onChange:shows=>{if(!current())throw Error('草稿已变化，请关闭并重新打开自定义放映');const changes=slideChanges();changes.customShows=shows;commitNativeChanges(changes);snapshot=JSON.stringify(nativeDraft!.operations)},onPlay:show=>{if(!current()){statusMessage.textContent='草稿已变化，请重新打开自定义放映';customShowDialog?.dispose();return}customShowDialog?.dispose();customShowDialog=undefined;void startSlidesShow(false,show)},onClose:()=>{customShowDialog=undefined}})
+}
+let backgroundPickGeneration=0
+async function applyBackgroundPane(op:BackgroundPaneOp,all?:boolean){
+ if(disposed||locked()||isNewSlide(selectedSlide))return
+ const sourceIndex=selectedSlide,key=backgroundPaneKey(),snapshot=JSON.stringify(slideChanges()),draftSnapshot=JSON.stringify(nativeDraft?.operations),paneToken=backgroundPane?.token(),generation=++backgroundPickGeneration
+ const targets=all?deck.slides.map((_,i)=>i).filter(i=>!deletedSlides.has(i)):[sourceIndex]
+ try{
+ const changes=structuredClone(slideChanges())
+ if(op.kind==='hideGraphics'){changes.backgroundGraphics=(changes.backgroundGraphics??[]).filter(item=>!targets.includes(item.slideIndex));for(const slideIndex of targets)if(op.hidden!==!!deck.slides[slideIndex]?.backgroundGraphicsHidden)changes.backgroundGraphics.push({slideIndex,hidden:op.hidden})}
+ else{
+ let upload:NonNullable<SlideChanges['backgroundImages']>[number]|undefined
+ let reuse:BackgroundImageReuse|undefined
+ if(op.kind==='image'){
+ const pending=backgroundImageEdits.find(item=>item.slideIndices.includes(sourceIndex)),existing=backgroundImageReuseEdits.find(item=>item.slideIndices.includes(sourceIndex))
+ if(op.pick){const file=await pickSlideImage();if(!file||disposed||locked()||generation!==backgroundPickGeneration||key!==backgroundPaneKey()||paneToken!==backgroundPane?.token()||backgroundPane?.element.hidden)return;const image=await prepareSlideImage(file,deck.size);if(disposed||locked()||generation!==backgroundPickGeneration||key!==backgroundPaneKey()||snapshot!==JSON.stringify(slideChanges())||draftSnapshot!==JSON.stringify(nativeDraft?.operations)||paneToken!==backgroundPane?.token()||backgroundPane?.element.hidden)return;upload={slideIndices:targets,bytesBase64:image.bytesBase64,extension:image.extension,tile:op.mode==='tile'}}
+ else if(pending)upload={...pending,slideIndices:targets,tile:op.mode==='tile'}
+ else {const identity=deck.slides[sourceIndex]?.backgroundImageSource;if(existing)reuse={...existing,slideIndices:targets,tile:op.mode==='tile'};else if(identity)reuse={sourceSlideIndex:sourceIndex,expectedSha256:identity.sha256,expectedSize:identity.size,slideIndices:targets,tile:op.mode==='tile'};else throw Error('来源背景图片身份不可读取，请重新选择图片')}
+ }
+ changes.backgrounds=(changes.backgrounds??[]).filter(item=>!targets.includes(item.slideIndex))
+ for(const name of ['backgroundImages','backgroundImageReuses','backgroundGradients'] as const){const list=changes[name]??[];for(const item of list)item.slideIndices=item.slideIndices.filter(i=>!targets.includes(i));(changes as any)[name]=list.filter(item=>item.slideIndices.length)}
+ changes.backgroundResets=(changes.backgroundResets??[]).filter(i=>!targets.includes(i))
+ if(op.kind==='solid')changes.backgrounds.push(...targets.map(slideIndex=>({slideIndex,color:op.color.toUpperCase()})))
+ if(op.kind==='gradient')(changes.backgroundGradients??=[]).push({slideIndices:targets,from:op.from.toUpperCase(),to:op.to.toUpperCase(),angleDeg:op.radial?0:op.angleDeg as 0|45|90,radial:!!op.radial})
+ if(op.kind==='reset')changes.backgroundResets.push(...targets.filter(i=>deck.slides[i]?.backgroundOwn))
+ if(upload)(changes.backgroundImages??=[]).push(upload)
+ if(reuse)(changes.backgroundImageReuses??=[]).push(reuse)
+ }
+ commitNativeChanges(changes)
+ }catch(error){statusMessage.textContent=error instanceof Error?error.message:'背景处理失败'}
+}
+const backgroundPane=native?createSlidesBackgroundPane((op,all)=>{void applyBackgroundPane(op,all)}):undefined
+if(backgroundPane)root.querySelector('.slides-inspector')!.prepend(backgroundPane.element)
 const GRADIENT_DIRECTIONS = [['→ 水平', 0, false], ['↓ 垂直', 90, false], ['↘ 对角', 45, false], ['◎ 径向', 0, true]] as const
 /** 固定源 FormatBackgroundPane：图片（拉伸/平铺）、渐变（→ ↓ ↘ 径向）、隐藏背景图形、重置背景、应用到全部页面。 */
 function openBackgroundImageDialog(fill: 'image' | 'gradient' = 'image') {
@@ -307,13 +400,21 @@ function openBackgroundImageDialog(fill: 'image' | 'gradient' = 'image') {
   const slide = slideAt(selectedSlide), pendingGradient = backgroundGradientEdits.find(item => item.slideIndices.includes(selectedSlide)), sourceGradient = slide.backgroundGradient
   const gradient = pendingGradient ?? sourceGradient ?? { from: '#FFFFFF', to: '#4472C4', angleDeg: 90 as const, radial: false }
   const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-bg-image-dialog'; dialog.setAttribute('aria-label', '设置背景格式')
-  dialog.innerHTML = '<h3>设置背景格式</h3><label>填充 <select name="fill" aria-label="背景填充类型"><option value="image">图片</option><option value="gradient">渐变</option></select></label>'
+  dialog.innerHTML = '<header><h3>设置背景格式</h3></header><div class="slides-background-body"><label>填充 <select name="fill" aria-label="背景填充类型"><option value="image">图片</option><option value="gradient">渐变</option></select></label>'
     + '<div data-fill="image"><label>填充方式 <select name="mode" aria-label="背景图片填充方式"><option value="stretch">拉伸</option><option value="tile">平铺</option></select></label></div>'
     + '<div data-fill="gradient"><label>起始颜色 <input name="from" type="color" aria-label="渐变起始颜色"></label><label>结束颜色 <input name="to" type="color" aria-label="渐变结束颜色"></label><label>方向 <select name="direction" aria-label="渐变方向">'
     + GRADIENT_DIRECTIONS.map(([label], index) => `<option value="${index}">${label}</option>`).join('') + '</select></label></div>'
-    + '<label class="slides-bg-image-all"><input name="graphics" type="checkbox"> 隐藏背景图形</label><label class="slides-bg-image-all"><input name="all" type="checkbox"> 应用到全部页面</label><p role="alert"></p>'
-    + '<div class="slides-table-actions"><button type="button" value="reset">重置背景</button><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></div>'
+    + '<label class="slides-bg-image-all"><input name="graphics" type="checkbox"> 隐藏背景图形</label><label class="slides-bg-image-all"><input name="all" type="checkbox"> 应用到全部页面</label><p role="status" aria-label="背景设置状态" aria-live="polite" tabindex="0"></p><p role="alert" aria-label="背景设置错误" tabindex="0"></p></div>'
+    + '<footer class="slides-table-actions"><button type="button" value="reset">重置背景</button><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></footer>'
   const field = <T extends HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!
+  const showError = (message: string) => { const alert = field('[role=alert]'); alert.textContent = message; alert.scrollIntoView?.({ block: 'nearest' }) }
+  let choosing = false
+  const setChoosing = (value: boolean) => {
+    choosing = value; dialog.setAttribute('aria-busy', String(value))
+    for (const control of dialog.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,button[value=ok],button[value=reset]')) control.disabled = value
+    field('[role=status]').textContent = value ? '正在选择或读取图片…' : ''
+    if (value) field<HTMLButtonElement>('button[value=cancel]').focus({ preventScroll: true })
+  }
   const current = backgroundImageEdits.find(item => item.slideIndices.includes(selectedSlide))
   field<HTMLSelectElement>('select[name=mode]').value = (current?.tile ?? slide.backgroundImage?.mode === 'tile') ? 'tile' : 'stretch'
   field<HTMLSelectElement>('select[name=fill]').value = fill
@@ -324,7 +425,6 @@ function openBackgroundImageDialog(fill: 'image' | 'gradient' = 'image') {
     field<HTMLButtonElement>('button[value=ok]').textContent = value === 'image' ? '选择图片…' : '确定' }
   field<HTMLSelectElement>('select[name=fill]').addEventListener('change', sync); sync()
   host.append(dialog)
-  dialog.addEventListener('close', () => dialog.remove())
   const targets = () => field<HTMLInputElement>('input[name=all]').checked ? deck.slides.map((_, index) => index).filter(index => !deletedSlides.has(index)) : [selectedSlide]
   /** 隐藏背景图形与来源一致时撤回该页修改。 */
   const applyGraphics = (slideIndices: number[]) => {
@@ -341,10 +441,11 @@ function openBackgroundImageDialog(fill: 'image' | 'gradient' = 'image') {
     finish(slideIndices.length > 1 ? '已暂存：全部页面重置为版式背景' : '已暂存：当前页重置为版式背景')
   })
   field<HTMLButtonElement>('button[value=ok]').addEventListener('click', async () => {
-    const alert = field('[role=alert]'), slideIndex = selectedSlide, snapshot = JSON.stringify(slideChanges()), slideIndices = targets()
+    if (choosing) return
+    const slideIndex = selectedSlide, snapshot = JSON.stringify(slideChanges()), slideIndices = targets()
     if (field<HTMLSelectElement>('select[name=fill]').value === 'gradient') {
       const [, angleDeg, radial] = GRADIENT_DIRECTIONS[Number(field<HTMLSelectElement>('select[name=direction]').value)] ?? GRADIENT_DIRECTIONS[0]
-      if (backgroundGradientEdits.length >= 20 && !backgroundGradientEdits.every(item => item.slideIndices.every(index => slideIndices.includes(index)))) { alert.textContent = '待保存的渐变背景已达 20 组，请先保存'; return }
+      if (backgroundGradientEdits.length >= 20 && !backgroundGradientEdits.every(item => item.slideIndices.every(index => slideIndices.includes(index)))) { showError('待保存的渐变背景已达 20 组，请先保存'); return }
       dropBackgroundImages(slideIndices)
       for (const index of slideIndices) backgroundEdits.delete(index)
       backgroundGradientEdits.push({ slideIndices, from: field<HTMLInputElement>('input[name=from]').value.toUpperCase(), to: field<HTMLInputElement>('input[name=to]').value.toUpperCase(), angleDeg, radial })
@@ -353,10 +454,12 @@ function openBackgroundImageDialog(fill: 'image' | 'gradient' = 'image') {
       return
     }
     const tile = field<HTMLSelectElement>('select[name=mode]').value === 'tile'
+    field('[role=alert]').textContent = ''; setChoosing(true)
     try {
       const file = await pickSlideImage()
-      if (!file) return
+      if (!file || !dialog.open || !dialog.isConnected) return
       const image = await prepareSlideImage(file, deck.size)
+      if (!dialog.open || !dialog.isConnected) return
       if (disposed || locked() || selectedSlide !== slideIndex || JSON.stringify(slideChanges()) !== snapshot) throw new Error('页面或草稿已变化，请重新选择背景图片')
       if (backgroundImageEdits.length >= 10 && !backgroundImageEdits.every(item => item.slideIndices.every(index => slideIndices.includes(index)))) throw new Error('待保存的背景图片已达 10 张，请先保存')
       dropBackgroundImages(slideIndices)
@@ -364,15 +467,15 @@ function openBackgroundImageDialog(fill: 'image' | 'gradient' = 'image') {
       backgroundImageEdits.push({ slideIndices, bytesBase64: image.bytesBase64, extension: image.extension, tile })
       applyGraphics(slideIndices)
       finish(slideIndices.length > 1 ? '背景图片已暂存到全部页面' : '背景图片已暂存到当前页')
-    } catch (error) { alert.textContent = error instanceof Error ? error.message : '背景图片处理失败，原文件保留' }
+    } catch (error) { if (dialog.open && dialog.isConnected) showError(error instanceof Error ? error.message : '背景图片处理失败，原文件保留') }
+    finally { if (dialog.open && dialog.isConnected) setChoosing(false) }
   })
-  dialog.showModal()
+  showSlidesSettingsDialog(dialog)
 }
 function openSectionDialog() {
-  const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog'; dialog.setAttribute('aria-label', '新增节')
-  dialog.innerHTML = '<h3>新增节</h3><label>节名称 <input name="name" type="text" maxlength="100" value="无标题节"></label><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></div>'
+  const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-section-dialog'; dialog.setAttribute('aria-label', '新增节')
+  dialog.innerHTML = '<header><h3>新增节</h3></header><div class="slides-settings-body"><label>节名称 <input name="name" type="text" maxlength="100" value="无标题节"></label><p role="alert" aria-label="新增节错误" tabindex="0"></p></div><footer class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></footer>'
   host.append(dialog)
-  dialog.addEventListener('close', () => dialog.remove())
   dialog.querySelector<HTMLButtonElement>('button[value=cancel]')!.addEventListener('click', () => dialog.close())
   dialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListener('click', () => {
     const name = dialog.querySelector<HTMLInputElement>('input[name=name]')!.value.trim()
@@ -381,17 +484,16 @@ function openSectionDialog() {
     sectionEdits.push({ slideIndex: selectedSlide, name })
     dialog.close(); renderSlides(); renderStructurePending(); markDirty()
   })
-  dialog.showModal()
+  showSlidesSettingsDialog(dialog)
   dialog.querySelector<HTMLInputElement>('input[name=name]')!.select()
 }
 /** 固定源 Insert ▸ Table：待插入表格（行×列，1–75）；位置由引擎按固定源规格计算。 */
 const tableEdits: { slideIndex: number; rows: number; cols: number }[] = []
 // 对话框按需创建、关闭即移除，不常驻编辑器 DOM。
 function openTableDialog() {
-const tableDialog = document.createElement('dialog'); tableDialog.className = 'slides-table-dialog'; tableDialog.setAttribute('aria-label', '插入表格')
-tableDialog.innerHTML = '<h3>插入表格</h3><label>列数 <input name="cols" type="number" min="1" max="75" value="5"></label><label>行数 <input name="rows" type="number" min="1" max="75" value="2"></label><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></div>'
+const tableDialog = document.createElement('dialog'); tableDialog.className = 'slides-table-dialog slides-insert-table-dialog'; tableDialog.setAttribute('aria-label', '插入表格')
+tableDialog.innerHTML = '<header><h3>插入表格</h3></header><div class="slides-settings-body"><label>列数 <input name="cols" type="number" min="1" max="75" value="5"></label><label>行数 <input name="rows" type="number" min="1" max="75" value="2"></label><p role="alert" aria-label="插入表格错误" tabindex="0"></p></div><footer class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">确定</button></footer>'
 host.append(tableDialog)
-tableDialog.addEventListener('close', () => tableDialog.remove())
 tableDialog.querySelector<HTMLButtonElement>('button[value=cancel]')!.addEventListener('click', () => tableDialog.close())
 tableDialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListener('click', () => {
   const read = (name: string) => Number(tableDialog.querySelector<HTMLInputElement>(`input[name=${name}]`)!.value)
@@ -403,7 +505,7 @@ tableDialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListen
   canvasStatus.textContent = '新增表格将在保存并打开新修订后显示在画布中。'
   renderStructurePending(); markDirty()
 })
-tableDialog.showModal()
+showSlidesSettingsDialog(tableDialog)
 }
 function paragraphCount(element: DeckElement) {
   const pending = edits.get(editKey(selectedSlide, element.id))?.text
@@ -432,12 +534,28 @@ function updateSequence(change: (items: SequenceItem[]) => SequenceItem[]) {
 const animationPane = document.createElement('section')
 animationPane.className = 'slides-animation-pane'; animationPane.setAttribute('aria-label', '动画窗格'); animationPane.hidden = true
 root.querySelector('.slides-inspector')!.prepend(animationPane)
+function focusAnimationControl(index: number, action?: string) {
+  const entry = animationPane.querySelector<HTMLElement>(`[data-animation-row="${index}"]`)
+  const control = action ? entry?.querySelector<HTMLButtonElement>(`[data-animation-action="${action}"]:not([disabled])`) : undefined
+  ;(control ?? entry?.querySelector<HTMLButtonElement>('.animation-pane-select') ?? animationPane.querySelector<HTMLButtonElement>('[data-animation-pane-close]'))?.focus()
+}
 /** 固定源 AnimationPane：当前页动画顺序列表，选择/上移/下移/删除；计时由 Ribbon 计时组修改选中行。 */
 function renderAnimationPane() {
   animationPane.hidden = !animationPaneOpen
   if (!animationPaneOpen) return
+  const scrollTop = animationPane.dataset.slideIndex === String(selectedSlide) ? animationPane.querySelector('ol')?.scrollTop ?? 0 : 0
+  animationPane.dataset.slideIndex = String(selectedSlide)
   const items = currentSequence(), source = sourceAnimations(), steps = stepNumbers(items, source), slide = slideAt(selectedSlide)
-  const heading = document.createElement('div'); heading.className = 'inspector-heading'; heading.textContent = `动画 · 第 ${order.indexOf(selectedSlide) + 1} 页`
+  const heading = document.createElement('div'); heading.className = 'inspector-heading'
+  const title = document.createElement('span'); title.textContent = `动画 · 第 ${order.indexOf(selectedSlide) + 1} 页`
+  const close = buttonIcon(X, '关闭动画窗格'); close.dataset.animationPaneClose = ''
+  close.addEventListener('click', () => {
+    animationPaneOpen = false; selectedAnimationRow = -1; renderInspector()
+    const opener = root.querySelector<HTMLButtonElement>('[data-command="toggleAnimationPane"]')
+    const target = opener && !opener.disabled && !opener.closest('[hidden]') ? opener : root.querySelector<HTMLButtonElement>('.slides-native-ribbon-tabs [aria-selected="true"]')
+    target?.focus()
+  })
+  heading.append(title, close)
   const list = document.createElement('ol'); list.className = 'animation-pane-list'
   const disabled = animationUnavailable()
   items.forEach((item, index) => {
@@ -448,11 +566,16 @@ function renderAnimationPane() {
     const targetName = element ? element.name || element.text.split('\n')[0]?.slice(0, 24) || element.type : '对象已不存在'
     const seconds = (value: number) => (value / 1000).toFixed(2)
     select.textContent = `${steps[index] || '·'} ${EFFECT_LABELS[row.effect] ?? row.effect} · ${targetName}${row.paragraph !== undefined ? ` · 第 ${row.paragraph + 1} 段` : ''}`
-    select.title = `${TRIGGER_LABELS[row.trigger]} · ${seconds(row.durationMs)} 秒${row.delayMs ? ` · 延迟 ${seconds(row.delayMs)} 秒` : ''}${row.readonlyTiming ? ' · 原样保留的预设效果，只能移动或删除' : ''}`
-    select.addEventListener('click', () => { selectedAnimationRow = selectedAnimationRow === index ? -1 : index; renderInspector() })
+    select.title = `${select.textContent}\n${TRIGGER_LABELS[row.trigger]} · ${seconds(row.durationMs)} 秒${row.delayMs ? ` · 延迟 ${seconds(row.delayMs)} 秒` : ''}${row.readonlyTiming ? ' · 原样保留的预设效果，只能移动或删除' : ''}`
+    select.addEventListener('keydown', event => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !['Home', 'End'].includes(event.key)) return
+      event.preventDefault(); select.scrollTop = event.key === 'Home' ? 0 : select.scrollHeight
+    })
+    select.addEventListener('click', () => { selectedAnimationRow = selectedAnimationRow === index ? -1 : index; renderInspector(); focusAnimationControl(index) })
     const detail = document.createElement('span'); detail.className = 'animation-pane-detail'; detail.textContent = `${TRIGGER_LABELS[row.trigger]} · ${seconds(row.durationMs)} 秒`
     const action = (label: string, title: string, run: () => void, off: boolean) => {
       const control = document.createElement('button'); control.type = 'button'; control.textContent = label; control.title = title; control.setAttribute('aria-label', `${title}：第 ${index + 1} 条动画`); control.disabled = disabled || off
+      control.dataset.animationAction = title
       control.addEventListener('click', run); return control
     }
     const move = (direction: -1 | 1) => () => {
@@ -460,18 +583,21 @@ function renderAnimationPane() {
       if (selectedAnimationRow === index) selectedAnimationRow = index + direction
       else if (selectedAnimationRow === index + direction) selectedAnimationRow = index
       renderInspector()
+      focusAnimationControl(index + direction, direction === -1 ? '上移' : '下移')
     }
     const actions = document.createElement('span'); actions.className = 'animation-pane-actions'
     actions.append(action('↑', '上移', move(-1), index === 0), action('↓', '下移', move(1), index === items.length - 1), action('✕', '删除', () => {
       updateSequence(current => deleteSequenceItem(current, index))
       selectedAnimationRow = selectedAnimationRow === index ? -1 : selectedAnimationRow > index ? selectedAnimationRow - 1 : selectedAnimationRow
       renderInspector()
+      focusAnimationControl(Math.min(index, currentSequence().length - 1))
     }, false))
     entry.append(select, detail, actions); list.append(entry)
   })
   const empty = document.createElement('p'); empty.className = 'animation-pane-empty'
   empty.textContent = isNewSlide(selectedSlide) ? NEW_SLIDE_REASON : items.length ? '选中一条动画后，可用“计时”组修改触发方式、时长与延迟。' : '本页还没有动画。选择对象后在“动画”选项卡添加。'
   animationPane.replaceChildren(heading, list, empty)
+  list.scrollTop = scrollTop
 }
 /** 透明度可用性：单选、来源为单一嵌入位图的普通图片、没有待保存的替换。 */
 function opacityReason(): string | null {
@@ -484,8 +610,8 @@ function opacityReason(): string | null {
   return null
 }
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
-  return backgroundImageEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundGradientEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundResetEdits.has(slideIndex) || backgroundGraphicsEdits.has(slideIndex) || pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
-    || commentPane.hasDraft(slideIndex) || commentEdits.some(edit => edit.slideIndex === slideIndex) || hiddenSlideEdits.has(slideIndex) || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...tableStyleEdits.values(), ...tableStructureEdits.values(), ...chartEdits, ...smartArtEdits, ...nativeImages, ...pictureReplacements, ...pictureCrops, ...nativeChartEdits].some(item => item.slideIndex === slideIndex)
+  return backgroundImageReuseEdits.some(item=>item.slideIndices.includes(slideIndex)) || backgroundImageEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundGradientEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundResetEdits.has(slideIndex) || backgroundGraphicsEdits.has(slideIndex) || pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
+    || commentPane.hasDraft(slideIndex) || commentEdits.some(edit => edit.slideIndex === slideIndex) || hiddenSlideEdits.has(slideIndex) || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...tableStyleEdits.values(), ...tableStructureEdits.values(), ...chartEdits, ...smartArtEdits, ...mediaInsertions, ...nativeImages, ...pictureReplacements, ...pictureCrops, ...nativeChartEdits].some(item => item.slideIndex === slideIndex)
     || (deck.slides[slideIndex]?.elements ?? []).some(element => chartTools.hasPending(slideIndex, element.id))
     || (!ignoreNewSlideSources && newSlides.some(item => newSlideSource(item) === slideIndex))
 }
@@ -503,7 +629,11 @@ const NEW_SLIDE_REASON = '新建的幻灯片保存并重新打开后才能编辑
 const isNewSlide = (slideIndex: number) => !!deck && slideIndex >= deck.slides.length
 function slideAt(slideIndex: number): DeckSlide {
   const source = deck.slides[slideIndex]
-  if (source) return source
+  if (source) {
+    const rendered=typeof renderTree==='undefined'?undefined:renderTree?.slides.find(item=>item.slideIndex===slideIndex)
+    const sources=rendered?.modelSources??[],known=new Set(source.elements.map(item=>item.id))
+    return {...source,elements:[...source.elements.map(element=>{const model=sources.find(item=>item.sourceId===element.id);return model?{...element,model3d:model}:element}),...sources.filter(item=>!known.has(item.sourceId)).map(item=>({id:item.sourceId,type:'picture',name:'3D 模型',text:'',editable:false,deletable:false,model3d:item}))]}
+  }
   const item = newSlides[slideIndex - deck.slides.length]
   const sourceIndex = item ? newSlideSource(item) : null
   const layoutSource = sourceIndex === null ? undefined : deck.slides[sourceIndex]
@@ -577,6 +707,7 @@ function removeNewSlide(slideIndex: number) {
 }
 const backgroundEdits = new Map<number, string>()
 const backgroundImageEdits: NonNullable<SlideChanges['backgroundImages']> = []
+const backgroundImageReuseEdits:BackgroundImageReuse[]=[]
 const backgroundGradientEdits: NonNullable<SlideChanges['backgroundGradients']> = []
 const backgroundResetEdits = new Set<number>()
 const backgroundGraphicsEdits = new Map<number, boolean>()
@@ -584,6 +715,8 @@ const textBoxEdits: TextBoxEdit[] = []
 const textFormattingEdits = new Map<string, TextFormatting>()
 const paragraphFormattingEdits: ParagraphFormatting[] = []
 const deletions = new Map<string, { slideIndex: number; elementId: string; label: string }>()
+const masterTextEdits: MasterTextEdit[] = []
+const masterElementEdits: MasterElementEdit[] = []
 const edits = new Map<string, Edit>()
 const imageEdits: ImageEdit[] = []
 const animationEdits: AnimationEdit[] = []
@@ -616,9 +749,13 @@ let explicitEmptySelection = false
 let dirty = false
 let disposed = false
 let structureDialog: HTMLDialogElement | undefined
+let printDialog:ReturnType<typeof import('./slides-print-dialog').openSlidesPrintDialog>|undefined
+let printOpening=false
 let structureDialogGeneration = 0
 let savedRevision = false
 let saving = false
+let refresh: Awaited<ReturnType<typeof mountOfficeReportRefresh>>
+let loading = true
 let mutationPending = 0
 const locked = () => disposed || saving || savedRevision || nativeDraft?.closed === true || nativeDraft?.saving === true
 let nativeUndo: HTMLButtonElement | undefined
@@ -635,8 +772,10 @@ function setEditingLocked(value: boolean) {
     else { field.disabled = lockFields.get(field) ?? field.disabled }
   }
   nativeRibbon?.setLocked(value)
+  if(value)inkControls?.cancel();inkControls?.update()
   chartFormatPane?.setLocked(value)
   geometryPane?.setLocked(value)
+  backgroundPane?.setLocked(value)
   shapeFormatPane?.setLocked(value)
   if (!value) lockFields.clear()
   updateNativeHistory()
@@ -646,7 +785,119 @@ for (const kind of ['click', 'input', 'change', 'submit']) root.addEventListener
   if (locked() && !(savedRevision && event.target instanceof Element && event.target.closest('a'))) { event.preventDefault(); event.stopImmediatePropagation() }
 }, true)
 
-let renderTree: { slides: (RenderSlide & { slideIndex: number })[] } | undefined
+let renderTree: { masterTextParts?: MasterTextRenderPart[]; slides: (RenderSlide & { slideIndex: number; slideIdentity?: string; mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] } | undefined
+let slidesViewMode: 'normal' | 'outline' | 'sorter' | 'reading' = 'normal'
+let slideSorter: ReturnType<typeof createSlidesSorter> | undefined
+let slideOutline: ReturnType<typeof createSlidesOutline> | undefined
+let slideReading: ReturnType<typeof createSlidesReading> | undefined
+let sorterLoading: Promise<void> | undefined
+let outlineReadingLoading: Promise<void> | undefined
+const sorterHost = document.createElement('div')
+sorterHost.hidden = true
+root.querySelector<HTMLElement>('.slides-workspace')!.append(sorterHost)
+const outlineHost = document.createElement('div'), readingHost = document.createElement('div')
+outlineHost.hidden = true; readingHost.hidden = true
+root.querySelector<HTMLElement>('.slides-sidebar')!.append(outlineHost)
+root.querySelector<HTMLElement>('.slides-workspace')!.append(readingHost)
+function syncSlidesViewMode() {
+  for (const [command, mode] of [['normalView', 'normal'], ['outlineView', 'outline'], ['slideSorter', 'sorter'], ['readingView', 'reading']]) nativeRibbon?.setValue(command!, String(slidesViewMode === mode))
+}
+async function setSlidesViewMode(mode: typeof slidesViewMode) {
+  if (disposed || locked() || !deck || (notesPane && !notesPane.flush()) || !commentPane.flush()) { syncSlidesViewMode(); return }
+  stopBrush(); selectObjects('')
+  slidesViewMode = mode
+  root.querySelector<HTMLElement>('.slides-workspace')!.dataset.viewMode = mode
+  sorterHost.hidden = mode !== 'sorter'
+  outlineHost.hidden = mode !== 'outline'; readingHost.hidden = mode !== 'reading'
+  nativeRibbon?.setContext(null)
+  syncSlidesViewMode()
+  if (mode === 'normal') { renderCanvas(); canvasHost.focus({ preventScroll: true }); return }
+  if (mode === 'outline' || mode === 'reading') {
+    outlineReadingLoading ??= import('./slides-outline-reading').then(({ createSlidesOutline, createSlidesReading }) => {
+      if (disposed) return
+      const options = {
+        onSelect(id: number) {
+          if (locked() || !order.includes(id) || (notesPane && !notesPane.flush()) || !commentPane.flush()) return false
+          selectedSlide = id; selectObjects(''); renderSlides(); renderInspector(); return true
+        },
+        onDelete: deleteSorterSlides,
+        onNormal: () => { void setSlidesViewMode('normal') },
+      }
+      slideOutline = createSlidesOutline(outlineHost, options); slideReading = createSlidesReading(readingHost, options)
+    }).catch(() => { if (!disposed) statusMessage.textContent = '大纲或阅读视图未能载入，请切回普通视图后重试'; outlineReadingLoading = undefined })
+    await outlineReadingLoading
+    if (disposed || slidesViewMode !== mode) return
+    renderSlideSorter()
+    if (mode === 'outline') slideOutline?.focus(); else slideReading?.focus()
+    return
+  }
+  if (!slideSorter) {
+    sorterHost.textContent = '正在载入幻灯片缩略图…'
+    sorterLoading ??= import('./slides-view-modes').then(({ createSlidesSorter }) => {
+      if (disposed) return
+      sorterHost.replaceChildren()
+      slideSorter = createSlidesSorter(sorterHost, {
+        onSelect(id) {
+          if (locked() || !order.includes(id) || (notesPane && !notesPane.flush()) || !commentPane.flush()) return false
+          selectedSlide = id; selectObjects(''); renderSlides(); renderInspector(); return true
+        },
+        onMove(ids, insertAt) {
+          if (locked() || (notesPane && !notesPane.flush()) || !commentPane.flush()) return false
+          if (ids.some(id => !order.includes(id)) || !ids.length || insertAt < 0 || insertAt > order.length) return false
+          const block = order.filter(id => ids.includes(id)), rest = order.filter(id => !ids.includes(id))
+          const at = insertAt - order.slice(0, insertAt).filter(id => ids.includes(id)).length
+          const next = [...rest.slice(0, at), ...block, ...rest.slice(at)]
+          if (next.every((id, position) => id === order[position])) return true
+          order.splice(0, order.length, ...next)
+          undoSnapshot = undefined; undoButton.disabled = true
+          renderSlides(); renderInspector(); markDirty(); return true
+        },
+        onDelete: deleteSorterSlides,
+        onNormal: () => { void setSlidesViewMode('normal') },
+      })
+    }).catch(() => { if (!disposed) sorterHost.textContent = '缩略图未能载入，请切回普通视图后重试'; sorterLoading = undefined })
+  }
+  await sorterLoading
+  if (disposed || slidesViewMode !== 'sorter') return
+  renderSlideSorter(); slideSorter?.focus()
+}
+function deleteSorterSlides(ids: number[]) {
+  if (locked() || (notesPane && !notesPane.flush()) || !commentPane.flush()) return
+  if (!ids.length || ids.some(id => !order.includes(id)) || ids.length >= order.length) { statusMessage.textContent = '至少保留一张幻灯片'; return }
+  if (ids.some(id => !isNewSlide(id) && slideHasPendingEdits(id))) { statusMessage.textContent = '选择中有页面存在待保存修改或被新建页沿用版式，请先撤销或保存后再删除'; return }
+  const position = Math.min(...ids.map(id => order.indexOf(id)))
+  for (const id of [...ids].sort((a, b) => b - a)) {
+    order.splice(order.indexOf(id), 1)
+    if (!isNewSlide(id)) { deletedSlides.add(id); continue }
+    newSlides.splice(id - deck.slides.length, 1)
+    for (let index = 0; index < order.length; index++) if (order[index]! > id) order[index]! -= 1
+    for (let index = sectionEdits.length - 1; index >= 0; index--) {
+      const section = sectionEdits[index]!
+      if (section.slideIndex === id) sectionEdits.splice(index, 1)
+      else if (section.slideIndex > id) section.slideIndex -= 1
+    }
+  }
+  selectedSlide = order[Math.min(position, order.length - 1)]!; selectObjects('')
+  undoSnapshot = undefined; undoButton.disabled = true
+  renderSlides(); renderInspector(); markDirty()
+}
+function slideForView(slideIndex: number) {
+  const source = renderTree?.slides.find(item => item.slideIndex === slideIndex)
+  const pending = isNewSlide(slideIndex) ? newSlides[slideIndex - deck.slides.length] : undefined
+  const sourceIndex = pending ? newSlideSource(pending) : null
+  const layout = pending ? (sourceIndex === null ? renderTree?.slides[0] : renderTree?.slides.find(item => item.slideIndex === sourceIndex)) : undefined
+  return source ?? (layout ? { ...layout, slideIndex, nodes: pending && 'duplicateOf' in pending ? layout.nodes : [] } : undefined)
+}
+function renderSlideSorter() {
+  if ((!slideSorter && !slideOutline && !slideReading) || !deck) return
+  const state = { current: selectedSlide, locked: locked(), slides: order.map(id => {
+    const source = slideAt(id), slide = slideForView(id)
+    return { id, title: isNewSlide(id) ? newSlideTitle(newSlides[id - deck.slides.length]!) : flatText(source), hidden: hiddenSlideEdits.get(id) ?? source.hidden ?? false,
+      slide: slide ? applyCanvasEdits(slide, [...edits.values()].filter(item => item.slideIndex === id)) : undefined }
+  }) }
+  slideSorter?.update(state); slideOutline?.update(state); slideReading?.update(state)
+}
+let inkControls:ReturnType<typeof mountSlidesInk>|undefined
 let canvas: { update: (state: SlidesCanvasState) => void; destroy?: () => void } | undefined
 let previewSequence = 0
 let previewTimer: ReturnType<typeof setTimeout> | undefined
@@ -666,13 +917,14 @@ function sendCanvasPreview() {
   if (previewInFlight) { previewQueued = true; return }
   previewInFlight = true
   const sequence = previewSequence
-  void request<{ slides: (RenderSlide & { slideIndex: number })[] }>('render-tree', {
+  void request<{ slides: (RenderSlide & { slideIndex: number;mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] }>('render-tree', {
     method: 'POST', body: JSON.stringify(native
-      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()], tableCells: [...tableCellEdits.values()], tableStyles: [...tableStyleEdits.values()] }] }
+      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', ...(masterElementEdits.length ? { masterElementEdits: structuredClone(masterElementEdits) } : {}), ...(masterTextEdits.length ? { masterTextEdits: structuredClone(masterTextEdits) } : {}), edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()], tableCells: [...tableCellEdits.values()], tableStyles: [...tableStyleEdits.values()], ...(modelInsertions.length?{modelInsertions:structuredClone(modelInsertions)}:{}),...(modelViews.length?{modelViews:structuredClone(modelViews)}:{}),...(mediaInsertions.length?{mediaInsertions:structuredClone(mediaInsertions)}:{}),...(zoomInsertions.length?{zoomInsertions:structuredClone(zoomInsertions)}:{}), backgrounds:slideChanges().backgrounds,backgroundImages:slideChanges().backgroundImages,backgroundImageReuses:slideChanges().backgroundImageReuses,backgroundGradients:slideChanges().backgroundGradients,backgroundResets:slideChanges().backgroundResets,backgroundGraphics:slideChanges().backgroundGraphics,customShows:slideChanges().customShows }] }
       : { expectedSha256: deck.sha256, edits: [...edits.values()] }),
   }).then(tree => {
     if (sequence !== previewSequence || locked()) return
     renderTree = tree
+    renderInspector()
     renderCanvas()
     canvasStatus.textContent = '点击对象选择，拖动调整位置，拖动角点缩放'
   }).catch(() => {
@@ -684,6 +936,17 @@ function sendCanvasPreview() {
 }
 
 const canvasHost = root.querySelector<HTMLElement>('.slides-canvas')!
+if (native) canvasHost.tabIndex = 0
+const onMediaDragOver=(event:DragEvent)=>{if(native&&event.dataTransfer?.types.includes('Files'))event.preventDefault()}
+const onMediaDrop=(event:DragEvent)=>{
+  const file=event.dataTransfer?.files[0];if(!native||!file)return
+  const kind=classifyDroppedFile(file.name,file.type);if(kind!=='audio'&&kind!=='video')return
+  event.preventDefault();event.stopPropagation()
+  const rect=(canvasHost.querySelector<HTMLElement>('.konvajs-content')??canvasHost).getBoundingClientRect(),size=slideSizeEdit??deck.size
+  const center=rect.width>0&&rect.height>0?{x:Math.max(0,Math.min(size.cx,(event.clientX-rect.left)/rect.width*size.cx)),y:Math.max(0,Math.min(size.cy,(event.clientY-rect.top)/rect.height*size.cy))}:undefined
+  void chooseNativeMedia(kind,file,center)
+}
+canvasHost.addEventListener('dragover',onMediaDragOver);canvasHost.addEventListener('drop',onMediaDrop)
 /** 固定源 View ▸ Gridlines：纯视图状态（不写入文件）；网格间距 48px = 0.5 英寸，随幻灯片尺寸换算为画布百分比。 */
 let gridVisible = false
 let rulerVisible = false
@@ -691,7 +954,7 @@ let guidesVisible = false
 const slidePx = () => { const size = slideSizeEdit ?? deck.size; return { width: size.cx / 9525, height: size.cy / 9525 } }
 const slideContent = () => canvasHost.querySelector<HTMLElement>('.konvajs-content')
 const guides = mountSlidesGuides(slideContent, slidePx, `native-slides-guides:${location.pathname.replace(/\/\d+$/, '')}`, visible => { guidesVisible = visible; nativeRibbon?.setValue('guides', String(visible)) })
-const ruler = mountSlidesRuler(root.querySelector<HTMLElement>('.slides-stage')!, slideContent, slidePx, 'cm', (axis, client, done) => guides.pull(axis, client, done))
+const ruler = mountSlidesRuler(root.querySelector<HTMLElement>('.slides-stage')!, slideContent, slidePx, 'cm', (axis, client, done) => guides.pull(axis, client, done), () => guides.cancelPull())
 function syncGrid() {
   ruler.update(); nativeRibbon?.setValue('ruler', String(rulerVisible)); nativeRibbon?.setValue('guides', String(guidesVisible))
   const size = slideSizeEdit ?? deck.size
@@ -704,14 +967,17 @@ const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
 
 let canvasSelectionGeneration = 0
 function renderCanvas() {
+  backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
+  mediaPlayback?.dispose();mediaPlayback=undefined
+  animationPreviewOverlay?.dispose()
+  renderSlideSorter()
   const source = renderTree?.slides.find(item => item.slideIndex === selectedSlide)
   geometryPane?.setPictureSource(editKey(selectedSlide,selectedElement),source?.nodes.find(node=>node.sourceId===selectedElement),pictureReplacements.some(item=>item.slideIndex===selectedSlide&&item.elementId===selectedElement))
   // 新建页没有来源 RenderTree：沿用版式来源页的画布尺寸与背景，不含任何对象。
-  const pendingItem = isNewSlide(selectedSlide) ? newSlides[selectedSlide - deck.slides.length] : undefined
-  const pendingSource = pendingItem ? newSlideSource(pendingItem) : null
-  const layoutSource = pendingItem ? (pendingSource === null ? renderTree?.slides[0] : renderTree?.slides.find(item => item.slideIndex === pendingSource)) : undefined
-  const slide = source ?? (layoutSource ? { ...layoutSource, slideIndex: selectedSlide, nodes: pendingItem && 'duplicateOf' in pendingItem ? layoutSource.nodes : [] } : undefined)
+  const rawSlide = slideForView(selectedSlide)
+  const slide = rawSlide&&native ? inkSlide(rawSlide,selectedSlide,slideChanges()) : rawSlide
   if (!canvas || !slide || !deck) return
+  inkControls?.update()
   ruler.update()
   queueMicrotask(() => guides.render())
   const selectionGeneration=++canvasSelectionGeneration, canvasSlide=selectedSlide, canvasSource=deck.sha256
@@ -725,13 +991,17 @@ function renderCanvas() {
   const ordered=blocks.filter(block=>rank.has(block[0]!.sourceId)).sort((a,b)=>rank.get(a[0]!.sourceId)!-rank.get(b[0]!.sourceId)!)
   let orderedIndex=0
   const projectedNodes=[...prefix,...blocks.flatMap(block=>rank.has(block[0]!.sourceId)?ordered[orderedIndex++]!:block)]
+  renderMediaControls(source)
+  modelControls?.update()
   canvas.update({
     slide: {...slide,nodes:projectedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
     selectableIds: new Set(locked()?[]:slideAt(selectedSlide).elements.filter(item=>!deletions.has(editKey(selectedSlide,item.id))).map(item=>item.id)),
     editableIds: new Set(locked() || pendingGroup(selectedSlide) ? [] : slideAt(selectedSlide).elements.filter(item => (item.editable || item.arrangeEditable) && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
     edits: [...edits.values()].filter(item => item.slideIndex === selectedSlide),
+    onMediaPlayback: id => playMedia(id),
     onSelect: (id, additive) => {
       if(disposed||locked()||selectionGeneration!==canvasSelectionGeneration||canvasSlide!==selectedSlide||canvasSource!==deck.sha256)return
+      if(native)canvasHost.focus({preventScroll:true})
       if(brushMode&&id){applyBrush(id);return}
       selectObjects(id,additive); renderInspector()
     },
@@ -739,6 +1009,7 @@ function renderCanvas() {
       if(disposed||locked()||selectionGeneration!==canvasSelectionGeneration||canvasSlide!==selectedSlide||canvasSource!==deck.sha256)return
       const allowed=new Set(slideAt(selectedSlide).elements.filter(item=>!deletions.has(editKey(selectedSlide,item.id))).map(item=>item.id))
       if(ids.some(id=>!allowed.has(id)))return
+      if(native)canvasHost.focus({preventScroll:true})
       selectedObjects=new Set(additive?[...selectedObjects,...ids]:ids)
       selectedElement=selectedObjects.has(selectedElement)?selectedElement:[...selectedObjects][0]??''
       selectionSlide=selectedSlide;explicitEmptySelection=selectedObjects.size===0
@@ -760,7 +1031,7 @@ function renderCanvas() {
 
 const flatText = (slide: DeckSlide) => slide.elements.find(item => item.text.trim())?.text.split('\n')[0] || `第 ${slide.slideIndex + 1} 页`
 const editKey = (slideIndex: number, elementId: string) => `${slideIndex}:${elementId}`
-const currentElement = () => deck.slides[selectedSlide]?.elements.find(item => item.id === selectedElement)
+const currentElement = () => slideAt(selectedSlide).elements.find(item => item.id === selectedElement)
 const currentGeometryInputs = () => [...root.querySelectorAll<HTMLInputElement>('.geometry-grid input')]
 
 const arrangeCommands: Record<string, SlidesArrangeOp> = {
@@ -966,17 +1237,33 @@ function openLinkDialog() {
   },onCancel:()=>{linkDialog=undefined}})
 }
 function onClipboardKey(event: KeyboardEvent) {
-  if(!native||!nativeDraft||disposed||!root.contains(document.activeElement))return
-  if(event.key==='Escape'&&brushMode){event.preventDefault();stopBrush();updateClipboardControls();statusMessage.textContent='已退出格式刷';return}
+  if(event.key==='Escape'&&screenRecordingController&&!disposed){event.preventDefault();event.stopPropagation();screenRecordingController.abort();return}
+  if(!native||!nativeDraft||disposed||event.defaultPrevented||event.isComposing||event.keyCode===229||!root.contains(document.activeElement))return
   const target=event.target
+  // 固定源文件菜单 CmdOrCtrl+S：先提交失焦输入，再复用保存修订动作。
+  if((event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='s'){
+    if(target instanceof Element&&target.closest('dialog'))return
+    event.preventDefault();event.stopPropagation()
+    if(event.repeat||loading||locked()||mutationPending||saveButton.disabled)return
+    const active=document.activeElement
+    if(active instanceof HTMLElement&&root.contains(active)){active.blur();if(active.isConnected)active.focus({preventScroll:true})}
+    saveButton.click();return
+  }
+  // 固定源菜单 CmdOrCtrl+P；浏览器入口仍使用同一份当前草稿快照。
+  if((event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='p'){
+    if(target instanceof Element&&target.closest('dialog'))return
+    event.preventDefault();event.stopPropagation();void openPrint();return
+  }
+  if(target instanceof Element&&target.closest('.slides-sorter-view,.slides-outline-pane,.slides-reading-view'))return
   if(target instanceof Element&&target.closest('input,textarea,select,[contenteditable="true"],dialog'))return
+  if(event.key==='Escape'&&brushMode){event.preventDefault();stopBrush();updateClipboardControls();statusMessage.textContent='已退出格式刷';return}
   if(!(event.ctrlKey||event.metaKey)||event.altKey||event.shiftKey)return
   const key=event.key.toLowerCase()
   if(!['c','x','v'].includes(key))return
   event.preventDefault();event.stopPropagation()
   if(key==='v')pasteObjects();else copyObjects(key==='x')
 }
-window.addEventListener('keydown',onClipboardKey,true)
+window.addEventListener('keydown',onClipboardKey)
 
 function groupReason(ungroup: boolean): string | null {
   if (locked()) return '当前修订不可编辑'
@@ -1035,27 +1322,137 @@ function openExportImagesDialog() {
   })
   dialog.showModal()
 }
-async function startSlidesShow(fromCurrent: boolean) {
+async function openZoom(mode:'slide'|'section') {
+ if(!nativeDraft||locked()||mutationPending||zoomController||isNewSlide(selectedSlide))return
+ const sourceSha=deck.sha256,sourceIndex=selectedSlide,snapshot=JSON.stringify(nativeDraft.operations)
+ const current=()=>!disposed&&!locked()&&!mutationPending&&deck.sha256===sourceSha&&selectedSlide===sourceIndex&&JSON.stringify(nativeDraft.operations)===snapshot
+ const identity=deck.slides[sourceIndex]?.slideIdentity
+ if(!identity){statusMessage.textContent='当前页尚无服务端来源身份，请重新载入';return}
+ const controller=new AbortController();zoomController=controller
+ try{
+  const tree=await request<{slides:RenderSlide[]}>('render-tree',{method:'POST',signal:controller.signal,body:JSON.stringify({expectedSha256:sourceSha,operations:JSON.parse(snapshot)})})
+  if(!current())return
+  const entries=order.map((index,position)=>({index,position,slide:tree.slides[position]})).filter(item=>item.slide&&deck.slides[item.index]?.slideIdentity)
+  let candidates=entries.filter(item=>item.index!==sourceIndex).map(item=>({...item,caption:`第 ${item.position+1} 页`}))
+  if(mode==='section'){
+   if(sectionEdits.length||newSlides.length||deletedSlides.size||order.some((index,position)=>index!==position)){statusMessage.textContent='请先保存页面顺序或分节修改，再插入节缩放定位';return}
+   const heads=(deck.sections??[]).filter(section=>section.slideIndices.length).map(section=>({index:Math.min(...section.slideIndices),name:section.name}))
+   if(heads.length&&Math.min(...heads.map(head=>head.index))>0)heads.unshift({index:0,name:'默认节'})
+   candidates=heads.flatMap(head=>{const item=entries.find(entry=>entry.index===head.index);return item?[{...item,caption:head.name}]:[]})
+  }
+  const dialog=document.createElement('dialog');zoomDialog=dialog;dialog.className='slides-table-dialog';dialog.setAttribute('aria-label',mode==='slide'?'幻灯片缩放定位':'节缩放定位')
+  dialog.innerHTML='<header><h3></h3></header><p>插入目标页静态快照和页跳转链接</p><div class="zoom-items"></div><p role="alert"></p><footer class="slides-table-actions"><button value="cancel">取消</button><button value="insert" disabled>插入</button></footer>'
+  dialog.querySelector('h3')!.textContent=dialog.getAttribute('aria-label');const list=dialog.querySelector<HTMLElement>('.zoom-items')!;list.style.cssText='display:flex;flex-wrap:wrap;gap:8px;max-height:50vh;overflow:auto'
+  const selected=new Set<number>(),insert=dialog.querySelector<HTMLButtonElement>('[value=insert]')!
+  const {mountZoomGrid}=await import('./slides-zoom-grid');await mountZoomGrid(list,candidates as {index:number;caption:string;slide:RenderSlide}[],indices=>{selected.clear();for(const index of indices)selected.add(index);insert.disabled=!selected.size},controller.signal)
+  if(!current()){controller.abort();dialog.remove();zoomDialog=undefined;return}
+  if(!candidates.length)dialog.querySelector('[role=alert]')!.textContent=mode==='section'?'当前文档没有可选分节':'没有其他可选页面'
+  const close=()=>dialog.close()
+  dialog.addEventListener('close',()=>{controller.abort();if(zoomDialog===dialog)zoomDialog=undefined;if(zoomController===controller)zoomController=undefined},{once:true})
+  dialog.querySelector('[value=cancel]')!.addEventListener('click',close)
+  insert.addEventListener('click',()=>{void(async()=>{insert.disabled=true;try{
+   if(!current())throw Error('页面或草稿已变化，请重新打开缩放定位')
+   const targets=candidates.filter(item=>selected.has(item.index));if(zoomInsertions.length+targets.length>50)throw Error('一次最多插入50个缩放定位，请先保存')
+   const {renderSlidesPrintImages}=await import('./slides-print-render');const pngs=await renderSlidesPrintImages(targets.map(item=>item.slide!),controller.signal)
+   if(!current())throw Error('页面或草稿已变化，请重新打开缩放定位')
+   const width=(slideSizeEdit??deck.size).cx/9525,height=(slideSizeEdit??deck.size).cy/9525,w=Math.round(width/4),h=Math.round(height/4)
+   const additions=targets.map((item,index)=>{const d=(index-(targets.length-1)/2)*16;return {slideIdentity:identity,targetSlideIdentity:deck.slides[item.index]!.slideIdentity!,bytesBase64:pngs[index]!.split(',')[1]!,geometry:{x:Math.max(0,Math.round((width-w)/2+d)),y:Math.max(0,Math.round((height-h)/2+d)),width:w,height:h},mode}})
+   commitNativeChanges({...slideChanges(),zoomInsertions:[...zoomInsertions,...additions]});close();statusMessage.textContent=`已插入 ${targets.length} 个缩放定位；保存后保留页跳转`
+  }catch(error){if(!controller.signal.aborted)dialog.querySelector('[role=alert]')!.textContent=error instanceof Error?error.message:'缩放定位未插入';insert.disabled=!selected.size}})()})
+  root.append(dialog);showSlidesSettingsDialog(dialog)
+ }catch(error){if(!controller.signal.aborted)statusMessage.textContent=error instanceof Error?error.message:'缩放定位未打开';controller.abort();zoomDialog?.remove();zoomDialog=undefined}
+ finally{if(!zoomDialog&&zoomController===controller)zoomController=undefined}
+}
+async function openPrint() {
+  if (!nativeDraft || disposed || loading || locked() || mutationPending || printOpening) return
+  if (!commentPane.flush() || (notesPane && !notesPane.flush())) return
+  if(chartFormatPane&&!chartFormatPane.flush()||geometryPane&&!geometryPane.flush()||backgroundPane&&!backgroundPane.flush()||shapeFormatPane&&!shapeFormatPane.flush())return
+  const active=document.activeElement
+  if(active instanceof HTMLElement&&root.contains(active)){
+    active.blur()
+    if(active.isConnected)active.focus({preventScroll:true})
+  }
+  if(disposed||locked()||mutationPending)return
+  if (cropOverlay || structureDialog) { statusMessage.textContent='请先确认或取消当前编辑，再打开打印预览'; return }
+  const sourceSha=deck.sha256,slideIndex=selectedSlide,snapshot=JSON.stringify(nativeDraft.operations)
+  const isCurrent=()=>!disposed&&!saving&&!mutationPending&&!nativeDraft?.closed&&deck.sha256===sourceSha&&selectedSlide===slideIndex&&JSON.stringify(nativeDraft?.operations)===snapshot
+  printOpening=true
+  try {
+    const [{openSlidesPrintDialog},{renderSlidesPrintImages}]=await Promise.all([import('./slides-print-dialog'),import('./slides-print-render')])
+    if(!isCurrent())return
+    printDialog?.dispose()
+    printDialog=openSlidesPrintDialog(root,{isCurrent,async load(signal){
+      const init={method:'POST',signal,body:JSON.stringify({expectedSha256:sourceSha,operations:JSON.parse(snapshot)})}
+      const [tree,preview]=await Promise.all([
+        request<{slides:RenderSlide[]}>('render-tree',init),
+        request<{sourceSha256:string;model:{slides:DeckSlide[]}}>('preview',init),
+      ])
+      if(!isCurrent()||signal.aborted)throw Error('文档或草稿已变化，请重新打开打印预览')
+      if(preview.sourceSha256!==sourceSha||!Array.isArray(tree.slides)||!tree.slides.length||!Array.isArray(preview.model?.slides)||tree.slides.length!==preview.model.slides.length)throw Error('打印模型与渲染快照不一致')
+      const srcs=await renderSlidesPrintImages(tree.slides,signal)
+      if(srcs.length!==tree.slides.length)throw Error('打印图片数量与页面不一致')
+      return {ratio:tree.slides[0]!.widthPx/tree.slides[0]!.heightPx,current:order.indexOf(slideIndex),slides:srcs.map((src,index)=>({src,hidden:preview.model.slides[index]!.hidden===true,notes:preview.model.slides[index]!.notesText??''}))}
+    }})
+  }catch(error){if(!disposed)statusMessage.textContent=error instanceof Error?error.message:'打印预览未打开'}
+  finally{printOpening=false}
+}
+async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow) {
   if (!nativeDraft || disposed || saving || mutationPending || showOpening || showOverlay) return
   if (cropOverlay || structureDialog || order.some(index=>commentPane.hasDraft(index))) { statusMessage.textContent='请先确认或取消当前编辑，再打开放映'; return }
   const sourceSha=deck.sha256, slideIndex=selectedSlide, snapshot=JSON.stringify(nativeDraft.operations)
   const requestedPosition=fromCurrent?order.indexOf(slideIndex):0
   showOpening=true
-  statusMessage.textContent='正在读取当前草稿的静态放映快照…'
+  animationPreviewOverlay?.dispose();mediaPlayback?.dispose();mediaPlayback=undefined
+  statusMessage.textContent='正在读取当前草稿的放映快照…'
   try {
-    const tree=await request<{slides:(RenderSlide & {slideIndex:number;hidden?:boolean})[]}>('render-tree',{
-      method:'POST',body:JSON.stringify({expectedSha256:sourceSha,operations:nativeDraft.operations}),
-    })
-    const { openSlidesShow } = await import('./slides-show')
+    const init={method:'POST',body:JSON.stringify({expectedSha256:sourceSha,operations:JSON.parse(snapshot)})}
+    const [tree, preview] = await Promise.all([
+      request<{slides:(RenderSlide & {slideIndex:number;hidden?:boolean})[]}>('render-tree',init),
+      request<{sourceSha256:string;model:{slides:DeckSlide[]}}>('preview',init),
+    ])
+    const [{ openSlidesShow }, { slidesShowSnapshot }] = await Promise.all([import('./slides-show'),import('./slides-show-snapshot')])
     if(disposed||saving||mutationPending||deck.sha256!==sourceSha||selectedSlide!==slideIndex||JSON.stringify(nativeDraft.operations)!==snapshot)throw new Error('页面或草稿已变化，请重新打开放映')
-    if(!Array.isArray(tree.slides)||!tree.slides.every(slide=>Array.isArray(slide.nodes)&&Number.isFinite(slide.widthPx)&&slide.widthPx>0&&Number.isFinite(slide.heightPx)&&slide.heightPx>0))throw new Error('放映快照无效')
-    const visible=tree.slides.map((slide,index)=>({slide,index})).filter(item=>!item.slide.hidden)
-    if(!visible.length)throw new Error('没有可放映的可见页面')
-    const current=visible.findIndex(item=>item.index>=requestedPosition)
-    showOverlay=openSlidesShow(root,{slides:visible.map(item=>item.slide),startIndex:fromCurrent&&current>=0?current:0,onClose:()=>{showOverlay=undefined}})
-    statusMessage.textContent='只读静态放映；不播放动画、转场和音视频'
+    if(preview.sourceSha256!==sourceSha||!Array.isArray(preview.model?.slides)||!Array.isArray(tree.slides)||!tree.slides.every(slide=>Array.isArray(slide.nodes)&&Number.isFinite(slide.widthPx)&&slide.widthPx>0&&Number.isFinite(slide.heightPx)&&slide.heightPx>0))throw new Error('放映快照无效')
+    if(!tree.slides.length)throw new Error('没有可放映页面')
+    const customOrder=customShow?.slideIndices.map(index=>order.indexOf(index)).filter(index=>index>=0)
+    if(customShow&&!customOrder?.length)throw Error('该自定义放映没有可放映页面')
+    const first=tree.slides.findIndex(slide=>!slide.hidden), startIndex=fromCurrent?Math.max(0,requestedPosition):Math.max(0,first)
+    const playback=slidesShowSnapshot(tree.slides,preview.model.slides)
+    showOverlay=openSlidesShow(root,{slides:tree.slides,mediaSources:tree.slides.map(slide=>(slide as RenderSlide & {mediaSources?:SlideMediaSource[];modelSources?:ModelSource[]}).mediaSources??[]),startIndex:customOrder?.[0]??startIndex,customOrder,...playback,onClose:(lastIndex)=>{
+      showOverlay=undefined
+      if(!disposed){const id=order[lastIndex??startIndex];root.querySelector<HTMLButtonElement>('.slide-open[data-slide-index="'+id+'"]')?.click();statusMessage.textContent='放映已结束；草稿未改动'}
+    }})
+    statusMessage.textContent='正在放映当前草稿：分步动画与转场；右键菜单可导航和切换黑白屏'
   } catch(error) { if(!disposed)statusMessage.textContent=error instanceof Error?error.message:'放映未打开' }
   finally { showOpening=false }
+}
+
+/** 固定源编辑画布 Preview：读取同一原生草稿的渲染快照及来源+草稿动画，不提交修改。 */
+async function startAnimationPreview() {
+  if (!nativeDraft || disposed || locked() || showOverlay || cropOverlay) return
+  const opener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+  if (slidesViewMode === 'sorter' || slidesViewMode === 'reading') await setSlidesViewMode('normal')
+  animationPreviewOverlay?.dispose()
+  const generation = ++animationPreviewGeneration, sourceSha = deck.sha256, slideIndex = selectedSlide
+  const snapshot = JSON.stringify(nativeDraft.operations), position = order.indexOf(slideIndex)
+  const source = sourceAnimations(), sequence = currentSequence()
+  if (!sequence.length) { statusMessage.textContent = '当前页没有动画可预览'; return }
+  statusMessage.textContent = '正在读取当前草稿的动画预览快照…'
+  try {
+    const tree = await request<{ slides: RenderSlide[] }>('render-tree', { method: 'POST', body: JSON.stringify({ expectedSha256: sourceSha, operations: nativeDraft.operations }) })
+    const [{ openSlidesAnimationPreview }, { previewAnimationItems }] = await Promise.all([import('./slides-animation-preview'), import('./slides-animation-preview-model')])
+    if (disposed || locked() || generation !== animationPreviewGeneration || deck.sha256 !== sourceSha || selectedSlide !== slideIndex || JSON.stringify(nativeDraft.operations) !== snapshot) return
+    const slide = tree.slides?.[position]
+    if (!slide || !Number.isFinite(slide.widthPx) || slide.widthPx <= 0 || !Number.isFinite(slide.heightPx) || slide.heightPx <= 0 || !Array.isArray(slide.nodes)) throw new Error('动画预览快照无效')
+    const ids: string[] = []
+    const collect = (nodes: RenderSlide['nodes']) => { for (const node of nodes) { if (!node.decoration) ids.push(node.sourceId); if (node.type === 'group') collect(node.children) } }
+    collect(slide.nodes)
+    const preview = previewAnimationItems(sequence, source, ids)
+    if (!preview.items.length) { statusMessage.textContent = preview.warnings.join('；') || '当前页没有可预览的动画'; return }
+    opener?.focus({ preventScroll: true })
+    animationPreviewOverlay = openSlidesAnimationPreview(root.querySelector<HTMLElement>('.slides-stage')!, { slide, ...preview, onClose: () => { animationPreviewOverlay = undefined } })
+    statusMessage.textContent = preview.warnings.join('；') || '正在预览当前页动画；单击画面或按 Esc 结束，不修改草稿'
+  } catch (error) { if (!disposed && generation === animationPreviewGeneration) statusMessage.textContent = error instanceof Error ? error.message : '动画预览未打开' }
 }
 
 function markDirty() {
@@ -1088,6 +1485,7 @@ function commitNativeChanges(changes: SlideChanges) {
   if (!nativeDraft || locked()) throw new Error('当前修订不可编辑')
   if(notesPane&&!notesPane.flush())throw new Error('请先完成或修正演讲者备注')
   validateNativeMediaDraft(changes,deck.slides,changes.deletedSlides??[],changes.deletions??[])
+  validateSlideMediaInsertions(changes,deck.slides.length,changes.deletedSlides??[])
   restoreNativeDraft([{kind:'editSlides',...changes}], true)
   nativeDraft.setOperations([{kind:'editSlides',...changes}])
   restoreNativeDraft()
@@ -1096,6 +1494,32 @@ function commitNativeChanges(changes: SlideChanges) {
   stateLabel.textContent = '有未保存修改'
   statusMessage.textContent = nativeDraft.persistenceError ?? '修改尚未保存'
   nativeAIHost?.refresh()
+}
+
+async function openMasterText() {
+  if (!nativeDraft || disposed || locked() || (notesPane && !notesPane.flush()) || !commentPane.flush()) return
+  masterTextDialog?.dispose()
+  const generation = ++masterTextDialogGeneration, sourceSha = deck.sha256, snapshot = JSON.stringify(nativeDraft.operations)
+  const isCurrent = () => !disposed && !locked() && generation === masterTextDialogGeneration && sourceSha === deck.sha256 && snapshot === JSON.stringify(nativeDraft.operations)
+  try {
+    const [tree, { openSlidesMasterText }] = await Promise.all([
+      request<{ masterTextParts?: MasterTextRenderPart[] }>('render-tree', { method: 'POST', body: JSON.stringify({ expectedSha256: sourceSha, operations: nativeDraft.operations }) }),
+      import('./slides-master-text'),
+    ])
+    if (!isCurrent()) return
+    masterTextDialog = openSlidesMasterText(root, {
+      parts: deck.masterTextParts ?? [], edits: structuredClone(masterTextEdits), renders: tree.masterTextParts ?? [], isCurrent,
+      onApply(items) { const changes = slideChanges(); if (items.length) changes.masterTextEdits = items; else delete changes.masterTextEdits; commitNativeChanges(changes) },
+      elements: { edits: structuredClone(masterElementEdits), onApply(items) {
+        const changes = slideChanges()
+        if (items.length) changes.masterElementEdits = items; else delete changes.masterElementEdits
+        const texts = masterTextEdits.filter(text => !items.some(item => item.kind === 'delete' && item.partPath === text.partPath && item.spid === text.spid))
+        if (texts.length) changes.masterTextEdits = texts; else delete changes.masterTextEdits
+        commitNativeChanges(changes)
+      } },
+      onClose() { masterTextDialog = undefined },
+    })
+  } catch (error) { if (isCurrent()) statusMessage.textContent = error instanceof Error ? error.message : '母版文字未能打开' }
 }
 
 function openFindReplace() {
@@ -1109,12 +1533,98 @@ function openFindReplace() {
   })
 }
 
+/** 源录制按钮是开始/停止切换；浏览器选择器授权后才捕获，不提供伪造画面。 */
+async function toggleScreenRecording(){
+ if(screenRecording){screenRecording.stop();return}
+ if(screenRecordingController||!nativeDraft||disposed||locked()||mutationPending||isNewSlide(selectedSlide))return
+ const slideIndex=selectedSlide,sourceSha=deck.sha256,snapshot=JSON.stringify(slideChanges()),draftSnapshot=JSON.stringify(nativeDraft.operations),controller=new AbortController()
+ screenRecordingController=controller
+ const button=root.querySelector<HTMLButtonElement>('[data-command="screenRecording"]')
+ const label=(text:string)=>{if(!button)return;button.setAttribute('aria-label',text);const caption=[...button.childNodes].find(node=>node.nodeType===Node.TEXT_NODE);if(caption)caption.textContent=text}
+ try{
+  statusMessage.textContent='请选择要共享的屏幕或窗口；按 Esc 可取消本次录制'
+  screenRecording=await startSlideScreenRecording(controller.signal)
+  label('停止录制');button?.classList.add('active','rb-recording');button?.setAttribute('aria-pressed','true')
+  statusMessage.textContent='屏幕录制中…再次点击「停止录制」停止并插入；Esc 取消'
+  const {file,poster}=await screenRecording.result
+  const asset=await prepareSlideMedia(file,'video',controller.signal)
+  if(disposed||locked()||mutationPending||deck.sha256!==sourceSha||selectedSlide!==slideIndex||JSON.stringify(slideChanges())!==snapshot||JSON.stringify(nativeDraft.operations)!==draftSnapshot)throw Error('页面或草稿已变化，录制未插入，请重新录制')
+  commitNativeChanges({...slideChanges(),mediaInsertions:[...mediaInsertions,{slideIndex,...asset,poster}]})
+  statusMessage.textContent='屏幕录制和真实预览图已加入草稿，可撤销；保存后嵌入 PPTX'
+ }catch(error){if(!disposed)statusMessage.textContent=controller.signal.aborted?'屏幕录制已取消，未插入媒体':error instanceof Error?error.message:'屏幕录制未完成，请确认浏览器授权'}
+ finally{screenRecording=undefined;if(screenRecordingController===controller)screenRecordingController=undefined;label('屏幕录制');button?.classList.remove('active','rb-recording');button?.setAttribute('aria-pressed','false')}
+}
+
+/** 固定源 insertMediaFile / insertDroppedMedia：文件读取期间不锁住工作流，提交前重新核验快照。 */
+async function chooseNativeMedia(kind:'video'|'audio',dropped?:File,center?:{x:number;y:number}) {
+  if(!nativeDraft||disposed||locked()||mutationPending||isNewSlide(selectedSlide))return
+  const slideIndex=selectedSlide,sourceSha=deck.sha256,snapshot=JSON.stringify(slideChanges()),draftSnapshot=JSON.stringify(nativeDraft.operations)
+  mediaPickerController?.abort();const controller=new AbortController();mediaPickerController=controller
+  try {
+    const file=dropped??await pickSlideMedia(kind,controller.signal)
+    if(!file)return
+    const asset=await prepareSlideMedia(file,kind,controller.signal)
+    if(disposed||locked()||mutationPending||deck.sha256!==sourceSha||selectedSlide!==slideIndex||JSON.stringify(slideChanges())!==snapshot||JSON.stringify(nativeDraft.operations)!==draftSnapshot)throw Error('页面或草稿已变化，请重新插入媒体')
+    commitNativeChanges({...slideChanges(),mediaInsertions:[...mediaInsertions,{slideIndex,...asset,...(center?{center}:{})}]})
+    statusMessage.textContent='媒体已加入草稿；正在从实际 PPTX 更新画布，可播放核验后保存新修订'
+  }catch(error){if(!disposed&&!controller.signal.aborted)statusMessage.textContent=error instanceof Error?error.message:'媒体未插入，原文件保留'}
+  finally{if(mediaPickerController===controller)mediaPickerController=undefined}
+}
+function renderMediaControls(source:(RenderSlide & {mediaSources?:SlideMediaSource[];modelSources?:ModelSource[]})|undefined){
+  let controls=root.querySelector<HTMLElement>('.slides-media-controls')
+  if(!controls){controls=document.createElement('div');controls.className='slides-media-controls';controls.setAttribute('aria-label','当前页媒体');canvasStatus.after(controls)}
+  controls.replaceChildren()
+  for(const media of source?.mediaSources??[]){
+    const button=document.createElement('button');button.type='button';button.textContent=`播放${media.kind==='video'?'视频':'音频'}`;button.dataset.mediaPlay=media.sourceId;button.disabled=locked()||!media.dataUrl;button.title=media.reason??media.warning??'从实际 PPTX 嵌入媒体播放';button.addEventListener('click',()=>playMedia(media.sourceId));controls.append(button)
+    if(media.reason||media.warning){const note=document.createElement('span');note.textContent=media.reason??media.warning??'';controls.append(note)}
+  }
+}
+function playMedia(sourceId:string){
+  if(disposed||locked())return
+  const slide=renderTree?.slides.find(item=>item.slideIndex===selectedSlide),media=slide?.mediaSources?.find(item=>item.sourceId===sourceId),node=slide?.nodes.find(item=>item.sourceId===sourceId)
+  if(!slide||!media||!node)return
+  mediaPlayback?.dispose()
+  try{mediaPlayback=openSlideMediaPlayback(canvasHost,media,node.box,slide.widthPx)}catch(error){statusMessage.textContent=error instanceof Error?error.message:'媒体无法读取'}
+}
+
+let cutoutDialog:ReturnType<typeof openSlidesCutout>|undefined
+let cutoutGeneration=0
+let cutoutCurrent:(()=>boolean)|undefined
+function cutoutReason():string|null{
+ const element=currentElement()
+ if(!nativeDraft||locked()||isNewSlide(selectedSlide)||selectedObjects.size!==1)return '请选择一张已核验身份的来源图片'
+ if(element?.type!=='picture'||element.mediaKind||!element.pictureReplaceable||!element.pictureSha256||!element.pictureSize)return element?.pictureReplaceReason??'此图片不能安全去背景'
+ if(pendingGroup(selectedSlide)||resetLayouts.has(selectedSlide)||layoutEdits.has(selectedSlide)||slideSizeEdit)return '请先保存页面结构或版式修改，再去除背景'
+ if([...pictureCrops,...pictureOpacities,...pictureReplacements].some(item=>item.slideIndex===selectedSlide&&item.elementId===element.id))return '请先保存或撤回此图片的裁切、透明度或替换修改'
+ return null
+}
+async function openPictureCutout(){
+ const reason=cutoutReason();if(reason){statusMessage.textContent=reason;return}
+ const element=currentElement()!,slideIndex=selectedSlide,sourceSha=deck.sha256,snapshot=JSON.stringify(slideChanges()),draftSnapshot=JSON.stringify(nativeDraft!.operations),generation=++cutoutGeneration
+ const current=()=>!disposed&&generation===cutoutGeneration&&!locked()&&deck.sha256===sourceSha&&selectedSlide===slideIndex&&selectedObjects.size===1&&currentElement()?.id===element.id&&JSON.stringify(slideChanges())===snapshot&&JSON.stringify(nativeDraft!.operations)===draftSnapshot
+ cutoutDialog?.dispose();cutoutDialog=undefined
+ try{
+  const picture=renderTree?.slides.find(slide=>slide.slideIndex===slideIndex)?.nodes.find(node=>node.sourceId===element.id)
+  if(picture?.type!=='picture'||!picture.dataUrl)throw Error('图片画布尚未就绪，请稍后重试')
+  const dataUrl=await verifiedCutoutSource(picture.dataUrl,element.pictureSha256!,element.pictureSize!)
+  if(!current())throw Error('页面、选择或草稿已变化，请重新打开去背景')
+  cutoutCurrent=current
+  cutoutDialog=openSlidesCutout(root,{dataUrl,isCurrent:current,onApply:png=>{
+   if(!current())throw Error('页面、选择或草稿已变化，请重新打开去背景')
+   const match=/^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(png);if(!match)throw Error('去背景输出不是有效PNG')
+   const changes=slideChanges();changes.pictureReplacements=[...pictureReplacements,{slideIndex,elementId:element.id,expectedSha256:element.pictureSha256!,expectedSize:element.pictureSize!,bytesBase64:match[1]!,extension:'png',keepSrcRect:true}]
+   commitNativeChanges(changes);statusMessage.textContent='去背景已加入草稿，可撤销；保存新修订后保留透明PNG'
+  }})
+ }catch(error){if(!disposed&&generation===cutoutGeneration)statusMessage.textContent=error instanceof Error?error.message:'去背景未打开，原图片保留'}
+}
+
 async function chooseNativePicture(replace: boolean) {
   const slideIndex=selectedSlide, element=currentElement(), sourceSha=deck.sha256
   const snapshot=JSON.stringify(slideChanges())
   if(isNewSlide(slideIndex)) {statusMessage.textContent=NEW_SLIDE_REASON;return}
   if(replace && pictureOpacities.some(item=>item.slideIndex===slideIndex&&item.elementId===element?.id)) {statusMessage.textContent='此图片有待保存的透明度修改，请先保存或撤回再替换';return}
   if(replace && pictureCrops.some(item=>item.slideIndex===slideIndex&&item.elementId===element?.id)) {statusMessage.textContent='此图片有待保存的裁切，请先保存或撤回裁切再替换';return}
+  if(replace && element?.mediaKind){statusMessage.textContent='此入口仅替换普通图片，不替换音视频文件';return}
   if(replace && !element?.pictureReplaceable) {statusMessage.textContent=element?.pictureReplaceReason??'请选择可替换的来源图片';return}
   try {
     const file=await pickSlideImage()
@@ -1216,8 +1726,10 @@ function openNativeChart(mode:'data'|'type'|'style'|'design'|'points') {
 }
 
 function slideChanges(): SlideChanges {
-  return { ...(notesEdits.size?{notesEdits:[...notesEdits].map(([slideIndex,text])=>({slideIndex,text}))}:{}), ...(linkEdits.length?{linkEdits:structuredClone(linkEdits)}:{}), ...(clipboardPastes.length?{clipboardPastes:structuredClone(clipboardPastes)}:{}), ...(groupEdits.length ? {groupEdits: structuredClone(groupEdits)} : {}), ...(tableStructureEdits.size ? {tableStructures:[...tableStructureEdits.values()].map(item=>({...item}))}:{}), ...(tableStyleEdits.size ? { tableStyles: [...tableStyleEdits.values()].map(item => structuredClone(item)) } : {}), edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
+  return { ...(zoomInsertions.length?{zoomInsertions:structuredClone(zoomInsertions)}:{}), ...(customShowEdits!==undefined?{customShows:structuredClone(customShowEdits)}:{}), ...(masterElementEdits.length ? { masterElementEdits: structuredClone(masterElementEdits) } : {}), ...(masterTextEdits.length ? { masterTextEdits: structuredClone(masterTextEdits) } : {}), ...(notesEdits.size?{notesEdits:[...notesEdits].map(([slideIndex,text])=>({slideIndex,text}))}:{}), ...(linkEdits.length?{linkEdits:structuredClone(linkEdits)}:{}), ...(clipboardPastes.length?{clipboardPastes:structuredClone(clipboardPastes)}:{}), ...(groupEdits.length ? {groupEdits: structuredClone(groupEdits)} : {}), ...(tableStructureEdits.size ? {tableStructures:[...tableStructureEdits.values()].map(item=>({...item}))}:{}), ...(tableStyleEdits.size ? { tableStyles: [...tableStyleEdits.values()].map(item => structuredClone(item)) } : {}), edits: [...edits.values()], ...(native ? { textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()] } : {}),
     order: [...order], ...(newSlides.length ? { newSlides: newSlides.map(item => ({ ...item })) } : {}), ...(deletedSlides.size ? { deletedSlides: [...deletedSlides] } : {}), ...(resetLayouts.size ? { resetLayouts: [...resetLayouts] } : {}), ...(shapeEdits.length ? { shapes: shapeEdits.map(item => ({ ...item, geometry: { ...item.geometry } })) } : {}), ...(tableEdits.length ? { tables: tableEdits.map(item => ({ ...item })) } : {}), ...(shapeStyleEdits.size ? { shapeStyles: [...shapeStyleEdits.values()].map(item => structuredClone(item)) } : {}), ...(shapeKindEdits.size ? { shapeKinds: [...shapeKindEdits.values()].map(item => ({ ...item })) } : {}), ...(sectionEdits.length ? { sections: sectionEdits.map(item => ({ ...item })) } : {}), ...(headerFooterEdit ? { headerFooter: { ...headerFooterEdit } } : {}), ...(tableCellEdits.size ? { tableCells: [...tableCellEdits.values()].map(item => ({ ...item })) } : {}), ...(chartEdits.length ? { charts: chartEdits.map(item => structuredClone(item)) } : {}), ...(smartArtEdits.length ? { smartArts: smartArtEdits.map(item => structuredClone(item)) } : {}), ...(selectedTheme ? { theme: selectedTheme } : {}), ...(slideSizeEdit ? { slideSize: slideSizeEdit } : {}),
+    ...(modelInsertions.length?{modelInsertions:structuredClone(modelInsertions)}:{}),...(modelViews.length?{modelViews:structuredClone(modelViews)}:{}),
+    ...(mediaInsertions.length ? {mediaInsertions:structuredClone(mediaInsertions)} : {}),
     ...(nativeImages.length ? { images: structuredClone(nativeImages) } : {}),
     ...(elementOrders.size ? {elementOrders:[...elementOrders].map(([slideIndex,elementIds])=>({slideIndex,elementIds:[...elementIds]}))}:{}),
     ...(pictureCrops.length ? {pictureCrops:structuredClone(pictureCrops)}:{}),
@@ -1231,6 +1743,7 @@ function slideChanges(): SlideChanges {
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
     backgrounds: [...backgroundEdits].map(([slideIndex, color]) => ({ slideIndex, color })),
     ...(backgroundImageEdits.length ? { backgroundImages: backgroundImageEdits.map(item => ({ ...item, slideIndices: [...item.slideIndices] })) } : {}),
+    ...(backgroundImageReuseEdits.length ? {backgroundImageReuses:structuredClone(backgroundImageReuseEdits)}:{}),
     ...(backgroundGradientEdits.length ? { backgroundGradients: backgroundGradientEdits.map(item => ({ ...item, slideIndices: [...item.slideIndices] })) } : {}),
     ...(backgroundResetEdits.size ? { backgroundResets: [...backgroundResetEdits] } : {}),
     ...(backgroundGraphicsEdits.size ? { backgroundGraphics: [...backgroundGraphicsEdits].map(([slideIndex, hidden]) => ({ slideIndex, hidden })) } : {}),
@@ -1241,12 +1754,18 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false) {
   if (!nativeDraft) return
   const operations = candidate ?? nativeDraft.operations
-  const supported = new Set(['notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['zoomInsertions','modelInsertions','modelViews','customShows', 'mediaInsertions', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundImageReuses', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
   }
   const changes = (operations[0] ?? {}) as SlideChanges
+  validateZoomDraft(changes.zoomInsertions,deck.slides,changes.deletedSlides??[])
+  validateModelDraft(changes,deck.slides.length,changes.deletedSlides??[])
+  const restoredShows=changes.customShows
+  if(restoredShows!==undefined&&(!deck.customShowsEditable||!Array.isArray(restoredShows)||restoredShows.length>100||new Set(restoredShows.map(item=>item?.id)).size!==restoredShows.length||restoredShows.some(item=>!item||Object.keys(item).sort().join()!=='id,name,slideIndices'||typeof item.id!=='string'||!(/^(?:0|[1-9]\d*|cs-[a-z0-9-]{1,80})$/.test(item.id))||typeof item.name!=='string'||!item.name.trim()||item.name.length>255||/[\u0000-\u001f\u007f-\u009f\ufffe\uffff]|\p{Cs}/u.test(item.name)||!Array.isArray(item.slideIndices)||item.slideIndices.length>500||item.slideIndices.some(index=>!Number.isInteger(index)||index<0||index>=deck.slides.length))))throw Error('自定义放映草稿无效；原草稿已保留')
+  const restoredMasterText = validateMasterTextDraft(changes.masterTextEdits, deck.masterTextParts ?? [])
+  const restoredMasterElements = validateMasterElementDraft(changes.masterElementEdits, deck.masterTextParts ?? [])
   const restoredNotes = validateSlidesNotesDraft(changes,deck.slides)
   const restoredGroups = validateSlidesGroupDraft(changes, deck.slides)
   const restoredLinks = validateSlidesLinkDraft(changes, deck.slides)
@@ -1260,6 +1779,11 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
       || typeof item.tile !== 'boolean' || !['png', 'jpg'].includes(item.extension) || typeof item.bytesBase64 !== 'string' || !Array.isArray(item.slideIndices) || !item.slideIndices.length
       || item.slideIndices.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length || used.has(index) || colors.has(index) || removed.has(index) || !used.add(index))))
       throw new Error('背景图片草稿无效；原草稿已保留')
+    const reuses=changes.backgroundImageReuses??[]
+    if(!Array.isArray(reuses)||reuses.length>50||reuses.some(item=>{
+      const identity=deck.slides[item?.sourceSlideIndex]?.backgroundImageSource
+      return !item||Object.keys(item).sort().join()!=='expectedSha256,expectedSize,slideIndices,sourceSlideIndex,tile'||!Number.isInteger(item.sourceSlideIndex)||!identity||identity.sha256!==item.expectedSha256||identity.size!==item.expectedSize||typeof item.tile!=='boolean'||!Array.isArray(item.slideIndices)||!item.slideIndices.length||item.slideIndices.some(index=>!Number.isInteger(index)||index<0||index>=deck.slides.length||used.has(index)||colors.has(index)||removed.has(index)||!used.add(index))
+    }))throw new Error('背景图片复用草稿与来源身份不一致；原草稿已保留')
     const gradients = changes.backgroundGradients ?? [], resets = changes.backgroundResets ?? [], graphics = changes.backgroundGraphics ?? []
     if (!Array.isArray(gradients) || gradients.length > 20 || gradients.some(item => !item || Object.keys(item).sort().join() !== 'angleDeg,from,radial,slideIndices,to' || !/^#[0-9A-F]{6}$/i.test(item.from) || !/^#[0-9A-F]{6}$/i.test(item.to)
       || typeof item.radial !== 'boolean' || ![0, 45, 90].includes(item.angleDeg) || (item.radial && item.angleDeg !== 0) || !Array.isArray(item.slideIndices) || !item.slideIndices.length
@@ -1282,6 +1806,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   const restoredElementOrders=validateSlidesElementOrders(changes.elementOrders,deck.slides,restoredDeleted)
   const restoredComments = validateCommentEdits(changes.commentEdits, deck.slides, restoredDeleted)
   validateNativeMediaDraft(changes, deck.slides, restoredDeleted, changes.deletions ?? [])
+  validateSlideMediaInsertions(changes,deck.slides.length,restoredDeleted)
   const restoredHidden = changes.hiddenSlides ?? []
   if (!Array.isArray(restoredHidden) || restoredHidden.length > 500 || new Set(restoredHidden.map(item => item?.slideIndex)).size !== restoredHidden.length || restoredHidden.some(item => !item || Object.keys(item).sort().join() !== 'hidden,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex) || typeof item.hidden !== 'boolean')) throw new Error('草稿中的隐藏幻灯片无效；原草稿已保留')
   const restoredReset = changes.resetLayouts ?? []
@@ -1356,10 +1881,12 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
     for (const item of restoredSequences) {
       const slide = deck.slides[item.slideIndex]
       if (!slide || Object.keys(item).sort().join() !== 'items,slideIndex' || (changes.animations ?? []).some(edit => edit.slideIndex === item.slideIndex)) throw new Error('动画序列无效')
-      validateSequence(item.items, slide.animations ?? [], slide.elements.map(element => ({ id: element.id, type: element.type, paragraphs: (changes.edits ?? []).findLast(edit => edit.slideIndex === item.slideIndex && edit.elementId === element.id && edit.text !== undefined)?.text?.split(/\r?\n/).length ?? element.paragraphFormatting?.length ?? element.paragraphAlignments?.length ?? (element.text ? element.text.split('\n').length : 0) })))
+      validateSequence(item.items, slide.animations ?? [], slide.elements.map(element => ({ id: element.id, type: element.type, mediaKind:element.mediaKind, paragraphs: (changes.edits ?? []).findLast(edit => edit.slideIndex === item.slideIndex && edit.elementId === element.id && edit.text !== undefined)?.text?.split(/\r?\n/).length ?? element.paragraphFormatting?.length ?? element.paragraphAlignments?.length ?? (element.text ? element.text.split('\n').length : 0) })))
     }
   } catch (error) { throw new Error(`${error instanceof Error ? error.message : '动画序列无效'}；原草稿已保留`) }
   if (validateOnly) return
+  masterTextEdits.splice(0, masterTextEdits.length, ...restoredMasterText)
+  masterElementEdits.splice(0, masterElementEdits.length, ...restoredMasterElements)
   notesEdits.clear();for(const item of restoredNotes)notesEdits.set(item.slideIndex,item.text)
   groupEdits.splice(0, groupEdits.length, ...restoredGroups)
   linkEdits.splice(0,linkEdits.length,...restoredLinks)
@@ -1382,7 +1909,9 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   for (const transition of transitions) transitionEdits.set(transition.slideIndex, transition.kind)
   for (const layout of changes.slideLayouts ?? []) layoutEdits.set(layout.slideIndex, layout.layoutPath)
   for (const background of changes.backgrounds ?? []) backgroundEdits.set(background.slideIndex, background.color)
+  customShowEdits=restoredShows===undefined?undefined:structuredClone(restoredShows)
   backgroundImageEdits.splice(0, backgroundImageEdits.length, ...restoredBackgroundImages.map(item => ({ ...item, slideIndices: [...item.slideIndices] })))
+  backgroundImageReuseEdits.splice(0,backgroundImageReuseEdits.length,...structuredClone(changes.backgroundImageReuses??[]))
   backgroundGradientEdits.splice(0, backgroundGradientEdits.length, ...(changes.backgroundGradients ?? []).map(item => ({ ...item, slideIndices: [...item.slideIndices] })))
   backgroundResetEdits.clear(); for (const index of changes.backgroundResets ?? []) backgroundResetEdits.add(index)
   backgroundGraphicsEdits.clear(); for (const item of changes.backgroundGraphics ?? []) backgroundGraphicsEdits.set(item.slideIndex, item.hidden)
@@ -1400,6 +1929,9 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   headerFooterEdit = restoredHf ? { ...restoredHf } : undefined
   smartArtEdits.splice(0, smartArtEdits.length, ...restoredSmartArts.map(item => structuredClone(item)))
   chartEdits.splice(0, chartEdits.length, ...restoredCharts.map(item => structuredClone(item)))
+  modelInsertions.splice(0,modelInsertions.length,...structuredClone(changes.modelInsertions??[]));modelViews.splice(0,modelViews.length,...structuredClone(changes.modelViews??[]))
+  mediaInsertions.splice(0,mediaInsertions.length,...structuredClone(changes.mediaInsertions??[]))
+  zoomInsertions.splice(0,zoomInsertions.length,...structuredClone(changes.zoomInsertions??[]))
   nativeImages.splice(0,nativeImages.length,...structuredClone(changes.images??[]))
   pictureReplacements.splice(0,pictureReplacements.length,...structuredClone(changes.pictureReplacements??[]))
   pictureCrops.splice(0,pictureCrops.length,...structuredClone(changes.pictureCrops??[]))
@@ -1447,7 +1979,12 @@ const commentPane = createSlidesCommentsPane({
   onAdd: items => changeComments([...commentEdits, ...items.map(item => ({ ...item, kind: 'add' as const, clientId: crypto.randomUUID() }))]),
   onDelete: (slideIndex, item) => { changeComments([...commentEdits, { slideIndex, kind: 'delete', authorId: item.authorId, idx: item.idx }]) },
   onWithdraw: clientId => { changeComments(commentEdits.filter(edit => edit.kind !== 'add' || edit.clientId !== clientId)) },
-  onClose: () => { commentsPaneOpen = false; renderComments() },
+  onClose: () => {
+    commentsPaneOpen = false; renderComments()
+    const opener = root.querySelector<HTMLButtonElement>('[data-command="commentsPane"]')
+    const target = opener && !opener.disabled && !opener.closest('[hidden]') ? opener : root.querySelector<HTMLButtonElement>('.slides-native-ribbon-tabs [aria-selected="true"]')
+    target?.focus()
+  },
 })
 root.querySelector('.slides-workspace')!.append(commentPane.element)
 const notesPane=native?createSlidesNotesPane(root.querySelector<HTMLElement>('.slides-stage')!,{
@@ -1584,11 +2121,16 @@ function transitionApplyAllUnavailable(): string | null {
 }
 
 function renderInspector() {
+  if(typeof nativeRibbon!=='undefined'){mountInkControls();mountModelControls()}
+  modelControls?.update()
+  inkControls?.update()
+  if(cutoutCurrent&&!cutoutCurrent()){++cutoutGeneration;cutoutDialog?.dispose();cutoutDialog=undefined;cutoutCurrent=undefined}
+  backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   renderNotes()
   if(selectionSlide!==selectedSlide){selectedObjects.clear();selectionSlide=selectedSlide;explicitEmptySelection=false;cropOverlay?.dispose();cropOverlay=undefined}
   renderComments()
   // 表格虽不能整体编辑/删除，但单元格可改字，因此也列入可选对象。
-  const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable || !!item.tableCells || item.type === 'chart' || item.type === 'group') && !deletions.has(editKey(selectedSlide, item.id)))
+  const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable || !!item.tableCells || item.type === 'chart' || item.type === 'group' || item.model3d) && !deletions.has(editKey(selectedSlide, item.id)))
   select.replaceChildren(...elements.map(item => {
     const option = document.createElement('option')
     option.value = item.id
@@ -1638,14 +2180,14 @@ function renderInspector() {
   slideMaster.textContent = master?.name || masterPath || '未读取'
   const existingAnimation = animationEdits.findLast(item => item.slideIndex === selectedSlide && item.elementId === selectedElement)
     ?? slide.animations?.find(item => item.elementId === selectedElement)
-  animationEffect.value = existingAnimation?.effect ?? 'fade'
+  animationEffect.value = existingAnimation?.effect ?? (element?.mediaKind?'mediaPlay':'fade')
   animationTrigger.value = existingAnimation?.trigger ?? 'onClick'
-  animationDuration.value = String(existingAnimation?.durationMs ?? 500)
+  animationDuration.value = String(existingAnimation?.durationMs ?? (element?.mediaKind?0:500))
   animationDelay.value = String(existingAnimation?.delayMs ?? 0)
   animationDurationMs = Number(animationDuration.value)
   animationDelayMs = Number(animationDelay.value)
   animationDirection = (existingAnimation?.direction as AnimationDirection | undefined) ?? 'bottom'
-  animationAdd.disabled = selectedObjects.size!==1 || !element?.editable
+  animationAdd.disabled = selectedObjects.size!==1 || !(element?.editable||element?.mediaKind)
   animationState.textContent = existingAnimation ? `已有 ${existingAnimation.effect} 动画，可继续添加。` : ''
   renderAnimationPane()
   const selectedRow = selectedAnimationRow >= 0 ? currentSequence()[selectedAnimationRow] : undefined
@@ -1717,6 +2259,7 @@ function renderInspector() {
   const rtl = uniformParagraphValue(paragraphs, 'rtl')
   nativeRibbon?.setValue('paragraphDirection', typeof rtl === 'boolean' ? String(rtl) : '')
   const contextualType: NativeSlidesContext = !element ? null
+    : element.model3d ? 'model3d'
     : element.type === 'table' ? 'table'
       : element.type === 'chart' ? 'chart'
         : element.type === 'picture' ? 'picture'
@@ -1736,9 +2279,10 @@ function renderInspector() {
   shapeFormatPane?.update()
   updateArrangeControls(); updateElementOrderControls(); updateGroupControls(); updateClipboardControls()
   for(const [command,enabled,reason] of [
+    ['removeBackground',!cutoutReason(),cutoutReason()??''],
     ['cropPicture',!cropReason(),cropReason()??''],
     ['pictureOpacity', !opacityReason(), opacityReason() ?? '图片透明度（0–100%）：0 为不透明'],
-    ['replacePicture',selectedObjects.size===1&&element?.pictureReplaceable===true&&!pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id),pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id)?'请先保存或撤回此图片裁切':element?.pictureReplaceReason??'请选择已核验身份的来源图片'],
+    ['replacePicture',selectedObjects.size===1&&!element?.mediaKind&&element?.pictureReplaceable===true&&!pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id),pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id)?'请先保存或撤回此图片裁切':element?.pictureReplaceReason??'请选择已核验身份的来源图片'],
     ['chartData',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全编辑数据'],
     ['chartType',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全更改类型'],
     ['chartElements',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全修改图表元素'],
@@ -1746,6 +2290,10 @@ function renderInspector() {
     ['chartPointColors',selectedObjects.size===1&&element?.chartEditSafe===true&&(nativeChartEdits.find(item=>item.slideIndex===selectedSlide&&item.elementId===element.id)?.kind??element.chartKind)!=='scatter','此来源或散点图不能安全修改单点配色'],
     ['chartSwitchRowCol',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全交换行列'],
     ['insertPicture',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
+    ['insertAudio',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
+    ['insertVideo',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
+    ['screenRecording',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
+    ['insertModel3d',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
   ] as const) {
     const button=root.querySelector<HTMLButtonElement>(`[data-command="${command}"]`)
     if(button){button.disabled=locked()||!enabled;button.title=enabled?'':reason}
@@ -1843,11 +2391,33 @@ function isWritableSlideSize(size: { cx: number; cy: number }) {
 }
 
 let sizeDialog: ReturnType<typeof openSlidesSizeDialog> | undefined
+let equationDialog: ReturnType<typeof openSlidesEquationDialog> | undefined
 let nativeRibbon: NativeSlidesRibbon | undefined
+function mountModelControls(){
+ if(!native||modelControls)return
+ const panel=root.querySelector<HTMLElement>('[data-ribbon-panel=model3dFormat]');if(!panel)return
+ panel.replaceChildren();const host=document.createElement('div');panel.append(host)
+ modelControls=mountModel3d(host,{canvas:()=>slideContent()??undefined,state:()=>{
+  const tree=renderTree?.slides.find(item=>item.slideIndex===selectedSlide),source=tree?.modelSources?.find(item=>item.sourceId===selectedElement),node=tree?.nodes.find(item=>item.sourceId===selectedElement&&item.type==='picture')
+  const original=new Set(deck.slides[selectedSlide]?.elements.filter(item=>item.model3d).map(item=>item.id)??[]),added=tree?.modelSources?.filter(item=>!original.has(item.sourceId))??[],index=added.findIndex(item=>item.sourceId===selectedElement)
+  return {key:deck.sha256+'|'+selectedSlide+'|'+selectedElement+'|'+JSON.stringify(nativeDraft?.operations),available:!!nativeDraft&&!locked()&&!isNewSlide(selectedSlide)&&!pendingGroup(selectedSlide)&&slidesViewMode==='normal',slideIndex:selectedSlide,width:tree?.widthPx??deck.size.cx/9525,height:tree?.heightPx??deck.size.cy/9525,source,node:node?.type==='picture'?node:undefined,insertionKey:index>=0?modelInsertions.filter(item=>item.slideIndex===selectedSlide)[index]?.key:undefined,changes:slideChanges()}
+ },commit:changes=>commitNativeChanges({...slideChanges(),...changes}),status:message=>{statusMessage.textContent=message}})
+}
+function mountInkControls(){
+ if(!native||inkControls)return
+ const panel=root.querySelector<HTMLElement>('[data-ribbon-panel=draw]');if(!panel)return
+ panel.replaceChildren()
+ const host=document.createElement('div');panel.append(host)
+ inkControls=mountSlidesInk(host,{canvas:()=>slideContent()??undefined,state:()=>({slide:slideForView(selectedSlide),slideIndex:selectedSlide,changes:slideChanges(),key:deck.sha256+'|'+selectedSlide+'|'+JSON.stringify(nativeDraft?.operations),available:!!nativeDraft&&!locked()&&!isNewSlide(selectedSlide)&&!pendingGroup(selectedSlide)&&slidesViewMode==='normal'}),commit:changes=>commitNativeChanges({...slideChanges(),...changes}),status:message=>{statusMessage.textContent=message}})
+}
+
 if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   onAssistant: sharedShell?.onAssistant ?? (sharedShell?.nativeAI ? () => nativeAIHost?.open() : undefined),
   onAction(command, value) {
+    if (command === 'slideMaster') { void openMasterText(); return }
+    if (['normalView', 'outlineView', 'slideSorter', 'readingView'].includes(command)) { void setSlidesViewMode(command === 'normalView' ? 'normal' : command === 'outlineView' ? 'outline' : command === 'readingView' ? 'reading' : 'sorter'); return }
     if(notesPane&&!notesPane.flush())return
+    if(command==='print'){void openPrint();return}
     if(command==='notes'){notesPane?.setVisible(!notesVisible);syncNotesVisibility();return}
     if (command === 'grid') { gridVisible = !gridVisible; syncGrid(); return }
     if (command === 'ruler') { rulerVisible = !rulerVisible; ruler.setVisible(rulerVisible); syncGrid(); return }
@@ -1858,6 +2428,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     if(command==='insertLink'){openLinkDialog();return}
     if (command === 'exportImages') { openExportImagesDialog(); return }
     if (command === 'startShow' || command === 'startShowCurrent') { stopBrush(); void startSlidesShow(command === 'startShowCurrent'); return }
+    if (command === 'animationPreview') { stopBrush(); void startAnimationPreview(); return }
     if (command === 'groupObjects' || command === 'ungroupObjects') { changeGroup(command === 'ungroupObjects'); return }
     if (pendingGroup(selectedSlide) && !['saveRevision','movePrevious','moveNext','commentsPane','toggleAnimationPane','findReplace'].includes(command)) { statusMessage.textContent='请先保存或撤销本页组合操作，再修改页面内容'; return }
     if(elementOrderCommands[command]){reorderObjects(elementOrderCommands[command]!);return}
@@ -1875,8 +2446,17 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       return
     }
     switch (command) {
+      case 'spelling': nativeAIHost?.openPreset({ kind: 'spelling' }); return
+      case 'translate': nativeAIHost?.openPreset({ kind: 'translate', language: String(value ?? '') }); return
       case 'findReplace': openFindReplace(); return
+      case 'slideZoom': void openZoom('slide'); return
+      case 'sectionZoom': void openZoom('section'); return
+      case 'insertAudio': void chooseNativeMedia('audio'); return
+      case 'insertModel3d': mountModelControls();void modelControls?.insert();return
+      case 'insertVideo': void chooseNativeMedia('video'); return
+      case 'screenRecording': void toggleScreenRecording(); return
       case 'insertPicture': void chooseNativePicture(false); return
+      case 'removeBackground': void openPictureCutout(); return
       case 'replacePicture': void chooseNativePicture(true); return
       case 'pictureOpacity': {
         // 固定源 onPictureOpacity：控件输入的是透明度百分比，写回不透明度（1 − 透明度）。
@@ -2005,6 +2585,18 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         canvasStatus.textContent = '新增图表将在保存并打开新修订后显示在画布中，可再用 AI 改图替换数据。'
         renderStructurePending(); markDirty(); break
       }
+      case 'insertEquation': {
+        if (textBoxEdits.length >= 200) { statusMessage.textContent = '一次最多插入 200 个文本框；请先保存'; break }
+        const sourceSlide = selectedSlide
+        equationDialog?.dispose()
+        equationDialog = openSlidesEquationDialog(root, text => {
+          if (locked() || selectedSlide !== sourceSlide || isNewSlide(sourceSlide) || deletedSlides.has(sourceSlide)) return
+          textBoxEdits.push({ ...equationTextBox(sourceSlide, deck.size, text), watermark: false })
+          canvasStatus.textContent = '新增公式文本将在保存并打开新修订后显示在画布中。'
+          renderStructurePending(); markDirty()
+        })
+        break
+      }
       case 'insertWordArt': {
         // 固定源 insertWordArt + wordart-insert.ts：354.6×72.7pt 居中、54pt、不换行随文字调整。
         const preset = WORDART_PRESETS.find(item => item.id === String(value ?? ''))
@@ -2093,7 +2685,8 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         break
       }
       case 'backgroundImage': openBackgroundImageDialog('image'); return
-      case 'formatBackground': openBackgroundImageDialog('gradient'); return
+      case 'customShows': openCustomShowDialog(); return
+      case 'formatBackground': if(backgroundPane){const slide=backgroundPaneSlide();if(slide)backgroundPane.open(slide,backgroundPaneKey())}else openBackgroundImageDialog('gradient'); return
       case 'background':
         if (typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)) {
           backgroundEdits.set(selectedSlide, value.toUpperCase()); dropBackgroundImages([selectedSlide]); renderStructurePending(); markDirty()
@@ -2158,7 +2751,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'deleteObject': objectDelete.click(); break
       case 'saveRevision': saveButton.click(); return
       case 'shapeGeometry': if(geometryPane)geometryPane.focus();else{currentGeometryInputs()[0]?.focus();root.querySelector('.geometry-heading')?.scrollIntoView({ block: 'nearest' })} return
-      case 'animationEffect': animationEffect.value = String(value); nativeRibbon?.setValue(command, String(value)); return
+      case 'animationEffect': animationEffect.value = String(value); if(animationEffect.value.startsWith('media')){animationDurationMs=0;animationDuration.value='0';nativeRibbon?.setValue('animationDuration','0')} nativeRibbon?.setValue(command, String(value)); return
       case 'animationDirection': animationDirection = value as AnimationDirection; return
       // 固定源 onAnimTiming：计时控件绑定到窗格选中的动画；未选中时作为下一条新增动画的计时。
       case 'animationTrigger':
@@ -2180,7 +2773,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'animationNone': {
         // 固定源 applyAnimation('none')：移除所选对象的全部动画。
         const target = currentElement()
-        if (!target?.editable || animationUnavailable()) break
+        if (!(target?.editable||target?.mediaKind) || animationUnavailable()) break
         const before = currentSequence().length
         for (let index = animationEdits.length - 1; index >= 0; index--) if (animationEdits[index]!.slideIndex === selectedSlide && animationEdits[index]!.elementId === target.id) animationEdits.splice(index, 1)
         updateSequence(items => removeElementAnimations(items, sourceAnimations(), target.id))
@@ -2194,18 +2787,19 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         break
       }
       case 'addAnimation':
-        if (animationUnavailable() || !currentElement()?.editable) break
+        if (animationUnavailable() || !(currentElement()?.editable||currentElement()?.mediaKind)) break
+        if(animationEffect.value.startsWith('media')!==!!currentElement()?.mediaKind){statusMessage.textContent='媒体动作需要选择音频或视频，形状动画需要选择文字或形状';break}
         if (animationSequences.has(selectedSlide) || animationByParagraph) {
           if (animationUnavailable()) break
           const target = currentElement()!
           updateSequence(items => appendAnimation(items, { elementId: target.id, effect: animationEffect.value as AnimationEffect, trigger: animationTrigger.value as AnimationTrigger,
-            durationMs: selectedAnimationRow >= 0 ? defaultAnimationDuration(animationEffect.value) : animationDurationMs, delayMs: selectedAnimationRow >= 0 ? 0 : animationDelayMs,
+            durationMs: animationEffect.value.startsWith('media')?0:selectedAnimationRow >= 0 ? defaultAnimationDuration(animationEffect.value) : animationDurationMs, delayMs: selectedAnimationRow >= 0 ? 0 : animationDelayMs,
             ...(['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(animationEffect.value) ? { direction: animationDirection } : {}) }, animationByParagraph ? paragraphCount(target) : 0))
           break
         }
         animationEdits.push({ slideIndex: selectedSlide, elementId: selectedElement,
           effect: animationEffect.value as AnimationEffect, trigger: animationTrigger.value as AnimationTrigger,
-          durationMs: animationDurationMs, delayMs: animationDelayMs, append: true,
+          durationMs: animationEffect.value.startsWith('media')?0:animationDurationMs, delayMs: animationDelayMs, append: true,
           ...( ['flyIn', 'flyOut', 'wipe', 'wipeOut'].includes(animationEffect.value) ? { direction: animationDirection } : {}),
         })
         renderInspector(); markDirty()
@@ -2217,6 +2811,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
 })
 
 if (native) {
+  syncSlidesViewMode()
   const history = document.createElement('div')
   history.className = 'slides-native-ribbon-group'
   history.setAttribute('aria-label', '编辑历史')
@@ -2231,6 +2826,7 @@ if (native) {
       if (locked() || !nativeDraft) return
       if(notesPane&&!notesPane.flush())return
       stopBrush()
+      customShowDialog?.dispose();customShowDialog=undefined
       nativeDraft[direction]()
       restoreNativeDraft()
       renderSlides(); renderInspector(); refreshCanvasPreview()
@@ -2310,10 +2906,11 @@ layoutSelect.addEventListener('change', () => {
   markDirty()
 })
 animationAdd.addEventListener('click', () => {
-  if (animationUnavailable() || !currentElement()?.editable) return
+  if (animationUnavailable() || !(currentElement()?.editable||currentElement()?.mediaKind)) return
+  if(animationEffect.value.startsWith('media')!==!!currentElement()?.mediaKind){statusMessage.textContent='请为所选对象选择对应的媒体或形状动画';return}
   if (animationSequences.has(selectedSlide)) {
     const target = currentElement()!
-    updateSequence(items => appendAnimation(items, { elementId: target.id, effect: animationEffect.value as AnimationEffect, trigger: animationTrigger.value as AnimationTrigger, durationMs: Math.max(0, Math.round(Number(animationDuration.value)) || 500), delayMs: Math.max(0, Math.round(Number(animationDelay.value)) || 0) }))
+    updateSequence(items => appendAnimation(items, { elementId: target.id, effect: animationEffect.value as AnimationEffect, trigger: animationTrigger.value as AnimationTrigger, durationMs: animationEffect.value.startsWith('media')?0:Math.max(0, Math.round(Number(animationDuration.value)) || 500), delayMs: Math.max(0, Math.round(Number(animationDelay.value)) || 0) }))
     renderInspector()
     return
   }
@@ -2322,7 +2919,7 @@ animationAdd.addEventListener('click', () => {
     elementId: selectedElement,
     effect: animationEffect.value as AnimationEffect,
     trigger: animationTrigger.value as AnimationTrigger,
-    durationMs: Math.max(1, Number(animationDuration.value) || 500),
+    durationMs: animationEffect.value.startsWith('media')?0:Math.max(1, Number(animationDuration.value) || 500),
     delayMs: Math.max(0, Number(animationDelay.value) || 0),
   })
   renderInspector()
@@ -2355,15 +2952,22 @@ function openTableStructure() {
   closeStructureDialog()
   const slideIndex=selectedSlide,snapshot=JSON.stringify(slideChanges()),cells=target.tableCells,generation=structureDialogGeneration
   const sourceSha=deck.sha256,draftSnapshot=JSON.stringify(nativeDraft?.operations)
-  const dialog=document.createElement('dialog');structureDialog=dialog;dialog.className='slides-table-structure-dialog';dialog.setAttribute('aria-label','调整表格行列')
+  const dialog=document.createElement('dialog');structureDialog=dialog;dialog.className='slides-table-dialog slides-table-structure-dialog';dialog.setAttribute('aria-label','调整表格行列')
   const title=document.createElement('h3');title.textContent='调整表格行列'
   const hint=document.createElement('p');hint.textContent='按来源行列操作，新增行列继承参考行列的单元格格式并留空；表格尺寸相应变化。每页每批一次，保存重开后显示新结构。'
+  hint.id='slides-table-structure-hint';dialog.setAttribute('aria-describedby',hint.id)
   const rowSelect=document.createElement('select'),colSelect=document.createElement('select')
   rowSelect.setAttribute('aria-label','参考行');colSelect.setAttribute('aria-label','参考列')
   cells.forEach((_,i)=>rowSelect.add(new Option(`第 ${i+1} 行`,String(i))))
   cells[0]!.forEach((_,i)=>colSelect.add(new Option(`第 ${i+1} 列`,String(i))))
   const error=document.createElement('p');error.setAttribute('role','alert')
-  dialog.append(title,hint,rowSelect,colSelect,error)
+  const groups=[rowSelect,colSelect].map((select,i)=>{
+    const group=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent=i===0?'行':'列'
+    const label=document.createElement('label');label.append(i===0?'参考行':'参考列',select)
+    const actions=document.createElement('div');actions.className='slides-structure-actions'
+    group.append(legend,label,actions);return {group,actions}
+  })
+  dialog.append(title,hint,...groups.map(item=>item.group),error)
   for(const [kind,before,label] of [['insert-row',true,'在上方插入行'],['insert-row',false,'在下方插入行'],['delete-row',undefined,'删除行'],['insert-col',true,'在左侧插入列'],['insert-col',false,'在右侧插入列'],['delete-col',undefined,'删除列']] as const) {
     const button=document.createElement('button');button.type='button';button.textContent=label
     const count=kind.endsWith('row')?cells.length:cells[0]!.length
@@ -2376,11 +2980,12 @@ function openTableStructure() {
       tableStructureEdits.set(slideIndex,{slideIndex,elementId:target.id,kind,index,...(before!==undefined?{before}:{})})
       closeStructureDialog();undoSnapshot=undefined;undoButton.disabled=true;renderInspector();renderStructurePending();markDirty();canvasStatus.textContent='行列修改已暂存；保存并打开新修订后显示新结构'
     }catch(e){error.textContent=e instanceof Error?e.message:'操作失败'}})
-    dialog.append(button)
+    if(kind.startsWith('delete-'))button.className='slides-structure-delete'
+    groups[kind.endsWith('row')?0:1]!.actions.append(button)
   }
-  const cancel=document.createElement('button');cancel.type='button';cancel.textContent='取消';cancel.addEventListener('click',closeStructureDialog);dialog.append(cancel)
-  dialog.addEventListener('cancel',closeStructureDialog)
-  dialog.addEventListener('close',()=>{if(structureDialog===dialog){structureDialog=undefined;++structureDialogGeneration};dialog.remove()},{once:true});root.append(dialog);dialog.showModal()
+  const actions=document.createElement('div');actions.className='slides-table-actions'
+  const cancel=document.createElement('button');cancel.type='button';cancel.textContent='取消';cancel.addEventListener('click',closeStructureDialog);actions.append(cancel);dialog.append(actions)
+  dialog.addEventListener('close',()=>{if(structureDialog===dialog){structureDialog=undefined;++structureDialogGeneration};dialog.remove()},{once:true});root.append(dialog);showSlidesSettingsDialog(dialog)
 }
 function renderTableCellEditor(element: DeckElement | undefined) {
   const generation = ++tableCellEditorGeneration, sourceSlide = selectedSlide, sourceSha = deck.sha256
@@ -2447,6 +3052,7 @@ function renderStructurePending() {
     })
     row(`第 ${order.indexOf(smartArt.slideIndex) + 1} 页 · SmartArt ${SMARTART_GALLERY.find(item => item.layout === smartArt.layout)?.label ?? smartArt.layout}`, () => smartArtEdits.splice(index, 1), items)
   }
+  for(const [index,media] of mediaInsertions.entries())row(`第 ${order.indexOf(media.slideIndex)+1} 页 · ${media.kind==='video'?'视频':'音频'} ${media.name??''}`,()=>{mediaInsertions.splice(index,1);refreshCanvasPreview()})
   for(const [index,image] of nativeImages.entries()) row(`第 ${order.indexOf(image.slideIndex)+1} 页 · 图片 ${image.descr??''}`,()=>nativeImages.splice(index,1))
   for(const [slideIndex] of elementOrders)row(`第 ${order.indexOf(slideIndex)+1} 页 · 对象层级`,()=>elementOrders.delete(slideIndex))
   for(const [index,crop] of pictureCrops.entries())row(`第 ${order.indexOf(crop.slideIndex)+1} 页 · 图片裁切`,()=>pictureCrops.splice(index,1))
@@ -2469,6 +3075,8 @@ function renderStructurePending() {
     row(`第 ${order.indexOf(style.slideIndex) + 1} 页 · ${name} · ${parts.join('、')}`, () => shapeStyleEdits.delete(key))
   }
   for (const [index, table] of tableEdits.entries()) row(`第 ${order.indexOf(table.slideIndex) + 1} 页 · 表格 ${table.rows}×${table.cols}`, () => tableEdits.splice(index, 1))
+  for (const [index, edit] of masterTextEdits.entries()) row(`母版/版式 ${deck.masterTextParts?.find(part => part.partPath === edit.partPath)?.name ?? edit.partPath} · 文字 ${edit.spid}`, () => masterTextEdits.splice(index, 1))
+  for (const [index, edit] of masterElementEdits.entries()) row(`母版/版式 ${deck.masterTextParts?.find(part => part.partPath === edit.partPath)?.name ?? edit.partPath} · ${edit.kind === 'delete' ? `删除文字 ${edit.spid}` : edit.kind === 'setFill' ? `对象 ${edit.spid} · 填充 ${edit.fill === 'none' ? '无填充' : edit.fill}` : edit.kind === 'setStroke' ? `对象 ${edit.spid} · 轮廓 ${edit.stroke?.color ?? '无'}` : edit.kind === 'setTransform' ? `对象 ${edit.spid} · 位置/旋转` : `新增文字框 ${(edit.kind === "addTextBox" ? edit.text : "").slice(0, 20)}`}`, () => masterElementEdits.splice(index, 1))
   for (const [index, shape] of shapeEdits.entries()) row(`第 ${order.indexOf(shape.slideIndex) + 1} 页 · 形状 ${SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes).find(item => item.prst === shape.kind)?.label ?? shape.kind}`, () => shapeEdits.splice(index, 1))
   for (const slideIndex of resetLayouts) row(`第 ${order.indexOf(slideIndex) + 1} 页 · 重置版式`, () => resetLayouts.delete(slideIndex))
   for (const [slideIndex, color] of backgroundEdits) {
@@ -2478,6 +3086,7 @@ function renderStructurePending() {
     const pages = item.slideIndices.length === deck.slides.length ? '全部页面' : item.slideIndices.map(slideIndex => `第 ${order.indexOf(slideIndex) + 1} 页`).join('、')
     row(`${pages} · 背景图片（${item.tile ? '平铺' : '拉伸'}）`, () => backgroundImageEdits.splice(index, 1))
   }
+  for(const [index,item] of backgroundImageReuseEdits.entries())row(`${item.slideIndices.map(i=>i+1).join('、')} · 复用背景图片（${item.tile?'平铺':'拉伸'}）`,()=>backgroundImageReuseEdits.splice(index,1))
   for (const [index, item] of backgroundGradientEdits.entries()) {
     const pages = item.slideIndices.length === deck.slides.length ? '全部页面' : item.slideIndices.map(slideIndex => `第 ${order.indexOf(slideIndex) + 1} 页`).join('、')
     row(`${pages} · 渐变背景 ${item.from}→${item.to}（${item.radial ? '径向' : `${item.angleDeg}°`}）`, () => backgroundGradientEdits.splice(index, 1))
@@ -2489,9 +3098,9 @@ function renderStructurePending() {
     text.type = 'text'
     text.value = box.text
     text.maxLength = 20000
-    text.setAttribute('aria-label', box.watermark ? '水印文字' : '新增文本内容')
+    text.setAttribute('aria-label', box.equation ? '新增公式文本' : box.watermark ? '水印文字' : '新增文本内容')
     text.addEventListener('input', () => { box.text = text.value; markDirty() })
-    row(`第 ${order.indexOf(box.slideIndex) + 1} 页 · ${box.field === 'slidenum' ? '页码字段' : box.field === 'datetime1' ? '日期字段' : box.wordArt ? '艺术字' : box.watermark ? '水印' : '文本'} `, () => {
+    row(`第 ${order.indexOf(box.slideIndex) + 1} 页 · ${box.field === 'slidenum' ? '页码字段' : box.field === 'datetime1' ? '日期字段' : box.equation ? '公式文本' : box.wordArt ? '艺术字' : box.watermark ? '水印' : '文本'} `, () => {
       textBoxEdits.splice(textBoxEdits.indexOf(box), 1)
     }, text)
   }
@@ -2733,14 +3342,20 @@ aiAccept.addEventListener('click', async () => {
 })
 
 const save = async () => {
-  if (locked() || mutationPending || saveButton.disabled) return
+  if (refresh?.busy || locked() || mutationPending || saveButton.disabled) return
   stopBrush()
   if (native && (!commentPane.flush()||notesPane&&!notesPane.flush())) return
   if(chartFormatPane&&!chartFormatPane.flush())return
   if(geometryPane&&!geometryPane.flush())return
+  if(backgroundPane&&!backgroundPane.flush())return
+  ++backgroundPickGeneration
   if(shapeFormatPane&&!shapeFormatPane.flush())return
   if (!dirty && imageEdits.length === 0) return
+  ++cutoutGeneration;cutoutDialog?.dispose();cutoutDialog=undefined
+  customShowDialog?.dispose();customShowDialog=undefined
+  mediaPickerController?.abort();mediaPlayback?.dispose();mediaPlayback=undefined
   saving = true
+  refresh?.update()
   closeStructureDialog()
   ++previewSequence
   clearTimeout(previewTimer)
@@ -2753,7 +3368,7 @@ const save = async () => {
     body: JSON.stringify({ expectedSha256: deck.sha256, ...(nativeDraft ? { operations: nativeDraft.operations }
       : { ...slideChanges(), ...(!native ? { chartEdits: chartTools.pendingEdits() } : {}), ...(imageEdits.length ? { imageEdits } : {}) }) }),
     })
-    if (native && result.revisionRegistered !== true) {
+    if (result.revisionRegistered !== true) {
       stateLabel.textContent = '修订未登记，草稿已保留'
       statusMessage.textContent = result.validation.issues.map(issue => issue.message).join('；') || '文件已生成，可重试保存登记'
       if (result.pptx?.downloadUrl) { downloadLink.href = result.pptx.downloadUrl; downloadLink.hidden = false; downloadLink.textContent = '下载 PPTX' }
@@ -2776,7 +3391,8 @@ const save = async () => {
     groupEdits.splice(0)
     notesEdits.clear();linkEdits.splice(0);clipboardPastes.splice(0);nativeClipboard=undefined;stopBrush()
     backgroundEdits.clear()
-    backgroundImageEdits.splice(0); backgroundGradientEdits.splice(0); backgroundResetEdits.clear(); backgroundGraphicsEdits.clear()
+    customShowEdits=undefined
+    backgroundImageEdits.splice(0); backgroundImageReuseEdits.splice(0); backgroundGradientEdits.splice(0); backgroundResetEdits.clear(); backgroundGraphicsEdits.clear()
     textBoxEdits.splice(0, textBoxEdits.length)
     textFormattingEdits.clear()
     paragraphFormattingEdits.splice(0)
@@ -2809,12 +3425,23 @@ const save = async () => {
     if (!savedRevision) setEditingLocked(false)
     updateNativeHistory()
     saveButton.disabled = savedRevision
+    refresh?.update()
   }
 }
 saveButton.addEventListener('click', save)
 
 async function start() {
   try {
+    if (!native && basePath.startsWith('/reports/v1/slides/')) refresh = await mountOfficeReportRefresh(root.closest<HTMLElement>('.report-app') ?? root.parentElement!, 'pptx', request, {
+      saving: () => saving,
+      blocked: () => loading || locked() || mutationPending > 0 || saveButton.disabled,
+      flush: () => {
+        if (native && !commentPane.flush() || notesPane && !notesPane.flush() || chartFormatPane && !chartFormatPane.flush()
+          || geometryPane && !geometryPane.flush() || shapeFormatPane && !shapeFormatPane.flush()) throw new Error('请先完成当前输入')
+        if (document.activeElement instanceof HTMLElement && root.contains(document.activeElement)) document.activeElement.blur()
+      }, dirty: () => dirty || imageEdits.length > 0 || chartTools.pendingEdits().length > 0,
+      save, setRefreshing: binaryRefreshLock(root, saveButton, () => saving || savedRevision || disposed),
+    })
     deck = await request<Deck>('deck')
     nativeRibbon?.setLayouts(deck.layouts ?? [])
     order.push(...deck.slides.map(slide => slide.slideIndex))
@@ -2839,7 +3466,7 @@ async function start() {
             const pages=scope==='notes'?deck.slides.filter(slide=>slide.slideIndex===selectedSlide):deck.slides
             if(!pages.length||pages.length>100)throw new Error('请选择不超过100页的演讲者备注')
             const unsafe=pages.find(slide=>slide.notesEditable!==true)
-            if(unsafe)throw new Error('第'+(order.indexOf(unsafe.slideIndex)+1)+'页备注不可编辑：'+(unsafe.notesReason??'来源备注结构不受支持'))
+            if(unsafe)throw new Error('第'+(order.indexOf(unsafe.slideIndex)+1)+'页备注不可编辑：'+slidesNotesReadOnlyReason(unsafe.notesReason))
             return {expectedSha256:deck.sha256,operations:nativeDraft.operations,selection:pages.map(slide=>({slideIndex:slide.slideIndex})),scope:'notes',objects:[],
               notes:pages.map(slide=>({slideIndex:slide.slideIndex,text:notesEdits.get(slide.slideIndex)??slide.notesText??''})),
               label:scope==='notes'?'第'+(order.indexOf(selectedSlide)+1)+'页 · 仅授权演讲者备注':'整稿 · 仅授权演讲者备注'}
@@ -2855,8 +3482,9 @@ async function start() {
           renderSlides(); renderInspector(); refreshCanvasPreview(); updateNativeHistory()
           stateLabel.textContent = '有未保存修改'; statusMessage.textContent = nativeDraft.persistenceError ?? 'AI 候选已加入草稿，尚未保存'
         } })
+      nativeRibbon?.setAIEditEnabled(true)
     }
-    void request<{ slides: (RenderSlide & { slideIndex: number })[] }>('render-tree').then(async tree => {
+    void request<{ slides: (RenderSlide & { slideIndex: number;mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] }>('render-tree').then(async tree => {
       if (!Array.isArray(tree.slides) || !tree.slides.every(slide => Array.isArray(slide.nodes))) throw new Error('画布数据无效')
       const { mountSlidesCanvas } = await import('./slides-canvas')
       renderTree = tree
@@ -2867,6 +3495,8 @@ async function start() {
       renderCanvas()
       if (nativeDraft?.dirty) refreshCanvasPreview()
     }).catch(() => { canvasStatus.textContent = '画布暂不可用，显示 PDF 兼容预览；可继续使用对象面板编辑。' })
+    loading = false
+    refresh?.update()
     stateLabel.textContent = dirty ? '有未保存修改' : '可编辑'
     statusMessage.textContent = nativeDraft?.persistenceError ?? `${deck.slides.length} 页 · 已核验 PPTX 身份${dirty ? ' · 已恢复本地草稿' : ''}`
   } catch (error) {
@@ -2894,7 +3524,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey,true); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

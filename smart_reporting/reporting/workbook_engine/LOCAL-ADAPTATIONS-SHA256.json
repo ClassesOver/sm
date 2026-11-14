@@ -1,4 +1,13 @@
 {
-  "packages/xlsx-engine/src/chart-add.ts": "c4ba4a20276931c4a0d55d3157af483bb8a6967e34f47d811bf480c70cad64c2",
-  "packages/xlsx-engine/package.json": "f1c2d5c99bcb978810465e9825957c63962d9cf8c51ba1ab772ccb9f4a0ed77f"
+  "packages/xlsx-engine/src/chart-add.ts": "f7c0b1f40aabc2a5e6de2cdf09cfa4140f6e7787ff85f36a000e5998a73f45d3",
+  "packages/xlsx-engine/package.json": "7cd7c06e0e1bf2a39065e8d0e35ac62aeeaf3db78e38826aa947df64c6329d16",
+  "packages/xlsx-engine/src/chart-read.ts": "d436ced21b53571d7a067777e323d7808218bdcc6c642c4b0943e47fe9254c70",
+  "packages/xlsx-engine/src/style-color.ts": "487227dfee8af11009a872de0d1d0f9d75eab7984aab3876ad756a8901973f6c",
+  "packages/xlsx-engine/src/chart-edit.ts": "9a38d8698ccbfa354b7b16d4f6e6d711b8b5f8cc1954e9073bfb824197fe7d0d",
+  "packages/xlsx-engine/src/chart-delete.ts": "15dfd2ff7165fbcdd9953c744d79c1144ab682ff74c92d7b9cf7c04150cf6630",
+  "packages/xlsx-engine/src/zip.ts": "28e1acea0e26efd77501fabc67ecd811f1da5cf7735f73c38eeebc3ec8cbb310",
+  "packages/xlsx-engine/tests/chart-delete-namespaces.test.ts": "7acbdfa0af908445e5bad1caeacbede3b23fded101275b7b1eca69852ee020c6",
+  "packages/xlsx-engine/tests/chart-edit-namespaces.test.ts": "16eb1ef82c42a21d88badf6274678c86a0a8e9ebeb905dd81b122f624af197b6",
+  "packages/xlsx-engine/src/chart-anchor.ts": "ddb6013cb14241537db4f6b44a3998ed5ed312ec007b9103d8d16503eaa26eb0",
+  "packages/xlsx-engine/src/index.ts": "105d063f77967cda8c263024994224b24144849af83967885739d2aacf310872"
 }

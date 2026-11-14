@@ -48,9 +48,9 @@ export function createPdfSidebarSizing(divider: HTMLElement, onWidth: (width: nu
   },{signal:lifetime.signal})
   divider.addEventListener('lostpointercapture',()=>end(false),{signal:lifetime.signal})
   window.addEventListener('blur',()=>end(false),{signal:lifetime.signal})
-  window.addEventListener('keydown', event => {if(event.key==='Escape'&&drag){event.preventDefault();end(false)}},{signal:lifetime.signal})
+  window.addEventListener('keydown', event => {if(event.key==='Escape'&&drag&&!event.isComposing&&event.keyCode!==229&&!event.defaultPrevented){event.preventDefault();end(false)}},{signal:lifetime.signal})
   divider.addEventListener('keydown', event => {
-    if(disposed||!panel||drag)return
+    if(disposed||!panel||drag||event.isComposing||event.keyCode===229||event.defaultPrevented)return
     const target=event.key==='Home'?SIDEBAR_W_MIN:event.key==='End'?Number.MAX_SAFE_INTEGER:event.key==='ArrowLeft'?width-10:event.key==='ArrowRight'?width+10:undefined
     if(target===undefined)return
     event.preventDefault(); apply(target,true)

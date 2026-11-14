@@ -77,3 +77,96 @@ it('submits grouped chart format and gridline settings', () => {
   expect(apply).toHaveBeenCalledWith({ chartPath: 'xl/charts/chart3.xml', grouping: 'stacked', gridlines: true }, expect.objectContaining({ property: 'format' }))
   dialog.dispose()
 })
+
+it('keeps the edited title until the asynchronous chart commit succeeds', async () => {
+  let finish!: () => void
+  const apply = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const dialog = createChartDesignDialog(document.body, apply)
+  dialog.open({ chartPath: 'xl/charts/chart1.xml', sheetId: 'sheet-1', sheetName: 'Sheet1', property: 'title', initialTitle: '原始标题' })
+  const input = document.querySelector<HTMLInputElement>('[aria-label="图表标题"]')!
+  input.value = '尚未成功写回的标题'
+  document.querySelector<HTMLButtonElement>('[data-chart-design-submit]')!.click()
+  expect(document.querySelector<HTMLElement>('[role="dialog"]')!.hidden).toBe(false)
+  expect(input.value).toBe('尚未成功写回的标题')
+  finish()
+  await vi.waitFor(() => expect(document.querySelector<HTMLElement>('[role="dialog"]')!.hidden).toBe(true))
+  dialog.dispose()
+})
+
+it('retains the failed title and error, then allows a successful retry', async () => {
+  let reject!: (reason: Error) => void
+  const pending = new Promise<void>((_, fail) => { reject = fail })
+  void pending.catch(() => undefined)
+  const apply = vi.fn().mockReturnValueOnce(pending).mockResolvedValueOnce(undefined)
+  const dialog = createChartDesignDialog(document.body, apply)
+  dialog.open({ chartPath: 'xl/charts/chart2.xml', sheetId: 'sheet-1', sheetName: 'Sheet1', property: 'title', initialTitle: '原始标题' })
+  const input = document.querySelector<HTMLInputElement>('[aria-label="图表标题"]')!
+  input.value = '保留我的修改'
+  document.querySelector<HTMLButtonElement>('[data-chart-design-submit]')!.click()
+  reject(new Error('图表来源已变化，请重试'))
+  await vi.waitFor(() => expect(document.querySelector('[role="alert"]')!.textContent).toContain('图表来源已变化，请重试'))
+  expect(document.querySelector<HTMLElement>('[role="dialog"]')!.hidden).toBe(false)
+  expect(input.value).toBe('保留我的修改')
+  document.querySelector<HTMLButtonElement>('[data-chart-design-submit]')!.click()
+  await vi.waitFor(() => expect(document.querySelector<HTMLElement>('[role="dialog"]')!.hidden).toBe(true))
+  expect(apply).toHaveBeenCalledTimes(2)
+  dialog.dispose()
+})
+
+it('prevents duplicate submission and user cancellation while a commit is pending', async () => {
+  let finish!: () => void
+  const apply = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const dialog = createChartDesignDialog(document.body, apply)
+  dialog.open({ chartPath: 'xl/charts/chart1.xml', sheetId: 'sheet-1', sheetName: 'Sheet1', property: 'title' })
+  const overlay = document.querySelector<HTMLElement>('[role="dialog"]')!, form = overlay.querySelector('form')!
+  form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  overlay.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  overlay.click()
+  overlay.querySelector<HTMLButtonElement>('[data-chart-design-cancel]')!.click()
+  expect(apply).toHaveBeenCalledOnce()
+  expect(overlay.hidden).toBe(false)
+  expect(overlay.querySelector('section')!.getAttribute('aria-busy')).toBe('true')
+  expect([...form.querySelectorAll<HTMLInputElement>('input,select,button')].every(control => control.disabled)).toBe(true)
+  expect(dialog.isApplying()).toBe(true)
+  const progress = overlay.querySelector<HTMLElement>('[role="status"]')!
+  expect(document.activeElement).toBe(progress)
+  for (const shiftKey of [false, true]) {
+    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true })
+    progress.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.activeElement).toBe(progress)
+  }
+  document.body.focus()
+  const outsideTab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true })
+  window.dispatchEvent(outsideTab)
+  expect(outsideTab.defaultPrevented).toBe(true)
+  expect(document.activeElement).toBe(progress)
+  finish()
+  await vi.waitFor(() => expect(overlay.hidden).toBe(true))
+  expect(dialog.isApplying()).toBe(false)
+  dialog.dispose()
+})
+
+it.each(['resolve', 'reject', 'dispose'] as const)('ignores a stale %s receipt after an external lifecycle change', async mode => {
+  let finish!: () => void, fail!: (reason: Error) => void
+  const pending = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject })
+  const dialog = createChartDesignDialog(document.body, () => pending)
+  dialog.open({ chartPath: 'xl/charts/chart1.xml', sheetId: 'sheet-1', sheetName: 'Sheet1', property: 'title' })
+  document.querySelector<HTMLButtonElement>('[data-chart-design-submit]')!.click()
+  if (mode === 'dispose') dialog.dispose()
+  else {
+    dialog.close()
+    dialog.open({ chartPath: 'xl/charts/chart2.xml', sheetId: 'sheet-1', sheetName: 'Sheet1', property: 'title', initialTitle: '第二张图' })
+  }
+  if (mode === 'reject') fail(new Error('过期失败'))
+  else finish()
+  await pending.catch(() => undefined)
+  if (mode === 'dispose') expect(document.querySelector('[role="dialog"]')).toBeNull()
+  else {
+    expect(document.querySelector<HTMLElement>('[role="dialog"]')!.hidden).toBe(false)
+    expect(document.querySelector<HTMLInputElement>('[aria-label="图表标题"]')!.value).toBe('第二张图')
+    expect(document.querySelector('[role="alert"]')!.textContent).toBe('')
+    dialog.dispose()
+  }
+})

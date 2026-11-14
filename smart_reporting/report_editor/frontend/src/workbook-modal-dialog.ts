@@ -34,6 +34,7 @@ export function useModalDialog(onClose: () => void): ModalDialogProps {
   // Clicking non-focusable card content drops focus to body, where the React handler never sees Escape/Tab.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
+      if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
       if (ref.current?.contains(document.activeElement)) return
       if (event.key === 'Escape') {
         event.preventDefault()
@@ -47,6 +48,7 @@ export function useModalDialog(onClose: () => void): ModalDialogProps {
   }, [])
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229 || event.defaultPrevented) return
     if (event.key === 'Escape') {
       event.preventDefault()
       event.stopPropagation()

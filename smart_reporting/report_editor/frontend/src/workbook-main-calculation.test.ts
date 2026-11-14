@@ -9,20 +9,56 @@ import { createNativeOfficeTransport } from './native-office-view'
 import { NativeDraft, type NativeDraftIdentity, type NativeSaveRequest } from './native-draft'
 import { createEditorShell } from './shell'
 
-const grid = vi.hoisted(() => ({ api: undefined as any, ribbon: undefined as any, apply: vi.fn(() => false), instances: [] as any[], failNameImport: false as boolean | 'local' }))
+const grid = vi.hoisted(() => ({ api: undefined as any, ribbon: undefined as any, ribbonView: undefined as any, chartObjects: undefined as any, apply: vi.fn(() => false), instances: [] as any[], failNameImport: false as boolean | 'local', realRibbon: false }))
+const reloadFault = vi.hoisted(() => ({ stage: '' as '' | 'read' | 'create' | 'loaded' | 'render' | 'hold-read', remaining: 1, release: undefined as (() => void) | undefined }))
+vi.mock('./workbook-theme', async original => {
+  const actual = await original<typeof import('./workbook-theme')>()
+  return { ...actual, readWorkbookThemeSource: (...args: Parameters<typeof actual.readWorkbookThemeSource>) => {
+    if (reloadFault.stage === 'read') { reloadFault.stage = ''; throw Error('fixture reload read failed') }
+    if (reloadFault.stage === 'hold-read') {
+      reloadFault.stage = ''
+      return new Promise<void>(resolve => { reloadFault.release = resolve }).then(() => actual.readWorkbookThemeSource(...args))
+    }
+    return actual.readWorkbookThemeSource(...args)
+  } }
+})
+vi.mock('./workbook-vendor/grid/sync', async original => {
+  const actual = await original<typeof import('./workbook-vendor/grid/sync')>()
+  return { ...actual, loadWorkbookData: (...args: Parameters<typeof actual.loadWorkbookData>) => {
+    actual.loadWorkbookData(...args)
+    if (reloadFault.stage === 'loaded') { reloadFault.stage = ''; throw Error('fixture reload loaded failed') }
+  } }
+})
+vi.mock('./workbook-render-ready', async original => {
+  const actual = await original<typeof import('./workbook-render-ready')>()
+  return { ...actual, waitForWorkbookRendered: (...args: Parameters<typeof actual.waitForWorkbookRendered>) => {
+    if (reloadFault.stage === 'render') { reloadFault.stage = ''; throw Error('fixture reload render failed') }
+    return actual.waitForWorkbookRendered(...args)
+  } }
+})
 vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-note', () => ({ UniverSheetsNotePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({ plugins: [] }) }))
 vi.mock('@univerjs/preset-sheets-conditional-formatting', () => ({ UniverSheetsConditionalFormattingPreset: () => ({ plugins: [] }) }))
-vi.mock('./workbook-ribbon', () => ({
-  mountWorkbookRibbon: (_host: unknown, callback: unknown) => { grid.ribbon = callback; return { dispose() {}, refreshState() {} } },
-  applyWorkbookRibbonCommand: grid.apply,
-}))
+vi.mock('./workbook-ribbon', async original => {
+  const actual = await original<typeof import('./workbook-ribbon')>()
+  return { ...actual,
+    mountWorkbookRibbon: (...args: Parameters<typeof actual.mountWorkbookRibbon>) => { grid.ribbon = args[1]; grid.ribbonView = args[2]; return grid.realRibbon ? actual.mountWorkbookRibbon(...args) : { dispose() {}, refreshState() {} } },
+    applyWorkbookRibbonCommand: grid.apply,
+  }
+})
 vi.mock('./workbook-vendor/grid/decimal-step', () => ({ stepSelectionDecimals() {} }))
 vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {}, setSparklineWorkbookResolver() {} }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts() {} }))
+vi.mock('./workbook-chart-object-interaction', async importOriginal => {
+  const actual = await importOriginal<typeof import('./workbook-chart-object-interaction')>()
+  return { ...actual, installWorkbookChartObjectInteraction: (root: HTMLElement, runtime: any, options: any) => {
+    grid.chartObjects = options
+    return actual.installWorkbookChartObjectInteraction(root, runtime, options)
+  } }
+})
 vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { Univer, IUniverInstanceService, LocaleType, mergeLocales } = await import('@univerjs/core')
   const CoreZhCN = (await import('@univerjs/preset-sheets-core/locales/zh-CN')).default
@@ -31,6 +67,7 @@ vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { UniverSheetsPlugin } = await import('@univerjs/sheets')
   const { UniverSheetsNotePlugin } = await import('@univerjs/sheets-note')
   const { UniverSheetsSortPlugin } = await import('@univerjs/sheets-sort')
+  const { UniverSheetsFilterPlugin } = await import('@univerjs/sheets-filter')
   const { UniverFormulaEnginePlugin } = await import('@univerjs/engine-formula')
   const { UniverSheetsFormulaPlugin } = await import('@univerjs/sheets-formula')
   const { UniverSheetsDataValidationPlugin } = await import('@univerjs/sheets-data-validation')
@@ -48,6 +85,7 @@ vi.mock('./workbook-vendor/grid/create-univer', async () => {
     univer.registerPlugin(UniverSheetsPlugin)
     univer.registerPlugin(UniverSheetsNotePlugin)
     univer.registerPlugin(UniverSheetsSortPlugin)
+    univer.registerPlugin(UniverSheetsFilterPlugin)
     univer.registerPlugin(UniverFormulaEnginePlugin)
     univer.registerPlugin(UniverSheetsFormulaPlugin)
     univer.registerPlugin(UniverSheetsDataValidationPlugin)
@@ -60,6 +98,7 @@ vi.mock('./workbook-vendor/grid/create-univer', async () => {
       ? false : execute(id, params)) as typeof api.syncExecuteCommand
     const create = api.createWorkbook.bind(api)
     api.createWorkbook = data => {
+      if (reloadFault.stage === 'create') { if (--reloadFault.remaining <= 0) reloadFault.stage = ''; throw Error('fixture reload create failed') }
       const workbook = create(data)
       univer.__getInjector().get(IUniverInstanceService).focusUnit(workbook.getId())
       return workbook
@@ -89,6 +128,573 @@ async function open(source: Uint8Array, draft: NativeDraft, save: (request: Nati
 }
 const sheet = () => grid.api.getActiveWorkbook().getActiveSheet()
 const history = (direction: 'undo' | 'redo') => expect(grid.api.syncExecuteCommand(`univer.command.${direction}`)).toBe(true)
+
+it('inserts static date and time from the selected grid cell through native draft history and OOXML readback', async () => {
+  const source = await fixture(), draft = new NativeDraft(identity, store())
+  const current = await open(source, draft, async () => { throw Error('unexpected save') })
+  try {
+    const press = (shiftKey = false) => {
+      const target = current.shell.editor.querySelector<HTMLElement>('#workbook-grid')!
+      const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, code: 'Semicolon', ctrlKey: true, shiftKey })
+      target.dispatchEvent(event)
+      expect(event.defaultPrevented).toBe(true)
+    }
+    sheet().getRange('C3').activate()
+    press()
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true))
+    expect(sheet().getRange('C3').getValue()).toBeGreaterThan(45000)
+    expect(sheet().getRange('C3').getValue()).toBeLessThan(70000)
+    expect((draft.operations.find(op => op.kind === 'applyCellEdits') as any).edits[0]).toMatchObject({ row: 2, column: 2, style: { numberFormat: 'yyyy/m/d' } })
+    grid.ribbon('undo')
+    await vi.waitFor(() => expect(draft.operations).toEqual([]))
+    grid.ribbon('redo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true))
+
+    sheet().getRange('D4').activate()
+    press(true)
+    const cellEdits = () => draft.operations.filter(op => op.kind === 'applyCellEdits').flatMap(op => (op as any).edits)
+    await vi.waitFor(() => expect(cellEdits()).toHaveLength(2))
+    expect(sheet().getRange('D4').getValue()).toBeGreaterThanOrEqual(0)
+    expect(sheet().getRange('D4').getValue()).toBeLessThan(1)
+    expect(cellEdits()[1]).toMatchObject({ row: 3, column: 3, style: { numberFormat: 'h:mm' } })
+
+    const saved = await applyWorkbookOperations(source, draft.operations)
+    const model = await readWorkbook(saved)
+    const { importedStyleOf } = await import('./workbook-vendor/core/session-core')
+    expect(model.sheets[0]!.cells.C3?.value).toBe(sheet().getRange('C3').getValue())
+    expect(importedStyleOf(model, 'Sheet1', 'C3')?.numberFormat).toBe('yyyy/m/d')
+    expect(model.sheets[0]!.cells.D4?.value).toBe(sheet().getRange('D4').getValue())
+    expect(importedStyleOf(model, 'Sheet1', 'D4')?.numberFormat).toBe('h:mm')
+  } finally { current.view?.dispose() }
+})
+
+it('deletes the selected chart through the real Ribbon and restores it with Ribbon UndoRedo without dropping manual data', async () => {
+  grid.realRibbon = true
+  const source = await applyWorkbookOperations(await fixture(), [{ kind: 'applyChartAdditions', additions: [{ worksheetSheetName: 'Sheet1',
+    anchor: { fromRow: 4, fromColumn: 4, toRow: 16, toColumn: 12, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'column', title: 'Delete me', series: [{ name: 'Amount', values: [2], categories: ['Q1'], valuesRef: 'Sheet1!A1:A1' }] } }] }])
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  const click = (tab: string, command: string) => {
+    document.querySelector<HTMLButtonElement>(`[data-ribbon-tab="${tab}"]`)!.click()
+    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${command}"]`)!
+    expect(button.disabled, button.title).toBe(false); button.click()
+  }
+  try {
+    sheet().getRange('J2').setValue('Keep delete manual'); sheet().getRange('J2').activate()
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true))
+    click('Chart Design', 'chart-delete')
+    await vi.waitFor(() => expect(draft.operations.filter(op => op.kind === 'applyChartDeletions')).toHaveLength(1))
+    await vi.waitFor(() => expect(current.shell.editor.inert).not.toBe(true))
+    expect((await readWorkbook(await applyWorkbookOperations(source, draft.operations))).sheets[0]!.charts ?? []).toHaveLength(0)
+    click('File', 'undo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartDeletions')).toBe(false))
+    await vi.waitFor(() => expect(current.shell.editor.inert).not.toBe(true))
+    expect(sheet().getRange('J2').getValue()).toBe('Keep delete manual')
+    expect((await readWorkbook(await applyWorkbookOperations(source, draft.operations))).sheets[0]!.charts).toHaveLength(1)
+    click('File', 'redo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartDeletions')).toBe(true))
+    await vi.waitFor(() => expect(current.shell.editor.inert).not.toBe(true))
+    expect(sheet().getRange('J2').getValue()).toBe('Keep delete manual')
+  } finally { current.view?.dispose() }
+}, 30000)
+
+it('merges a file through the real Ribbon with cancel manual draft UndoRedo recovery and native save', async () => {
+  grid.realRibbon = true
+  const source = await fixture(), imported = await applyCellEdits(await createBlankWorkbook(), [{ sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'Imported literal' }, style: { bold: true } }])
+  const storage = store(), draft = new NativeDraft(identity, storage), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  const click = (tab: string, command: string) => {
+    document.querySelector<HTMLButtonElement>(`[data-ribbon-tab="${tab}"]`)!.click()
+    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${command}"]`)!
+    expect(button.disabled, button.title).toBe(false); button.click()
+  }
+  try {
+    sheet().getRange('J2').setValue('Keep merge manual'); sheet().getRange('J2').activate()
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true))
+    const manual = structuredClone(draft.operations)
+    click('Data', 'merge-workbooks')
+    await vi.waitFor(() => expect(document.querySelector('input[type=file]'), current.shell.editor.querySelector('.workbook-feedback')?.textContent ?? '').not.toBeNull(), { timeout: 10000 })
+    document.querySelector<HTMLInputElement>('input[type=file]')!.dispatchEvent(new Event('cancel'))
+    expect(draft.operations).toEqual(manual); expect(grid.api.getActiveWorkbook().getSheets()).toHaveLength(1)
+    click('Data', 'merge-workbooks')
+    await vi.waitFor(() => expect(document.querySelector('input[type=file]'), current.shell.editor.querySelector('.workbook-feedback')?.textContent ?? '').not.toBeNull(), { timeout: 10000 })
+    const input = document.querySelector<HTMLInputElement>('input[type=file]')!
+    Object.defineProperty(input, 'files', { value: [{ name: 'import.xlsx', size: imported.length, arrayBuffer: async () => imported.slice().buffer }] })
+    input.dispatchEvent(new Event('change'))
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applySheetEdits'), current.shell.editor.querySelector('.workbook-feedback')?.textContent ?? '').toBe(true), { timeout: 10000 })
+    await vi.waitFor(() => expect(current.shell.editor.inert).not.toBe(true))
+    expect(grid.api.getActiveWorkbook().getSheets().map((item: any) => item.getSheetName())).toEqual(['Sheet1', 'Sheet1 (2)'])
+    click('File', 'undo')
+    await vi.waitFor(() => expect(grid.api.getActiveWorkbook().getSheets()).toHaveLength(1), { timeout: 10000 })
+    await vi.waitFor(() => expect(current.shell.editor.inert).not.toBe(true))
+    expect(sheet().getRange('J2').getValue()).toBe('Keep merge manual')
+    click('File', 'redo')
+    await vi.waitFor(() => expect(grid.api.getActiveWorkbook().getSheets()).toHaveLength(2), { timeout: 10000 })
+    await vi.waitFor(() => expect(current.shell.editor.inert).not.toBe(true))
+  } finally { current.view?.dispose() }
+  const recovered = new NativeDraft(identity, storage); let saved: Uint8Array | undefined, saves = 0
+  const reopened = await open(source, recovered, async request => {
+    saves++; saved = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/merged.xlsx' } }, validation: { ok: false, issues: [{ code: 'native_source_review_pending' }] } }
+  })
+  try {
+    expect(grid.api.getActiveWorkbook().getSheets()).toHaveLength(2)
+    expect(grid.api.getActiveWorkbook().getSheetByName('Sheet1').getRange('J2').getValue()).toBe('Keep merge manual')
+    expect(grid.api.getActiveWorkbook().getSheetByName('Sheet1 (2)').getRange('A1').getValue()).toBe('Imported literal')
+    expect(reopened.shell.save.disabled).toBe(false)
+    reopened.shell.save.click(); await vi.waitFor(() => expect(saved, reopened.shell.editor.querySelector('.workbook-feedback')?.textContent ?? '').toBeDefined(), { timeout: 10000 })
+    expect(saves).toBe(1)
+    const model = await readWorkbook(saved!)
+    expect(model.sheets.map(item => item.name)).toEqual(['Sheet1', 'Sheet1 (2)'])
+    expect(model.sheets[0]!.cells.J2?.value).toBe('Keep merge manual')
+    expect(model.sheets[1]!.cells.A1?.value).toBe('Imported literal')
+    expect(model.styles.fonts[model.styles.cellXfs[model.sheets[1]!.cells.A1!.styleIndex!]!.fontId]!.bold).toBe(true)
+  } finally { reopened.view?.dispose() }
+}, 30000)
+
+it.each(['column', 'bar', 'line', 'area', 'pie', 'scatter', 'radar', 'doughnut', 'combo'] as const)('preserves manual data when directly inserting a %s chart with one native undo/redo and save', async kind => {
+  const source = await fixture(), draft = new NativeDraft(identity, store()); let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations as any)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/direct-chart.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('D1:F4').setValues([['X', 'Sales', 'Cost'], [1, 10, 5], [2, 20, 8], [3, 30, 12]])
+    sheet().getRange('D20').setValue(77); sheet().getRange('D1:F4').activate()
+    grid.ribbon(`insert-chart:${kind}`)
+    await vi.waitFor(() => expect(draft.operations.filter(op => op.kind === 'applyChartAdditions')).toHaveLength(1))
+    expect(sheet().getRange('D20').getValue()).toBe(77)
+    expect(sheet().getRange('E2').getValue()).toBe(10)
+    grid.ribbon('undo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartAdditions')).toBe(false))
+    await vi.waitFor(() => expect(current.shell.editor.inert).toBeFalsy())
+    expect(sheet().getRange('D20').getValue()).toBe(77)
+    grid.ribbon('redo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartAdditions')).toBe(true))
+    await vi.waitFor(() => expect(current.shell.editor.inert).toBeFalsy())
+    expect(sheet().getRange('D20').getValue()).toBe(77)
+    current.shell.save.click(); await vi.waitFor(() => expect(downloaded).toBeDefined())
+    const model = await readWorkbook(downloaded!)
+    expect(model.sheets[0]!.cells.D20?.value).toBe(77)
+    expect(model.sheets[0]!.cells.E2?.value).toBe(10)
+    expect(model.sheets[0]!.charts).toHaveLength(1)
+    expect(model.sheets[0]!.charts![0]!.kind).toBe(kind)
+  } finally { current.view?.dispose() }
+})
+
+it.each(['read', 'create', 'loaded', 'render'] as const)('retains manual data after a direct insertion %s failure and supports ribbon retry', async stage => {
+  const draft = new NativeDraft(identity, store()), current = await open(await fixture(), draft, async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('D1:E3').setValues([['Quarter', 'Sales'], ['Q1', 10], ['Q2', 20]])
+    sheet().getRange('D20').setValue(77)
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true))
+    const before = structuredClone(draft.operations)
+    sheet().getRange('D1:E3').activate(); reloadFault.stage = stage; reloadFault.remaining = 1
+    grid.ribbon('insert-chart:column')
+    await vi.waitFor(() => expect(document.querySelector('.workbook-feedback')!.textContent).toContain(`fixture reload ${stage} failed`))
+    expect(document.querySelector<HTMLElement>('.workbook-feedback')!.hidden).toBe(false)
+    expect(sheet().getRange('D20').getValue()).toBe(77); expect(draft.operations).toEqual(before)
+    expect(current.shell.editor.inert).toBeFalsy()
+    expect(sheet().getSelection().getActiveRange().getRange()).toMatchObject({ startRow: 0, endRow: 2, startColumn: 3, endColumn: 4 })
+    grid.ribbon('insert-chart:column')
+    await vi.waitFor(() => expect(draft.operations.filter(op => op.kind === 'applyChartAdditions')).toHaveLength(1))
+    expect(sheet().getRange('D20').getValue()).toBe(77)
+  } finally { reloadFault.stage = ''; current.view?.dispose() }
+})
+
+it('rejects direct insertion when the selected data changes during async preflight', async () => {
+  const draft = new NativeDraft(identity, store()), current = await open(await fixture(), draft, async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('A1:B1').activate(); grid.ribbon('insert-chart:column')
+    sheet().getRange('A1').setValue(91)
+    await vi.waitFor(() => expect(document.querySelector('.workbook-feedback')!.textContent).toContain('图表数据已变化，请重新选择数据并插入图表'))
+    expect(document.querySelector<HTMLElement>('.workbook-feedback')!.hidden).toBe(false)
+    expect(draft.operations.some(op => op.kind === 'applyChartAdditions')).toBe(false)
+    expect(sheet().getRange('A1').getValue()).toBe(91)
+    expect(current.shell.editor.inert).toBeFalsy()
+  } finally { current.view?.dispose() }
+})
+
+it('rejects direct insertion on a protected sheet without replacing the workbook', async () => {
+  const draft = new NativeDraft(identity, store()), current = await open(await fixture(), draft, async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('A1:B1').activate(); grid.ribbon('sheet-protect')
+    const book = grid.api.getActiveWorkbook().getWorkbook(), before = structuredClone(draft.operations)
+    grid.ribbon('insert-chart:column')
+    await vi.waitFor(() => expect(document.querySelector('.workbook-feedback')!.textContent).toContain('工作表受保护'))
+    expect(document.querySelector<HTMLElement>('.workbook-feedback')!.hidden).toBe(false)
+    expect(grid.api.getActiveWorkbook().getWorkbook()).toBe(book)
+    expect(draft.operations).toEqual(before)
+  } finally { current.view?.dispose() }
+})
+
+it('blocks grid input while replacement inputs are still being read', async () => {
+  const draft = new NativeDraft(identity, store()), current = await open(await fixture(), draft, async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('A1:B1').activate(); reloadFault.stage = 'hold-read'
+    grid.ribbon('insert-chart:column')
+    await vi.waitFor(() => expect(reloadFault.release).toBeTypeOf('function'))
+    const key = new KeyboardEvent('keydown', { key: 'x', bubbles: true, cancelable: true })
+    document.querySelector('.workbook-grid')!.dispatchEvent(key)
+    expect(key.defaultPrevented).toBe(true)
+    reloadFault.release!(); reloadFault.release = undefined
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartAdditions')).toBe(true))
+  } finally { reloadFault.release?.(); reloadFault.release = undefined; reloadFault.stage = ''; current.view?.dispose() }
+})
+
+it.each(['read', 'create', 'loaded', 'render'] as const)('recovers a chart reload %s failure without losing manual data and retries the same dialog', async stage => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const source = await applyChartAdditions(await fixture(), [{ worksheetSheetName: 'Sheet1',
+    anchor: { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'column', title: 'Original', series: [{ name: 'Amount', values: [2], categories: ['Q1'], valuesRef: 'Sheet1!A1:A1' }] } }])
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('D20').setValue(77)
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true))
+    const before = structuredClone(draft.operations)
+    grid.ribbon('chart-title')
+    const input = document.querySelector<HTMLInputElement>('[aria-label="图表标题"]')!
+    const form = input.closest('form')!, dialog = form.closest<HTMLElement>('[role="dialog"]')!
+    input.value = 'Retry retained'
+    reloadFault.stage = stage; reloadFault.remaining = 1
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(form.querySelector('[role="alert"]')!.textContent).toContain(`fixture reload ${stage} failed`))
+    expect(dialog.hidden).toBe(false); expect(input.value).toBe('Retry retained')
+    expect(sheet().getRange('D20').getValue()).toBe(77); expect(draft.operations).toEqual(before)
+    expect(current.shell.editor.inert).toBeFalsy()
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(dialog.hidden).toBe(true))
+    expect(sheet().getRange('D20').getValue()).toBe(77)
+    expect(draft.operations.some(op => op.kind === 'applyChartEdits')).toBe(true)
+    grid.ribbon('undo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartEdits')).toBe(false))
+    await vi.waitFor(() => expect(current.shell.editor.inert).toBeFalsy())
+    expect(sheet().getRange('D20').getValue()).toBe(77)
+    grid.ribbon('redo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartEdits')).toBe(true))
+    await vi.waitFor(() => expect(current.shell.editor.inert).toBeFalsy())
+    expect(sheet().getRange('D20').getValue()).toBe(77)
+  } finally { reloadFault.stage = ''; current.view?.dispose() }
+})
+
+it('retains the native manual undo/redo journal after a failed destructive chart reload', async () => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const source = await applyChartAdditions(await fixture(), [{ worksheetSheetName: 'Sheet1',
+    anchor: { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'column', title: 'Original', series: [{ name: 'Amount', values: [2], categories: ['Q1'], valuesRef: 'Sheet1!A1:A1' }] } }])
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('D20').setValue(77)
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true))
+    grid.ribbon('chart-title')
+    const input = document.querySelector<HTMLInputElement>('[aria-label="图表标题"]')!
+    input.value = 'Must not commit'; reloadFault.stage = 'render'
+    input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(input.closest('form')!.querySelector('[role="alert"]')!.textContent).toContain('fixture reload render failed'))
+    grid.ribbon('undo')
+    await vi.waitFor(() => expect(sheet().getRange('D20').getValue()).toBeNull())
+    await vi.waitFor(() => expect(current.shell.editor.inert).toBeFalsy())
+    grid.ribbon('redo')
+    await vi.waitFor(() => expect(sheet().getRange('D20').getValue()).toBe(77))
+    expect(draft.operations.some(op => op.kind === 'applyChartEdits')).toBe(false)
+  } finally { reloadFault.stage = ''; current.view?.dispose() }
+})
+
+it('keeps the draft and disables editing with an explicit reopen reason when rollback also fails', async () => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const source = await applyChartAdditions(await fixture(), [{ worksheetSheetName: 'Sheet1',
+    anchor: { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'column', title: 'Original', series: [{ name: 'Amount', values: [2], categories: ['Q1'], valuesRef: 'Sheet1!A1:A1' }] } }])
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('D20').setValue(77)
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true))
+    const before = structuredClone(draft.operations)
+    grid.ribbon('chart-title')
+    const input = document.querySelector<HTMLInputElement>('[aria-label="图表标题"]')!
+    input.value = 'Must not commit'; reloadFault.stage = 'create'; reloadFault.remaining = 2
+    input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(input.closest('form')!.querySelector('[role="alert"]')!.textContent).toContain('本地草稿已保留，请重新打开文档'))
+    expect(draft.operations).toEqual(before); expect(current.shell.save.disabled).toBe(true)
+    expect(input.value).toBe('Must not commit'); expect(current.shell.editor.inert).toBeFalsy()
+  } finally { reloadFault.stage = ''; reloadFault.remaining = 1; current.view?.dispose() }
+})
+
+it('inserts the actual ranked recommendation through native draft history and restores it before save', async () => {
+  const source = await fixture(), draft = new NativeDraft(identity, store()); let downloaded: Uint8Array | undefined
+  const save = async (request: NativeSaveRequest) => {
+    downloaded = await applyWorkbookOperations(source, request.operations as any)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/recommended.xlsx' } }, validation: { issues: [] } }
+  }
+  let current = await open(source, draft, save)
+  try {
+    sheet().getRange('D1:E4').setValues([['Quarter', 'Sales'], ['Q1', 10], ['Q2', 20], ['Q3', 30]])
+    sheet().getRange('A1').setValue(9); sheet().getRange('D1:E4').activate()
+    grid.ribbon('recommended-charts-open')
+    await vi.waitFor(() => expect(document.querySelector('[data-recommended-chart="line"]')).not.toBeNull())
+    expect(document.querySelector('[data-recommended-chart]')?.getAttribute('data-recommended-chart')).toBe('line')
+    expect(document.querySelector('[data-recommended-chart="line"] svg path')).not.toBeNull()
+    document.querySelector<HTMLButtonElement>('[data-recommended-close]')!.click()
+    expect(draft.operations.some(op => op.kind === 'applyChartAdditions')).toBe(false)
+    grid.ribbon('recommended-charts-open')
+    document.querySelector<HTMLButtonElement>('[data-recommended-chart="line"]')!.click()
+    await vi.waitFor(() => expect(draft.operations.filter(op => op.kind === 'applyChartAdditions')).toHaveLength(1))
+    expect(sheet().getRange('A1').getValue()).toBe(9)
+    grid.ribbon('undo'); await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartAdditions')).toBe(false))
+    await vi.waitFor(() => expect(!!current.shell.editor.inert).toBe(false))
+    expect(sheet().getRange('A1').getValue()).toBe(9)
+    grid.ribbon('redo'); await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartAdditions')).toBe(true))
+    await vi.waitFor(() => expect(!!current.shell.editor.inert).toBe(false))
+    current.view?.dispose(); current = await open(source, draft, save)
+    current.shell.save.click(); await vi.waitFor(() => expect(downloaded).toBeDefined())
+    const model = await readWorkbook(downloaded!)
+    expect(model.sheets[0]!.cells.A1?.value).toBe(9)
+    expect(model.sheets[0]!.charts).toHaveLength(1)
+    expect(model.sheets[0]!.charts![0]).toMatchObject({ kind: 'line', series: [{ name: 'Sales', categories: ['Q1', 'Q2', 'Q3'], valuesRef: "'Sheet1'!$E$2:$E$4" }] })
+  } finally { current.view?.dispose() }
+})
+
+it.each(['data', 'protection', 'replacement'] as const)('rejects a stale recommendation after %s changes without dropping manual draft', async guard => {
+  const source = await fixture(), draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('D1:E4').setValues([['Quarter', 'Sales'], ['Q1', 10], ['Q2', 20], ['Q3', 30]])
+    sheet().getRange('A1').setValue(9); sheet().getRange('D1:E4').activate()
+    grid.ribbon('recommended-charts-open')
+    await vi.waitFor(() => expect(document.querySelector('[data-recommended-chart="line"]')).not.toBeNull())
+    if (guard === 'data') sheet().getRange('E2').setValue(99)
+    else if (guard === 'protection') grid.ribbon('sheet-protect')
+    else { const book = grid.api.getActiveWorkbook(); grid.api.createWorkbook({ ...book.getSnapshot(), id: 'recommendation-replacement' }) }
+    document.querySelector<HTMLButtonElement>('[data-recommended-chart="line"]')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.workbook-feedback')!.textContent).toMatch(/图表数据.*变化|工作表受保护/))
+    expect(draft.operations.some(op => op.kind === 'applyChartAdditions')).toBe(false)
+    expect(!!current.shell.editor.inert).toBe(false)
+    expect(draft.operations.some(op => op.kind === 'applyCellEdits')).toBe(true)
+  } finally { current.view?.dispose() }
+})
+
+it('rejects a recommendation for an empty selection without opening a fake chart picker', async () => {
+  const current = await open(await fixture(), new NativeDraft(identity, store()), async () => { throw Error('unexpected save') })
+  try {
+    sheet().getRange('D1:E4').activate(); grid.ribbon('recommended-charts-open')
+    expect(document.querySelector('.workbook-recommended-charts-overlay')).toBeNull()
+    expect(document.querySelector('.workbook-feedback')!.textContent).toContain('至少一列数值')
+  } finally { current.view?.dispose() }
+})
+
+it('targets the selected same-title chart in a multi-chart sheet and retains manual edits through save', async () => {
+  const {applyChartAdditions}=await import('@sheets-web/xlsx-engine')
+  const addition={worksheetSheetName:'Sheet1',anchor:{fromRow:2,fromColumn:3,toRow:10,toColumn:9,fromRowOffset:0,fromColumnOffset:0,toRowOffset:0,toColumnOffset:0},chart:{chartType:'column' as const,title:'Same',series:[{name:'Amount',values:[2],categories:['Q1'],valuesRef:'Sheet1!A1:A1'}]}}
+  const source=await applyChartAdditions(await fixture(),[addition,{...addition,anchor:{...addition.anchor,fromColumn:10,toColumn:16}}])
+  const draft=new NativeDraft(identity,store());let downloaded:Uint8Array|undefined
+  const current=await open(source,draft,async request=>{
+    downloaded=await applyWorkbookOperations(source,request.operations as any)
+    return {revision:2,revisionRegistered:true,artifacts:{xlsx:{downloadUrl:'/selected-chart.xlsx'}},validation:{issues:[]}}
+  })
+  try {
+    sheet().getRange('A1').setValue(9)
+    await vi.waitFor(()=>expect(draft.operations.some(op=>op.kind==='applyCellEdits')).toBe(true))
+    grid.ribbon('chart-delete')
+    expect(draft.operations.some(op=>op.kind==='applyChartDeletions')).toBe(false)
+    grid.ribbon('chart-descriptions')
+    const choose=document.querySelector<HTMLButtonElement>('[data-select-chart="xl/charts/chart2.xml"]')
+    expect(choose).not.toBeNull();choose!.click()
+    grid.ribbon('chart-title')
+    const title=document.querySelector<HTMLInputElement>('[aria-label="图表标题"]')!
+    title.value='Chosen second';title.closest('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))
+    await vi.waitFor(()=>expect(draft.operations.some(op=>op.kind==='applyChartEdits')).toBe(true))
+    expect((draft.operations.find(op=>op.kind==='applyChartEdits') as any).edits).toEqual([{chartPath:'xl/charts/chart2.xml',title:'Chosen second'}])
+    grid.ribbon('chart-delete')
+    await vi.waitFor(()=>expect(draft.operations.some(op=>op.kind==='applyChartDeletions')).toBe(true))
+    current.shell.save.click();await vi.waitFor(()=>expect(downloaded).toBeDefined())
+    const model=await readWorkbook(downloaded!)
+    expect(model.sheets[0]!.charts?.map(chart=>[chart.chartPath,chart.title])).toEqual([['xl/charts/chart1.xml','Same']])
+    expect(model.sheets[0]!.cells['A1']?.value).toBe(9)
+  } finally {current.view?.dispose()}
+})
+
+it('applies layout and point colors to the selected pie chart across reloads without dropping manual edits', async () => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const addition = { worksheetSheetName: 'Sheet1', anchor: { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'pie' as const, title: 'Same', series: [{ name: 'Amount', values: [2, 6], categories: ['Q1', 'Q2'], valuesRef: 'Sheet1!A1:A2' }] } }
+  const source = await applyChartAdditions(await fixture(), [addition, { ...addition, anchor: { ...addition.anchor, fromColumn: 10, toColumn: 16 } }])
+  const draft = new NativeDraft(identity, store()); let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations as any)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/chart-presets.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    expect(grid.ribbonView.chart()).toBeNull()
+    grid.ribbon('chart-descriptions')
+    document.querySelector<HTMLButtonElement>('[data-select-chart="xl/charts/chart2.xml"]')!.click()
+    expect(grid.ribbonView.chart()).toEqual({ isPie: true, canLabel: true, seriesCount: 1, categoryCount: 2 })
+    sheet().getRange('A1').setValue(9)
+    grid.ribbon('chart-colors:green')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartEdits' && (op as any).edits.some((edit: any) => edit.pointColors))).toBe(true))
+    expect(document.querySelector<HTMLElement>('.workbook-grid')!.dataset.selectedChart).toBe('xl/charts/chart2.xml')
+    grid.ribbon('chart-layout:1')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartEdits' && (op as any).edits.some((edit: any) => edit.dataLabels === 'category-percent'))).toBe(true))
+    current.shell.save.click(); await vi.waitFor(() => expect(downloaded).toBeDefined())
+    const model = await readWorkbook(downloaded!), charts = model.sheets[0]!.charts!
+    expect(charts[0]!.legend).toMatchObject({ position: 'bottom' })
+    expect(charts[0]!.dataLabels).toBeUndefined()
+    expect(charts[1]).toMatchObject({ chartPath: 'xl/charts/chart2.xml', legend: { position: 'right' }, dataLabels: { showCategory: true, showPercent: true } })
+    expect(charts[1]!.series[0]!.pointColors).toMatchObject({ 0: '#375623', 1: '#548235' })
+    expect(model.sheets[0]!.cells['A1']?.value).toBe(9)
+  } finally { current.view?.dispose() }
+})
+
+it('undoes and redoes a chart palette through File commands while retaining the manual cell draft', async () => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const source = await applyChartAdditions(await fixture(), [{ worksheetSheetName: 'Sheet1',
+    anchor: { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'pie', title: 'Palette', series: [{ name: 'Amount', values: [2, 6], categories: ['Q1', 'Q2'], valuesRef: 'Sheet1!A1:A2' }] } }])
+  const originalPointColors = (await readWorkbook(source)).sheets[0]!.charts![0]!.series[0]!.pointColors
+  const draft = new NativeDraft(identity, store()); let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations as any)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/chart-history.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('A1').setValue(9)
+    grid.ribbon('chart-colors:green')
+    await vi.waitFor(() => expect(document.querySelector('.workbook-feedback')!.textContent).toContain('图表预设已应用'))
+    const colored = await readWorkbook(await applyWorkbookOperations(source, draft.operations as any))
+    expect(colored.sheets[0]!.charts![0]!.series[0]!.pointColors).toMatchObject({ 0: '#375623', 1: '#548235' })
+    grid.ribbon('undo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartEdits')).toBe(false))
+    await vi.waitFor(() => expect(!!current.shell.editor.inert).toBe(false))
+    const undone = await readWorkbook(await applyWorkbookOperations(source, draft.operations as any))
+    expect(undone.sheets[0]!.charts![0]!.series[0]!.pointColors).toEqual(originalPointColors)
+    expect(undone.sheets[0]!.cells['A1']?.value).toBe(9)
+    expect(sheet().getRange('A1').getValue()).toBe(9)
+    grid.ribbon('redo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartEdits')).toBe(true))
+    await vi.waitFor(() => expect(!!current.shell.editor.inert).toBe(false))
+    current.shell.save.click(); await vi.waitFor(() => expect(downloaded).toBeDefined())
+    const redone = await readWorkbook(downloaded!)
+    expect(redone.sheets[0]!.charts![0]!.series[0]!.pointColors).toMatchObject({ 0: '#375623', 1: '#548235' })
+    expect(redone.sheets[0]!.cells['A1']?.value).toBe(9)
+  } finally { current.view?.dispose() }
+})
+
+it('saves exact chart geometry through the real host draft and File history without losing manual cells', async () => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const anchor = { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 }
+  const source = await applyChartAdditions(await fixture(), [0, 1].map(index => ({ worksheetSheetName: 'Sheet1', anchor,
+    chart: { chartType: 'column' as const, title: `Same ${index}`, series: [{ name: 'Amount', values: [2], valuesRef: 'Sheet1!A1:A1', categories: ['Q1'] }] } })))
+  const draft = new NativeDraft(identity, store()); let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations as any)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/chart-geometry.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('A1').setValue(9)
+    grid.ribbon('chart-descriptions'); document.querySelector<HTMLButtonElement>('[data-select-chart="xl/charts/chart2.xml"]')!.click()
+    expect(grid.chartObjects).toBeDefined()
+    const chart = grid.chartObjects.charts('Sheet1')[1], target = grid.chartObjects.capture(chart, 'Sheet1')
+    const next = { ...anchor, fromRow: 1004, toRow: 1012, fromColumn: 30, toColumn: 36, fromColumnOffset: 9525, toColumnOffset: 9525 }
+    await grid.chartObjects.commit(target, 'move', next)
+    expect(draft.operations.filter(op => op.kind === 'applyChartAnchors')).toEqual([{ kind: 'applyChartAnchors', edits: [{ sheetName: 'Sheet1', chartPath: 'xl/charts/chart2.xml', before: anchor, anchor: next, mode: 'move' }] }])
+    expect(sheet().getRange('A1').getValue()).toBe(9)
+    expect(sheet().getMaxRows()).toBeGreaterThan(next.toRow)
+    expect(sheet().getMaxColumns()).toBeGreaterThan(next.toColumn)
+    grid.ribbon('undo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartAnchors')).toBe(false))
+    await vi.waitFor(() => expect(!!current.shell.editor.inert).toBe(false))
+    expect((await readWorkbook(await applyWorkbookOperations(source, draft.operations as any))).sheets[0]!.cells['A1']?.value).toBe(9)
+    grid.ribbon('redo')
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartAnchors')).toBe(true))
+    await vi.waitFor(() => expect(!!current.shell.editor.inert).toBe(false))
+    current.shell.save.click(); await vi.waitFor(() => expect(downloaded).toBeDefined())
+    const model = await readWorkbook(downloaded!)
+    expect(model.sheets[0]!.charts![0]!.anchor).toMatchObject({ fromRow: 2, toRow: 10 })
+    expect(model.sheets[0]!.charts![1]!.anchor).toMatchObject({ fromRow: 1004, toRow: 1012, fromColumn: 30, toColumn: 36, fromColumnOffset: 9525, toColumnOffset: 9525 })
+    expect(model.sheets[0]!.cells['A1']?.value).toBe(9)
+  } finally { current.view?.dispose() }
+})
+
+it.each(['protection', 'replacement'] as const)('rechecks chart geometry after async capture against %s changes', async guard => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const anchor = { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 }
+  const source = await applyChartAdditions(await fixture(), [{ worksheetSheetName: 'Sheet1', anchor,
+    chart: { chartType: 'column', title: 'Guarded', series: [{ name: 'Amount', values: [2], valuesRef: 'Sheet1!A1:A1', categories: ['Q1'] }] } }])
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  try {
+    expect(grid.chartObjects).toBeDefined()
+    const target = grid.chartObjects.capture(grid.chartObjects.charts('Sheet1')[0], 'Sheet1')
+    const commit = grid.chartObjects.commit(target, 'move', { ...anchor, fromRow: 4, toRow: 12 })
+    if (guard === 'protection') grid.ribbon('sheet-protect')
+    else { const book = grid.api.getActiveWorkbook(); grid.api.createWorkbook({ ...book.getSnapshot(), id: 'replacement-workbook' }) }
+    await expect(commit).rejects.toThrow(guard === 'protection' ? '受保护' : '图表目标已变化')
+    expect(draft.operations.some(op => op.kind === 'applyChartAnchors')).toBe(false)
+  } finally { current.view?.dispose() }
+})
+
+it('rejects a stale chart anchor after native row insertion without locking the editor or losing the draft', async () => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const anchor = { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 }
+  const source = await applyChartAdditions(await fixture(), [{ worksheetSheetName: 'Sheet1', anchor,
+    chart: { chartType: 'column', title: 'Shifted', series: [{ name: 'Amount', values: [2], valuesRef: 'Sheet1!A1:A1', categories: ['Q1'] }] } }])
+  const draft = new NativeDraft(identity, store()); let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations as any)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/chart-stale.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    const target = grid.chartObjects.capture(grid.chartObjects.charts('Sheet1')[0], 'Sheet1')
+    expect(grid.api.syncExecuteCommand('sheet.command.insert-row-by-range', { unitId: grid.api.getActiveWorkbook().getId(), subUnitId: sheet().getSheetId(), range: { startRow: 1, endRow: 1, startColumn: 0, endColumn: 9 }, direction: 0 })).toBe(true)
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyRowColumnOps')).toBe(true))
+    await expect(grid.chartObjects.commit(target, 'move', { ...anchor, fromRow: 4, toRow: 12 })).rejects.toThrow('图表锚点身份已变化')
+    expect(grid.chartObjects.available()).toBe(true)
+    sheet().getRange('A1').setValue(9)
+    current.shell.save.click(); await vi.waitFor(() => expect(downloaded).toBeDefined())
+    const model = await readWorkbook(downloaded!)
+    expect(model.sheets[0]!.cells['A1']?.value).toBe(9)
+    expect(model.sheets[0]!.charts![0]!.anchor).toMatchObject({ fromRow: 3, toRow: 11 })
+    expect(draft.operations.some(op => op.kind === 'applyChartAnchors')).toBe(false)
+  } finally { current.view?.dispose() }
+})
+
+it('rejects chart dialog edits when the actual worksheet is replaced despite an identical sheet id and chart path', async () => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const source = await applyChartAdditions(await fixture(), [{ worksheetSheetName: 'Sheet1',
+    anchor: { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'column', title: 'Original', series: [{ name: 'Amount', values: [2], categories: ['Q1'], valuesRef: 'Sheet1!A1:A1' }] } }])
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  try {
+    grid.ribbon('chart-title')
+    const input = document.querySelector<HTMLInputElement>('[aria-label="图表标题"]')!
+    input.value = 'Must not apply'
+    const book = grid.api.getActiveWorkbook(), snapshot = book.getSnapshot()
+    grid.api.createWorkbook({ ...snapshot, id: 'replacement-workbook' })
+    expect(sheet().getSheetId()).toBe(book.getActiveSheet().getSheetId())
+    input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    expect(input.closest('form')!.querySelector('[role="alert"]')!.textContent).toContain('图表目标已变化')
+    expect(draft.operations.some(op => op.kind === 'applyChartEdits')).toBe(false)
+  } finally { current.view?.dispose() }
+})
+
+it('rechecks protection after async chart capture and routes the grid Delete key through the same guarded deletion', async () => {
+  const { applyChartAdditions } = await import('@sheets-web/xlsx-engine')
+  const source = await applyChartAdditions(await fixture(), [{ worksheetSheetName: 'Sheet1',
+    anchor: { fromRow: 2, fromColumn: 3, toRow: 10, toColumn: 9, fromRowOffset: 0, fromColumnOffset: 0, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'column', title: 'Guarded', series: [{ name: 'Amount', values: [2], categories: ['Q1'], valuesRef: 'Sheet1!A1:A1' }] } }])
+  const draft = new NativeDraft(identity, store()), current = await open(source, draft, async () => { throw Error('unexpected save') })
+  try {
+    grid.ribbon('chart-descriptions')
+    document.querySelector<HTMLButtonElement>('[data-select-chart="xl/charts/chart1.xml"]')!.click()
+    grid.ribbon('chart-type-bar')
+    grid.ribbon('sheet-protect')
+    await vi.waitFor(() => expect(document.querySelector('.workbook-feedback')!.textContent).toContain('工作表受保护'))
+    expect(draft.operations.some(op => op.kind === 'applyChartEdits')).toBe(false)
+    const canvasHost = document.querySelector<HTMLElement>('.workbook-grid')!
+    canvasHost.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }))
+    expect(draft.operations.some(op => op.kind === 'applyChartDeletions')).toBe(false)
+    grid.ribbon('sheet-protect')
+    canvasHost.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(draft.operations.some(op => op.kind === 'applyChartDeletions')).toBe(true))
+    expect(canvasHost.dataset.selectedChart).toBeUndefined()
+  } finally { current.view?.dispose() }
+})
 
 it('toggles cross highlight as a persisted reading preference without snapshot, history or draft edits', async () => {
   localStorage.removeItem('report-editor-cross-highlight')
@@ -483,6 +1089,7 @@ it('runs a column data table in manual mode, restores inputs and saves only stat
 
 afterEach(() => {
   grid.failNameImport = false
+  grid.realRibbon = false
   for (const instance of grid.instances.splice(0)) instance.dispose()
   document.body.replaceChildren()
 })
@@ -1358,4 +1965,87 @@ it('keeps pivot cache source identity current after renaming its worksheet', asy
     expect(workbook.getSnapshot()).toEqual(before); expect(draft.operations).toEqual(operations)
     expect(document.querySelector('.workbook-feedback')?.textContent).toContain('仍有透视表')
   } finally { current.view?.dispose() }
+})
+
+
+it('formal binary refresh mounts before file loading, uses workbook CSRF and downloads only XLSX',async()=>{
+  window.history.replaceState({},'','/reports/v1/workbooks/report/1');localStorage.clear()
+  document.cookie='report_workbook_csrf=workbook-token';document.cookie='report_editor_csrf=wrong-md'
+  document.body.innerHTML='<main id="app"></main>'
+  const css=document.createElement('style')
+  css.textContent=(await import('./style.css?raw')).default+(await import('./workbook.css?raw')).default+(await import('./office-theme.css?raw')).default+(await import('./binary-refresh.css?raw')).default
+  document.head.append(css)
+  const source=await fixture(),sha='d'.repeat(64)
+  const task={taskId:'recalc-workbook',status:'completed',result:{issueCodes:['code_only']},execution:{status:'completed',runId:'run',issueCodes:[]}}
+  const fetcher=vi.fn(async(url:string)=>new Response(JSON.stringify(url.endsWith('/context')?{reportId:'report',revision:1,contextSha256:'e'.repeat(64),sha256:sha,dataRefresh:{available:true}}:url.endsWith('/delivery')?{task,delivery:{xlsx:{downloadUrl:'/actual.xlsx'},word:{downloadUrl:'/wrong.docx'},validation:{ok:false,issues:[{code:'xlsx_validation_failed'}]}}}:task)))
+  vi.stubGlobal('fetch',fetcher)
+  const shell=createEditorShell(document.querySelector('#app')!,'full','xlsx')
+  const current=await createWorkbookEditorView(shell,{file:async()=>{
+    expect(document.querySelector('[data-action=binary-refresh]')).not.toBeNull()
+    return {bytes:source.slice().buffer as ArrayBuffer,sha256:sha}
+  }})
+  try{
+    const action=document.querySelector<HTMLButtonElement>('[data-action=binary-refresh]')!
+    expect(action.disabled).toBe(false);action.click()
+    await vi.waitFor(()=>expect(document.querySelector('.binary-refresh-result a')).not.toBeNull())
+    const post=fetcher.mock.calls.find(([url])=>String(url).endsWith('/recalculations'))!
+    expect(post[0]).toBe('/reports/v1/workbooks/report/1/api/recalculations')
+    const call=(fetcher.mock.calls as unknown as [string,RequestInit][]).find(([url])=>url.endsWith('/recalculations'))!
+    expect(new Headers(call[1].headers).get('X-CSRF-Token')).toBe('workbook-token')
+    expect(JSON.parse(call[1].body as string)).toEqual({requestId:expect.any(String),expectedBinarySha256:sha})
+    const links=document.querySelectorAll<HTMLAnchorElement>('.binary-refresh-result a');expect(links).toHaveLength(1);expect(links[0].getAttribute('href')).toBe('/actual.xlsx')
+    for(let element:Element|null=links[0];element;element=element.parentElement)expect(getComputedStyle(element).display).not.toBe('none')
+    expect(document.body.textContent).toContain('xlsx_validation_failed');expect(document.body.textContent).toContain('code_only')
+  }finally{current?.dispose();window.dispatchEvent(new Event('pagehide'));css.remove();window.history.replaceState({},'','/')}
+})
+
+it('formal workbook flushes the active input, saves once, keeps unregistered download and never dispatches on the old source',async()=>{
+  window.history.replaceState({},'','/reports/v1/workbooks/report/1');localStorage.clear();document.body.innerHTML='<main id="app"></main>'
+  const source=await fixture(),sha='d'.repeat(64)
+  const fetcher=vi.fn(async()=>new Response(JSON.stringify({reportId:'report',revision:1,contextSha256:'e'.repeat(64),sha256:sha,dataRefresh:{available:true}})))
+  vi.stubGlobal('fetch',fetcher)
+  const request=vi.fn(async()=>({revision:2,revisionRegistered:false,xlsx:{downloadUrl:'/unregistered.xlsx'},validation:{ok:false,issues:[{message:'未登记'}]}}))
+  const shell=createEditorShell(document.querySelector('#app')!,'full','xlsx')
+  const current=await createWorkbookEditorView(shell,{file:async()=>({bytes:source.slice().buffer as ArrayBuffer,sha256:sha}),request:request as never})
+  try{
+    const workbook=grid.api.getActiveWorkbook()
+    const end=vi.fn(async()=>{sheet().getRange('A1').setValue(123);return true})
+    workbook.isCellEditing=()=>true;workbook.endEditingAsync=end
+    // Facade wrappers are fresh objects; keep the active editor wrapper stable.
+    const get=vi.spyOn(grid.api,'getActiveWorkbook').mockReturnValue(workbook)
+    document.querySelector<HTMLButtonElement>('[data-action=binary-refresh]')!.click()
+    await vi.waitFor(()=>expect(request).toHaveBeenCalledOnce())
+    expect(end).toHaveBeenCalledOnce();expect(document.querySelector<HTMLAnchorElement>('[data-action=xlsx-download]')!.getAttribute('href')).toBe('/unregistered.xlsx')
+    expect(fetcher.mock.calls).toHaveLength(1)
+    get.mockRestore()
+  }finally{current?.dispose();window.dispatchEvent(new Event('pagehide'));window.history.replaceState({},'','/')}
+})
+
+
+it('formal workbook recovers cached task before failed preview and retains saving after a successful reload',async()=>{
+  window.history.replaceState({},'','/reports/v1/workbooks/report/1');localStorage.clear();document.body.innerHTML='<main id="app"></main>'
+  const source=await fixture(),sha='d'.repeat(64)
+  const task={taskId:'recalc-workbook',status:'completed',result:null,execution:{status:'completed',runId:'run',issueCodes:[]}}
+  let available=true,fail=false
+  const fetcher=vi.fn(async(url:string)=>new Response(JSON.stringify(url.endsWith('/context')?{reportId:'report',revision:1,contextSha256:'e'.repeat(64),sha256:sha,dataRefresh:{available}}:url.endsWith('/delivery')?{task,delivery:{xlsx:{downloadUrl:'/actual.xlsx'},validation:{ok:false,issues:[{code:'still_failed'}]}}}:task)))
+  vi.stubGlobal('fetch',fetcher)
+  const open=async()=>{
+    const shell=createEditorShell(document.querySelector('#app')!,'full','xlsx')
+    const current=await createWorkbookEditorView(shell,{file:async()=>{if(fail)throw Error('workbook bytes missing');return {bytes:source.slice().buffer as ArrayBuffer,sha256:sha}}})
+    return {shell,current}
+  }
+  let current=await open()
+  try{
+    document.querySelector<HTMLButtonElement>('[data-action=binary-refresh]')!.click()
+    await vi.waitFor(()=>expect(document.querySelector('.binary-refresh-result a')).not.toBeNull())
+    current.current?.dispose();window.dispatchEvent(new Event('pagehide'));document.body.innerHTML='<main id="app"></main>'
+    current=await open()
+    await vi.waitFor(()=>expect(document.querySelector('.binary-refresh-result a')).not.toBeNull())
+    expect(current.shell.save.disabled).toBe(false)
+    current.current?.dispose();window.dispatchEvent(new Event('pagehide'));document.body.innerHTML='<main id="app"></main>'
+    available=false;fail=true;current=await open()
+    await vi.waitFor(()=>expect(document.querySelector('.binary-refresh-result a')).not.toBeNull())
+    expect(document.querySelector('[data-action=binary-refresh]')).toBeNull()
+    expect(document.body.textContent).toContain('workbook bytes missing')
+  }finally{current.current?.dispose();window.dispatchEvent(new Event('pagehide'));window.history.replaceState({},'','/')}
 })

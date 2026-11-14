@@ -5,6 +5,8 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import { observePdfBuiltAssets } from './pdf-object-dialog-checks.mjs'
+import { inspectPdfObjectPanel } from './pdf-object-panel-checks.mjs'
 const frontend = fileURLToPath(new URL('../', import.meta.url)), repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const port = Number(process.env.PDF_SAVED_DRAWINGS_SMOKE_PORT ?? 4212), base = `http://127.0.0.1:${port}`, sha = bytes => createHash('sha256').update(bytes).digest('hex')
 function python(input) {
@@ -40,8 +42,9 @@ let browser, readonly = false
 const server = spawn('./node_modules/.bin/vite', ['preview', '--host', '127.0.0.1', '--port', String(port), '--strictPort'], { cwd: frontend, stdio: 'ignore' })
 try {
   for (let n = 0; n < 100; n++) { try { if ((await fetch(`${base}/reports/v1/editor/assets/native.html`)).ok) break } catch {} await delay(250) }
-  browser = await chromium.launch({ headless: true, executablePath: process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ?? '/usr/bin/chromium' })
+  browser = await chromium.launch({ headless: true, ...(process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE ? {executablePath:process.env.REPORT_EDITOR_CHROMIUM_EXECUTABLE} : {}) })
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = []
+  const verifyAssets=await observePdfBuiltAssets(page),sidebarLayouts=[]
   page.on('pageerror', error => errors.push(error.message)); page.on('console', entry => { if (entry.type() === 'error') errors.push(entry.text()) })
   const revision = route => Number(route.request().url().match(/drawings-fixture\/(\d+)\/api/)[1]), active = route => revisions.get(revision(route))
   const inspect = bytes => python({ mode: 'inspect', bytes: bytes.toString('base64') }), patch = (bytes, operations) => python({ mode: 'patch', bytes: bytes.toString('base64'), operations })
@@ -70,12 +73,14 @@ try {
   const preview = async () => { await page.locator('[data-pdf-ribbon-tab="edit"]').click(); await page.getByRole('button', { name: '校验当前修改', exact: true }).click(); await page.waitForFunction(() => document.querySelector('.native-pdf-editor')?.dataset.pdfPreview === 'true', null, { timeout: 30000 }); await page.waitForFunction(() => document.querySelectorAll('.pdf-page').length === 3 && document.querySelector('.pdf-page canvas')) }
   const save = async n => { await page.locator('[data-action="save"]').click(); await page.waitForFunction(n => document.querySelector('.save-state-label')?.textContent === `已保存修订 ${n}`, n, { timeout: 30000 }); const link = await page.locator('.native-delivery a').filter({ hasText: '下载 PDF' }).getAttribute('href'); const bytes = Buffer.from(await page.evaluate(async url => [...new Uint8Array(await (await fetch(url)).arrayBuffer())], link)); assert.deepEqual(bytes, revisions.get(n)) }
   await open(1); await show(); assert.equal(await rows.count(), 2)
+  sidebarLayouts.push(...await inspectPdfObjectPanel(page,{panel,kind:'saved-drawings',operations:ops,directory:process.env.PDF_SAVED_DRAWINGS_EVIDENCE_DIR}))
   const first = fixture.model.pages[0].drawings[0], second = fixture.model.pages[0].drawings[1]
   assert.deepEqual(first.rect, second.rect); assert.notEqual(first.annotationId, second.annotationId)
   await rows.last().getByRole('button', { name: '暂存删除' }).click()
   assert.equal((await ops())[0].annotationId, second.annotationId)
   await rows.last().getByRole('button', { name: '撤销此删除' }).click(); assert.deepEqual(await ops(), [])
   await rows.last().getByRole('button', { name: '暂存删除' }).click(); const pending = await ops()
+  sidebarLayouts.push(...await inspectPdfObjectPanel(page,{panel,kind:'saved-drawings-pending',operations:ops,directory:process.env.PDF_SAVED_DRAWINGS_EVIDENCE_DIR}))
   await page.locator('[data-pdf-ribbon-tab="home"]').click()
   await page.getByRole('button', { name: /^(撤销|Undo)$/ }).click(); assert.deepEqual(await ops(), [])
   await page.getByRole('button', { name: /^(重做|Redo)$/ }).click(); assert.deepEqual(await ops(), pending)
@@ -86,9 +91,12 @@ try {
   assert.equal(saved.pages[0].drawings[0].expectedAnnotationSha256, first.expectedAnnotationSha256)
   const independent = python({ mode: 'verify', source: fixture.bytes, bytes: revisions.get(2).toString('base64') })
   await open(2); await show(); assert.equal(await rows.count(), 1)
-  readonly = true; await open(2); await show(); assert.equal(await rows.first().getByRole('button').isDisabled(), true)
+  readonly = true; await open(2); await show()
+  assert.equal(await rows.count(),0);assert.match(await panel.innerText(),/只读.*未加载绘图编辑信息/);assert.equal(await panel.getByRole('button',{name:'暂存删除'}).count(),0)
+  sidebarLayouts.push(...await inspectPdfObjectPanel(page,{panel,kind:'saved-drawings-readonly',operations:ops,directory:process.env.PDF_SAVED_DRAWINGS_EVIDENCE_DIR}))
   assert.deepEqual(await ops(), []); assert.deepEqual(errors, [])
   const evidence = { ok: true, independent, browserVersion: browser.version(), revisions: [...revisions].map(([revision, bytes]) => ({ revision, sha256: sha(bytes), size: bytes.length })), operations: payloads.map(input => input.operations), exactTwinIdentityAndCancelRestoreUndoRedoReload: true, previewAndActualDownloads: true, readonlyAndPreviewControls: true, provenance: 'production static UI; substituted authorization/revision routes; actual packed engine, PDF.js and downloads; no desktop/full-image/production acceptance' }
+  evidence.sidebarLayouts=sidebarLayouts;Object.assign(evidence,await verifyAssets())
   if (process.env.PDF_SAVED_DRAWINGS_EVIDENCE_DIR) { const dir = process.env.PDF_SAVED_DRAWINGS_EVIDENCE_DIR; await mkdir(dir, { recursive: true }); for (const [n, bytes] of revisions) await writeFile(`${dir}/revision-${n}.pdf`, bytes); await writeFile(`${dir}/evidence.json`, JSON.stringify(evidence, null, 2)); await page.screenshot({ path: `${dir}/readonly-reopen.png`, fullPage: true }) }
   console.log(JSON.stringify(evidence))
 } finally { await browser?.close(); server.kill('SIGTERM') }

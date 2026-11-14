@@ -16,10 +16,35 @@ async function scaling(content:string) {
  zip.file(path,(await zip.file(path)!.async('string')).replace(/(<c:valAx>[\s\S]*?)<c:scaling>[\s\S]*?<\/c:scaling>/,(_all,prefix)=>prefix+'<c:scaling>'+content+'</c:scaling>'))
  return zip.generateAsync({type:'uint8array'})
 }
+async function scatterAxesFixture() {
+ const bytes=await applyChartAdditions(await createBlankWorkbook(),[{worksheetSheetName:'Sheet1',
+  anchor:{fromRow:0,fromColumn:3,fromRowOffset:0,fromColumnOffset:0,toRow:9,toColumn:11,toRowOffset:0,toColumnOffset:0},
+  chart:{chartType:'scatter',title:'XY axes',series:[{name:'XY',categories:['-20','0','20'],categoriesRef:'Sheet1!$A$2:$A$4',values:[-20,0,20],valuesRef:'Sheet1!$B$2:$B$4'}]}}])
+ const zip=await JSZip.loadAsync(bytes),path='xl/charts/chart1.xml',xml=await zip.file(path)!.async('string')
+ const plot=xml.match(/<c:scatterChart>([\s\S]*?)<\/c:scatterChart>/)![1]!
+ const ids=[...plot.matchAll(/<c:axId val="(\d+)"\/>/g)].map(match=>match[1]!)
+ const axes=[...xml.matchAll(/<c:valAx>[\s\S]*?<\/c:valAx>/g)].map(match=>match[0])
+ expect(ids).toHaveLength(2);expect(axes).toHaveLength(2)
+ const linked=axes.map(axis=>{
+  const axisId=axis.match(/<c:axId val="(\d+)"\/>/)![1]!,isX=axisId===ids[0]
+  return axis.replace('<c:scaling><c:orientation val="minMax"/></c:scaling>',
+   '<c:scaling><c:orientation val="maxMin"/><c:max val="10"/><c:min val="-10"/></c:scaling>')
+   .replace('<c:delete val="0"/>',`<c:delete val="${isX?'1':'0'}"/>`)
+   .replace('</c:valAx>',`<c:majorUnit val="10"/></c:valAx>`)
+ })
+ zip.file(path,xml.replace(axes.join(''),linked.reverse().join('')))
+ return zip.generateAsync({type:'uint8array'})
+}
 it('reads min/max only from the plot-linked value axis',async()=>{
  const result=await chart(await fixture())
  expect(result.axes?.value.scaling).toEqual({min:2,max:8,reversed:false})
  expect(result.axes?.category.scaling).toBeUndefined()
+})
+it('maps scatter X and Y value axes by scatter axId order, not XML order',async()=>{
+ const result=await chart(await scatterAxesFixture())
+ expect(result.axes?.category).toMatchObject({hidden:true,scaling:{min:-10,max:10,majorUnit:10,reversed:true}})
+ expect(result.axes?.value).toMatchObject({hidden:false,scaling:{min:-10,max:10,majorUnit:10,reversed:true}})
+ expect(result.series[0]).toMatchObject({xValuesRef:'Sheet1!$A$2:$A$4',valuesRef:'Sheet1!$B$2:$B$4'})
 })
 it('returns to automatic bounds after explicit null removal',async()=>{
  const reset=await applyChartEdits(await fixture(),[{chartPath:'xl/charts/chart1.xml',valueAxis:{min:null,max:null}}])

@@ -1,9 +1,10 @@
 import { ReportEditorApiError, type DataRefreshRequest, type DataRefreshTask, type ReportEditorClient } from './api'
-import { markdownSha256 } from './source-validation'
+import { deliveryFormats, deliveryLabels, deliveryLayoutDetails, deliveryUrl, deliveryValidation } from './delivery-presentation'
 
 /** 只缓存请求身份；未知响应先读回，任何页面重开均不重提取数。 */
 export function mountDataRefresh(root: HTMLElement, options: {
   client: ReportEditorClient; storageKey: string; getDraft?: () => { markdown: string } | null
+  saveMarkdown?: () => Promise<string>
 }) {
   const key = options.storageKey + ':data-refresh'
   root.setAttribute('role', 'group')
@@ -57,7 +58,7 @@ export function mountDataRefresh(root: HTMLElement, options: {
   button.addEventListener('click', async () => {
     if (!request && !confirming) {
       confirming = true
-      message.textContent = '按本报告原口径和范围重新取数，生成新修订；原报告保持不变。请先保存正文。此操作不采用新口径，也不代表业务批准。'
+      message.textContent = '按本报告原口径和范围重新取数，生成新修订；原报告保持不变。将先保存正文。此操作不采用新口径，也不代表业务批准。'
       update(); return
     }
     busy(button, true)
@@ -71,8 +72,12 @@ export function mountDataRefresh(root: HTMLElement, options: {
       else {
         const draft = options.getDraft?.()
         if (!draft || !capability?.available) return
+        // 保存失败或响应未知时没有可信保存回执，不能登记刷新身份。
+        if (!options.saveMarkdown) throw new Error('save unavailable')
+        const savedSha256 = await options.saveMarkdown()
+        if (!/^[a-f0-9]{64}$/.test(savedSha256)) throw new Error('invalid save receipt')
         request = { requestId: crypto.randomUUID(), parentRevision: capability.parentRevision,
-          expectedSha256: await markdownSha256(draft.markdown), operation: 'refresh_data' }
+          expectedSha256: savedSha256, operation: 'refresh_data' }
         // 无法保存未知响应的恢复身份时不发起有副作用的请求。
         try { sessionStorage.setItem(key, JSON.stringify(request)) }
         catch { request = null; message.textContent = '无法保存刷新请求身份，请启用会话存储后重试。'; return }
@@ -85,7 +90,8 @@ export function mountDataRefresh(root: HTMLElement, options: {
       } else if (error instanceof ReportEditorApiError && error.status === 404 && error.code === 'source_missing') {
         resume = true
         message.textContent = '服务端未找到原请求。请核对已保存正文，再显式确认提交原请求；不会自动重新取数。'
-      } else message.textContent = '刷新结果未知，请读取原请求进度；不会自动重新提交。'
+      } else message.textContent = request ? '刷新结果未知，请读取原请求进度；不会自动重新提交。'
+        : '保存尚未确认，未提交刷新请求。请先确认保存成功后重试。'
     } finally { busy(button, false); update() }
   })
   deliveryButton.addEventListener('click', async () => {
@@ -94,24 +100,27 @@ export function mountDataRefresh(root: HTMLElement, options: {
     try {
       const { delivery } = await options.client.dataRefreshDelivery(taskId)
       links.replaceChildren()
-      for (const [format, label] of [['pdf', 'PDF'], ['word', 'Word'], ['pptx', 'PPTX'], ['xlsx', 'XLSX']] as const) {
+      let downloadable = false
+      for (const format of deliveryFormats) {
         const file = delivery[format]
-        if (!file) continue
-        const url = new URL(file.downloadUrl, location.href)
-        if (!['http:', 'https:'].includes(url.protocol)) continue
+        const url = deliveryUrl(file?.downloadUrl)
+        if (!url) continue
         const link = document.createElement('a')
-        link.href = url.href; link.textContent = `下载 ${label} · 修订 ${delivery.revision}`
-        link.className = 'ui-button'; links.append(link)
+        link.href = url; link.textContent = `下载 ${deliveryLabels[format]} · 修订 ${delivery.revision}`
+        link.className = 'ui-button'; links.append(link); downloadable = true
       }
       if (delivery.editor?.openUrl) {
-        const url = new URL(delivery.editor.openUrl, location.href)
-        if (['http:', 'https:'].includes(url.protocol)) {
+        const url = deliveryUrl(delivery.editor.openUrl)
+        if (url) {
           const link = document.createElement('a')
-          link.href = url.href; link.textContent = '打开新修订'; link.className = 'ui-button'; links.append(link)
+          link.href = url; link.textContent = '打开新修订'; link.className = 'ui-button'; links.append(link)
         }
       }
-      message.textContent = delivery.validation?.ok === true ? '文件已生成，业务批准尚未完成。'
-        : '文件可下载，验收尚未通过：' + (delivery.validation?.issues.map(issue => issue.message).filter(Boolean).join('；') || '请核对交付告警。')
+      const validation = deliveryValidation(delivery.validation)
+      message.textContent = !downloadable ? '未生成可下载文件。' + (validation.reasons || '请核对交付告警。')
+        : validation.ok ? '文件已生成，业务批准尚未完成。'
+        : '文件可下载，验收尚未通过：' + (validation.reasons || '请核对交付告警。')
+      links.append(deliveryLayoutDetails(delivery.validation))
     } catch { message.textContent = '暂未读到可核验文件，请先读取刷新进度；不会重新生成。' }
     finally { busy(deliveryButton, false) }
   })

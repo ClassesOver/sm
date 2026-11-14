@@ -1,11 +1,12 @@
 /** 图片来源身份与输入边界；OOXML 修改交给固定源引擎。 */
+import { validInkIdentity } from './pptx-ink.ts'
 import { createHash } from 'node:crypto'
 import { replacePictureBytes, type OpenedPptx } from '@genoffice/pptx-engine'
 import { imageSizeFromBytes } from '../packages/pptx-render/src/image-dpi.ts'
 
 export type PictureAsset = { bytesBase64: string; extension: 'png' | 'jpg' }
-export type PictureInsertion = PictureAsset & { slideIndex: number; geometry: { x: number; y: number; width: number; height: number }; descr?: string }
-export type PictureReplacement = PictureAsset & { slideIndex: number; elementId: string; expectedSha256: string; expectedSize: number }
+export type PictureInsertion = PictureAsset & { slideIndex: number; geometry: { x: number; y: number; width: number; height: number }; descr?: string;name?:string }
+export type PictureReplacement = PictureAsset & { slideIndex: number; elementId: string; expectedSha256: string; expectedSize: number;keepSrcRect?:true }
 export type PictureImageIdentity = { slideIndex: number; elementId: string; sha256: string | null; size: number | null; replaceable: boolean; readOnlyReason: string | null }
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
@@ -34,13 +35,16 @@ export function assetBytes(item: PictureAsset): Buffer {
 }
 function validSlide(opened:OpenedPptx,index:number){return Number.isInteger(index)&&index>=0&&index<opened.deck.slides.length}
 function validBatch(items:unknown): asserts items is unknown[] {if(!Array.isArray(items)||items.length>50)throw Error('picture_request_invalid')}
+export function pictureInsertionName(item:{name?:string;descr?:string}):string {return item.name??(item.descr==='AI 生成配图'?'AI 生成配图':'插入的图片')}
 export function validatePictureInsertions(opened:OpenedPptx,items:PictureInsertion[]):void {
  validBatch(items)
  let total=0
  for(const item of items){
   if(!item||!validSlide(opened,item.slideIndex))throw Error('picture_target_invalid')
+  const ink=item.name!==undefined&&validInkIdentity(item.name,item.descr,item.extension)
+  if(item.name!==undefined&&!ink)throw Error('picture_ink_identity_invalid')
   const g=item.geometry
-  if(!g||![g.x,g.y,g.width,g.height].every(n=>typeof n==='number'&&Number.isFinite(n)&&n>=0&&n<=100000)||g.width<=0||g.height<=0)throw Error('picture_geometry_invalid')
+  if(!g||![g.x,g.y,g.width,g.height].every(n=>typeof n==='number'&&Number.isFinite(n)&&n>=(ink?-100000:0)&&n<=100000)||g.width<=0||g.height<=0)throw Error('picture_geometry_invalid')
   if(item.descr!==undefined&&(typeof item.descr!=='string'||item.descr.length>10000))throw Error('picture_description_invalid')
   total+=assetBytes(item).length
   if(total>8*1024*1024)throw Error('picture_budget_exceeded')
@@ -54,6 +58,7 @@ export function validatePictureReplacements(opened:OpenedPptx,items:PictureRepla
   const key=item.slideIndex+':'+item.elementId
   if(seen.has(key))throw Error('picture_target_duplicate')
   seen.add(key)
+  if(item.keepSrcRect!==undefined&&item.keepSrcRect!==true)throw Error('picture_keep_crop_invalid')
   const target=identities.find(p=>p.slideIndex===item.slideIndex&&p.elementId===item.elementId)
   if(!target?.replaceable)throw Error('picture_target_invalid')
   if(target.sha256!==item.expectedSha256||target.size!==item.expectedSize)throw Error('picture_identity_changed')
@@ -64,6 +69,6 @@ export function validatePictureReplacements(opened:OpenedPptx,items:PictureRepla
 export function applyPictureReplacements(opened:OpenedPptx,items:PictureReplacement[]):void {
  validatePictureReplacements(opened,items)
  for(const item of items){
-  if(!replacePictureBytes(opened,opened.deck.slides[item.slideIndex]!,item.elementId,assetBytes(item),item.extension))throw Error('picture_replace_failed')
+  if(!replacePictureBytes(opened,opened.deck.slides[item.slideIndex]!,item.elementId,assetBytes(item),item.extension,{keepSrcRect:item.keepSrcRect}))throw Error('picture_replace_failed')
  }
 }

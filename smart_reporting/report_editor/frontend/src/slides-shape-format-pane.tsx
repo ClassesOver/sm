@@ -60,8 +60,9 @@ export function planSlidesShapeStyle<T extends Draft>(context: Context<T>, comma
 export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => Context<T>, onConfirm: (changes: T) => void, ribbonHost?: HTMLElement) {
   const element = document.createElement('section'); element.className = 'slides-shape-format-pane'; element.setAttribute('aria-label','填充与轮廓'); element.hidden = true
   const root = createRoot(element)
-  let context: Context<T>, pending: T | undefined, timer: ReturnType<typeof setTimeout> | undefined, generation = 0, locked = false, disposed = false, error = '', widthDraft: string | undefined
-  const cancel = () => { clearTimeout(timer); timer = undefined; pending = undefined; widthDraft = undefined; error = '' }
+  const messageId = `slides-shape-status-${crypto.randomUUID()}`
+  let context: Context<T>, pending: T | undefined, timer: ReturnType<typeof setTimeout> | undefined, generation = 0, locked = false, disposed = false, error = '', widthDraft: string | undefined, widthBeforeEdit: number | undefined
+  const cancel = () => { clearTimeout(timer); timer = undefined; pending = undefined; widthDraft = undefined; widthBeforeEdit = undefined; error = '' }
   const target = (c: Context<T>) => `${c.slideIndex}:${c.element?.id}`
   const valid = (version: number) => !disposed && !locked && version === generation && !getContext().reason && target(getContext()) === target(context) && equal(getContext().changes,context.changes)
   const invalidWidth = () => widthDraft !== undefined && (!widthDraft.trim() || !Number.isFinite(Number(widthDraft)) || !(Number(widthDraft) > 0 && Number(widthDraft) <= 100))
@@ -95,16 +96,16 @@ export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => C
         const value = current[field], none = field === 'fill' ? value === 'none' : value === null, unavailable = disabled || value === undefined
         const label = field === 'fill' ? '填充' : '轮廓', sourceStroke = current.source?.stroke
         const color = field === 'fill' ? (current.fill === 'none' ? '#4472C4' : current.fill) : current.stroke?.color ?? sourceStroke?.color ?? '#000000'
-        return <section key={field}><h4>{label}</h4>
+        return <fieldset key={field}><legend>{label}</legend>
           <label className="shape-radio"><input type="radio" name={`${target(context)}:${field}`} data-shape-none={field} checked={none} disabled={unavailable} onChange={() => queue(field === 'fill' ? 'shapeNoFill' : 'shapeNoOutline',undefined,version)} />无{field === 'fill' ? '填充' : '线条'}</label>
           <label className="shape-radio"><input type="radio" name={`${target(context)}:${field}`} checked={value !== undefined && !none} disabled={unavailable} onChange={() => queue(field === 'fill' ? 'shapeFill' : 'shapeOutline',color,version)} />{field === 'fill' ? '纯色填充' : '实线'}</label>
           <div className="shape-color-row"><span>颜色</span><SlidesFormatColorWell point={`shape-${field}`} value={color ?? '#4472C4'} label={`${label}颜色`} disabled={unavailable} onPick={value => queue(field === 'fill' ? 'shapeFill' : 'shapeOutline',value,version)} />
-          <button type="button" data-shape-reset={field} disabled={disabled || current.patch?.[field] === undefined} onClick={() => { widthDraft = undefined; queue(field === 'fill' ? 'shapeResetFill' : 'shapeResetStroke',undefined,version) }}>恢复来源</button></div>
-          {field === 'stroke' && <label className="shape-width">粗细<input type="number" data-shape-width aria-label="轮廓粗细（磅）" min="0.01" max="100" step="0.25" value={widthDraft ?? (current.stroke?.widthPt !== undefined ? String(current.stroke.widthPt) : '')} disabled={unavailable || none} onChange={event => { if (!valid(version)) return; widthDraft = event.target.value; if (invalidWidth()) { clearTimeout(timer); error = '轮廓粗细须大于0且不超过100磅'; render() } else queue('shapeOutlineWidth',widthDraft,version) }} onKeyDown={event => { if(event.key === 'Enter') {event.preventDefault();flush()} if(event.key === 'Escape') {widthDraft=undefined;error='';render()} }} />磅</label>}
+          <button type="button" data-shape-reset={field} disabled={disabled || current.patch?.[field] === undefined} onClick={() => { widthDraft = undefined; widthBeforeEdit = undefined; queue(field === 'fill' ? 'shapeResetFill' : 'shapeResetStroke',undefined,version) }}>恢复来源</button></div>
+          {field === 'stroke' && <label className="shape-width">粗细<input type="number" data-shape-width aria-label="轮廓粗细（磅）" aria-invalid={invalidWidth() || undefined} aria-describedby={messageId} min="0.01" max="100" step="0.25" value={widthDraft ?? (current.stroke?.widthPt !== undefined ? String(current.stroke.widthPt) : '')} disabled={unavailable || none} onChange={event => { if (!valid(version)) return; if (widthDraft === undefined) widthBeforeEdit = current.stroke?.widthPt ?? 1; widthDraft = event.target.value; if (invalidWidth()) { clearTimeout(timer); error = '轮廓粗细须大于0且不超过100磅'; render() } else queue('shapeOutlineWidth',widthDraft,version) }} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229 || event.defaultPrevented) return; if(event.key === 'Enter') {event.preventDefault();flush()} if(event.key === 'Escape') {event.preventDefault();const original=widthBeforeEdit;widthDraft=undefined;widthBeforeEdit=undefined;error='';if(original!==undefined)queue('shapeOutlineWidth',original,version);else render()} }} />磅</label>}
           {value === undefined && <p>{label}来源未能安全摘要，复杂样式保持只读</p>}
-        </section>
+        </fieldset>
       })}
-      <p role="status">{context.reason || (disabled ? '此来源对象暂不支持安全修改形状格式' : error)}</p>
+      <p id={messageId} role="status" aria-label="形状格式状态" tabIndex={0} className={!disabled && error ? 'shape-format-error' : undefined}>{context.reason || (disabled ? '此来源对象暂不支持安全修改形状格式' : error)}</p>
     </Fragment> : null))
   }
   function update() {

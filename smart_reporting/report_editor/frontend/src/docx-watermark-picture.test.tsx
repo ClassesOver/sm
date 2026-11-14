@@ -1,0 +1,18 @@
+import {afterEach,beforeAll,expect,it,vi} from 'vitest'
+import {createRoot,type Root} from 'react-dom/client'
+import {createElement} from 'react'
+import {flushSync} from 'react-dom'
+import {WatermarkDialog} from './docx-watermark-dialog-source'
+import type {Watermark} from '@genoffice/docx-engine'
+import {withDocxWatermark,effectiveDocxWatermark,type DocxWatermarkModel} from './docx-watermark'
+const picture={image:{base64:'iVBORw0KGgo=',mime:'image/png' as const,widthPx:12,heightPx:8},scale:150,washout:false}
+const model:DocxWatermarkModel={text:null,style:null,picture:false,mixed:false,editable:true,readOnlyReason:null,expectedHeadersSha256:'a'.repeat(64)}
+let root:Root|undefined
+beforeAll(()=>{vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue(null)})
+afterEach(()=>{root?.unmount();document.body.replaceChildren()})
+it('stages picture union and restores source picture without duplicating intent',()=>{const operations=withDocxWatermark([],model,picture);expect(effectiveDocxWatermark(operations,model)).toEqual(picture);expect(withDocxWatermark([], {...model,picture:true,pictureSpec:picture},picture)).toEqual([])})
+function mount(onApply?:(value:Watermark|null)=>void){const host=document.body.appendChild(document.createElement('div'));root=createRoot(host);const apply=vi.fn<(value:Watermark|null)=>void>(onApply),close=vi.fn();let settle!:(value:typeof picture.image|null)=>void;const pick=vi.fn(()=>new Promise<typeof picture.image|null>(resolve=>settle=resolve));flushSync(()=>root!.render(createElement(WatermarkDialog,{current:{text:null,style:null,picture:null},presets:['机密'],pageBox:null,onApply:apply,onClose:close,pickImage:pick})));const click=(node:HTMLElement)=>flushSync(()=>node.click());return{host,apply,close,pick,resolve:()=>settle(picture.image),click}}
+it('retains all three source modes and picture scale/washout and preview',async()=>{const f=mount(),modes=f.host.querySelectorAll<HTMLInputElement>('.wm-mode input');expect(modes).toHaveLength(3);f.click(modes[1]!);f.click(f.host.querySelector('.wm-pick')!);f.resolve();await vi.waitFor(()=>expect(f.host.querySelector('.wm-pick-name')?.textContent).toBe('12 × 8 px'));expect(f.host.querySelector('.wm-preview-mark')).not.toBeNull();f.click(f.host.querySelector('.btn-primary')!);expect(f.apply.mock.calls[0]?.[0]).toMatchObject({image:picture.image,washout:true})})
+it('ignores image selection when mode changes and composition Enter does not apply',async()=>{const f=mount(),modes=f.host.querySelectorAll<HTMLInputElement>('.wm-mode input');f.click(modes[1]!);f.click(f.host.querySelector('.wm-pick')!);f.click(modes[2]!);f.resolve();await new Promise(resolve=>setTimeout(resolve,0));expect(f.host.querySelector('.wm-pick-name')?.textContent).not.toContain('12 × 8');f.host.querySelector('input[type=text]')!.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true}));expect(f.apply).not.toHaveBeenCalled()})
+it('ignores pending image completion after unmount',async()=>{const f=mount();f.click(f.host.querySelectorAll<HTMLInputElement>('.wm-mode input')[1]!);f.click(f.host.querySelector('.wm-pick')!);expect((f.host.querySelector('.btn-primary') as HTMLButtonElement).disabled).toBe(true);root!.unmount();root=undefined;f.resolve();await new Promise(resolve=>setTimeout(resolve,0));expect(f.apply).not.toHaveBeenCalled();expect(f.host.textContent).toBe('')})
+it('retains the dialog and exposes a stale apply failure',()=>{const f=mount(()=>{throw Error('来源已改变')});f.click(f.host.querySelector('.btn-primary')!);expect(f.close).not.toHaveBeenCalled();expect(f.host.querySelector('[role=alert]')?.textContent).toBe('来源已改变')})

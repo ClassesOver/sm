@@ -3,6 +3,15 @@ import type { NativeDraftIdentity, NativeOperation, NativeSaveRequest } from './
 import { nativeAIProgressListener, type NativeAIProgressListener } from './native-ai-progress'
 
 export interface NativeFileIdentity { path: string; size: number; sha256: string; mediaType: string }
+export interface NativePdfMergeRequest {
+  requestId:string;expectedSha256:string;files:{sha256:string;bytesBase64:string}[]
+}
+export interface NativePdfSplitResult {
+  source: {documentId: string; revision: number; sha256: string}
+  chunkSize: number
+  parts: {index: number; pages: number[]; filename: string; result?: NativeSaveResponse; error?: {code: string; message: string}}[]
+  validation: {ok: boolean; issues: {code: string; message?: string}[]}
+}
 export interface NativeContext {
   documentId: string
   format: 'docx' | 'pdf' | 'xlsx' | 'pptx'
@@ -13,6 +22,9 @@ export interface NativeContext {
   origin: 'report' | 'upload' | 'derived'
 }
 export interface NativeContextResponse {
+  threadActor?: {personId: string; author: string} | null
+  contextSha256?: string
+  dataRefresh?: import('./binary-refresh').BinaryRefreshCapability
   context: NativeContext
   csrfToken: string
   capabilities: Record<string, unknown>
@@ -151,6 +163,7 @@ export interface NativeSaveResponse {
   editor?: { openUrl: string } | null
   validation: { ok: boolean; issues: { code: string; message?: string }[] }
 }
+export interface NativeMailMergeSourceResponse { source: { name:string; path:string; sourceSha256:string; fields:string[]; records:Record<string,string>[]; recordCount:number } }
 export class NativeApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message) }
 }
@@ -181,6 +194,11 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
   }
   return {
     context: async (signal?: AbortSignal): Promise<NativeContextResponse> => (await request('context', undefined, signal)).json(),
+    imagePixels: async (target: {sourceSha256: string; pageId: string; imageId: string; expectedImageSha256: string}, signal?: AbortSignal): Promise<{sourceSha256:string;imageId:string;expectedImageSha256:string;pageId:string;image:string;width:number;height:number;sha256:string}> => (await request('image-pixels', target, signal)).json(),
+    imageBackground: async (target: {sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};pxWidth:number}, signal?:AbortSignal): Promise<{sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};image:string;width:number;height:number;sha256:string}> => (await request('image-background',target,signal)).json(),
+    refreshSubmit: async (payload: {requestId: string; expectedBinarySha256: string}, signal?: AbortSignal) => (await request('recalculations', payload, signal)).json(),
+    refreshStatus: async (requestId: string, signal?: AbortSignal) => (await request(`recalculations/by-request/${encodeURIComponent(requestId)}`, undefined, signal)).json(),
+    refreshDelivery: async (taskId: string, signal?: AbortSignal) => (await request(`recalculations/${encodeURIComponent(taskId)}/delivery`, undefined, signal)).json(),
     file: async (signal?: AbortSignal): Promise<ArrayBuffer> => (await request('file', undefined, signal)).arrayBuffer(),
     readModel: async <Model = Record<string, unknown>>(signal?: AbortSignal): Promise<{sourceSha256: string; model: Model}> => (await request('read-model', undefined, signal)).json(),
     preview: async <Model = Record<string, unknown>>(payload: NativePreviewRequest, signal?: AbortSignal): Promise<NativePreviewResponse<Model>> => (await request('preview', payload, signal)).json(),
@@ -191,7 +209,10 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
       return response.arrayBuffer()
     },
     save: async (payload: NativeSaveRequest, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('save', payload, signal)).json(),
+    mailMergeSource: async (payload: {requestId:string;filename:string;bytesBase64:string}, signal?: AbortSignal): Promise<NativeMailMergeSourceResponse> => (await request('mail-merge/source', payload, signal)).json(),
     extractPages: async (payload: {requestId: string; expectedSha256: string; pages: number[]}, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('extract-pages', payload, signal)).json(),
+    splitPdf: async (payload: {requestId: string; expectedSha256: string; chunkSize: number}, signal?: AbortSignal): Promise<NativePdfSplitResult> => (await request('split-pdf', payload, signal)).json(),
+    mergePdf: async (payload:NativePdfMergeRequest,signal?:AbortSignal):Promise<NativeSaveResponse> => (await request('merge-pdf',payload,signal)).json(),
     protectPdf: async (payload: import('./pdf-protection').PdfProtectionRequest, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('protect-pdf',payload,signal)).json(),
     externalPages: async (payload: import('./pdf-external-pages').PdfExternalPagesRequest, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('external-pages',payload,signal)).json(),
     convertOffice: async (payload: import('./pdf-convert-office').PdfConvertOfficeRequest, signal?: AbortSignal): Promise<import('./pdf-convert-office').PdfConvertOfficeResult> => (await request('convert-office',payload,signal)).json(),
@@ -199,6 +220,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
       const response=await request('export-images',payload,signal)
       return {content:await response.arrayBuffer(),sha256:response.headers.get('X-Native-Export-Sha256')??'',size:Number(response.headers.get('X-Native-Export-Size')),sourceSha256:response.headers.get('X-Native-Source-Sha256')??'',filename:'pdf-pages-'+payload.format+'.zip'}
     },
+    shrinkPdf: async (expectedSha256:string,signal?:AbortSignal) => {const response=await request('shrink-pdf',{expectedSha256},signal);return{content:await response.arrayBuffer(),sha256:response.headers.get('X-Native-Export-Sha256')??'',size:Number(response.headers.get('X-Native-Export-Size')),sourceSha256:response.headers.get('X-Native-Source-Sha256')??'',streamsRecompressed:Number(response.headers.get('X-Native-Shrink-Streams')),imagesDownsampled:Number(response.headers.get('X-Native-Shrink-Images')),warnings:JSON.parse(response.headers.get('X-Native-Shrink-Warnings')??'[]') as string[]}},
     export: async (payload: NativeSaveRequest, signal?: AbortSignal): Promise<NativeSaveResponse> => (await request('export', payload, signal)).json(),
     pdfFormAIStart: async (payload: Parameters<PDFFormAIClient['pdfFormAIStart']>[0], signal?: AbortSignal): Promise<PDFFormAIJob> => (await request('ai/forms/start',payload,signal)).json(),
     pdfFormAIStatus: async (id:string,signal?:AbortSignal): Promise<PDFFormAIJob> => (await request('ai/forms/'+encodeURIComponent(id)+'?waitMs=20000',undefined,signal)).json(),
@@ -222,7 +244,8 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     pdfAIStatus: async (id: string, signal?: AbortSignal): Promise<NativePDFReadTask> => (await request('ai/read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     pdfAIEvents: nativeAIProgressListener(`${base}/ai/read`),
     pdfAICancel: async (clientRequestId: string): Promise<NativePDFReadTask> => (await request('ai/read/cancel', {clientRequestId})).json(),
-    aiStart: async (payload: NativePreviewRequest & { instruction: string; selection: NativeAISelection[] }, signal?: AbortSignal): Promise<NativeAIJob> => (await request('ai/start', payload, signal)).json(),
+    aiStart: async (payload: NativePreviewRequest & { instruction: string; selection: NativeAISelection[]; clientRequestId?: string }, signal?: AbortSignal): Promise<NativeAIJob> => (await request('ai/start', payload, signal)).json(),
+    aiCancelRequest: async (clientRequestId: string): Promise<NativeAIJob> => (await request('ai/cancel-request', {clientRequestId})).json(),
     aiStatus: async (id: string, signal?: AbortSignal): Promise<NativeAIJob> => (await request(`ai/${encodeURIComponent(id)}?waitMs=20000`, undefined, signal)).json(),
     aiEvents,
     aiAccept: async (id: string, payload: NativePreviewRequest & { snapshotSha256: string }, signal?: AbortSignal): Promise<{operations: NativeOperation[]}> => (await request(`ai/${encodeURIComponent(id)}/accept`, payload, signal)).json(),

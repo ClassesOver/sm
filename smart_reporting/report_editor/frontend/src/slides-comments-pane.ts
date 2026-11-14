@@ -17,6 +17,7 @@ export function createSlidesCommentsPane(callbacks: {
   const drafts = new Map<number, string>()
   let state: PaneState | undefined
   let message = ''
+  let renderedSlide: number | undefined, listScrollTop = 0, paneScrollTop = 0
   const button = (action: string, label: string, click: () => void) => {
     const control = document.createElement('button'); control.type = 'button'; control.dataset.commentAction = action; control.textContent = label; control.setAttribute('aria-label', label); control.addEventListener('click', click); return control
   }
@@ -31,8 +32,16 @@ export function createSlidesCommentsPane(callbacks: {
   }
   const render = () => {
     if (!state) return
+    const sameSlide = renderedSlide === state.slideIndex
+    if (!sameSlide) { listScrollTop = 0; paneScrollTop = 0 }
+    else if (!element.hidden) { listScrollTop = element.querySelector('.comments-list')?.scrollTop ?? 0; paneScrollTop = element.scrollTop }
     element.hidden = !state.visible
     if (!state.visible) return
+    const active = document.activeElement instanceof HTMLElement && element.contains(document.activeElement) ? document.activeElement : null
+    const activeCard = active?.closest<HTMLElement>('.comment-card'), cardIndex = activeCard ? [...element.querySelectorAll('.comment-card')].indexOf(activeCard) : -1
+    const editor = active instanceof HTMLTextAreaElement ? { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection, scrollTop: active.scrollTop } : undefined
+    const activeAction = active?.dataset.commentAction, activeText = active?.classList.contains('comment-text'), textScrollTop = active?.scrollTop ?? 0
+    renderedSlide = state.slideIndex
     const source = sourceComments(state.source), reason = state.reason || source.readOnlyReason
     element.replaceChildren()
     const heading = document.createElement('div'); heading.className = 'inspector-heading comments-heading'
@@ -48,9 +57,14 @@ export function createSlidesCommentsPane(callbacks: {
       const head = document.createElement('div'); head.className = 'comment-head'
       const avatar = document.createElement('span'); avatar.className = 'comment-avatar'; avatar.textContent = (initials || author).slice(0, 2)
       const meta = document.createElement('span'); meta.className = 'comment-meta'
-      const name = document.createElement('span'); name.className = 'comment-author'; name.textContent = author; meta.append(name)
+      const name = document.createElement('span'); name.className = 'comment-author'; name.textContent = author; name.title = author; meta.append(name)
       if (dt) { const date = document.createElement('span'); date.className = 'comment-time'; const parsed = new Date(dt); date.textContent = Number.isNaN(parsed.getTime()) ? dt : parsed.toLocaleString('zh-CN'); meta.append(date) }
       const content = document.createElement('div'); content.className = 'comment-text'; content.textContent = text
+      content.tabIndex = 0; content.setAttribute('role', 'textbox'); content.setAttribute('aria-readonly', 'true'); content.setAttribute('aria-label', `${author}的批注正文`)
+      content.addEventListener('keydown', event => {
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || content.scrollHeight <= content.clientHeight || !['Home', 'End'].includes(event.key)) return
+        event.preventDefault(); content.scrollTop = event.key === 'Home' ? 0 : content.scrollHeight
+      })
       head.append(avatar, meta); article.append(head, content); list.append(article); return { article, head }
     }
     for (const item of original) {
@@ -68,12 +82,30 @@ export function createSlidesCommentsPane(callbacks: {
       const composer = document.createElement('div'); composer.className = 'comment-new'
       const input = document.createElement('textarea'); input.dataset.commentText = ''; input.rows = 3; input.maxLength = 10000; input.value = drafts.get(state.slideIndex)!; input.placeholder = '输入批注内容…'; input.setAttribute('aria-label', '批注内容'); input.disabled = state.locked
       const status = document.createElement('p'); status.className = 'comments-status'; status.setAttribute('role', 'status'); status.textContent = message
+      status.id = 'slides-comments-status'; input.setAttribute('aria-describedby', status.id)
+      input.setAttribute('aria-invalid', String(Boolean(commentTextError(input.value) && (input.value || message))))
       const post = button('add', '发布批注', () => { submit(false) }); post.className = 'btn-primary'; post.disabled = state.locked || commentTextError(input.value) !== null
-      input.addEventListener('input', () => { drafts.set(state!.slideIndex, input.value); const error = commentTextError(input.value); status.textContent = input.value ? error || '保存修订时将一并发布此批注' : ''; post.disabled = state!.locked || error !== null })
-      input.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); submit(false) } })
+      input.addEventListener('input', () => { drafts.set(state!.slideIndex, input.value); const error = commentTextError(input.value); input.setAttribute('aria-invalid', String(Boolean(input.value && error))); status.textContent = input.value ? error || '保存修订时将一并发布此批注' : ''; post.disabled = state!.locked || error !== null })
+      input.addEventListener('keydown', event => { if (!event.isComposing && event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); submit(false) } })
       const cancel = button('cancel', '取消', () => { drafts.delete(state!.slideIndex); message = ''; render() }); cancel.disabled = state.locked
       const actions = document.createElement('div'); actions.className = 'comment-new-actions'; actions.append(cancel, post); composer.append(input, status, actions); element.append(composer)
     } else if (!reason) { const create = button('compose', '新增批注', () => openComposer()); create.className = 'comments-compose'; create.disabled = state.locked; element.append(create) }
+    list.scrollTop = listScrollTop; element.scrollTop = paneScrollTop
+    if (!sameSlide || !active || state.locked) return
+    const nextEditor = element.querySelector<HTMLTextAreaElement>('[data-comment-text]')
+    if (editor && nextEditor) {
+      nextEditor.focus({ preventScroll: true }); nextEditor.setSelectionRange(editor.start, editor.end, editor.direction); nextEditor.scrollTop = editor.scrollTop
+      return
+    }
+    let target: HTMLElement | null = null
+    if (activeCard) {
+      const cards = [...list.querySelectorAll<HTMLElement>('.comment-card')]
+      const matching = cards.find(card => activeCard.dataset.commentClientId ? card.dataset.commentClientId === activeCard.dataset.commentClientId : card.dataset.commentAuthorId === activeCard.dataset.commentAuthorId && card.dataset.commentIdx === activeCard.dataset.commentIdx)
+      const next = matching ?? cards[Math.min(cardIndex, cards.length - 1)]
+      target = activeText ? next?.querySelector<HTMLElement>('.comment-text') ?? null : next?.querySelector<HTMLButtonElement>('.comment-del:not([disabled])') ?? null
+      if (matching && activeText && target) { target.focus({ preventScroll: true }); target.scrollTop = textScrollTop; return }
+    } else if (activeAction) target = element.querySelector<HTMLButtonElement>(`[data-comment-action="${activeAction}"]:not([disabled])`)
+    ;(target ?? element.querySelector<HTMLButtonElement>('[data-comment-action="compose"]:not([disabled])') ?? close).focus()
   }
   const openComposer = () => {
     if (!state || state.locked) return

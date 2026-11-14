@@ -3,7 +3,7 @@ import { buttonClasses } from './button'
 
 /** 空值或0为自动；指定高度保留来源exact/atLeast规则，不另造行高规则入口。 */
 export function openDocxRowHeightDialog(root: HTMLElement, initialHeightTwips: number | null, maxHeightTwips: number, apply: (heightTwips: number | null) => void) {
-  const modal = createModal({ root, label: '行高', closeLabel: '关闭行高', onRequestClose: () => modal.remove(), content: `
+  const modal = createModal({ root, label: '行高', cardClass: 'docx-table-property-dialog', closeLabel: '关闭行高', onRequestClose: () => modal.remove(), content: `
     <h2>行高</h2><form novalidate>
       <label>行高（twip）<input aria-label="行高（twip）" type="number" min="0" step="1" placeholder="自动"></label>
       <p>留空或输入 0 恢复自动行高；指定值按当前节正文高度截断。</p>

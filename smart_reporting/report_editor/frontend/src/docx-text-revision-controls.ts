@@ -38,20 +38,48 @@ export function createDocxTextRevisionControls(options:Options){
   if(!live.node.eq(editor.schema.nodeFromJSON(expected)))failDocxTextRevision()
   return {...live,pending}
  }
+ const targetPosition=(entry:Entry,live:ReturnType<typeof liveOf>,pending:DocxTextRevisionOperation[])=>{
+  const targets=getDocxTextRevisionTargets(entry.source,entry.anchor),byId=new Map(pending.map(op=>[op.revisionId,op]))
+  let from=entry.target.from
+  for(const target of targets){
+   const op=byId.get(target.revisionId),removed=op&&((target.type==='insertion')===(op.action==='reject'))
+   if(removed&&target.to<=entry.target.from)from-=target.to-target.from
+  }
+  return live.pos+1+from
+ }
  const navigate=(entry:Entry)=>{
   try{
-   const live=verified(entry),targets=getDocxTextRevisionTargets(entry.source,entry.anchor),byId=new Map(live.pending.map(op=>[op.revisionId,op]))
-   let from=entry.target.from,length=entry.target.to-entry.target.from
-   for(const target of targets){
-    const op=byId.get(target.revisionId),removed=op&&((target.type==='insertion')===(op.action==='reject'))
-    if(removed&&target.to<=entry.target.from)from-=target.to-target.from
-    if(removed&&target.revisionId===entry.target.revisionId)length=0
-   }
-   const start=live.pos+1+from
+   const live=verified(entry),start=targetPosition(entry,live,live.pending)
+   const decision=live.pending.find(op=>op.revisionId===entry.target.revisionId)
+   const removed=decision&&((entry.target.type==='insertion')===(decision.action==='reject'))
+   const length=removed?0:entry.target.to-entry.target.from
    editor.view.dispatch(editor.state.tr.setSelection(TextSelection.create(editor.state.doc,start,start+length)).setMeta('addToHistory',false).scrollIntoView())
    selectedId=entry.target.revisionId
    editor.view.focus()
   }catch(error){options.onError(error)}
+ }
+ const navigableEntries=()=>{
+  const entries:Entry[]=[]
+  for(const anchor of anchors){
+   if(!anchor.reviewTargets?.length)continue
+   try{const source=sourceOf(anchor);for(const target of getDocxTextRevisionTargets(source,anchor))entries.push({source,anchor,target})}catch{}
+  }
+  return entries.flatMap(entry=>{
+   try{
+    const live=verified(entry)
+    if(live.pending.some(op=>op.revisionId===entry.target.revisionId))return []
+    return [{entry,position:targetPosition(entry,live,live.pending)}]
+   }catch{return []}
+  }).sort((a,b)=>a.position-b.position)
+ }
+ const navigationReason=()=>navigableEntries().length?null:'没有可导航的受支持正文修订'
+ const navigateRevision=(direction:1|-1)=>{
+  const entries=navigableEntries()
+  if(!entries.length)return false
+  const head=editor.state.selection.from
+  const target=direction===1?entries.find(item=>item.position>head)??entries[0]:[...entries].reverse().find(item=>item.position<head)??entries[entries.length-1]
+  navigate(target.entry)
+  return true
  }
  const apply=(entry:Entry,action:'accept'|'reject')=>{
   try{
@@ -152,9 +180,10 @@ export function createDocxTextRevisionControls(options:Options){
  const close=()=>{modal?.remove();modal=undefined}
  const open=()=>{
   if(disposed||editor.isDestroyed)return
-  if(!modal)modal=createModal({root:options.container,label:'正文修订列表',closeLabel:'关闭正文修订列表',onRequestClose:close,content:'<h2>正文修订列表</h2><p>仅处理列表中受支持的简单正文插入和删除修订；复杂修订和页眉、页脚、脚注等其他故事中的修订均保留。批量操作只处理尚未决策的目标，可一次撤销整批操作。</p><p role="status" aria-live="polite"></p><button type="button" data-action="next">下一条待处理</button><button type="button" data-action="accept-all">接受所有支持的正文修订</button><button type="button" data-action="reject-all">拒绝所有支持的正文修订</button><ol data-revision-list></ol>'})
+  if(!modal)modal=createModal({root:options.container,label:'正文修订列表',cardClass:'docx-revision-dialog',closeLabel:'关闭正文修订列表',onRequestClose:close,content:'<h2>正文修订列表</h2><p>仅处理列表中受支持的简单正文插入和删除修订；复杂修订和页眉、页脚、脚注等其他故事中的修订均保留。批量操作只处理尚未决策的目标，可一次撤销整批操作。</p><p role="status" aria-live="polite"></p><div class="docx-revision-actions"><button type="button" data-action="next">下一条待处理</button><button type="button" data-action="accept-all">接受所有支持的正文修订</button><button type="button" data-action="reject-all">拒绝所有支持的正文修订</button></div><ol data-revision-list></ol>'})
+  for(const button of modal.card.querySelectorAll('button[data-action]'))button.className=buttonClasses('secondary')
   refresh();modal.open()
  }
  editor.on('transaction',refresh)
- return {open,refresh,applyAll,batchReason,dispose(){disposed=true;editor.off('transaction',refresh);close()}}
+ return {open,refresh,applyAll,batchReason,navigateRevision,navigationReason,dispose(){disposed=true;editor.off('transaction',refresh);close()}}
 }

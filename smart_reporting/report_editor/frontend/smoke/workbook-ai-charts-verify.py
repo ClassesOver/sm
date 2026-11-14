@@ -1,6 +1,7 @@
 """Independent openpyxl/lxml checks of downloaded chart revisions."""
 import hashlib
 import json
+import re
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -18,6 +19,7 @@ def verify(directory: Path):
     deleted = (directory / 'deleted.xlsx').read_bytes()
     ns = {'c': 'http://schemas.openxmlformats.org/drawingml/2006/chart',
           'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+    namespace_preserved = False
     with ZipFile(BytesIO(source)) as before, ZipFile(BytesIO(edited)) as first, ZipFile(BytesIO(deleted)) as second:
         untouched = 'xl/charts/chart2.xml'
         assert before.read(untouched) == first.read(untouched) == second.read(untouched)
@@ -40,6 +42,34 @@ def verify(directory: Path):
         assert xml.xpath('//c:ser/c:cat//c:pt/c:v/text()', namespaces=ns) == ['Q1', 'Q2']
         assert xml.xpath('//c:ser//c:f/text()', namespaces=ns) == ["'Sheet'!$A$2:$A$3", "'Sheet'!$B$2:$B$3"]
         assert 'xl/charts/chart1.xml' not in second.namelist()
+        if 'custom/namespace-sentinel.bin' in before.namelist():
+            # 从已冻结夹具原文求删除范围，独立于引擎的 SAX 定位实现。
+            drawing = 'xl/drawings/drawing1.xml'
+            rels = 'xl/drawings/_rels/drawing1.xml.rels'
+            original_drawing = before.read(drawing).decode()
+            anchors = re.findall(r'<twoCellAnchor\b[^>]*>[\s\S]*?</twoCellAnchor>', original_drawing)
+            assert len(anchors) == 2 and 'link:id="chart&amp;one"' in anchors[0]
+            assert first.read(drawing) == before.read(drawing)
+            assert second.read(drawing).decode() == original_drawing.replace(anchors[0], '', 1)
+            original_rels = before.read(rels).decode()
+            target_rels = re.findall(r'<pkg:Relationship\b[^>]*Id="chart&amp;one"[^>]*/>', original_rels)
+            assert len(target_rels) == 1
+            assert first.read(rels) == before.read(rels)
+            assert second.read(rels).decode() == original_rels.replace(target_rels[0], '', 1)
+            chart_bytes = first.read('xl/charts/chart1.xml')
+            opaque = b'<vendor:payload xmlns:vendor="urn:namespace-fixture"><vendor:title>Keep &amp; opaque</vendor:title></vendor:payload>'
+            assert opaque in chart_bytes and xml.prefix is None
+            assert xml.xpath('/c:chartSpace/c:chart/c:title//a:t', namespaces=ns)[0].prefix == 'ink'
+            assert set(first.namelist()) == set(before.namelist())
+            assert set(second.namelist()) == set(first.namelist()) - {'xl/charts/chart1.xml'}
+            edit_allowed = {'xl/charts/chart1.xml', 'xl/worksheets/sheet1.xml', 'xl/styles.xml'}
+            delete_allowed = {drawing, rels, '[Content_Types].xml', 'xl/charts/chart1.xml'}
+            for name in before.namelist():
+                if name not in edit_allowed:
+                    assert first.read(name) == before.read(name), name
+                if name not in delete_allowed:
+                    assert second.read(name) == first.read(name), name
+            namespace_preserved = True
         saved_request = json.loads((directory / 'edited-save.json').read_text())['request']
         axis_titles = next((record['axisTitles'] for operation in saved_request['operations']
             if operation['kind'] == 'applyChartEdits' for record in operation['edits'] if 'axisTitles' in record), None)
@@ -141,6 +171,7 @@ def verify(directory: Path):
             'editedTitle': 'Updated', 'editedType': 'bar', 'editedLegend': 'bottom',
             'chartCounts': [2, 2, 1], 'otherChartByteIdentical': True, 'manualBoldRetained': True, 'categoryLabelsRetained': True,
             'sourceLabelStyleAndPointPreserved': source_style is not None,
+            'namespaceAndUnrelatedPackageBytesPreserved': namespace_preserved,
             'reopenedTextPixels': text_pixels}
 
 

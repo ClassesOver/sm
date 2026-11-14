@@ -43,7 +43,6 @@ export type SlidesLinkOptions={elementLink:SlidesLinkTarget|null;slides:readonly
 export function openSlidesLink(host:HTMLElement,options:SlidesLinkOptions):{dispose():void}{
  const previous=document.activeElement instanceof HTMLElement?document.activeElement:undefined,dialog=document.createElement('dialog')
  dialog.className='slides-native-link-dialog';dialog.setAttribute('role','dialog');dialog.setAttribute('aria-modal','true');dialog.setAttribute('aria-label','对象超链接')
- Object.assign(dialog.style,{maxWidth:'90vw',width:'440px',padding:'24px',border:'1px solid #cad4df',borderRadius:'12px'})
  const heading=document.createElement('h2');heading.textContent='对象超链接'
  const mode=document.createElement('select');mode.dataset.linkKind='';mode.setAttribute('aria-label','链接类型')
  for(const [value,label] of [['url','网址或邮箱'],['slide','本文档幻灯片']]){const option=document.createElement('option');option.value=value!;option.textContent=label!;mode.append(option)}
@@ -54,7 +53,7 @@ export function openSlidesLink(host:HTMLElement,options:SlidesLinkOptions):{disp
  const update=()=>{url.hidden=mode.value!=='url';slide.hidden=mode.value!=='slide'};mode.addEventListener('change',update);update()
  const note=document.createElement('p');note.textContent='修改将保存到PPTX；当前本地静态放映暂不执行链接。'
  const error=document.createElement('p');error.setAttribute('role','alert')
- const actions=document.createElement('div');Object.assign(actions.style,{display:'flex',justifyContent:'flex-end',gap:'12px',marginTop:'16px'})
+ const actions=document.createElement('div');actions.className='slides-table-actions'
  let active=true
  const dispose=()=>{if(!active)return;active=false;dialog.remove();if(previous?.isConnected)previous.focus()}
  const cancel=()=>{if(!active)return;dispose();options.onCancel()}
@@ -69,9 +68,9 @@ export function openSlidesLink(host:HTMLElement,options:SlidesLinkOptions):{disp
  }
  const button=(label:string,click:()=>void)=>{const node=document.createElement('button');node.type='button';node.textContent=label;node.addEventListener('click',click);return node}
  if(options.elementLink){const remove=button('移除链接',()=>apply(true));remove.dataset.linkRemove='';actions.append(remove)}
- const ok=button('确定',()=>apply());ok.dataset.linkConfirm='';actions.append(button('取消',cancel),ok)
+ const ok=button('确定',()=>apply());ok.dataset.linkConfirm='';ok.value='ok';actions.append(button('取消',cancel),ok)
  dialog.append(heading,mode,url,slide,note,error,actions);host.append(dialog)
- dialog.addEventListener('cancel',event=>{event.preventDefault();cancel()});dialog.addEventListener('close',cancel);dialog.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();cancel()}else if(event.key==='Enter'&&event.target===url){event.preventDefault();apply()}})
+ dialog.addEventListener('cancel',event=>{event.preventDefault();cancel()});dialog.addEventListener('close',cancel);dialog.addEventListener('keydown',event=>{if(event.isComposing||event.keyCode===229||event.defaultPrevented)return;if(event.key==='Escape'){event.preventDefault();cancel()}else if(event.key==='Enter'&&event.target===url){event.preventDefault();apply()}})
  if(typeof dialog.showModal==='function')dialog.showModal();else dialog.setAttribute('open','')
  ;(mode.value==='url'?url:slide).focus()
  return {dispose}

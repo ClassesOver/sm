@@ -2,7 +2,7 @@ import {createModal} from './modal'
 import {buttonClasses} from './button'
 /** null 为混合；未触碰回 undefined，仍由宿主验证来源/选区未过期。 */
 export function openDocxCellWrapDialog(root:HTMLElement,initial:boolean|null,apply:(wrap:boolean|undefined)=>void){
- const modal=createModal({root,label:'自动换行',closeLabel:'关闭自动换行',onRequestClose:()=>modal.remove(),content:`<h2>自动换行</h2><form><label><input type="checkbox" aria-label="自动换行">自动换行</label><p data-mixed></p><p>仅调整所选单元格的直属换行属性。固定布局或超宽表格仍可能按可用宽度换行；此设置不改变列宽或适应文字。</p><p role="alert"></p><button type="button" data-action="cancel" class="${buttonClasses('secondary')}">取消</button><button type="submit" class="${buttonClasses('primary')}">确定</button></form>`})
+ const modal=createModal({root,label:'自动换行',cardClass:'docx-table-property-dialog',closeLabel:'关闭自动换行',onRequestClose:()=>modal.remove(),content:`<h2>自动换行</h2><form><label><input type="checkbox" aria-label="自动换行">自动换行</label><p data-mixed></p><p>仅调整所选单元格的直属换行属性。固定布局或超宽表格仍可能按可用宽度换行；此设置不改变列宽或适应文字。</p><p role="alert"></p><button type="button" data-action="cancel" class="${buttonClasses('secondary')}">取消</button><button type="submit" class="${buttonClasses('primary')}">确定</button></form>`})
  const input=modal.card.querySelector<HTMLInputElement>('input')!;input.checked=initial??false;input.indeterminate=initial===null;input.setAttribute('aria-checked',initial===null?'mixed':String(initial));let touched=false
  modal.card.querySelector('[data-mixed]')!.textContent=initial===null?'所选单元格包含多个值；未修改时保持各自设置。':''
  input.addEventListener('change',()=>{touched=true;input.indeterminate=false;input.setAttribute('aria-checked',String(input.checked))})

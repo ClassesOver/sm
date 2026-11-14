@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
+import { inspectPptxStructureLayout } from './office-pptx-structure-layout.mjs'
 
 const frontend = process.cwd()
+const staticRoot = resolve(frontend, '../static')
+const sha = bytes => createHash('sha256').update(bytes).digest('hex')
+const manifestSha256 = sha(await readFile(resolve(staticRoot, '.vite/manifest.json')))
+if (process.env.PPTX_EXPECTED_MANIFEST_SHA256) assert.equal(manifestSha256, process.env.PPTX_EXPECTED_MANIFEST_SHA256)
+const chunks = new Map(), pendingAssets = []
 const repo = new URL('../../../', `file://${frontend}/`).pathname
 const port = Number(process.env.PPTX_SMOKE_PORT ?? 4209)
 const baseUrl = `http://127.0.0.1:${port}`
@@ -66,6 +72,15 @@ try {
   const failedResponses = []
   page.on('pageerror', error => pageErrors.push(error.message))
   page.on('response', response => { if (response.status() >= 400) failedResponses.push({ status: response.status(), url: response.url() }) })
+  page.on('response', response => {
+    if (!new URL(response.url()).pathname.endsWith('.js')) return
+    pendingAssets.push((async () => {
+      const bytes = await response.body(), path = new URL(response.url()).pathname.replace('/reports/v1/editor/assets/', '')
+      const disk = await readFile(resolve(staticRoot, path))
+      assert.equal(sha(bytes), sha(disk), path)
+      chunks.set(path, { path, size: bytes.length, sha256: sha(bytes) })
+    })())
+  })
   await page.route('**/favicon.ico', route => route.fulfill({ status: 200, contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg"/>' }))
 
   await page.route('**/reports/v1/native/fixture-pptx/*/api/context', route => route.fulfill({ json: {
@@ -125,12 +140,19 @@ try {
   await page.locator('#object-select').selectOption(target.id)
   await page.locator('[data-ribbon-tab="tableDesign"]').click()
   const structure=page.locator('[data-command="tableStructure"]')
+  const readDraft=()=>page.evaluate(()=>JSON.parse(Object.entries(localStorage).find(([key])=>key.includes('fixture-pptx'))?.[1]??'{"operations":[]}').operations)
+  let layout
+  if (process.env.PPTX_STRUCTURE_VIEWPORTS) {
+    const output = resolve(process.env.PPTX_SMOKE_EVIDENCE_DIR)
+    await mkdir(output, { recursive: true })
+    layout = await inspectPptxStructureLayout(page, { output, viewports: process.env.PPTX_STRUCTURE_VIEWPORTS, draft: readDraft })
+    await page.setViewportSize({ width: 1440, height: 1000 })
+  }
   await structure.click()
   const dialog=page.getByRole('dialog',{name:'调整表格行列'})
   await dialog.waitFor({state:'visible'})
   await dialog.getByLabel('参考行',{exact:true}).selectOption('1')
   await dialog.getByRole('button',{name:'在下方插入行',exact:true}).click()
-  const readDraft=()=>page.evaluate(()=>JSON.parse(Object.entries(localStorage).find(([key])=>key.includes('fixture-pptx'))?.[1]??'{"operations":[]}').operations)
   const expected=await readDraft()
   assert.deepEqual(expected[0].tableStructures,[{slideIndex:0,elementId:target.id,kind:'insert-row',index:1,before:false}])
   assert.equal(await structure.isDisabled(),true)
@@ -167,7 +189,9 @@ print(json.dumps({'rows':len(t.rows),'columns':len(t.columns),'height':shape.hei
   assert.equal(await page.locator('[data-table-cell]').count(),9)
   assert.equal(await page.locator('[data-command="tableStructure"]').isEnabled(),true)
   assert.deepEqual(pageErrors,[]);assert.deepEqual(failedResponses,[])
-  const receipt={ok:true,sourceSha,outputSha:activeSha,independent:JSON.parse(result.stdout),operation:expected[0],productionBuild:true}
+  await Promise.all(pendingAssets)
+  assert.equal(sha(await readFile(resolve(staticRoot,'.vite/manifest.json'))), manifestSha256)
+  const receipt={ok:true,sourceSha,outputSha:activeSha,independent:JSON.parse(result.stdout),operation:expected[0],productionBuild:true,apiRoutesAreFixtures:true,manifestSha256,runtimeJavaScript:[...chunks.values()],layout,pageErrors,failedResponses}
   if(process.env.PPTX_SMOKE_EVIDENCE_DIR){const directory=resolve(process.env.PPTX_SMOKE_EVIDENCE_DIR);await mkdir(directory,{recursive:true});await writeFile(join(directory,'source.pptx'),sourceBytes);await writeFile(join(directory,'downloaded.pptx'),downloaded);await writeFile(join(directory,'evidence.json'),JSON.stringify(receipt,null,2))}
   console.log(JSON.stringify(receipt))
 } finally {await browser?.close();server.kill('SIGTERM')}

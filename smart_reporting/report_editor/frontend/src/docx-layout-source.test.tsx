@@ -5,6 +5,51 @@ import { DocxLayoutSource } from './docx-layout-source'
 
 afterEach(() => { document.body.replaceChildren() })
 
+it('returns a controlled page-number failure to the dialog while ordinary layout controls remain handled', () => {
+  const host = document.body.appendChild(document.createElement('div')), root = createRoot(host)
+  const onChange = vi.fn(() => ({ error: '此节已插入分节符，请先保存，再调整页面设置' }))
+  const settings = { orientation: 'portrait' as const, pageWidth: 12240, pageHeight: 15840, pageBorder: false, marginTop: 1440, marginRight: 1440, marginBottom: 1440, marginLeft: 1440, columns: 1 as const }
+  flushSync(() => root.render(<DocxLayoutSource editable settings={settings} pageNumberFmt="upperRoman" pageNumberStart={3} onChange={onChange} />))
+  flushSync(() => host.querySelector<HTMLButtonElement>('[data-source-action="page-number-format"]')!.click())
+  flushSync(() => host.querySelector<HTMLButtonElement>('[type="submit"]')!.click())
+  expect(host.querySelector('[role=dialog]')).not.toBeNull()
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('此节已插入分节符')
+  flushSync(() => host.querySelector<HTMLButtonElement>('[data-source-action="page-number-cancel"]')!.click())
+  const orientation = host.querySelector<HTMLSelectElement>('[data-source-action="layout-orientation"]')!
+  orientation.value = 'landscape'
+  expect(() => flushSync(() => orientation.dispatchEvent(new Event('change', { bubbles: true })))).not.toThrow()
+  expect(onChange).toHaveBeenCalledTimes(2)
+  flushSync(() => root.unmount())
+})
+
+it('retains the page-number draft during dynamic editing and source locks', () => {
+  const host = document.body.appendChild(document.createElement('div')), root = createRoot(host), onChange = vi.fn()
+  const settings = { orientation: 'portrait' as const, pageWidth: 12240, pageHeight: 15840, pageBorder: false, marginTop: 1440, marginRight: 1440, marginBottom: 1440, marginLeft: 1440, columns: 1 as const }
+  const render = (editable: boolean, pageNumberReason?: string) => flushSync(() => root.render(<DocxLayoutSource editable={editable} settings={settings} pageNumberFmt="upperRoman" pageNumberStart={3} pageNumberReason={pageNumberReason} onChange={onChange} />))
+  render(true)
+  flushSync(() => host.querySelector<HTMLButtonElement>('[data-source-action="page-number-format"]')!.click())
+  const input = host.querySelector<HTMLInputElement>('[aria-label="起始页码"]')!
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '12')
+  flushSync(() => input.dispatchEvent(new Event('input', { bubbles: true })))
+  const confirm = host.querySelector<HTMLButtonElement>('[type="submit"]')!
+  confirm.focus(); render(false)
+  expect(confirm.disabled).toBe(true)
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('不可编辑或正在保存')
+  expect(document.activeElement).not.toBe(confirm)
+  flushSync(() => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+  expect(host.querySelector('[role=dialog]')).not.toBeNull()
+  expect(input.value).toBe('12'); expect(onChange).not.toHaveBeenCalled()
+  render(true, '页码格式来源状态不可判定')
+  expect(confirm.disabled).toBe(true)
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('来源状态不可判定')
+  render(true)
+  expect(confirm.disabled).toBe(false)
+  flushSync(() => confirm.click())
+  expect(onChange).toHaveBeenCalledExactlyOnceWith({ pageNumberFmt: 'upperRoman', pageNumberStart: 12 })
+  expect(host.querySelector('[role=dialog]')).toBeNull()
+  flushSync(() => root.unmount())
+})
+
 it('offers the pinned Word paper gallery and applies dimensions in the active orientation', () => {
   const host = document.createElement('div'); document.body.append(host)
   const root = createRoot(host), onChange = vi.fn()

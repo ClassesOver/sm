@@ -38,6 +38,37 @@ const selectTable = (root: ParentNode) => {
 const openDialog = (root: ParentNode) => { button(root, 'tableStructure').click(); return root.querySelector<HTMLDialogElement>('[aria-label="调整表格行列"]')! }
 const action = (dialog: HTMLDialogElement, text: string) => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent === text)!
 
+it('focuses a visibly labelled reference row and groups row and column operations', async () => {
+  const { shell, view } = await open(); selectTable(shell.editor)
+  const dialog = openDialog(shell.editor)
+  const row = dialog.querySelector<HTMLSelectElement>('[aria-label="参考行"]')!
+  expect(document.activeElement).toBe(row)
+  expect(row.closest('label')?.textContent).toContain('参考行')
+  expect(dialog.querySelector('[aria-label="参考列"]')!.closest('label')?.textContent).toContain('参考列')
+  const groups = [...dialog.querySelectorAll('fieldset')]
+  expect(groups.map(group => group.querySelector('legend')?.textContent)).toEqual(['行', '列'])
+  expect(groups.map(group => group.querySelectorAll('button').length)).toEqual([3, 3])
+  view.dispose()
+})
+
+it.each(['取消', 'Escape', '标题关闭'])('restores the structure entry and discards reference choices on %s', async method => {
+  const { shell, view, draft } = await open(); selectTable(shell.editor)
+  const opener = button(shell.editor, 'tableStructure'); opener.focus()
+  const dialog = openDialog(shell.editor)
+  dialog.querySelector<HTMLSelectElement>('[aria-label="参考行"]')!.value = '1'
+  if (method === 'Escape') dialog.dispatchEvent(new Event('cancel', { cancelable: true }))
+  else if (method === '标题关闭') {
+    const close = dialog.querySelector<HTMLButtonElement>('[aria-label="关闭调整表格行列"]')
+    expect(close).not.toBeNull(); close!.click()
+  } else action(dialog, '取消').click()
+  expect(dialog.isConnected).toBe(false)
+  expect(document.activeElement).toBe(opener)
+  expect(draft.operations).toEqual([])
+  const reopened = openDialog(shell.editor)
+  expect(reopened.querySelector<HTMLSelectElement>('[aria-label="参考行"]')!.value).toBe('0')
+  view.dispose()
+})
+
 it.each([
   ['在上方插入行', 'insert-row', 1, true], ['在下方插入行', 'insert-row', 1, false], ['删除行', 'delete-row', 1, undefined],
   ['在左侧插入列', 'insert-col', 2, true], ['在右侧插入列', 'insert-col', 2, false], ['删除列', 'delete-col', 2, undefined],
@@ -127,7 +158,7 @@ it('blocks stale custom-size submission after staging a structure operation', as
   button(shell.editor, 'customSlideSize').click()
   const sizeDialog = shell.editor.querySelector<HTMLDialogElement>('dialog')!
   selectTable(shell.editor); action(openDialog(shell.editor), '删除行').click()
-  sizeDialog.querySelector<HTMLInputElement>('[aria-label="Slide Width"]')!.value = '30'
+  sizeDialog.querySelector<HTMLInputElement>('[aria-label="幻灯片宽度"]')!.value = '30'
   button(sizeDialog, 'applyCustomSlideSize').dispatchEvent(new Event('click'))
   expect(draft.operations[0]).toHaveProperty('tableStructures')
   expect(draft.operations[0]).not.toHaveProperty('slideSize')

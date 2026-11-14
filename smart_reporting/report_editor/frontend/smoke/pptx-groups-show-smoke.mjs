@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
 import { verifyBrowserTextInput } from './browser-input-preflight.mjs'
+import { inspectSlidesShow } from './office-pptx-show-layout.mjs'
 
 // This is an explicit authorization/CSRF route fixture, not a live-service authorization test.
 // Preview, rendering, save and downloaded-file inspection run the real Python/OOXML engine.
@@ -202,10 +203,15 @@ try {
   await page.locator('#object-text').fill('Unsaved slideshow snapshot')
   await waitDraft(op => op.edits?.some(item => item.elementId === before.id && item.text === 'Unsaved slideshow snapshot'))
   const beforeShow = await draft(), saveCount = saves.length
+  const openShow=async()=>{
+    await page.locator('[data-ribbon-tab="slideShow"]').click();await page.locator('[data-command="startShow"]').click();await page.locator('.slides-show-stage canvas').first().waitFor()
+  }
   await page.locator('[data-ribbon-tab="slideShow"]').click()
   await page.locator('[data-command="startShow"]').click()
   await page.locator('.slides-show-stage canvas').first().waitFor()
   assert.equal(await page.getByLabel('放映页码').textContent(), '1 / 2')
+  let showLayout
+  if(process.env.PPTX_SHOW_VIEWPORTS){showLayout=await inspectSlidesShow(page,{output,viewports:process.env.PPTX_SHOW_VIEWPORTS,open:openShow,draft});assert.deepEqual(showLayout.failures,[])}
   await page.screenshot({ path: resolve(output, 'show-from-beginning.png'), fullPage: true })
   await page.keyboard.press('ArrowRight')
   assert.equal(await page.getByLabel('放映页码').textContent(), '2 / 2')
@@ -235,7 +241,7 @@ try {
     engine: 'real Python inspect/patch/render and independent python-pptx/ZIP readback',
     manifestSha256, runtimeJavaScript: [...runtimeJavaScript.values()], sourceSha256: sourceSha,
     revision: activeRevision, saves, grouped: grouped.independent, ungrouped: ungrouped.independent,
-    beforeShow, pageErrors, consoleErrors, routeErrors, failedResponses, runtimeEvents, inputBaseline }
+    beforeShow, showLayout, pageErrors, consoleErrors, routeErrors, failedResponses, runtimeEvents, inputBaseline }
   await writeFile(resolve(output, 'evidence.json'), JSON.stringify(evidence, null, 2))
   console.log(JSON.stringify({ ok: true, output, revision: activeRevision, manifestSha256, runtimeJavaScript: runtimeJavaScript.size }))
 } catch (error) {

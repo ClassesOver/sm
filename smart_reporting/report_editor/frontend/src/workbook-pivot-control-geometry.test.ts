@@ -48,6 +48,21 @@ it('previews a move and commits one snapped anchor only after release', async ()
   subscription.unsubscribe()
 })
 
+it.each(['composition', 'legacy', 'handled'])('受保护Escape不撤回透视控件拖动，松开仍只提交一次：%s', async protection => {
+  const f = fixture()
+  f.handle.start(f.event('pointerdown', 120, 130), f.button, 'move'); f.dispatch('pointermove', 220, 170)
+  const preview = f.service.domLayers[0]![1].position$
+  const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, isComposing: protection === 'composition', keyCode: protection === 'legacy' ? 229 : 0 })
+  if (protection === 'handled') event.preventDefault()
+  window.dispatchEvent(event)
+  expect(f.service.domLayers[0]![1].position$).toBe(preview)
+  expect(f.button.releasePointerCapture).not.toHaveBeenCalled()
+  expect(f.commit).not.toHaveBeenCalled()
+  f.dispatch('pointerup', 220, 170); await Promise.resolve()
+  expect(f.commit).toHaveBeenCalledExactlyOnceWith({ row: 6, column: 3, width: 192, height: 260 })
+  expect(f.service.domLayers[0]![1].position$).toBe(f.source)
+})
+
 it('resizes in unscaled integer pixels and clamps native schema limits', async () => {
   const f = fixture(1.25)
   f.handle.start(f.event('pointerdown', 200, 200), f.button, 'resize')
