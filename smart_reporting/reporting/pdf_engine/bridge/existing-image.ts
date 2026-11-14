@@ -6,11 +6,14 @@ import {inspectTextObjects} from '../src/main/text-edit'
 import {staticTextAvailability} from './static-text'
 import {applyExistingImageReplace,applyExistingImageReplaceBgra,applyExistingImageTransform,decodePngBgra,listExistingEngineImages,renderExistingImageBgra,type ExistingEngineImage} from './existing-image-engine'
 import {cropRect,flipPixels,multiplyAlpha} from '../src/renderer/image-bake'
+import {removeBackground} from '../src/renderer/cutout'
 const hash=(value:Uint8Array|string)=>createHash('sha256').update(value).digest('hex')
 const rectSchema=z.tuple([z.number().finite(),z.number().finite(),z.number().finite(),z.number().finite()])
 const operationSchema=z.object({kind:z.literal('transformExistingImage'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string(),imageId:z.string().regex(/^[a-f0-9]{64}$/),expectedImageSha256:z.string().regex(/^[a-f0-9]{64}$/),rect:rectSchema,image:z.string().min(8).max(6_000_000).optional(),bake:z.discriminatedUnion('kind',[
  z.object({kind:z.literal('flip'),axis:z.enum(['h','v'])}).strict(),
  z.object({kind:z.literal('opacity'),alpha:z.number().min(0).max(.99).refine(value=>Math.abs(Math.round(value*100)-value*100)<1e-9)}).strict(),
+ // 固定源 ImageBakeOp cutout：容差 0–100（DEFAULT_CUTOUT_TOLERANCE=30），边缘连通的背景像素 alpha 置 0。
+ z.object({kind:z.literal('cutout'),tolerance:z.number().int().min(0).max(100)}).strict(),
  z.object({kind:z.literal('crop'),crop:z.object({l:z.number().min(0).max(1),t:z.number().min(0).max(1),r:z.number().min(0).max(1),b:z.number().min(0).max(1)}).strict().refine(c=>c.r-c.l>=.01&&c.b-c.t>=.01&&(c.r-c.l<1||c.b-c.t<1))}).strict(),
 ]).optional()}).strict().refine(op=>op.image===undefined||op.bake===undefined)
 /** 固定源 App.tsx BAKE_SCALE：烘焙像素按页面尺寸 3 倍取样，结果保持印刷清晰度。 */
@@ -50,7 +53,7 @@ export async function transformExistingImage(content:Uint8Array,input:unknown,ex
  if(operation.image!==undefined&&!target.replaceable)throw Error(target.replaceReason??'此图像暂不支持替换')
  if(operation.bake&&!target.bakeable)throw Error(target.bakeReason??'此图像暂不支持裁剪、翻转与透明度')
  // 烘焙不与移动同批：翻转/透明度保持原范围，裁剪的新范围必须正是固定源 cropRect(原范围, 保留比例)。
- if(operation.bake&&!near(operation.rect,operation.bake.kind==='crop'?cropRect(target.rect,operation.bake.crop):target.rect,.05))throw Error(operation.bake.kind==='crop'?'裁剪后的范围须由保留比例计算，不能同时移动':'翻转或透明度不能同时移动或缩放图像')
+ if(operation.bake&&!near(operation.rect,operation.bake.kind==='crop'?cropRect(target.rect,operation.bake.crop):target.rect,.05))throw Error(operation.bake.kind==='crop'?'裁剪后的范围须由保留比例计算，不能同时移动':'翻转、透明度或去除背景不能同时移动或缩放图像')
  const document=await PDFDocument.load(content,{updateMetadata:false}),page=document.getPage(target.pageIndex),box=page.getCropBox(),[x1,y1,x2,y2]=operation.rect
  if(x2-x1<3||y2-y1<3||x1<box.x||y1<box.y||x2>box.x+box.width||y2>box.y+box.height)throw Error('图像范围超出来源裁切范围或尺寸过小')
  const skip=(reason:string)=>({operationIndex:0,kind:operation.kind,pageId:operation.pageId,reason})
@@ -65,6 +68,8 @@ export async function transformExistingImage(content:Uint8Array,input:unknown,ex
    let pixels:{width:number;height:number;bgra:Uint8Array}
    if(bake.kind==='flip')pixels={width:image.width,height:image.height,bgra:new Uint8Array(flipPixels(image,bake.axis).buffer)}
    else if(bake.kind==='opacity')pixels={width:image.width,height:image.height,bgra:new Uint8Array(multiplyAlpha(image,bake.alpha).buffer)}
+   // 固定源 removeBackground：背景采样与距离比较对通道顺序对称，BGRA 像素与 RGBA 结果一致。
+   else if(bake.kind==='cutout')pixels={width:image.width,height:image.height,bgra:new Uint8Array(removeBackground(image,bake.tolerance).data.buffer)}
    else{
     // 与固定源 cropImagePng 相同的取整：sx/sy 四舍五入，宽高至少 1 像素
     const {l,t,r,b}=bake.crop,sx=Math.round(l*image.width),sy=Math.round(t*image.height),sw=Math.max(1,Math.min(image.width-sx,Math.round((r-l)*image.width))),sh=Math.max(1,Math.min(image.height-sy,Math.round((b-t)*image.height)))

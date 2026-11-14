@@ -65,7 +65,7 @@ const tabs: Tab[] = [
     { label: 'Export', controls: [
       { id: 'print', label: 'Print', unavailable: desktop('打印') },
       { id: 'exportPdf', label: 'Export PDF', icon: Download, unavailable: noWrite('PDF 导出') },
-      { id: 'exportImages', label: 'Export Images', unavailable: noWrite('图片导出') },
+      { id: 'exportImages', label: 'Export Images', sourceActionId: 'onExportImages' },
     ] },
     { label: 'Save', controls: [
       { id: 'saveRevision', label: 'Save Revision', sourceIcon: IconSave },

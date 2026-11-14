@@ -172,6 +172,7 @@ type RibbonCommand =
   | 'print-scale-open'
   | 'header-footer-open'
   | 'insert-symbol'
+  | 'link-open'
   | 'refresh-all'
   | 'print-gridlines'
   | 'print-headings'
@@ -464,7 +465,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '图表', actions: ['recommended-charts-open', 'insert-chart:column', 'insert-chart:bar', 'insert-chart:line', 'insert-chart:area', 'insert-chart:pie', 'insert-chart:scatter', 'insert-chart:radar', 'insert-chart:doughnut', 'insert-chart:combo'].map(id => action(id, id, id === 'recommended-charts-open' ? undefined : id as RibbonCommand)) },
     { title: '迷你图', actions: (['sparkline:line', 'sparkline:column', 'sparkline:stacked', 'sparkline:edit', 'sparkline:delete'] as const).map(id => action(id, id, id)) },
     { title: '筛选器', actions: (['slicer-open', 'timeline-open'] as const).map(id => action(id, id, id)) },
-    { title: '链接', actions: ['link-open'].map(id => action(id, id)) },
+    { title: '链接', actions: [action('link-open', 'link-open', 'link-open')] },
     { title: '批注', actions: [action('批注', 'note-open', 'note-open')] },
     { title: '文本', actions: [action('insert-textbox', 'insert-textbox'), action('header-footer-open', 'header-footer-open', 'header-footer-open')] },
     { title: '符号', actions: [action('insert-equation', 'insert-equation'), action('insert-symbol', 'insert-symbol', 'insert-symbol')] },

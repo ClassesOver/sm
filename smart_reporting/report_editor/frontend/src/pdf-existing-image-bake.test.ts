@@ -25,3 +25,14 @@ it('rejects unbakeable targets, invalid bakes, moved rects and bake with replace
  expect(()=>validatePdfExistingImage(pages,[flip],[{...target,bakeable:false}])).toThrow()
  expect(()=>validatePdfExistingImage(pages,[{...flip,bake:{kind:'opacity',alpha:2}}],[target])).toThrow()
 })
+
+it('stages the pinned cutout bake in place with an integer 0–100 tolerance and rejects invalid ones',()=>{
+ const staged=existingImageBake(sha,target,{kind:'cutout',tolerance:30})
+ expect(staged).toEqual({...base,rect:[60,90,160,170],bake:{kind:'cutout',tolerance:30}})
+ expect(()=>validatePdfExistingImage(pages,[staged],[target])).not.toThrow()
+ for(const tolerance of [0,100])expect(()=>existingImageBake(sha,target,{kind:'cutout',tolerance})).not.toThrow()
+ for(const bake of [{kind:'cutout',tolerance:101},{kind:'cutout',tolerance:-1},{kind:'cutout',tolerance:12.5},{kind:'cutout'},{kind:'cutout',tolerance:30,extra:1}])
+  expect(()=>existingImageBake(sha,target,bake as never),JSON.stringify(bake)).toThrow()
+ expect(()=>validatePdfExistingImage(pages,[{...staged,rect:[70,90,170,170]}],[target])).toThrow('不能同时移动')
+ expect(()=>validatePdfExistingImage(pages,[{...staged,bake:{kind:'cutout',tolerance:500}}],[target])).toThrow()
+})

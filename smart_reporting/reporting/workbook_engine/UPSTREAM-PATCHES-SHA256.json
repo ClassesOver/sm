@@ -1,5 +1,5 @@
 {
-  "packages/xlsx-engine/src/index.ts": "f37e588e548811126acd0217c2b16aa21ca0abf00f65ad00450ee33684693684",
+  "packages/xlsx-engine/src/index.ts": "8577ff27ba54379154b47c1abb5b40f9ec55ffdd2d4466d26542c7976e66c612",
   "packages/xlsx-engine/src/notes.ts": "13a61a02edeaae5707efb432fbefdd2a18ee8c1076ce3f44ceedb52ac176ad97",
   "packages/xlsx-engine/src/note-read.ts": "ee3eb11c7730255498f4416c92af86e59699ccc6a46bfcef6a18a5d8de313ef2",
   "packages/xlsx-engine/src/pivot-grouping.ts": "95665158e5b576d11ff71ca2c110f781163cabbeb2b166ad368cd42165cd2645",
@@ -83,5 +83,10 @@
   "packages/xlsx-engine/src/pivot-table-source.ts": "c59965c38428d710c774361f6a50fe623fc95ac6ed111a3630b5237cf3416ca6",
   "packages/xlsx-engine/tests/pivot-table-source.test.ts": "162c72c959e27675213a6cc2c1fc8e7a908d423b2519f0ffc53f860b59904ca2",
   "packages/xlsx-engine/src/pivot-source-field-rename.ts": "d05230d0ebd5242467fc55c4784b436e50fc841c4033c5681d45d46022f5a2a4",
-  "packages/xlsx-engine/src/pivot-controls.ts": "a3820c1d0406aff66ccc49958b07f5dff3f79d94e86918427f94bd24c228a4dd"
+  "packages/xlsx-engine/src/pivot-controls.ts": "a3820c1d0406aff66ccc49958b07f5dff3f79d94e86918427f94bd24c228a4dd",
+  "packages/xlsx-engine/src/hyperlinks.ts": "e6b66dd38495e09a24b4fa859af0d0e21f25ad594ca229ae74b2b5120a463b89",
+  "packages/xlsx-engine/src/hyperlink-write.ts": "6599bca1f80f1bae1fb50a8566d613d335f9694bc36b5c971e6bf15d571f681e",
+  "packages/xlsx-engine/tests/hyperlinks.test.ts": "4f668f013dc43c4454280caa19d33b300eb3e8eac893e9009bf27df0c47090c3",
+  "packages/xlsx-engine/tests/hyperlink-reid-regex.test.ts": "b37818aef47f0c1f9f74024552c39b9d795f841e46d0cbebc715a8c6d8bbacb2",
+  "packages/xlsx-engine/tests/hyperlink-write.test.ts": "a259b012da22124fab611ee1f0509f567a620c1484947954d0abd3ddb3d7b2e3"
 }

@@ -27,7 +27,7 @@ _OPERATION_KINDS = frozenset({
     'applyColumnWidths', 'applyRowHeights', 'applySheetOutline', 'applyPageSetups', 'applyTableAdditions', 'applyTableEdits', 'sortRange',
     'refreshPivotCaches', 'applyPivotLayoutExpansions', 'expandPivotOutputs', 'upsertPivotControl', 'removePivotControl',
     'applyDefinedNames', 'protectSheet', 'protectWorkbookStructure', 'setSheetEditableRanges', 'setThemePart',
-    'appendSheetSparklines',
+    'appendSheetSparklines', 'applySheetHyperlinks',
 })
 
 

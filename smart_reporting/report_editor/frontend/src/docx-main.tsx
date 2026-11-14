@@ -63,6 +63,7 @@ import { normalizeDocxColumnWidthSources } from './docx-table-column-width'
 import { withDocxTableAlignmentDisplayIndents } from './docx-table-alignment-baseline'
 import { createDocxRibbon } from './docx-ribbon'
 import { docxPageColorModel, docxPageColorOperations, effectiveDocxPageColor, withDocxPageColor } from './docx-page-color'
+import { effectiveDocxPageBorder, withDocxPageBorder } from './docx-page-borders'
 import { docxWatermarkModel, docxWatermarkOperations, effectiveDocxWatermark, withDocxWatermark } from './docx-watermark'
 import { createDocxViewCommands } from './docx-view'
 import { parseDocxOffThread } from './vendor/genoffice-docs/apps/docs/src/renderer/parse-off-thread'
@@ -971,7 +972,26 @@ export async function createDocxEditorView(shell: EditorShell, options: {
       commitDocxNativeOperations(editor, withDocxWatermark(nativeOperations(), watermarkModel, spec))
       syncWatermark()
     },
-  } : undefined))
+  } : undefined, {
+    // 固定源 Design ▸ Page Borders：整篇文档 = 每节一条 setSectionLayout（onPageBorderAll），本节 = 当前节。
+    current: () => effectiveDocxPageBorder(sectionAnchors[activeSection]!.settings, sectionValues(activeSection) as Record<string, unknown> | undefined),
+    sectionLabel: () => sectionAnchors.length > 1 ? `第 ${activeSection + 1} 节` : undefined,
+    reason: (scope: import('./docx-page-borders').PageBorderScope) => {
+      if (saving || draft.saving || draft.closed || !context.editingEnabled) return '当前文档不可编辑或正在保存'
+      if (draft.operations.some(operation => operation.kind === 'insertSectionBreak')) return '已插入分节符，请先保存，再设置页面边框'
+      if (draft.operations.some(operation => operation.kind === 'setWatermark')) return '页面边框与水印需分开保存，请先保存水印修改'
+      return (scope === 'whole' ? sectionAnchors.map((_, index) => index) : [activeSection]).some(pendingBreakIn) ? '此节已插入分节符，请先保存' : null
+    },
+    apply: (value: import('./docx-page-borders').DocxPageBorderValue, scope: import('./docx-page-borders').PageBorderScope) => {
+      if (saving || draft.saving || draft.closed || !context.editingEnabled) return
+      const indices = scope === 'whole' ? sectionAnchors.map((_, index) => index) : [activeSection]
+      const layout = withDocxPageBorder(sectionOperation(), indices.map(index => ({ sectionId: sectionAnchors[index]!.sectionId, settings: sectionAnchors[index]!.settings })), value,
+        (sectionId, values) => { const anchor = sectionAnchors.find(item => item.sectionId === sectionId)!; return restoredDocxSectionOperation([{ kind: 'setSectionLayout', sectionId, expectedSectionSha256: anchor.expectedSectionSha256, values }], anchor) })
+      commitDocxNativeOperations(editor, collectOperations(editor.getJSON(), layout, headerFooterOperations()))
+      syncSection()
+      editor.commands.setMeta('native-section-layout', true)
+    },
+  }))
   editor.on('transaction', view.refresh)
   let columnFrame = 0, columnRequest = 0
   const scheduleColumns = () => {
