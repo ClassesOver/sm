@@ -209,3 +209,61 @@ async def test_finish_is_two_phase_and_instruction_requires_successor(repository
     assert completed.state is TaskState.COMPLETED
     closed = await repository.get_attempt(completed.current_internal_run_id)
     assert closed is not None and closed.outcome is AttemptOutcome.FINISH_ACCEPTED
+
+
+@pytest.mark.anyio
+async def test_old_resume_rolls_back_before_queued_postgres_epoch_takeover(repository):
+    """A real task lock serializes takeover; expired old run writes still roll back."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from sqlalchemy import select, text
+
+    from smart_reporting.task_execution.tests.test_lifecycle_expiry_postgres import (
+        blocked_statement,
+        database_lease_expired,
+    )
+
+    task = await repository.create_task_with_initial_attempt(scope("late-resume"), "目标")
+    old_lease = await repository.claim_lease(task.scope.external_run_id, "old-worker")
+    task, initial_attempt = await repository.open_initial(
+        task.scope.external_run_id, old_lease, task.state_version,
+    )
+    database = SimpleNamespace(async_engine=repository.db.db_engine)
+    async with repository.db.db_engine.begin() as connection:
+        expiry = (await connection.execute(text('UPDATE agentos_coding.agentos_coding_tasks '
+            "SET lease_expires_at=clock_timestamp()+interval '1 second' "
+            'WHERE external_run_id=:run RETURNING lease_expires_at'),
+            {'run': task.scope.external_run_id})).scalar_one()
+    old_lease = Lease(old_lease.owner, old_lease.epoch, expiry)
+    actors = []
+    try:
+        async with repository.db.db_engine.begin() as blocker:
+            await blocker.execute(select(repository.runs.c.internal_run_id).where(
+                repository.runs.c.internal_run_id == initial_attempt.internal_run_id).with_for_update())
+            holder = (await blocker.execute(text('SELECT pg_backend_pid()'))).scalar_one()
+            actors.append(asyncio.create_task(repository.resume_current(
+                task.scope.external_run_id, old_lease, task.state_version)))
+            await blocked_statement(database, holder)
+            async with repository.db.db_engine.connect() as observer:
+                old_pid = (await observer.execute(text('SELECT pid FROM pg_stat_activity '
+                    "WHERE datname=current_database() AND wait_event_type='Lock' "
+                    'AND :holder = ANY(pg_blocking_pids(pid))'), {'holder': holder})).scalar_one()
+            await database_lease_expired(repository, database, task.scope.external_run_id)
+            actors.append(asyncio.create_task(repository.claim_lease(task.scope.external_run_id, "new-worker")))
+            await blocked_statement(database, old_pid)
+        results = await asyncio.wait_for(asyncio.gather(*actors, return_exceptions=True), 5)
+        assert isinstance(results[0], TaskExecutionRepositoryError)
+        assert results[0].code == "task_cas_conflict"
+        new_lease = results[1]
+        assert isinstance(new_lease, Lease) and new_lease.epoch == old_lease.epoch + 1
+        after = await repository.get_attempt(initial_attempt.internal_run_id)
+        assert after.resume_count == initial_attempt.resume_count
+        assert after.lease_epoch == old_lease.epoch
+        current = await repository.get_task_snapshot(task.scope.external_run_id)
+        assert current.state_version == task.state_version
+        assert current.lease_owner == "new-worker"
+    finally:
+        for actor in actors:
+            actor.cancel()
+        await asyncio.gather(*actors, return_exceptions=True)

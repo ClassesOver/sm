@@ -3,7 +3,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import create_engine, insert, select, update
+from sqlalchemy import create_engine, event, insert, select, update
 
 from smart_reporting.task_execution import (
     Lease,
@@ -49,6 +49,12 @@ def repository(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'lease-fence.sqlite'}").execution_options(
         schema_translate_map={repository.metadata.schema: None}
     )
+    # Production is PG-only. Test SQLite evaluates a real SQL UDF; never make
+    # production authorization fall back to a Python time captured before waiting.
+    @event.listens_for(engine, "connect")
+    def register_clock(dbapi_connection, _record):
+        dbapi_connection.create_function("clock_timestamp", 0, lambda: utcnow().isoformat(sep=" "))
+
     repository.metadata.create_all(engine)
     adapter = _SqliteAsyncAdapter(engine)
     repository.db = SimpleNamespace(db_engine=adapter)
@@ -161,3 +167,64 @@ async def test_indeterminate_owned_patch_cleanup_still_fails_current_task(reposi
     with engine.connect() as connection:
         assert connection.execute(select(current.runs.c.outcome)).scalar_one() == "error"
         assert connection.execute(select(current.instructions.c.status)).scalar_one() == "rejected"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["open", "close", "resume", "request_finish", "finalize_finish"])
+@pytest.mark.parametrize("fence", ["epoch", "owner", "expiry"])
+async def test_old_attempt_transition_cannot_commit_after_epoch_takeover(repository, action, fence):
+    from smart_reporting.task_execution.models import AttemptOutcome
+
+    current, scope, lease, engine, adapter = repository
+    with engine.begin() as connection:
+        connection.execute(update(current.tasks).values(state_version=1))
+    initial_status = "created" if action == "open" else "running"
+    with engine.begin() as connection:
+        connection.execute(update(current.runs).values(status=initial_status))
+        if action == "finalize_finish":
+            connection.execute(update(current.tasks).values(status="finishing", finish_receipt={"ok": True}))
+    snapshot = await current.get_task_snapshot(scope.external_run_id)
+
+    def before_execute(connection, statement):
+        if getattr(statement, "is_update", False) and statement.table is current.tasks:
+            adapter.before_execute = None
+            # Claiming a new epoch does not change state_version. Inject precisely
+            # after the old worker's snapshot read, before its final task CAS.
+            values = {
+                "epoch": {"lease_epoch": 2},
+                "owner": {"lease_owner": "worker-b"},
+                "expiry": {"lease_expires_at": utcnow() - timedelta(seconds=1)},
+            }[fence]
+            connection.execute(update(current.tasks).values(**values))
+
+    if action == "request_finish":
+        with engine.begin() as connection:
+            connection.execute(update(current.instructions).values(status="applied"))
+    adapter.before_execute = before_execute
+    with pytest.raises(TaskExecutionRepositoryError) as captured:
+        if action == "close":
+            await current.close_and_decide(
+                scope.external_run_id, lease, snapshot.state_version,
+                outcome=AttemptOutcome.ERROR, agno_status="error", create_next=True,
+            )
+        elif action == "resume":
+            await current.resume_current(scope.external_run_id, lease, snapshot.state_version)
+        elif action == "open":
+            await current.open_initial(scope.external_run_id, lease, snapshot.state_version)
+        elif action == "request_finish":
+            await current.request_finish(
+                scope.external_run_id, lease, snapshot.state_version, {"ok": True},
+                result_text="done", retained_execution_ids=[],
+            )
+        else:
+            await current.finalize_finish(
+                scope.external_run_id, lease, snapshot.state_version, agno_status="completed",
+            )
+    assert captured.value.code == "task_cas_conflict"
+    with engine.connect() as connection:
+        assert connection.execute(select(current.runs.c.status)).scalar_one() == initial_status
+        assert connection.execute(select(current.runs.c.resume_count)).scalar_one() == 0
+        assert connection.execute(select(current.tasks.c.status)).scalar_one() == snapshot.state.value
+        assert len(connection.execute(select(current.runs)).all()) == 1
+        expected_instruction = "applied" if action == "request_finish" else "pending"
+        assert connection.execute(select(current.instructions.c.status)).scalar_one() == expected_instruction
