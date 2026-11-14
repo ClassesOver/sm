@@ -21,7 +21,7 @@ _OPERATION_KINDS = frozenset({
     'formatTableProperties', 'replaceImage', 'setParagraphDropCap',
     'setParagraphProperties',
     'setParagraphCustomList', 'setParagraphNumberingValue',
-    'insertCrossReference', 'insertCaption', 'pasteRichContent', 'mailMergeSingle', 'insertMailMergeField', 'editEquations', 'setPageColor', 'setWatermark',
+    'insertCrossReference', 'insertCaption', 'pasteRichContent', 'mailMergeSingle', 'insertMailMergeField', 'editEquations', 'setPageColor', 'setWatermark', 'setTableStyle',
     'createBookmark', 'deleteBookmark', 'insertToc', 'updateToc', 'deleteComment', 'resolveComment', 'replyComment', 'createComment', 'editCommentText', 'resolveTextRevision', 'recordTextRevision', 'setTrackRevisions', 'insertNote', 'updateNote', 'deleteNote', 'patchParagraphRuns',
     'clearParagraphFormatting', 'setParagraphRulerIndent', 'setParagraphTabStops', 'setTableCellBorders', 'setTableRepeatHeaders', 'reshapeTableCells', 'resizeTableColumns', 'setTableRowHeights', 'setTableAutoFit', 'setTableCellTextDirection', 'setTableCellAlignment', 'setTableCellMargins', 'setTableCellMarginOverrides', 'setTableRowBreaks', 'setTableAlignment', 'setTableCellWrap', 'setTableAltText',
     'replaceParagraph', 'insertParagraph', 'insertParagraphImage', 'insertTable', 'insertCoverPage', 'deleteParagraph',
