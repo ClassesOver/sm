@@ -53,3 +53,26 @@ async def test_http_legal_table_selection_rejected_before_task_or_provider():
         assert ai._jobs == {}
     finally:
         await ai.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('kind', ['unknown_value_error', 'authorization_error'])
+async def test_prepare_does_not_convert_unknown_or_authorization_errors(kind):
+    from smart_reporting.reporting.models import ReportingError
+
+    data = inputs()
+    error = (ValueError('unexpected implementation defect') if kind == 'unknown_value_error'
+             else ReportingError('native_permission_denied', 'Synthetic authorization refusal'))
+    repository = AsyncMock(spec=['create_native_word_task'])
+    transport = AsyncMock(spec=['run'])
+    dispatcher = WordTaskDispatcher(repository, data.grants, data.editor,
+        scope_factory=lambda context, task_id: TaskExecutionScope(task_id, 'user', 'thread', 'workspace', 'word'),
+        secret='s' * 32, transport=transport, enabled=True)
+    dispatcher.builder.build = AsyncMock(side_effect=error)
+    with pytest.raises(type(error)) as caught:
+        await dispatcher.prepare(context=data.context, session_reference='c' * 64,
+            instruction='Edit', expected_sha256='a' * 64, operations=[],
+            selection=[{'blockId': 'p1'}], request_id='known-boundary-only')
+    assert caught.value is error
+    repository.create_native_word_task.assert_not_called()
+    transport.run.assert_not_called()

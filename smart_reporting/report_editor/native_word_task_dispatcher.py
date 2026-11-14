@@ -59,8 +59,14 @@ class WordTaskDispatcher:
         scope = self.scope_factory(context, task_id)
         if not isinstance(scope, TaskExecutionScope) or scope.external_run_id != task_id:
             raise _invalid()
-        value = await self.builder.build(scope=scope, server_session_reference=session_reference,
-            instruction=instruction, expected_sha256=expected_sha256, operations=operations, selection=selection)
+        try:
+            value = await self.builder.build(scope=scope, server_session_reference=session_reference,
+                instruction=instruction, expected_sha256=expected_sha256, operations=operations, selection=selection)
+        except ValueError as error:
+            if type(error) is not ValueError or error.args != ('native_word_builder_invalid',):
+                raise
+            raise ReportingError('native_ai_selection_invalid',
+                '当前 Word 任务输入不受支持或授权已变化，请重新选择。') from None
         try:
             await self.repository.create_native_word_task(scope, instruction, value)
         except TaskExecutionRepositoryError as error:
