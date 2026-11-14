@@ -21,6 +21,7 @@ from smart_reporting.report_editor.native_ai_api import create_native_ai_router
 from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_import import NativeImportService
 from smart_reporting.report_editor.native_import_api import create_native_import_router
+from smart_reporting.report_editor.native_repository import NativeDocumentRepository
 from smart_reporting.report_editor.native_word_task_dispatcher import WordTaskDispatcher
 from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
 from smart_reporting.task_execution.models import TaskExecutionScope, TaskState
@@ -67,10 +68,22 @@ class SyntheticMcpTransport:
 
 @pytest.fixture
 async def chain(tmp_path, word_repository):
+    from sqlalchemy import text
+
     from smart_reporting.app import require_workspace_capability
 
-    repository, _ = word_repository
+    repository, database = word_repository
     publication, _, _ = await create_publication(tmp_path)
+    # The publication helper's minimal fake supports save-only tests, NOT import.
+    # Use the real repository contract required by NativeImportService here.
+    native_repository = NativeDocumentRepository(database.async_engine)
+    await native_repository.create_schema()
+    assert callable(native_repository.create_from_source)
+    assert callable(native_repository.get_revision)
+    assert callable(native_repository.complete_revision)
+    async with database.async_engine.begin() as connection:
+        await connection.execute(text('TRUNCATE report_native_documents_v1 CASCADE'))
+    publication.repository = native_repository
     editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
         report_editor=None, docx_enabled=True, publication=publication)
     transport = SyntheticMcpTransport()
@@ -115,6 +128,19 @@ async def chain(tmp_path, word_repository):
                 context=context)
     finally:
         await ai.aclose()
+        async with database.async_engine.begin() as connection:
+            await connection.execute(text('TRUNCATE report_native_documents_v1 CASCADE'))
+
+
+async def test_chain_fixture_real_import_context_preview_preserves_source(chain):
+    from smart_reporting.report_editor.native_models import NativeScope
+
+    native_context = chain.context['context']
+    revision = await chain.editor.repository.get_revision(native_context['documentId'], 1,
+        scope=NativeScope.model_validate(native_context['scope']))
+    assert revision is not None and revision.status == 'saved'
+    assert await chain.editor.read_file(revision.context) == chain.original
+    assert chain.transport.calls == 0
 
 
 async def started(chain):
