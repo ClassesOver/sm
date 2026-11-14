@@ -14,8 +14,8 @@
 
 当前仍需补齐：
 
-1. 固定源 Rust reader 在没有根标签或根模式 none、首个 series 有标签时回退首 series，本地尚未实现。
-2. 图表级 `dataLabelStyle` 的颜色／字号继承，目前仍使用默认 9px／#888。
+1. 固定源 Rust reader 在没有根标签或根模式 none、首个 series 有标签时回退首 series，本地尚未实现。该差异不能只改 reader：本地已有 Scatter 标签编辑入口，选择 none 会删除根标签但保留 series；若引入回退，首 series 的 value 会使标签重新显示。须先设计并验证关闭契约，不能将当前专项视为待直接接线的小修复。
+2. 更正：固定源 `ScatterChart` 不接收或消费 `dataLabelStyle`，数据标签仅使用 `data-label` class；本地默认 9px／#888 不应因此列作固定源 Scatter 颜色／字号继承缺口。通用 reader 中存在该字段、或其它图族消费该字段，不证明 Scatter 具有此能力。
 3. 完整轴文字样式、富文本／主题，以及复杂多 plot／次轴来源仍需核验。固定源未应用的反向坐标、顶部／右侧布局或 X 单位标签不列为必须新增功能。
 4. 四格式整体、完整 AI 工具、真实生产 provider 同链及持久恢复仍未验收完成。
 
@@ -39,3 +39,15 @@
 在图表读取模型中按语义保留 X、Y 轴属性：各轴分别保存主网格线和显示单位除数/标签；已有设计级网格线字段应明确映射到 Y 轴/全局行为。读取 Scatter plot 级数据标签，再按 series 数字格式绘制全局数值标签，并根据对应字段绘制轴标题、X 轴和 Y 轴网格线。固定源 renderer 不处理 series/point 级 `dLbls`，本轮不扩展这部分。编辑坐标轴标题、网格线和值范围时，应依据 Scatter plot 声明的轴 ID 定位，不应默认使用 XML 中首个轴或 `catAx`/`valAx` 类型。
 
 参考文件：`reporting/workbook_engine/packages/xlsx-engine/src/chart-read.ts`、`src/chart-add.ts`、`src/chart-edit.ts`、`report_editor/frontend/src/workbook-vendor/grid/chart-render.ts`、`grid/chart-data-labels.ts`，以及固定源 `apps/sheets/src/renderer/WorkbookVisuals.tsx` 的 `ScatterChart`。
+
+
+## 2026-11-14 固定源复核与本轮结论
+
+本次基于 `code` 分支 `b65c5e8`（#237）独立工作区，只读复核固定 GenOffice `f8c17004fb730df11f0f743164ffd8b4281bb38c`，修正上面两项来源事实。没有修改产品代码、安装依赖、运行测试、接入真实 Codex、推送、PR、合并或部署。
+
+- [WorkbookVisuals.tsx:4726–4928](https://github.com/genspark-ai/genoffice/blob/f8c17004fb730df11f0f743164ffd8b4281bb38c/apps/sheets/src/renderer/WorkbookVisuals.tsx#L4726-L4928)：`ScatterChart` 参数不含 `dataLabelStyle`，仅在全图 `dataLabels === 'value'` 时绘制标签，标签没有 `labelTextStyle`。原“颜色／字号继承尚缺”判断撤回，不能借对齐名义扩展非源能力。
+- [Rust charts.rs:598–641](https://github.com/genspark-ai/genoffice/blob/f8c17004fb730df11f0f743164ffd8b4281bb38c/apps/sheets/native/xlsx-engine/src/visuals/charts.rs#L598-L641)：根模式优先；根为 none 且第一 series 非 none 时回退第一 series；缺根标签也回退第一 series。`delete` 优先 none，percent 与组合模式优先 value。Scatter 只显示最终 value 模式，不能把任意“有标签”简化为 value。
+- [chart-visual.ts](https://github.com/genspark-ai/genoffice/blob/f8c17004fb730df11f0f743164ffd8b4281bb38c/packages/xlsx-gateway/src/domain/chart-visual.ts)：固定源 `LABELABLE_PLOTS` 不含 Scatter。本地已有 value/none 编辑入口属于需要单独验证的宿主增量，不可用固定源的只读显示事实替代编辑正确性证明。
+- 本地 `chart-edit.ts::setDataLabels` 对 Scatter 的 none 仅删除根 `dLbls`，保留 series。`workbook-chart-format-pane.tsx` 与 `workbook-chart-design-dialog.ts` 仍允许选 none；因此简单增加 reader 回退会导致部分来源“关闭后仍显示”。一刀切禁用所有带 series `dLbls` 的编辑同样不正确，会回退根 value、首 series none/percent、仅后续 series 或仅 point 标签等既有可用能力。
+
+若后续继续，候选范围必须重新批准：按请求结果判定，value 保持可用，none 只在保留来源 series 后实际回退为第一 series value 的场景拒绝；UI 明确解释且 writer 同语义保护，其他编辑不降级，并覆盖批处理／预设／AI 入口与真实保存重开。该方案本轮未实施、未测试、未获完整验收，当前产品行为保持原样。

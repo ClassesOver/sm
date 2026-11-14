@@ -1,3 +1,4 @@
+import { mountSlidesRailNavigation } from './slides-rail-navigation'
 import {validateZoomDraft} from './slides-zoom-model'
 import {mountModel3d} from './slides-model3d-ui'
 import {validateModelDraft,type ModelInsertion,type ModelViewEdit,type ModelSource} from './slides-model3d'
@@ -787,6 +788,7 @@ for (const kind of ['click', 'input', 'change', 'submit']) root.addEventListener
 
 let renderTree: { masterTextParts?: MasterTextRenderPart[]; slides: (RenderSlide & { slideIndex: number; slideIdentity?: string; mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] } | undefined
 let slidesViewMode: 'normal' | 'outline' | 'sorter' | 'reading' = 'normal'
+const railNavigation = mountSlidesRailNavigation(list, { enabled: () => native && !disposed && !loading && slidesViewMode === 'normal', current: () => selectedSlide })
 let slideSorter: ReturnType<typeof createSlidesSorter> | undefined
 let slideOutline: ReturnType<typeof createSlidesOutline> | undefined
 let slideReading: ReturnType<typeof createSlidesReading> | undefined
@@ -2054,6 +2056,7 @@ function renderSlides() {
     open.type = 'button'
     open.className = 'slide-open'
     open.dataset.slideIndex = String(slideIndex)
+    if (slideIndex === selectedSlide) open.setAttribute('aria-current', 'page')
     open.innerHTML = `<span class="slide-number">${position + 1}</span><span class="slide-title"></span>`
     open.querySelector('.slide-title')!.textContent = isNewSlide(slideIndex) ? newSlideTitle(newSlides[slideIndex - deck.slides.length]!) : flatText(slide)
     if (row.dataset.hidden === 'true') { const badge = document.createElement('span'); badge.className = 'slide-hidden-badge'; badge.textContent = '已隐藏'; open.append(badge) }
@@ -3524,7 +3527,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)
