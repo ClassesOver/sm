@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_models import NativeArtifacts
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.tests.test_native_pdf_extract import extract_fixture
 from smart_reporting.reporting.tests.test_native_pdf_extract import source_pdf
 

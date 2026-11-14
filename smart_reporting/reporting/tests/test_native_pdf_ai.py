@@ -14,8 +14,8 @@ from agno.models.base import Model
 from agno.models.response import ModelResponse
 from pypdf import PdfWriter
 
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.report_editor.native_models import NativeEditorContext, NativeScope
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.models import ReportingError
 
 

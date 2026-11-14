@@ -18,7 +18,7 @@ from smart_reporting.report_editor.native_models import NativeArtifacts
 from smart_reporting.report_editor.native_office import patch_office
 from smart_reporting.report_editor.workbook_native_ai import create_native_workbook_ai_service
 from smart_reporting.office.model import create_office_model
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.model_policy import (
     ReportingThinkingProfile,
     apply_reporting_thinking_profile,

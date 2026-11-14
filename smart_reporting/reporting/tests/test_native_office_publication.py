@@ -8,9 +8,9 @@ from openpyxl import Workbook, load_workbook
 from pptx import Presentation
 from pptx.util import Inches
 
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.report_editor.native import bind_native_workspace
 from smart_reporting.report_editor.native_models import NATIVE_MEDIA, NativeEditorContext
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
 
 

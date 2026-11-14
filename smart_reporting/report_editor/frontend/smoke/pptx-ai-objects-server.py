@@ -38,7 +38,7 @@ from smart_reporting.report_editor.slides_ai_native_operations import NativeSlid
 from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
 from smart_reporting.report_editor.slides_native_ai_api import create_native_slides_ai_router
 from smart_reporting.office.structured_agents import create_structured_candidate_agent
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
     ReportingWorkspaceRouter,

@@ -30,7 +30,7 @@ from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.delivery.docx_native import inspect_docx, patch_docx
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,

@@ -51,8 +51,8 @@ async def repositories():
 
 
 def inputs():
+    from smart_reporting.office.artifacts import ArtifactFile
     from smart_reporting.report_editor.native_models import NativeScope, NativeSource
-    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 
     scope = NativeScope(database="db", company_id="c", user_id="u", thread_id="t")
     source = NativeSource(

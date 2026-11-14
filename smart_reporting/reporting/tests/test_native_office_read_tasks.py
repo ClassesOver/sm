@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from pptx import Presentation
 from pptx.util import Inches
 
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
@@ -22,7 +23,6 @@ from smart_reporting.report_editor.native_models import (
     NativeScope,
 )
 from smart_reporting.report_editor.native_office import inspect_office
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
     ReportingWorkspaceRouter,

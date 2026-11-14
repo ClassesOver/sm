@@ -65,12 +65,8 @@ source_modules =
     smart_reporting.report_editor.workbook_native_ai_api
 forbidden_modules =
     smart_reporting.reporting.contract
-    smart_reporting.reporting.data_sources
     smart_reporting.reporting.hospital_operation
-    smart_reporting.reporting.profile
     smart_reporting.reporting.semantics
-    smart_reporting.reporting.trace
     smart_reporting.reporting.workflow
-    smart_reporting.reporting.workspace
     smart_reporting.management
 allow_indirect_imports = False

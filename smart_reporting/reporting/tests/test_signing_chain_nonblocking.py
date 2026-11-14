@@ -18,16 +18,12 @@ def test_agents_nonblocking_contract_registry_points_at_existing_tests():
 # 这类 raise 必须位于 try 体内且有 except Exception（或裸 except）兜底，把原因转为
 # validation.issues / publicationGate.issues 后继续。新增此类 raise 未兜底即失败。
 _SIGNING_CHAIN = {
-    "smart_reporting/reporting/trace/reader_formulas.py": ("reader_formula", "_formal_metric_formula"),
-    "smart_reporting/reporting/delivery/report_runtime/claim_support.py": ("insert_claim_support",),
-    "smart_reporting/reporting/workspace.py": ("_render_report_pair",),
     "smart_reporting/report_editor/native_publication.py": ("save_revision", "_save_reserved", "_publish_artifacts", "_issue_links"),
     "smart_reporting/report_editor/native_pdf_extract.py": ("extract_pages", "split_pdf", "_publish_derived_pdf"),
     "smart_reporting/report_editor/native_pdf_merge.py": ("merge_pdf",),
     "smart_reporting/report_editor/native_pdf_protection.py": ("protect_pdf",),
     "smart_reporting/report_editor/native_pdf_convert.py": ("convert_office",),
     "smart_reporting/report_editor/native_pdf_contract.py": ("pdf_review_issues",),
-    "smart_reporting/reporting/delivery/report_runtime/table_captions.py": ("validate_table_caption_input", "load_table_caption_input", "prepare_table_captions", "render_table_captions"),
 }
 _GATE_CODE = r"validation|not_validated|gate|audit|quality"
 # 门禁内部可以 raise，但其在签发链路上的每个调用点都必须被 except Exception 兜底。

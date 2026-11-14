@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import hmac
 from typing import Annotated, Any, Literal
-from zoneinfo import ZoneInfo
 
 from fastapi import Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -96,30 +94,6 @@ def create_configuration_router(auth, management: ManagementSettings, startup: A
             expected_version=payload.expected_version, expected_hash=payload.expected_hash,
             expected_effective_revision=payload.expected_effective_revision,
             approval_id=payload.approval_id, expected_approval_hash=payload.expected_approval_hash)
-
-    preview_lock = asyncio.Lock()
-
-    @router.post("/management/api/v1/configuration/preferences/preview/{format}")
-    async def preview(request: Request, format: Literal["md", "xlsx", "pptx", "pdf", "word"], payload: ExpectedVersionInput):
-        from ..reporting.delivery.office_engine import run_office_engine
-        from .configuration_preview import render_preference_preview
-
-        require_csrf(request)
-        detail = await services["preferences"].detail(request.cookies[SESSION_COOKIE])
-        if detail["draft"]["version"] != payload.expected_version:
-            raise ManagementError("management_version_conflict", "配置已被其他操作更新，请回读后比较。", 409)
-        if preview_lock.locked():
-            raise ManagementError("management_preview_busy", "已有样例正在生成，请稍后重试。", 409)
-        async with preview_lock:
-            try:
-                result = await run_office_engine(render_preference_preview, detail["draft"]["document"], format,
-                    generated_date=auth.clock().astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat())
-            except Exception:
-                from loguru import logger
-
-                logger.opt(exception=True).warning("configuration_preference_preview_failed format={}", format)
-                raise ManagementError("management_preview_failed", "样例生成失败，草稿已保留，请重试。", 503) from None
-        return {**result, "draftVersion": detail["draft"]["version"], "contentHash": detail["draft"]["contentHash"]}
 
     @router.put("/management/api/v1/configuration/{kind}/draft")
     async def save(request: Request, kind: Kind, payload: ConfigurationDraftInput):

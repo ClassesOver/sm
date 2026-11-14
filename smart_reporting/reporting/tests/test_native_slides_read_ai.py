@@ -252,13 +252,13 @@ async def test_agno_reads_actual_chart_data_and_returns_verified_citation(struct
 
 @pytest.mark.anyio
 async def test_chart_read_service_uses_actual_draft_and_keeps_selection_isolated(structured_deck):
+    from smart_reporting.office.artifacts import ArtifactFile
     from smart_reporting.report_editor.native_models import (
         NATIVE_MEDIA,
         NativeEditorContext,
         NativeScope,
     )
     from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
-    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
     from smart_reporting.reporting.tests.test_native_office_read_tasks import read_all, request_for
 
     content, model = structured_deck
@@ -335,6 +335,7 @@ def test_notes_are_frozen_and_coverage_requires_reading_entire_notes():
 
 @pytest.mark.anyio
 async def test_actual_notes_draft_service_and_agno_read_only_evidence():
+    from smart_reporting.office.artifacts import ArtifactFile
     from smart_reporting.report_editor.native_models import (
         NATIVE_MEDIA,
         NativeEditorContext,
@@ -342,7 +343,6 @@ async def test_actual_notes_draft_service_and_agno_read_only_evidence():
     )
     from smart_reporting.report_editor.native_office import patch_office
     from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
-    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
     from smart_reporting.reporting.tests.pptx_ai_fixture import ScriptedModel as NotesModel
     from smart_reporting.reporting.tests.test_native_office_read_tasks import request_for
 

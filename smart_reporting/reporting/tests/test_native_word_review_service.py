@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.report_editor.native import bind_native_workspace
 from smart_reporting.report_editor.native_ai import NativeAIService
 from smart_reporting.report_editor.native_word_ai import NativeWordAIProposal, NativeWordAITools
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.delivery.docx_native import inspect_docx, patch_docx
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_docx_comment_reply import modern_source

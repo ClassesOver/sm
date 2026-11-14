@@ -6,7 +6,7 @@ from pypdf import PdfReader
 
 from smart_reporting.report_editor.native import NativeEditorService, bind_native_workspace
 from smart_reporting.report_editor.native_models import NativeEditorContext
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
 from smart_reporting.reporting.tests.test_pdf_native_text_edits import source_pdf, text_operation

@@ -120,7 +120,7 @@ def anyio_backend():
 @pytest.mark.anyio
 async def test_comment_publication_preserves_download_on_validation_failure(tmp_path, bundled_engine):
     from smart_reporting.report_editor.native import bind_native_workspace
-    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+    from smart_reporting.office.artifacts import ArtifactFile
     from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
 
     service, parent, downloads = await create_publication(tmp_path / 'publication')
