@@ -71,3 +71,5 @@ node smart_reporting/report_editor/frontend/scripts/xlsx-parity-audit-inventory.
 P12 的显式单元格格式维度标签已完成[后续限定修复](../NATIVE_XLSX_PIVOT_DIMENSION_FORMATS_ACCEPTANCE_20261114.md)：编号前导零、1900/1904日期、缓存及筛选／基项身份一致。继承样式、计算字段、数字表头和旧文件迁移仍开放，P12保持partial；此前三份诊断仍是历史失败证据。
 
 P12 的行／列继承数字格式已在[后续专项](../NATIVE_XLSX_PIVOT_INHERITED_FORMATS_ACCEPTANCE_20261114.md)补齐透视读取路径；普通网格导入不在该验收范围，计算字段、数字表头与旧状态迁移仍开放。
+
+创建PR前已合并最新code f7180255并执行[组合验证](../NATIVE_XLSX_PR_INTEGRATION_ACCEPTANCE_20261114.md)，当前组合身份见[pr-integration.json](pr-integration.json)。各专项历史验收边界保留。
