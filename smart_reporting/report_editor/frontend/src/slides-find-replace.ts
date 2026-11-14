@@ -80,6 +80,8 @@ export function planSlidesReplace(slides: SlidesFindSource[], edits: SlidesFindE
     else result.push(edit)
     count += replaced
   }
+  // Preview and save accept at most 500 object edits, including the pending draft.
+  if (result.length > 500) throw new Error('替换后待保存的对象修改将超过 500 项，本次未提交任何替换。请减少本次替换对象；已有修改较多时，可先保存新修订。')
   return { edits: result, count }
 }
 
