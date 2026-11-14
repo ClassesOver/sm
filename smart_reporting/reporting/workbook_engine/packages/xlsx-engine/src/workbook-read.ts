@@ -8,6 +8,7 @@ import { columnWidthToPixels, rowHeightToPixels } from './geometry'
 /// has no sidecar to resolve them.
 
 import { withoutFutureFunctionMarkers } from './future-functions'
+import { sharedFormulaTexts } from './shared-formulas'
 import { readSheetProtection, readWorkbookProtection, type SheetProtectionModel, type WorkbookProtectionModel } from './protection-read'
 import { readOutlineSummary, readOutlineLine } from './outline-read'
 import { readSheetNotes, type SheetNotesModel } from './note-read'
@@ -226,6 +227,7 @@ async function readSharedStrings(source: EntrySource): Promise<readonly string[]
 
 function parseWorksheetCells(worksheetXml: string, sharedStrings: readonly string[]) {
   const cells: Record<string, ModelCell> = {}
+  const shared = sharedFormulaTexts(worksheetXml)
   for (const match of worksheetXml.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
     const attributes = match[1] ?? ''
     const address = readXmlAttribute(attributes, 'r')
@@ -233,9 +235,10 @@ function parseWorksheetCells(worksheetXml: string, sharedStrings: readonly strin
     const body = match[2] ?? ''
     const styleRaw = readXmlAttribute(attributes, 's')
     const styleIndex = styleRaw === undefined ? undefined : Number(styleRaw)
-    const formula = body.match(/<f(?:\s[^>]*[^/>])?>([\s\S]*?)<\/f>/)?.[1]
+    const sharedFormula = shared.get(address)
+    const formula = sharedFormula ?? body.match(/<f(?:\s[^>]*[^/>])?>([\s\S]*?)<\/f>/)?.[1]
     if (formula !== undefined) {
-      cells[address] = { value: null, formula: `=${withoutFutureFunctionMarkers(decodeXmlText(formula))}`, styleIndex }
+      cells[address] = { value: null, formula: `=${withoutFutureFunctionMarkers(sharedFormula === undefined ? decodeXmlText(formula) : formula)}`, styleIndex }
       continue
     }
     const type = readXmlAttribute(attributes, 't')

@@ -5,7 +5,7 @@ import { installPivotControlLayout } from './workbook-pivot-control-layout'
 import { installPivotControlGeometry, type PivotControlAnchor } from './workbook-pivot-control-geometry'
 import { readPivotControls, upsertPivotControlRequestSchema, type PivotControl, type PivotControlRequest } from '@sheets-web/xlsx-engine/pivot-controls'
 import { readWorkbookPivots, type PivotConfig, type WorkbookPivot } from './workbook-pivot'
-import { readPivotFilterFields, pivotMemberFilterConfig, pivotTimelineFilterConfig, type PivotFilterField } from './workbook-pivot-filters'
+import { readPivotFilterFields, pivotFilterHiddenMembers, pivotMemberFilterConfig, pivotTimelineFilterConfig, type PivotFilterField } from './workbook-pivot-filters'
 import './workbook-pivot-controls.css'
 
 export interface PivotControlView { control: PivotControl; pivot: WorkbookPivot; fields: PivotFilterField[] }
@@ -113,7 +113,7 @@ export function installPivotControlOverlay<R>(runtime: ControlRuntime<R>, views:
         if (!anchor || !field) throw new Error('原生控件缺少可显示的位置或字段')
         const draftKey = `${view.control.tablePath}:${view.control.name}`, geometry: Geometry = {}
         if (!drafts.has(draftKey)) {
-          const hidden = new Set(view.pivot.hiddenMembers?.[field.axis]?.[field.level] ?? [])
+          const hidden = new Set(pivotFilterHiddenMembers(view.pivot, field))
           drafts.set(draftKey, { selected: field.members.filter(member => !hidden.has(member.value)).map(member => member.value), from: view.control.from ?? '', to: view.control.to ?? '' })
         }
         const active = () => !disposed && generation === current

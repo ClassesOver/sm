@@ -1,11 +1,11 @@
 /** Office 2010/2013 原生非 OLAP 控件；控制列表、缓存和 DrawingML 一起提交。 */
 import { z } from 'zod'
 import { createBufferEntrySource, assemblePackage, type EntrySource } from './zip'
-import { readPivotState, pivotHostSheet, resolvePivotTarget, rebuildPivotOutput } from './pivot-add'
+import { readPivotState, pivotHostSheet, resolvePivotTarget, rebuildPivotOutput, pivotLayoutSpecOf } from './pivot-add'
+import { pivotSourceColumnValues, readPivotSourcePatterns } from './pivot-source-format'
 import { readWorkbook, parseSheetElements } from './workbook-read'
 import { readXmlAttribute, decodeXmlText, escapeXmlText } from './xml'
 import { formatAddress } from './cell-address'
-import { formatCodeFor } from './style-read'
 import { relationships } from './sheet-removal-parts'
 
 const R='http://schemas.openxmlformats.org/officeDocument/2006/relationships'
@@ -57,8 +57,9 @@ function contentType(xml:string,path:string,type:string){const value=`<Override 
 async function context(bytes:Uint8Array,request:PivotControlRequest){
  const source=await createBufferEntrySource(bytes),xml=await source.readText(request.tablePath),state=readPivotState(xml)
  if(!state)fail('仅支持本编辑器可完整读取的透视表')
- const field=state.fieldNames.indexOf(request.field),axis=state.rowFieldIndices.includes(field)?'row':(state.columnFieldIndices??[]).includes(field)?'column':undefined
- if(field<0||!axis||state.groupings?.some(rule=>rule.fieldIndex===field))fail('控件字段必须是未分组的现有行或列字段')
+ const field=state.fieldNames.indexOf(request.field),pageLevel=(state.pageFilters??[]).findIndex(filter=>filter.fieldIndex===field)
+ const axis=state.rowFieldIndices.includes(field)?'row':(state.columnFieldIndices??[]).includes(field)?'column':pageLevel>=0?'page':undefined
+ if(field<0||!axis||state.groupings?.some(rule=>rule.fieldIndex===field))fail('控件字段必须是未分组的现有行、列或报表筛选字段')
  const cacheId=Number(attr(xml.match(/<pivotTableDefinition\b[^>]*>/)?.[0]??'','cacheId'))
  const rels=await source.readText(relsPath(request.tablePath)),cacheRelationship=[...rels.matchAll(/<Relationship\b[^>]*\/>/g)].find(r=>attr(r[0],'Type')===R+'/pivotCacheDefinition')?.[0]
  const cachePath=resolvePivotTarget(request.tablePath,attr(cacheRelationship??'','Target'))
@@ -68,8 +69,9 @@ async function context(bytes:Uint8Array,request:PivotControlRequest){
  for(const path of await source.paths())if(/^xl\/pivotTables\/[^/]+\.xml$/.test(path)&&path!==request.tablePath){const other=await source.readText(path);if(attr(other.match(/<pivotTableDefinition\b[^>]*>/)?.[0]??'','cacheId')===String(cacheId))fail('共享透视缓存需要先拆分，不能孤立更新控件')}
  const cacheXml=await source.readText(cachePath),fieldBlocks=[...cacheXml.matchAll(/<cacheField\b[^>]*>[\s\S]*?<\/cacheField>/g)],fieldXml=fieldBlocks[field]?.[0]
  if(!fieldXml||/<fieldGroup\b/.test(fieldXml))fail('控件不支持分组缓存字段')
- const level=axis==='row'?state.rowFieldIndices.indexOf(field):(state.columnFieldIndices??[]).indexOf(field)
- const members=[...(axis==='row'?state.rowLevelItems[level]:state.colLevelItems?.[level])??[]],hidden=new Set((axis==='row'?state.rowHiddenItems?.[level]:state.colHiddenItems?.[level])??[])
+ const level=axis==='row'?state.rowFieldIndices.indexOf(field):axis==='column'?(state.columnFieldIndices??[]).indexOf(field):pageLevel
+ const members=[...(axis==='row'?state.rowLevelItems[level]:axis==='column'?state.colLevelItems?.[level]:state.pageLevelItems?.[level])??[]]
+ const hidden=new Set((axis==='row'?state.rowHiddenItems?.[level]:axis==='column'?state.colHiddenItems?.[level]:state.pageHiddenItems?.[level])??[])
  const selected=members.map((_,index)=>!hidden.has(index))
  if(!members.length||!selected.some(Boolean))fail('至少保留一个可见成员')
  return {source,xml,state,field,axis,cacheId,cachePath,host,sheetId,cacheXml,fieldXml,members,selected,workbookXml}
@@ -80,11 +82,14 @@ async function timelineDates(bytes:Uint8Array,ctx:Context){
  if(!sheet)fail('日期来源不存在')
  let numericDateField=false
  const area=ctx.state.sourceArea,values=new Map<string,string|undefined>(),epoch1904=['1','true'].includes(attr(ctx.workbookXml.match(/<workbookPr\b[^>]*>/)?.[0]??'','date1904'))
+ const cells=Array.from({length:area.endRow-area.startRow},(_,index)=>sheet.cells[formatAddress(area.startRow+index+1,area.startColumn+ctx.field)])
+ const patterns=await readPivotSourcePatterns(ctx.source,await ctx.source.readText(sheet.path),area)
+ const labels=pivotSourceColumnValues(cells.map(cell=>cell?.value??null),cells.map((_,index)=>patterns[index+1]?.[ctx.field]??'General'),ctx.state.fieldNames[ctx.field]!,{...pivotLayoutSpecOf(ctx.state),dimensionFormatProjection:ctx.state.dimensionFormatProjection===true},epoch1904)
  for(let row=area.startRow+1;row<=area.endRow;row++){
-  const cell=sheet.cells[formatAddress(row,area.startColumn+ctx.field)],value=cell?.value,key=String(value??'');let parsed: string|undefined
+  const cell=sheet.cells[formatAddress(row,area.startColumn+ctx.field)],value=cell?.value,key=String(labels[row-area.startRow-1]??'');let parsed: string|undefined
   if(typeof value==='string')fail('原生时间线需要带日期格式的数值日期，ISO 日期文本仅支持成员筛选')
   else if(typeof value==='number'&&Number.isFinite(value)&&value>=0){
-   const xf=wb.styles.cellXfs[cell?.styleIndex??0],format=xf?formatCodeFor(wb.styles,xf).replace(/"[^"]*"|\[[^\]]*\]|\\./g,''):''
+   const format=(patterns[row-area.startRow]?.[ctx.field]??'').replace(/"[^"]*"|\[[^\]]*\]|\\./g,'')
    if(/[dy]/i.test(format))numericDateField=true
    if(/[dy]/i.test(format)&&!(!epoch1904&&Math.floor(value)===60)){
     const serial=Math.floor(value),epoch=epoch1904?Date.UTC(1904,0,1):Date.UTC(1899,11,31),d=new Date(epoch+(serial-(!epoch1904&&serial>60?1:0))*86400000)
@@ -257,9 +262,15 @@ export async function syncOwnedPivotControls(beforeBytes:Uint8Array,afterBytes:U
    if(candidate)current={...meta,request:upsertPivotControlRequestSchema.parse({...meta.request,...candidate,anchor:candidate.anchor??meta.request.anchor})}
    const dates=await timelineDates(bytes,ctx),from=current.request.from!,to=current.request.to!
    const members=ctx.members.filter((_,i)=>dates[i]!<from||dates[i]!>to)
-   const manual=[...(ctx.state.manualHiddenMembers??[])].filter(entry=>entry.fieldIndex!==ctx.field)
-   manual.push({fieldIndex:ctx.field,members})
-   bytes=await rebuildPivotOutput(bytes,meta.request.tablePath,ctx.cachePath,{...ctx.state,manualHiddenMembers:manual})
+   if(ctx.axis==='page'){
+    const hidden=new Set(members),selected=ctx.members.filter(member=>!hidden.has(member))
+    const pageFilters=ctx.state.pageFilters?.map(filter=>filter.fieldIndex===ctx.field?{fieldIndex:ctx.field,selected}:filter)
+    bytes=await rebuildPivotOutput(bytes,meta.request.tablePath,ctx.cachePath,{...ctx.state,pageFilters})
+   }else{
+    const manual=[...(ctx.state.manualHiddenMembers??[])].filter(entry=>entry.fieldIndex!==ctx.field)
+    manual.push({fieldIndex:ctx.field,members})
+    bytes=await rebuildPivotOutput(bytes,meta.request.tablePath,ctx.cachePath,{...ctx.state,manualHiddenMembers:manual})
+   }
   }
   updates.push({previous:meta,current})
  }

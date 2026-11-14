@@ -19,7 +19,7 @@ async function chartXml(bytes:Uint8Array):Promise<string>{
  return (await createBufferEntrySource(bytes)).readText('xl/charts/chart1.xml')
 }
 
-it('reads only scatter plot-level value labels and preserves the Y value format',async()=>{
+it('keeps root value precedence over first-series none and preserves the Y value format',async()=>{
  let bytes=await scatterWorkbook(),xml=await chartXml(bytes)
  xml=xml.replace('</c:ser>','<c:dLbls><c:showVal val="0"/><c:dLbl><c:idx val="1"/><c:showVal val="1"/></c:dLbl></c:dLbls></c:ser>')
  .replace('</c:ser><c:axId','</c:ser><c:dLbls><c:showVal val="1"/></c:dLbls><c:axId')
@@ -27,7 +27,7 @@ it('reads only scatter plot-level value labels and preserves the Y value format'
  let chart=(await readWorkbook(bytes)).sheets[0]!.charts![0]!
  expect(chart.dataLabels?.showValue).toBe(true)
  expect(chart.dataLabels?.points).toBeUndefined()
- expect(chart.design?.dataLabels).toBeUndefined()
+ expect(chart.design?.dataLabels).toBe('value')
  expect(chart.series[0]!.dataLabels?.showValue).toBe(false)
  expect(chart.series[0]!.dataLabels?.points?.[1]?.showValue).toBe(true)
  expect(chart.series[0]!.numberFormat).toBe('0.0%')
@@ -46,12 +46,14 @@ it('exposes a simple scatter root value mode in the chart design',async()=>{
  expect(chart.design?.dataLabels).toBe('value')
 })
 
-it('does not promote scatter series or point labels to the plot',async()=>{
+it('falls back to the first series without promoting point overrides',async()=>{
  let bytes=await scatterWorkbook(),xml=await chartXml(bytes)
  xml=xml.replace('</c:ser>','<c:dLbls><c:showVal val="1"/><c:dLbl><c:idx val="0"/><c:showVal val="0"/></c:dLbl></c:dLbls></c:ser>')
  let zip=await JSZip.loadAsync(bytes);zip.file('xl/charts/chart1.xml',xml);bytes=await zip.generateAsync({type:'uint8array'})
  const chart=(await readWorkbook(bytes)).sheets[0]!.charts![0]!
- expect(chart.dataLabels).toBeUndefined()
+ expect(chart.dataLabels?.showValue).toBe(true)
+ expect(chart.design?.dataLabels).toBe('value')
+ expect(chart.design?.dataLabelsOffUnavailable).toBe(true)
  expect(chart.series[0]!.dataLabels?.showValue).toBe(true)
  expect(chart.series[0]!.dataLabels?.points?.[0]?.showValue).toBe(false)
 })
@@ -138,4 +140,60 @@ it('does not allow scatter label position or format edits',async()=>{
  const bytes=await scatterWorkbook()
  await expect(applyChartEdits(bytes,[{chartPath:'xl/charts/chart1.xml',dataLabels:'value',dataLabelPosition:'outside-end'}])).rejects.toThrow(/data labels/)
  await expect(applyChartEdits(bytes,[{chartPath:'xl/charts/chart1.xml',dataLabels:'percent'}])).rejects.toThrow(/only value data labels/)
+})
+
+it.each([
+ ['', '<c:showVal val="1"/>', true, true],
+ ['<c:dLbls><c:showVal val="0"/></c:dLbls>', '<c:showVal val="1"/>', true, true],
+ ['<c:dLbls><c:delete val="1"/></c:dLbls>', '<c:showVal val="true"/>', true, true],
+ ['', '<c:showVal val="1"/><c:showPercent val="1"/>', false, false],
+ ['', '<c:showCatName val="1"/><c:showVal val="1"/><c:showPercent val="1"/>', false, false],
+ ['', '<c:showVal val="1"/><c:delete val="1"/>', false, false],
+ ['', '<c:dLbl><c:idx val="0"/><c:showVal val="1"/></c:dLbl>', false, false],
+ ['', '<c:extLst><c:ext uri="test"><c:showVal val="1"/></c:ext></c:extLst>', false, false],
+ ['<c:dLbls><c:showPercent val="1"/></c:dLbls>', '<c:showVal val="1"/>', false, true],
+ ['<c:dLbls><c:showVal val="1"/></c:dLbls>', '<c:showPercent val="1"/>', true, false],
+] as const)('matches pinned precedence for root %s / first series %s',async(root,flags,visible,blocksOff)=>{
+ let bytes=await scatterWorkbook(),xml=await chartXml(bytes)
+ xml=xml.replace('</c:ser>',`<c:dLbls>${flags}</c:dLbls></c:ser>`)
+ xml=xml.replace('</c:ser><c:axId',`</c:ser><!-- root -->${root}<c:axId`)
+ const zip=await JSZip.loadAsync(bytes);zip.file('xl/charts/chart1.xml',xml);bytes=await zip.generateAsync({type:'uint8array'})
+ const chart=(await readWorkbook(bytes)).sheets[0]!.charts![0]!
+ expect(!!chart.dataLabels?.showValue).toBe(visible)
+ expect(!!chart.design?.dataLabelsOffUnavailable).toBe(blocksOff)
+ const on=await applyChartEdits(bytes,[{chartPath:'xl/charts/chart1.xml',dataLabels:'value'}])
+ expect((await readWorkbook(on)).sheets[0]!.charts![0]!.dataLabels?.showValue).toBe(true)
+ if(blocksOff){
+  await expect(applyChartEdits(bytes,[{chartPath:'xl/charts/chart1.xml',dataLabels:'none'}])).rejects.toThrow(/first.series.*value/i)
+  await expect(applyChartEdits(bytes,[{chartPath:'xl/charts/chart1.xml',title:'must not commit'},{chartPath:'xl/charts/chart1.xml',dataLabels:'none'}])).rejects.toThrow(/first.series.*value/i)
+  expect(await chartXml(bytes)).toBe(xml)
+ }else{
+  const off=await applyChartEdits(bytes,[{chartPath:'xl/charts/chart1.xml',dataLabels:'none'}])
+  expect(!!(await readWorkbook(off)).sheets[0]!.charts![0]!.dataLabels?.showValue).toBe(false)
+ }
+})
+
+it('does not use later series as fallback and preserves their source bytes',async()=>{
+ let bytes=await scatterWorkbook(),xml=await chartXml(bytes)
+ const first=xml.match(/<c:ser\b[^>]*>[\s\S]*?<\/c:ser>/)![0]
+ const later=first.replace('<c:idx val="0"/>','<c:idx val="1"/>').replace('<c:order val="0"/>','<c:order val="1"/>').replace('</c:ser>','<c:dLbls><c:showVal val="1"/></c:dLbls></c:ser>')
+ xml=xml.replace(first,first+later)
+ const zip=await JSZip.loadAsync(bytes);zip.file('xl/charts/chart1.xml',xml);bytes=await zip.generateAsync({type:'uint8array'})
+ const chart=(await readWorkbook(bytes)).sheets[0]!.charts![0]!
+ expect(!!chart.dataLabels?.showValue).toBe(false)
+ expect(chart.design?.dataLabelsOffUnavailable).not.toBe(true)
+ const off=await applyChartEdits(bytes,[{chartPath:'xl/charts/chart1.xml',dataLabels:'none'}])
+ expect(await chartXml(off)).toContain(later)
+})
+
+it.each(['alternate','default'] as const)('reads fallback with %s chart namespaces and ignores foreign flags',async namespace=>{
+ let bytes=await scatterWorkbook(),xml=await chartXml(bytes)
+ const seriesLabels='<c:dLbls xmlns:f="urn:foreign"><f:delete val="1"/><f:showPercent val="1"/><c:showVal val="1"/></c:dLbls>'
+ xml=xml.replace('</c:ser>',seriesLabels+'</c:ser>')
+ xml=namespace==='alternate'?xml.replaceAll('xmlns:c=','xmlns:chart=').replaceAll('c:', 'chart:'):xml.replaceAll('xmlns:c=','xmlns=').replaceAll('<c:','<').replaceAll('</c:','</')
+ const zip=await JSZip.loadAsync(bytes);zip.file('xl/charts/chart1.xml',xml);bytes=await zip.generateAsync({type:'uint8array'})
+ const chart=(await readWorkbook(bytes)).sheets[0]!.charts![0]!
+ expect(chart.dataLabels?.showValue).toBe(true)
+ expect(chart.design?.dataLabelsOffUnavailable).toBe(true)
+ await expect(applyChartEdits(bytes,[{chartPath:'xl/charts/chart1.xml',dataLabels:'none'}])).rejects.toThrow(/first.series.*value/i)
 })

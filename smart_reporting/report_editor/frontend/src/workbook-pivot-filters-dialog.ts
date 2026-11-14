@@ -3,7 +3,7 @@ import { createModal } from './modal'
 import { parseAddress, formatAddress } from '@sheets-web/xlsx-engine'
 import { readPivotControls, type PivotControl, type PivotControlRequest } from '@sheets-web/xlsx-engine/pivot-controls'
 import type { PivotConfig, WorkbookPivot } from './workbook-pivot'
-import { readPivotFilterFields, pivotMemberFilterConfig, pivotTimelineFilterConfig, PIVOT_FILTER_SAVE_NOTICE, type PivotFilterField } from './workbook-pivot-filters'
+import { readPivotFilterFields, pivotFilterHiddenMembers, pivotMemberFilterConfig, pivotTimelineFilterConfig, PIVOT_FILTER_SAVE_NOTICE, type PivotFilterField } from './workbook-pivot-filters'
 
 interface Input { bytes: Uint8Array; pivots: WorkbookPivot[]; selectedTablePath?: string; mode: 'slicer' | 'timeline' }
 
@@ -30,7 +30,7 @@ export function createPivotFilterDialog(root: HTMLElement, apply: (config: Pivot
     find<HTMLInputElement>('[aria-label="控件左上角单元格"]').value = formatAddress(anchor.row, anchor.column)
     find<HTMLInputElement>('[aria-label="控件宽度（像素）"]').value = String(anchor.width ?? (input.mode === 'slicer' ? 192 : 480))
     find<HTMLInputElement>('[aria-label="控件高度（像素）"]').value = String(anchor.height ?? (input.mode === 'slicer' ? 260 : 160))
-    const hidden = new Set(selected.hiddenMembers?.[field.axis]?.[field.level] ?? [])
+    const hidden = new Set(pivotFilterHiddenMembers(selected, field))
     if (input.mode === 'timeline') {
       const dates = field.members.filter(member => member.date && !hidden.has(member.value)).map(member => member.date!).sort()
       from.value = owned?.from ?? dates[0] ?? ''; to.value = owned?.to ?? dates.at(-1) ?? ''
@@ -50,7 +50,7 @@ export function createPivotFilterDialog(root: HTMLElement, apply: (config: Pivot
       if (generation !== epoch) return
       fields = input.mode === 'timeline' ? available.filter(field => field.timeline) : available
       chooser.replaceChildren(...fields.map(field => option(field.name, field.name)))
-      if (!fields.length) throw new Error(input.mode === 'timeline' ? '没有可筛选的日期字段；支持 ISO 日期文本或有日期格式的 Excel 日期序列，分组日期请使用成员筛选。' : '请先将筛选字段放入透视表的行轴或列轴')
+      if (!fields.length) throw new Error(input.mode === 'timeline' ? '没有可筛选的日期字段；支持 ISO 日期文本或有日期格式的 Excel 日期序列，分组日期请使用成员筛选。' : '请先将筛选字段放入透视表的行轴、列轴或报表筛选区域')
       render()
     } catch (cause) { if (generation === epoch) error.textContent = (cause as Error).message }
     finally { if (generation === epoch) setBusy(false) }

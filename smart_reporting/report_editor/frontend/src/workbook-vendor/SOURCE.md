@@ -338,3 +338,28 @@ local renderer/helper identities are in LOCAL-ADAPTATIONS-SHA256.
 
 
 2026-11-13 图表对象几何接线：以固定源 `WorkbookVisuals.tsx` 与 `xlsx-drawing-edit.ts` 为准补 move/八向 resize。twoCell 支持 move/resize；oneCell 只 move 并保留 extent，absoluteAnchor 仍明确拒绝。本地24px最小显示/选取及RTL投影保持一致；原始 SOURCE-SHA256 不变，必要本地适配登记 LOCAL-ADAPTATIONS-SHA256。见 `NATIVE_XLSX_CHART_OBJECT_GEOMETRY_ACCEPTANCE.md`。
+
+2026-11-14 Line/Radar series strokes: `grid/chart-render.ts` consumes the
+already-read independent source lineColor/lineWidth/noFill fields for these two
+families. Fixed GenOffice f8c17004fb730df11f0f743164ffd8b4281bb38c
+WorkbookVisuals.tsx lineStroke/LineChart/RadarChart supplies defaults 3/2.5.
+Invisible strokes do not invent selectable segments; thick visible radar outlines
+join the existing fill region, keeping data-point priority. Area/combo are outside
+this adaptation. Native Canvas pixels and directed tests are bounded in
+../../../NATIVE_XLSX_LINE_RADAR_STROKE_ACCEPTANCE_20261114.md.
+LOCAL-ADAPTATIONS-SHA256 updates the renderer only; original source hashes remain.
+
+2026-11-14 ordinary stacked bar/column Canvas: honors source multi-series
+stacked/percentStacked grouping, nonnegative source components, total domains,
+percent ticks, centered raw-value labels/ink and segment identity. Line/Area/Combo
+remain separate. Actual native Canvas and OOXML/openpyxl evidence:
+../../../NATIVE_XLSX_STACKED_BAR_ACCEPTANCE_20261114.md. Current renderer/value-axis/
+label hashes recorded in LOCAL-ADAPTATIONS-SHA256; fixed SOURCE hashes unchanged.
+
+2026-11-14 shared formula import follow-up: `core/session-core.ts` ignores a
+recalculated value when the formula text is unchanged, while retaining actual
+formula/removal/style deltas. This avoids saving untouched expanded followers as
+user edits. The imported shared-group projection and safe detachment live in the
+local engine; 126 directed frontend tests include real Univer recomputation,
+undo/redo and save/reopen. `LOCAL-ADAPTATIONS-SHA256.json` records current session
+core identity. Evidence: ../../../NATIVE_XLSX_SHARED_FORMULA_ACCEPTANCE_20261114.md.

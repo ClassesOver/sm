@@ -37,6 +37,7 @@ export function createChartDesignDialog(root: HTMLElement, apply: (edit: ChartDe
   const gridline = modal.card.querySelector<HTMLInputElement>('[aria-label="显示主网格线"]')!
   const gridlines = modal.card.querySelector<HTMLElement>('[data-chart-design-gridlines]')!
   const error = modal.card.querySelector<HTMLElement>('[role="alert"]')!
+  const labelNotice=document.createElement('p');labelNotice.textContent='首个系列保留了值标签，关闭图表标签后仍会显示；当前保留来源系列设置。';labelNotice.hidden=true;labels.append(labelNotice)
   const legendLabel = document.createElement('label')
   legendLabel.innerHTML = '图例位置<select aria-label="图例位置"><option value="">请选择</option><option value="none">无</option><option value="left">左侧</option><option value="right">右侧</option><option value="top">顶部</option><option value="bottom">底部</option></select>'
   form.insertBefore(legendLabel, error)
@@ -99,6 +100,7 @@ export function createChartDesignDialog(root: HTMLElement, apply: (edit: ChartDe
         if (!unchanged('gridlines')) edit.gridlines = gridline.checked
       }
       else if (!unchanged('input')) edit.axisTitles = target.property === 'categoryTitle' ? { category: input.value.trim() || null } : { value: input.value.trim() || null }
+      if(edit.dataLabels==='none'&&target.initial?.dataLabelsOffUnavailable)throw new Error(labelNotice.textContent!)
       if (Object.keys(edit).length === 1) { close(); return }
       setApplying(true)
       const result = apply(edit, { ...target })
@@ -118,6 +120,10 @@ export function createChartDesignDialog(root: HTMLElement, apply: (edit: ChartDe
       if (disposed || applying) return
       generation++
       target = { ...next }
+      const offUnavailable=next.property==='labels'&&!!next.initial?.dataLabelsOffUnavailable
+      select.querySelector<HTMLOptionElement>('option[value="none"]')!.disabled=offUnavailable
+      labelNotice.hidden=!offUnavailable
+      if(offUnavailable)select.setAttribute('aria-description',labelNotice.textContent!);else select.removeAttribute('aria-description')
       const isLabels = next.property === 'labels', isFormat = next.property === 'format', isLegend = next.property === 'legend'
       axis.hidden = isLabels || isFormat || isLegend; labels.hidden = !isLabels; format.hidden = !isFormat; gridlines.hidden = !isFormat; legendLabel.hidden = !isLegend
       input.setAttribute('aria-label', next.property === 'title' ? '图表标题' : next.property === 'categoryTitle' ? '分类轴标题' : '数值轴标题')

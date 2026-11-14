@@ -198,3 +198,18 @@ it('restores unsubmitted selections after a geometry transaction and exposes pro
   expect(handle.snapshotDrafts()[key]?.selected).toEqual(['东', '西'])
   await act(async () => handle.dispose()); h.cleanup()
 })
+
+it('restores a page slicer selection in the worksheet overlay and clears it on all-selected submission',async()=>{
+ const h=harness(),pageView:PivotControlView={...view,pivot:{...view.pivot,rowFields:['金额'],pageFilters:[{field:'地区',selected:['西']}],hiddenMembers:undefined},fields:[{...view.fields[0]!,axis:'page'}]}
+ const apply=vi.fn(async(_config:import('./workbook-pivot').PivotConfig,_request:import('@sheets-web/xlsx-engine/pivot-controls').PivotControlRequest)=>{}),error=vi.fn()
+ let handle!:ReturnType<typeof installPivotControlOverlay>
+ try{
+  await act(async()=>{handle=installPivotControlOverlay(h.runtime,[pageView],{canEdit:()=>true,apply,error},'page')})
+  const inputs=h.host.querySelectorAll<HTMLInputElement>('input[type=checkbox]')
+  expect([...inputs].map(input=>input.checked)).toEqual([false,true])
+  await act(async()=>inputs[0]!.click())
+  await act(async()=>h.host.querySelector('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})))
+  expect(apply.mock.calls[0]![0].pageFilters).toEqual([{field:'地区'}])
+  expect(error).not.toHaveBeenCalled()
+ }finally{if(handle)await act(async()=>handle.dispose());h.cleanup()}
+})

@@ -6,6 +6,104 @@ const fixture=async()=>applyCellEdits(await createBlankWorkbook(),[['区域','�
 const pivot={name:'透视表',sourceSheetName:'Sheet1',sourceRange:'A1:D3',targetSheetName:'Sheet1',targetCell:'H1',rowFields:['区域'],columnFields:[],values:[{field:'收入',agg:'sum'}],tablePath:'xl/pivotTables/pivotTable1.xml',cachePath:'xl/pivotCache/pivotCacheDefinition1.xml',worksheetPath:'xl/worksheets/sheet1.xml',location:{startRow:0,startColumn:7,endRow:4,endColumn:8},fieldNames:['区域','年份','收入','数量']} satisfies WorkbookPivot
 const check=(root:HTMLElement,label:string)=>Array.from(root.querySelectorAll<HTMLInputElement>('.pivot-field-list input')).find(input=>input.closest('label')!.textContent===label)!
 async function setup(apply:(config:PivotConfig,path?:string)=>Promise<void>,existing=false){const root=document.createElement('div');document.body.append(root);const dialog=createPivotDialog(root,apply);await dialog.open({bytes:await fixture(),sourceSheetName:'Sheet1',sourceRange:'A1:D3',targetCell:'H1',...(existing?{pivots:[pivot]}:{})});return {root,dialog,dispose:()=>{dialog.dispose();root.remove()}}}
+it.each([false,true])('offers actual grouped base members and saves the chosen item: date1904=%s',async date1904=>{
+ const {createBufferEntrySource,readWorkbook}=await import('@sheets-web/xlsx-engine'),{assemblePackage}=await import('@sheets-web/xlsx-engine/zip'),{createPivotPlan,readWorkbookPivots}=await import('./workbook-pivot'),{applyWorkbookOperations}=await import('../../../reporting/workbook_engine/bridge/operations')
+ let bytes=await fixture()
+ if(date1904){
+  bytes=await applyCellEdits(bytes,[0,366].map((value,index)=>({sheetName:'Sheet1',row:index+1,column:1,writeValue:true,cell:{value},style:{numberFormat:'mm-dd-yy'}})))
+  const source=await createBufferEntrySource(bytes),xml=await source.readText('xl/workbook.xml'),next=/<workbookPr\b/.test(xml)?xml.replace(/<workbookPr\b[^>]*\/>/,'<workbookPr date1904="1"/>'):xml.replace(/<workbook\b[^>]*>/,opening=>opening+'<workbookPr date1904="1"/>')
+  bytes=(await assemblePackage(bytes,{replaced:new Map([['xl/workbook.xml',next]]),added:new Map(),addedBinary:new Map(),removedEntries:[],addedEntries:[],touchedEntries:['xl/workbook.xml']})).buffer
+ }
+ const baseItem=date1904?'1904':'2025-2030',grouping=date1904?{field:'年份',kind:'date' as const,dateUnit:'year' as const}:{field:'年份',kind:'range' as const,rangeStep:5,rangeStart:2020}
+ const existing:WorkbookPivot={...pivot,rowFields:['年份'],groupings:[grouping],values:[{field:'收入',agg:'sum',showDataAs:'percentOf',baseField:'年份',baseItem}]}
+ let saved:Uint8Array|undefined
+ const apply=vi.fn(async(config:PivotConfig)=>{saved=await applyWorkbookOperations(bytes,(await createPivotPlan(bytes,config)).operations)}),root=document.body.appendChild(document.createElement('div')),dialog=createPivotDialog(root,apply)
+ try{
+  await dialog.open({bytes,sourceSheetName:'Sheet1',sourceRange:'A1:D3',targetCell:'H1',pivots:[existing]})
+  root.querySelector<HTMLButtonElement>('[data-pivot-area="values"] button[aria-haspopup="menu"]')!.click()
+  await vi.waitFor(()=>expect(root.querySelector('[role="menu"]')).not.toBeNull())
+  Array.from(root.querySelectorAll<HTMLButtonElement>('[role="menu"] button')).find(button=>button.textContent==='值字段设置…')!.click()
+  await vi.waitFor(()=>expect(root.querySelector('[aria-label="值字段设置：收入"]')).not.toBeNull())
+  const settings=root.querySelector<HTMLElement>('[aria-label="值字段设置：收入"]')!
+  expect(settings.querySelector(`button.gs-dd-btn[data-value="${baseItem}"]`)).not.toBeNull()
+  settings.querySelector<HTMLButtonElement>('.primary-action')!.click()
+  await vi.waitFor(()=>expect(saved).toBeDefined())
+  expect((await readWorkbookPivots(saved!))[0]!.values[0]!.baseItem).toBe(baseItem)
+  expect((await readWorkbook(saved!)).sheets[0]!.cells.I2!.value).toBe(1)
+ }finally{dialog.dispose();root.remove()}
+})
+it.each(['percentOf','percentOfParent','difference','percentDiff','runTotal','percentOfRunningTotal','rankAscending','rankDescending'] as const)('enables %s and submits its base field/item from actual settings',async showDataAs=>{
+ const apply=vi.fn(async(_config:PivotConfig)=>{}),s=await setup(apply,true)
+ try{
+  s.root.querySelector<HTMLButtonElement>('[data-pivot-area="values"] button[aria-haspopup="menu"]')!.click()
+  await vi.waitFor(()=>expect(s.root.querySelector('[role="menu"]')).not.toBeNull())
+  Array.from(s.root.querySelectorAll<HTMLButtonElement>('[role="menu"] button')).find(button=>button.textContent==='值字段设置…')!.click()
+  await vi.waitFor(()=>expect(s.root.querySelector('[aria-label="值字段设置：收入"]')).not.toBeNull())
+  const settings=s.root.querySelector<HTMLElement>('[aria-label="值字段设置：收入"]')!
+  settings.querySelector<HTMLButtonElement>('button.gs-dd-btn[data-value=""]')!.click()
+  await vi.waitFor(()=>expect(settings.querySelector(`[role="option"][data-value="${showDataAs}"]`)).not.toBeNull())
+  const option=settings.querySelector<HTMLButtonElement>(`[role="option"][data-value="${showDataAs}"]`)!
+  expect(option.disabled).toBe(false);option.click()
+  await vi.waitFor(()=>expect(settings.querySelector(`button.gs-dd-btn[data-value="${showDataAs}"]`)).not.toBeNull())
+  settings.querySelector<HTMLButtonElement>('.primary-action')!.click()
+  await vi.waitFor(()=>expect(apply).toHaveBeenCalledOnce())
+  expect(apply.mock.calls[0]![0].values[0]).toMatchObject({showDataAs,baseField:'区域'})
+  expect(apply.mock.calls[0]![0].values[0]!.baseItem).toBe(['percentOf','difference','percentDiff'].includes(showDataAs)?'东':undefined)
+ }finally{s.dispose()}
+})
+it.each(['percentOfParentRow','percentOfParentCol','index'] as const)('enables and submits source ShowAs %s without base parameters',async showDataAs=>{
+ const apply=vi.fn(async(_config:PivotConfig)=>{}),s=await setup(apply,true)
+ try{
+  s.root.querySelector<HTMLButtonElement>('[data-pivot-area="values"] button[aria-haspopup="menu"]')!.click()
+  await vi.waitFor(()=>expect(s.root.querySelector('[role="menu"]')).not.toBeNull())
+  Array.from(s.root.querySelectorAll<HTMLButtonElement>('[role="menu"] button')).find(button=>button.textContent==='值字段设置…')!.click()
+  await vi.waitFor(()=>expect(s.root.querySelector('[aria-label="值字段设置：收入"]')).not.toBeNull())
+  const settings=s.root.querySelector<HTMLElement>('[aria-label="值字段设置：收入"]')!
+  settings.querySelector<HTMLButtonElement>('button.gs-dd-btn[data-value=""]')!.click()
+  await vi.waitFor(()=>expect(settings.querySelector(`[role="option"][data-value="${showDataAs}"]`)).not.toBeNull())
+  const option=settings.querySelector<HTMLButtonElement>(`[role="option"][data-value="${showDataAs}"]`)!
+  expect(option.disabled).toBe(false);option.click()
+  await vi.waitFor(()=>expect(settings.querySelector(`button.gs-dd-btn[data-value="${showDataAs}"]`)).not.toBeNull())
+  settings.querySelector<HTMLButtonElement>('.primary-action')!.click()
+  await vi.waitFor(()=>expect(apply).toHaveBeenCalledOnce())
+  expect(apply.mock.calls[0]![0].values[0]!.showDataAs).toBe(showDataAs)
+ }finally{s.dispose()}
+})
+it('enables custom value caption input and submits the trimmed caption',async()=>{
+ const apply=vi.fn(async(_config:PivotConfig)=>{}),s=await setup(apply,true)
+ try{
+  s.root.querySelector<HTMLButtonElement>('[data-pivot-area="values"] button[aria-haspopup="menu"]')!.click()
+  await vi.waitFor(()=>expect(s.root.querySelector('[role="menu"]')).not.toBeNull())
+  Array.from(s.root.querySelectorAll<HTMLButtonElement>('[role="menu"] button')).find(button=>button.textContent==='值字段设置…')!.click()
+  await vi.waitFor(()=>expect(s.root.querySelector('[aria-label="值字段设置：收入"]')).not.toBeNull())
+  const settings=s.root.querySelector<HTMLElement>('[aria-label="值字段设置：收入"]')!,input=settings.querySelector<HTMLInputElement>('input[placeholder="收入 的求和"]')!
+  expect(input.disabled).toBe(false)
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,'  净收入 & 税后  ')
+  input.dispatchEvent(new Event('input',{bubbles:true}))
+  settings.querySelector<HTMLButtonElement>('.primary-action')!.click()
+  await vi.waitFor(()=>expect(apply).toHaveBeenCalledOnce())
+  expect(apply.mock.calls[0]![0].values[0]!.name).toBe('净收入 & 税后')
+ }finally{s.dispose()}
+})
+it.each(['product','countNums','stdDev','stdDevp','var','varp'] as const)('enables and submits source aggregation %s from value settings',async agg=>{
+ const apply=vi.fn(async(_config:PivotConfig)=>{}),s=await setup(apply,true)
+ try{
+  s.root.querySelector<HTMLButtonElement>('[data-pivot-area="values"] button[aria-haspopup="menu"]')!.click()
+  await vi.waitFor(()=>expect(s.root.querySelector('[role="menu"]')).not.toBeNull())
+  Array.from(s.root.querySelectorAll<HTMLButtonElement>('[role="menu"] button')).find(button=>button.textContent==='值字段设置…')!.click()
+  await vi.waitFor(()=>expect(s.root.querySelector('[aria-label="值字段设置：收入"]')).not.toBeNull())
+  const settings=s.root.querySelector<HTMLElement>('[aria-label="值字段设置：收入"]')!
+  settings.querySelector<HTMLButtonElement>('button[data-value="sum"]')!.click()
+  await vi.waitFor(()=>expect(settings.querySelector(`[role="option"][data-value="${agg}"]`)).not.toBeNull())
+  const option=settings.querySelector<HTMLButtonElement>(`[role="option"][data-value="${agg}"]`)!
+  expect(option.disabled).toBe(false)
+  option.click()
+  await vi.waitFor(()=>expect(settings.querySelector(`button.gs-dd-btn[data-value="${agg}"]`)).not.toBeNull())
+  settings.querySelector<HTMLButtonElement>('.primary-action')!.click()
+  await vi.waitFor(()=>expect(apply).toHaveBeenCalledOnce())
+  expect(apply.mock.calls[0]![0].values[0]!.agg).toBe(agg)
+ }finally{s.dispose()}
+})
 it('uses checkbox placement, 2 by 2 areas and cancels without applying',async()=>{
  const apply=vi.fn(async()=>{}),s=await setup(apply)
  check(s.root,'区域').click();await vi.waitFor(()=>expect(s.root.querySelector('[data-pivot-area="rows"]')!.textContent).toContain('区域'))

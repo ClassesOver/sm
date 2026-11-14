@@ -38,6 +38,11 @@ it('retains source non-overlap and global 1000-result cap', async () => {
   expect(searchInIndex(index, 'aa')).toHaveLength(1)
   expect(searchInIndex(index, 'x')).toHaveLength(1000)
 })
+it('does not split supplementary letters at whole-word boundaries', async () => {
+  const index = await buildSearchIndex(doc([[run('𐐀cat cat𐐀 𐐀a a𐐀 cat 𠀀cat cat𠀀')]]))
+  expect(searchInIndex(index, 'cat', { wholeWord: true })).toHaveLength(3)
+  expect(searchInIndex(index, '𐐀', { wholeWord: true })).toHaveLength(0)
+})
 it('indexes geometry-free text but does not fabricate a navigation box for it', async () => {
   const index = await buildSearchIndex(doc([[{ str: 'hidden' }, run(' visible')], []]))
   expect(index[0].text).toBe('hidden visible')

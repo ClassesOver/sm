@@ -147,3 +147,25 @@ it('moves and resizes one control while preserving sibling geometry, caches and 
  expect(drawing).toContain('<xdr:col>12</xdr:col>');expect(drawing).toContain('<xdr:row>4</xdr:row>');expect(drawing).toContain('cx="3048000" cy="1714500"')
  for(const anchor of [{row:-1,column:0},{row:0,column:16384},{row:0,column:0,width:95},{row:0,column:0,height:2001}])await expect(upsertPivotControl(before,{...request,anchor})).rejects.toThrow()
 })
+
+async function pageFixture() {
+ const bytes=await fixture(true),zip=await createBufferEntrySource(bytes),state=readPivotState(await zip.readText(request.tablePath))!
+ const layout=buildPivotLayout([['地区','日期','收入'],['东',45292,10],['西',45293,20],['北',45294,30]],{rowFields:['地区'],values:[{field:'收入',agg:'sum'}],pageFilters:[{field:'日期',selected:['45293','45294']}]})
+ return rebuildPivotOutput(bytes,request.tablePath,'xl/pivotCache/pivotCacheDefinition1.xml',{...state,...layout.definition,columnFieldIndices:[],colLevelItems:[],colLines:[]})
+}
+it('creates and reads a native slicer on a report-filter dimension with selected cache members',async()=>{
+ const bytes=await upsertPivotControl(await pageFixture(),{...request,field:'日期'}),zip=await createBufferEntrySource(bytes)
+ expect(await supportsOwnedPivotControls(bytes)).toBe(true)
+ const cache=await zip.readText('xl/slicerCaches/slicerCache1.xml')
+ expect(cache).toContain('<x14:i x="0" s="0"')
+ expect(cache).toContain('<x14:i x="1" s="1"')
+})
+it('keeps a report-filter timeline interval authoritative when source dates change',async()=>{
+ const native=await upsertPivotControl(await pageFixture(),{...request,kind:'timeline',field:'日期',name:'PageDates',from:'2024-01-02',to:'2024-01-03'})
+ const zip=await createBufferEntrySource(native),state=readPivotState(await zip.readText(request.tablePath))!
+ const changed=await applyCellEdits(native,[{sheetName:'Sheet1',row:3,column:1,writeValue:true,cell:{value:45323}}])
+ const rebuilt=await rebuildPivotOutput(changed,request.tablePath,'xl/pivotCache/pivotCacheDefinition1.xml',state)
+ const saved=await syncOwnedPivotControls(native,rebuilt,request.tablePath),out=await createBufferEntrySource(saved)
+ expect(readPivotState(await out.readText(request.tablePath))!.pageFilters).toEqual([{fieldIndex:1,selected:['45293']}])
+ expect(await supportsOwnedPivotControls(saved)).toBe(true)
+})

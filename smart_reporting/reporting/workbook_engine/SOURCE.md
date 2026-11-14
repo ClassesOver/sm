@@ -660,3 +660,105 @@ Targeted RED/GREEN, independent namespace review and eleven saved XLSX files are
 
 
 2026-11-13 推荐图表必要移植修复：chart-add.ensureSheetDrawing 复用本地既有 OPC relationships/resolveTablePartPath，支持固定源 xlsx-drawing-add 已支持的合法绝对与相对 drawing Target，拒绝 External、URI、网络和越根目标；不重写已有 drawing/原图。源功能参照与本地适配哈希分别保留，不称本地 chart-add 原字节同源。
+
+## 2026-11-14 Scatter first-series label fallback
+
+At fixed GenOffice f8c17004fb730df11f0f743164ffd8b4281bb38c, charts.rs:598–641,
+root none/absent falls back only to the first series. `scatter-label-mode.ts`
+shares direct namespace-aware mode parsing between reader and writer. Preserve
+series overrides and conditionally reject only off requests that would reveal
+first-series value labels. UI explanation/conditional off controls and bounded
+browser/file acceptance: ../../report_editor/NATIVE_XLSX_SCATTER_LABEL_FALLBACK_ACCEPTANCE_20261114.md.
+Current changed/added engine and test hashes are in UPSTREAM-PATCHES-SHA256.json;
+original SOURCE-SHA256 and historical LOCAL-ADAPTATIONS-SHA256 remain unchanged.
+
+## 2026-11-14 Shared formula eager import and safe group detachment
+
+`shared-formulas.ts` implements the eager browser counterpart of fixed GenOffice
+`shared_formulas.rs` / `shared-formula-index.ts`: only explicitly stored followers
+are expanded. `workbook-write.ts` detaches a touched group before value/formula
+rewrites; style-only and unrelated groups retain their original formula XML.
+The existing copy/fill subset in `conditional-formatting-offset-source.ts` gains
+literal/structured/name/3D/range guards, including Unicode and grid-name tokens.
+General cached fallback and indexed/streaming load remain separate gaps.
+Current code/test hashes: UPSTREAM-PATCHES-SHA256.json; original source manifests
+stay frozen. Evidence: ../../report_editor/NATIVE_XLSX_SHARED_FORMULA_ACCEPTANCE_20261114.md.
+
+## 2026-11-14 All eleven fixed-source pivot aggregation modes
+
+`pivot-value-modes.ts` extracts the eleven aggregation names/captions from fixed
+GenOffice domain/pivot-value-modes.ts. Layout and owned-state validation share
+that type envelope; writer now persists six additional OOXML subtotal spellings.
+Product/numeric count/sample and population variance/deviation use the fixed
+source bake semantics, including numeric text conversion and null sample n<2.
+General ShowAs/base item/field/caption expansion is separate. Current engine/test
+identities are recorded in UPSTREAM-PATCHES-SHA256.json; frozen original source
+manifests are unchanged. Evidence: ../../report_editor/NATIVE_XLSX_PIVOT_AGGREGATIONS_ACCEPTANCE_20261114.md.
+
+2026-11-14 custom pivot captions: optional `name` now survives layout definition,
+state validation, rebuild, escaped `dataField@name` serialization and host
+owned/foreign readers. Domain trim/default and repeated-caption suffix semantics
+match fixed source. Current engine hashes supersede the earlier aggregation
+batch; its frozen browser artifact remains historical evidence. Acceptance:
+../../report_editor/NATIVE_XLSX_PIVOT_CAPTIONS_ACCEPTANCE_20261114.md.
+
+2026-11-14 pivot parent percentages/index: six non-base-field ShowAs modes now
+share the supported type/schema/reader/writer envelope. Parent modes serialize
+through canonical Office2010 x14:dataField/pivotShowAs (MS-XLSX2.2.4.5 extension
+URI), correcting the fixed source's invalid core ST_ShowDataAs spelling. The
+namespace-aware reader preserves unsupported x14 modes as read-only host input;
+index defaults to General and explicitly resets an old percentage style when
+no user format remains. Remaining eight base-field/item modes stay disabled.
+Current hashes supersede older batch identities; see
+../../report_editor/NATIVE_XLSX_PIVOT_PARENT_INDEX_ACCEPTANCE_20261114.md.
+
+Parent-mode normative follow-up: MS-XLSX CT_DataField requires that ancestor
+showDataAs be absent when x14:pivotShowAs is present. Removed the former normal
+placeholder, added an absence regression, regenerated three browser download
+artifacts and independently verified raw XML. Index stays core index; no OLAP-only
+sourceField is emitted. Current pivot-add hash and parent-index artifact binding
+include this correction.
+
+2026-11-14 eight base-field/item ShowAs modes: full14 mode envelope, label/index
+resolution, grouped/subtotal scope, visible-order running totals and RANK.EQ ties
+now follow fixed source arithmetic. Native percentOf writes percent; all six x14
+modes omit core showDataAs. Foreign item positions resolve through pivot items to
+cache labels; display order is preserved and unverifiable running order refuses
+editing. Explicit General writes numFmtId0 and survives foreign refresh. Raw foreign
+date/error base cache projection remains guarded, not claimed complete. Current
+hashes and frozen tested sources/evidence:
+../../report_editor/NATIVE_XLSX_PIVOT_BASE_MODES_ACCEPTANCE_20261114.md.
+
+2026-11-14 pivot boolean source fidelity: preserve source boolean values instead of
+coercing them to numeric1/0 before aggregation. Both owned and cache-only refresh
+write b records; cache base-member reader accepts all four XML boolean lexemes.
+This corrects a fixed-source gateway limitation to match its domain arithmetic.
+Formatted dimension labels remain a confirmed gap. Acceptance and current hashes:
+../../report_editor/NATIVE_XLSX_PIVOT_SOURCE_BOOLEANS_ACCEPTANCE_20261114.md.
+
+2026-11-14 report-filter native controls: context now maps page members/hidden
+indexes; timeline synchronization updates existing pageFilters. Recalculation
+intersects a selected page filter with current source members, keeping the
+explicit empty-intersection refusal. Current associated hashes supersede prior
+batches. Acceptance: ../../report_editor/NATIVE_XLSX_PIVOT_PAGE_CONTROLS_ACCEPTANCE_20261114.md.
+
+2026-11-14 manifest baseline reconciliation: eight unchanged baseline files had
+stale UPSTREAM-PATCHES hashes. Each current file was compared byte-for-byte to
+HEAD 1e4a0a34; corrected metadata only, without new behavioral acceptance claims.
+Previous and actual identities are preserved in
+../../report_editor/XLSX_PARITY_AUDIT_20261114/engine-manifest-baseline-corrections.json.
+Historical acceptance artifact bindings remain unchanged.
+
+2026-11-14 explicit pivot dimension formats: shared numfmt3.2.6 projection now
+feeds new host pivots, layout/cache records, member/base pickers and native
+timeline identity. Measures/grouped inputs remain raw; calculated fields retain
+raw projection pending dependency separation. dimensionFormatProjection enables
+new host pivots; unmarked legacy/foreign pivots preserve raw identity. Inherited
+styles/numeric headers and legacy migration remain open. Current hashes:
+../../report_editor/NATIVE_XLSX_PIVOT_DIMENSION_FORMATS_ACCEPTANCE_20261114.md.
+
+2026-11-14 inherited pivot formats: explicit cell XF including0 overrides custom
+row XF, column XF and default XF0. All pivot projection consumers now use the
+raw XML pattern matrix, including date eligibility and field classification.
+Ordinary grid import is unchanged. See
+../../report_editor/NATIVE_XLSX_PIVOT_INHERITED_FORMATS_ACCEPTANCE_20261114.md.
