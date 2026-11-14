@@ -8,19 +8,22 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from loguru import logger
 from pydantic import Field
 
+from ..office.editor_grants import ReportEditorSession
 from ..reporting.contract import StrictModel
 from ..reporting.models import ReportingError
 from ..reporting.structured_output.execution import (
     ReportingStructuredOutputExecutor,
     StructuredOutputCallBudget,
 )
-from .service import ReportEditorContext, ReportEditorSession
+
+if TYPE_CHECKING:
+    from .service import ReportEditorContext
 
 _MAX_INSTRUCTION_CHARS = 2_000
 _MAX_DECK_CONTEXT_CHARS = 48_000

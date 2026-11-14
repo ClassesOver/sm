@@ -144,9 +144,9 @@ INVALID = [
 
 @pytest.mark.parametrize('fields', INVALID)
 def test_invalid_schema_rejected_before_engine(monkeypatch, fields):
-    from smart_reporting.report_editor.slides import ReportSlidesEditorService
+    from smart_reporting.report_editor.pptx_engine import PptxEngine
     engine = Mock(side_effect=AssertionError('invalid input reached engine'))
-    monkeypatch.setattr(ReportSlidesEditorService, '_run_engine', engine)
+    monkeypatch.setattr(PptxEngine, '_run_engine', engine)
     with pytest.raises(ValueError):
         patch_office('pptx', b'source', [{'kind': 'editSlides', 'paragraphFormatting': [
             {'slideIndex': 0, 'elementId': 'x', **fields}]}])

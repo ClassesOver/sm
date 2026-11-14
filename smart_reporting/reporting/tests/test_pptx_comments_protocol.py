@@ -58,7 +58,7 @@ def test_python_transport_injects_fixed_host_author_for_adds(monkeypatch):
         Path(request['output']).write_bytes(b'protocol-test-output')
         return SimpleNamespace(returncode=0, stderr='', stdout='{"issues":[]}')
 
-    monkeypatch.setattr('smart_reporting.report_editor.slides.run_bridge', bridge)
+    monkeypatch.setattr('smart_reporting.report_editor.pptx_engine.run_bridge', bridge)
     result = ReportSlidesEditorService._run_engine(b'protocol-test-source', 'edit', comment_edits=[ADD])
     assert result['bytes'] == b'protocol-test-output'
     engine, name, request = captured[0]

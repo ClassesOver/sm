@@ -35,7 +35,7 @@ def test_python_transport_forwards_master_elements_to_existing_bridge(monkeypatc
         Path(request['output']).write_bytes(b'protocol-test-output')
         return SimpleNamespace(returncode=0, stderr='', stdout='{"issues":[]}')
 
-    monkeypatch.setattr('smart_reporting.report_editor.slides.run_bridge', bridge)
+    monkeypatch.setattr('smart_reporting.report_editor.pptx_engine.run_bridge', bridge)
     result = ReportSlidesEditorService._run_engine(b'protocol-test-source', 'edit', master_element_edits=[ADD, DELETE])
     assert result['bytes'] == b'protocol-test-output'
     engine, name, request = captured[0]

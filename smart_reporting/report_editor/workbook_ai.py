@@ -12,13 +12,13 @@ from uuid import uuid4
 from loguru import logger
 from pydantic import Field
 
+from ..office.editor_grants import ReportEditorSession
 from ..reporting.contract import StrictModel
 from ..reporting.models import ReportingError
 from ..reporting.structured_output.execution import (
     ReportingStructuredOutputExecutor,
     StructuredOutputCallBudget,
 )
-from .service import ReportEditorSession
 
 
 @dataclass

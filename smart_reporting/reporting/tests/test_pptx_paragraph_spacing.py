@@ -223,10 +223,10 @@ INVALID = [
 
 @pytest.mark.parametrize("fields", INVALID)
 def test_invalid_native_spacing_never_calls_engine(monkeypatch, fields):
-    from smart_reporting.report_editor.slides import ReportSlidesEditorService
+    from smart_reporting.report_editor.pptx_engine import PptxEngine
 
     engine = Mock(side_effect=AssertionError("invalid input reached engine"))
-    monkeypatch.setattr(ReportSlidesEditorService, "_run_engine", engine)
+    monkeypatch.setattr(PptxEngine, "_run_engine", engine)
     with pytest.raises(ValueError, match="native_office_operations_invalid"):
         patch_office(
             "pptx",

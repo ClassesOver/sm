@@ -21,7 +21,7 @@ from ..workspace import WorkspacePathConflict
 from ._file_identity import read_verified_file
 from .native import NativeEditorService, bind_native_workspace
 from .native_models import NATIVE_MEDIA, NativeFormat, NativeScope, NativeSource, native_digest
-from .slides import ReportSlidesEditorService
+from .pptx_engine import PptxEngine
 
 MAX_IMPORT_BYTES = 24 * 1024 * 1024
 _MAX_PART_BYTES = 64 * 1024 * 1024
@@ -100,7 +100,7 @@ def inspect_native_upload(content: bytes, *, filename: str = '') -> NativeFormat
         elif format == 'xlsx':
             inspect_workbook(content)
         else:
-            ReportSlidesEditorService._run_engine(content, 'inspect')
+            PptxEngine._run_engine(content, 'inspect')
         return format
     except (OSError, subprocess.SubprocessError):
         raise ReportingError('native_engine_unavailable', '文件解析引擎暂不可用，请稍后重试。') from None

@@ -13,7 +13,7 @@ from smart_reporting.report_editor.native import NativeEditorService
 from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_import import NativeImportService
 from smart_reporting.report_editor.native_import_api import create_native_import_router
-from smart_reporting.report_editor import slides
+from smart_reporting.report_editor import pptx_engine
 from smart_reporting.reporting.delivery.office_engine import engine_dir
 from smart_reporting.reporting.tests.pptx_comments_fixture import create, verify
 from smart_reporting.reporting.tests.test_native_ribbon_http_roundtrip import Repository, anyio_backend  # noqa: F401
@@ -25,7 +25,7 @@ from smart_reporting.tests.test_reporting_request_identity import SECRET, _capab
 async def test_classic_comments_http_exact_delete_add_and_nonblocking_download(tmp_path, monkeypatch):
     bridge = engine_dir('slides') / 'dist/edit-pptx.mjs'
     assert bridge.is_file(), '验收使用生产打包桥，不自动构建或降级为tsx'
-    calls, actual = [], slides.run_bridge
+    calls, actual = [], pptx_engine.run_bridge
 
     def traced(engine, name, request, **kwargs):
         result = actual(engine, name, request, **kwargs)
@@ -33,7 +33,7 @@ async def test_classic_comments_http_exact_delete_add_and_nonblocking_download(t
         assert result.args[:2] == ['node', str(bridge)]
         return result
 
-    monkeypatch.setattr(slides, 'run_bridge', traced)
+    monkeypatch.setattr(pptx_engine, 'run_bridge', traced)
     publication, _, downloads = await create_publication(tmp_path)
     publication.repository = Repository()
     publication.validator = AsyncMock(side_effect=RuntimeError('pptx_comments_validation_probe'))

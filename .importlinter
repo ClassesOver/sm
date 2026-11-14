@@ -1,5 +1,6 @@
 [importlinter]
 root_package = smart_reporting
+exclude_type_checking_imports = True
 
 [importlinter:contract:office-independent-of-report-workflow]
 name = Office 原生编辑器不得依赖报告工作流
@@ -66,3 +67,111 @@ allow_indirect_imports = True
 ignore_imports =
     smart_reporting.report_editor.native_refresh -> smart_reporting.reporting.workflow.*
     smart_reporting.report_editor.office_refresh -> smart_reporting.reporting.workflow.*
+
+[importlinter:contract:office-independent-of-legacy-editors]
+name = Office 模块不得依赖待退役的旧 Markdown/幻灯片/工作簿编辑器
+type = forbidden
+source_modules =
+    smart_reporting.report_editor._edit_jobs
+    smart_reporting.report_editor._file_identity
+    smart_reporting.report_editor.native
+    smart_reporting.report_editor.native_ai
+    smart_reporting.report_editor.native_ai_api
+    smart_reporting.report_editor.native_api
+    smart_reporting.report_editor.native_import
+    smart_reporting.report_editor.native_import_api
+    smart_reporting.report_editor.native_mail_merge
+    smart_reporting.report_editor.native_models
+    smart_reporting.report_editor.native_office
+    smart_reporting.report_editor.native_office_read_tasks
+    smart_reporting.report_editor.native_pdf_ai
+    smart_reporting.report_editor.native_pdf_ai_tasks
+    smart_reporting.report_editor.native_pdf_contract
+    smart_reporting.report_editor.native_pdf_convert
+    smart_reporting.report_editor.native_pdf_external_pages
+    smart_reporting.report_editor.native_pdf_extract
+    smart_reporting.report_editor.native_pdf_form_ai
+    smart_reporting.report_editor.native_pdf_form_ai_api
+    smart_reporting.report_editor.native_pdf_form_ai_tasks
+    smart_reporting.report_editor.native_pdf_image_export
+    smart_reporting.report_editor.native_pdf_merge
+    smart_reporting.report_editor.native_pdf_protection
+    smart_reporting.report_editor.native_pdf_review_ai
+    smart_reporting.report_editor.native_pdf_review_ai_api
+    smart_reporting.report_editor.native_pdf_review_ai_tasks
+    smart_reporting.report_editor.native_publication
+    smart_reporting.report_editor.native_readiness
+    smart_reporting.report_editor.native_refresh
+    smart_reporting.report_editor.native_repository
+    smart_reporting.report_editor.native_slides_read_ai
+    smart_reporting.report_editor.native_word_ai
+    smart_reporting.report_editor.native_word_notes_ai
+    smart_reporting.report_editor.native_word_read_ai
+    smart_reporting.report_editor.native_word_read_review
+    smart_reporting.report_editor.native_word_read_tasks
+    smart_reporting.report_editor.native_word_review_ai
+    smart_reporting.report_editor.native_word_task_builder
+    smart_reporting.report_editor.native_workbook_read_ai
+    smart_reporting.report_editor.native_xlsx_pictures
+    smart_reporting.report_editor.native_xlsx_threads
+    smart_reporting.report_editor.office_refresh
+    smart_reporting.report_editor.pptx_master_elements
+    smart_reporting.report_editor.pptx_media
+    smart_reporting.report_editor.pptx_model3d
+    smart_reporting.report_editor.slides_native_ai
+    smart_reporting.report_editor.slides_native_ai_api
+    smart_reporting.report_editor.workbook_native_ai
+    smart_reporting.report_editor.workbook_native_ai_api
+    smart_reporting.report_editor._edit_jobs
+    smart_reporting.report_editor._file_identity
+    smart_reporting.report_editor.agent_event_streams
+    smart_reporting.report_editor.capabilities
+    smart_reporting.report_editor.pptx_engine
+    smart_reporting.report_editor.slides_render
+    smart_reporting.report_editor.slides_ai
+    smart_reporting.report_editor.slides_ai_native_operations
+    smart_reporting.report_editor.slides_ai_tools
+    smart_reporting.report_editor.workbook_ai
+    smart_reporting.report_editor.workbook_ai_charts
+    smart_reporting.report_editor.workbook_ai_tools
+forbidden_modules =
+    smart_reporting.report_editor.api
+    smart_reporting.report_editor.service
+    smart_reporting.report_editor.ai
+    smart_reporting.report_editor.chart_ai
+    smart_reporting.report_editor.chart_continuation
+    smart_reporting.report_editor.chart_edits
+    smart_reporting.report_editor.chart_templates
+    smart_reporting.report_editor.data_revisions
+    smart_reporting.report_editor.data_revision_contract
+    smart_reporting.report_editor.data_revision_exports
+    smart_reporting.report_editor.design
+    smart_reporting.report_editor.design_api
+    smart_reporting.report_editor.design_preview
+    smart_reporting.report_editor.design_repository
+    smart_reporting.report_editor.issue_reviews
+    smart_reporting.report_editor.policy_recovery
+    smart_reporting.report_editor.recalculation
+    smart_reporting.report_editor.render_preparation
+    smart_reporting.report_editor.revision_notice
+    smart_reporting.report_editor.revisions
+    smart_reporting.report_editor.slides
+    smart_reporting.report_editor.slides_api
+    smart_reporting.report_editor.slides_chart_ai
+    smart_reporting.report_editor.slides_image_ai
+    smart_reporting.report_editor.standard_charts
+    smart_reporting.report_editor.table_ai
+    smart_reporting.report_editor.template_provenance
+    smart_reporting.report_editor.template_render
+    smart_reporting.report_editor.template_source
+    smart_reporting.report_editor.trace_exports
+    smart_reporting.report_editor.trace_retention
+    smart_reporting.report_editor.trace_revisions
+    smart_reporting.report_editor.trace_sources
+    smart_reporting.report_editor.workbook
+    smart_reporting.report_editor.workbook_api
+allow_indirect_imports = True
+# 现存违规白名单（只减不增）：报告重跑刷新将在 P2 随“重算/刷新”入口一并下线。
+ignore_imports =
+    smart_reporting.report_editor.native_refresh -> smart_reporting.report_editor.*
+    smart_reporting.report_editor.office_refresh -> smart_reporting.report_editor.*
