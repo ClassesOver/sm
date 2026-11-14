@@ -1,3 +1,4 @@
+import { OfficeAssistantController } from './office-assistant-controller'
 import {createElement,Sparkles,CircleStop,Check,X} from 'lucide'
 import {bindOfficeAssistantPanel} from './office-assistant-panel'
 import {NATIVE_CHART_TYPES} from './slides-native-chart-edit'
@@ -51,8 +52,8 @@ export function mountSlidesNativeAI(host: HTMLElement, options: { api: SlidesNat
   const closeButton = document.createElement('button'); closeButton.type = 'button'; closeButton.className = 'native-ai-close'
   const help = [...panel.children].findLast(element => element.tagName === 'P') as HTMLElement
   const panelView = bindOfficeAssistantPanel(panel, {title,help,input:instruction,start:submit,cancel,close:closeButton,onClose:()=>{void discard()}})
-  let disposed = false, busy = false, accepting = false, generation = 0, activeId = '', activeRequestId = '', pending: Job | undefined, snapshot = '', quoted: Context | undefined
-  let controller = new AbortController()
+  let disposed = false, busy = false, accepting = false, generation = 0, activeRequestId = '', pending: Job | undefined, snapshot = '', quoted: Context | undefined
+  const tasks = new OfficeAssistantController({ ...options.api, id:(job: Job)=>job.editId, running:(job: Job)=>job.status==='running' })
   const current = () => options.context(scope.value as Scope)
   const identity = (context: Context) => JSON.stringify({ expectedSha256: context.expectedSha256, operations: context.operations, selection: context.selection, scope: context.scope, instruction: instruction.value.trim() })
   const message = (error: unknown) => error instanceof Error ? error.message : 'AI 请求失败，人工草稿已保留'
@@ -96,34 +97,29 @@ export function mountSlidesNativeAI(host: HTMLElement, options: { api: SlidesNat
   form.addEventListener('submit', async event => {
     event.preventDefault()
     if (disposed || busy || accepting || options.locked() || !instruction.value.trim()) return
-    if (activeRequestId) void options.api.cancelRequest?.(activeRequestId).catch(() => {})
-    const turn = ++generation; controller.abort(); controller = new AbortController()
+    if (activeRequestId) void tasks.cancel().catch(() => {})
+    const turn = ++generation
     activeRequestId = crypto.randomUUID()
     busy = true; submit.disabled = true; cancel.hidden = false; preview.hidden = true; pending = undefined; status.textContent = '正在规划并核验 PPTX 候选…'
     try {
       quoted = structuredClone(current()); snapshot = identity(quoted)
       if (quoted.scope !== 'deck' && !quoted.selection.length) throw new Error('请选择可编辑文字、表格或图表对象')
-      const started = await options.api.start({ expectedSha256: quoted.expectedSha256, operations: quoted.operations, selection: quoted.selection, scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }, controller.signal)
-      if (disposed || turn !== generation) { if (started.editId) void options.api.cancel(started.editId).catch(() => {}); return }
-      activeId = started.editId; cancel.hidden = false
-      progress.start(options.api.events, started.editId, controller.signal, () => !disposed && turn === generation && !options.locked())
-      let job = started
-      while (job.status === 'running') {
-        job = await options.api.status(started.editId, controller.signal)
-        if (disposed || turn !== generation) return
-      }
+      const job = await tasks.run({ expectedSha256: quoted.expectedSha256, operations: quoted.operations, selection: quoted.selection, scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }, activeRequestId, (started, signal) => {
+        cancel.hidden = false
+        progress.start(options.api.events, started.editId, signal, () => !disposed && turn === generation && !options.locked())
+      })
+      if (!job || disposed || turn !== generation) return
       if (options.locked() || identity(current()) !== snapshot) throw new Error('完整草稿或授权范围已变化，请重新生成候选。')
       if (job.status === 'succeeded' && job.proposal) { show(job); status.textContent = '候选已经引擎核验，请检查差异后明确采纳。' }
       else status.textContent = job.error?.message ?? 'AI 任务已取消，人工草稿已保留。'
     } catch (error) { if (!disposed && turn === generation) status.textContent = message(error) }
-    finally { if (!disposed && turn === generation) { busy = false; submit.disabled = false; cancel.hidden = true; activeId = '' } }
+    finally { if (!disposed && turn === generation) { busy = false; submit.disabled = false; cancel.hidden = true } }
   })
   async function discard() {
     progress.stop()
-    const id = activeId || pending?.editId, requestId = activeRequestId, turn = ++generation; controller.abort(); busy = false; pending = undefined; activeId = ''; activeRequestId = ''; preview.hidden = true; cancel.hidden = true; submit.disabled = false
+    const turn = ++generation; busy = false; pending = undefined; activeRequestId = ''; preview.hidden = true; cancel.hidden = true; submit.disabled = false
     status.textContent = 'AI 候选已放弃，人工草稿已保留。'
-    const cancellations = [requestId ? options.api.cancelRequest?.(requestId) : undefined, id ? options.api.cancel(id) : undefined].filter(Boolean)
-    const results = await Promise.allSettled(cancellations)
+    const results = await Promise.allSettled([tasks.cancel()])
     const failure = results.find(result => result.status === 'rejected')
     if (failure?.status === 'rejected' && !disposed && turn === generation) status.textContent = message(failure.reason)
   }
@@ -136,10 +132,12 @@ export function mountSlidesNativeAI(host: HTMLElement, options: { api: SlidesNat
     try {
       const context = current()
       if (identity(context) !== snapshot) throw new Error('完整草稿已变化，请重新生成候选。')
-      const accepted = await options.api.accept(pending.editId, { expectedSha256: context.expectedSha256, operations: context.operations, snapshotSha256: pending.snapshotSha256 }, controller.signal)
+      const candidate = pending
+      const accepted = await tasks.accept(signal => options.api.accept(candidate.editId, { expectedSha256: context.expectedSha256, operations: context.operations, snapshotSha256: candidate.snapshotSha256 }, signal))
+      if (!accepted) return
       if (disposed || turn !== generation || options.locked()) return
       if (identity(current()) !== snapshot) throw new Error('完整草稿已变化，请重新生成候选。')
-      options.apply(accepted.operations); pending = undefined; activeRequestId = ''; preview.hidden = true; status.textContent = '候选已加入草稿，可撤销或保存为新修订；业务事实仍需人工复核。'; refresh()
+      options.apply(accepted.operations); tasks.release(); pending = undefined; activeRequestId = ''; preview.hidden = true; status.textContent = '候选已加入草稿，可撤销或保存为新修订；业务事实仍需人工复核。'; refresh()
     } catch (error) { if (!disposed && turn === generation) { status.textContent = message(error); accept.disabled = false } }
     finally { accepting = false; options.accepting?.(false) }
   })
@@ -155,5 +153,5 @@ export function mountSlidesNativeAI(host: HTMLElement, options: { api: SlidesNat
     instruction.value = next.instruction; scope.value = next.scope; title.textContent = 'AI 助手 · ' + next.title
     open(); status.textContent = '请核对授权范围，点击生成候选后才调用 AI；候选仍需明确采纳。'
     return true
-  }, close() { if (!disposed) closeButton.click() }, refresh, dispose() { panelView.dispose(); disposed = true; ++generation; progress.stop(); controller.abort(); const id = activeId || pending?.editId; if (activeRequestId) void options.api.cancelRequest?.(activeRequestId).catch(() => {}); if (id) void options.api.cancel(id).catch(() => {}); panel.remove() } }
+  }, close() { if (!disposed) closeButton.click() }, refresh, dispose() { panelView.dispose(); disposed = true; ++generation; progress.stop(); void tasks.cancel().catch(() => {}); panel.remove() } }
 }

@@ -1,3 +1,4 @@
+import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel } from './office-assistant-panel'
 /** Office 阅读与编辑候选分开；回答不会写入草稿。 */
 import { createElement, MessageCircle, FileText, ListChecks, Sparkles, X, CircleStop } from 'lucide'
@@ -32,12 +33,13 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   panel.append(title,help,controls,scope,input,start,cancel,close,status,output,evidence);root.append(panel)
   const progress=mountNativeAIProgress(panel)
   const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,onClose:()=>{if(busy)stop()}})
-  let action: NativeOfficeReadAction='ask', generation=0,busy=false,disposed=false,activeRequest: string | undefined,controller: AbortController | undefined
+  const tasks = new OfficeAssistantController({start:options.api.officeAIStart,status:options.api.officeAIStatus,cancelRequest:options.api.officeAICancel,id:(task: NativeOfficeReadTask)=>task.taskId,running:(task: NativeOfficeReadTask)=>task.status==='running'})
+  let action: NativeOfficeReadAction='ask', generation=0,busy=false,disposed=false
   function update() {start.disabled=busy || action==='ask' && !input.value.trim();cancel.disabled=!busy;scope.disabled=busy;for(const [index,item] of actionButtons.entries()){item.disabled=busy;item.setAttribute('aria-pressed',String(Object.keys(actions)[index]===action))}}
   function stop(message='任务已取消') {
-    const turn=++generation;controller?.abort();progress.reset();busy=false
-    const id=activeRequest;activeRequest=undefined;status.textContent=message;update()
-    if(id) void options.api.officeAICancel(id).catch(error=>{if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
+    const turn=++generation;progress.reset();busy=false
+    status.textContent=message;update()
+    void tasks.cancel().catch(error=>{if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
   }
   function display(result: NonNullable<NativeOfficeReadTask['result']>) {
     output.textContent=result.answer;evidence.replaceChildren()
@@ -60,20 +62,17 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
     }catch(error){if(turn===generation && !disposed){busy=false;status.textContent=error instanceof Error ? error.message : '未保存编辑同步失败';update()}return}
     const {operations,selection:selected}=structuredClone(captured)
     const snapshot=JSON.stringify({operations,selection:selected}),requestId=crypto.randomUUID()
-    activeRequest=requestId;controller=new AbortController();const signal=controller.signal;busy=true;progress.reset();output.textContent='';evidence.replaceChildren();status.textContent='正在读取 '+formatLabel+' 文档';update()
+    busy=true;progress.reset();output.textContent='';evidence.replaceChildren();status.textContent='正在读取 '+formatLabel+' 文档';update()
     try {
-      let task=await options.api.officeAIStart({clientRequestId:requestId,action,instruction:input.value.trim(),expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected},signal)
-      if(turn!==generation || disposed)return
-      progress.start(options.api.officeAIEvents,task.taskId,signal,()=>turn===generation && !disposed)
-      while(turn===generation && !disposed && task.status==='running')task=await options.api.officeAIStatus(task.taskId,signal)
-      if(turn!==generation || disposed)return
+      const task=await tasks.run({clientRequestId:requestId,action,instruction:input.value.trim(),expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected},requestId,(started,signal)=>progress.start(options.api.officeAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
+      if(!task || turn!==generation || disposed)return
       const current=await options.context(scope.value==='selection' ? 'selection' : 'document')
       if(turn!==generation || disposed)return
       if(snapshot!==JSON.stringify(current)){progress.reset();status.textContent='草稿或选区已变化，请重新阅读。';return}
       if(task.status==='completed' && task.result){display(task.result);status.textContent='阅读完成，文档与草稿未修改。'}
       else status.textContent=task.error?.message ?? (task.status==='cancelled' ? '任务已取消' : 'Office AI 未返回有效回答')
     }catch(error){if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : 'Office AI 阅读失败'}
-    finally{if(turn===generation){busy=false;activeRequest=undefined;progress.stop();update()}}
+    finally{if(turn===generation){busy=false;tasks.release();progress.stop();update()}}
   }
   function open(preset: NativeOfficeReadAction='ask') {if(disposed)return;panelView.beforeOpen();if(busy)stop();action=preset;panel.hidden=false;update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true});if(preset!=='ask')void run()}
   input.oninput=update;scope.onchange=()=>{output.textContent='';evidence.replaceChildren();status.textContent=scope.value==='selection' ? '将读取编辑器当前真实选区；无效选区不会改为整篇阅读。' : '';update()}
