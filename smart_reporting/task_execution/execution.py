@@ -798,7 +798,8 @@ class TaskExecutionKernel:
                     exit_code=1,
                     operation_receipt=receipt,
                 )
-                return True
+                # 对账确认未应用只能终结失败，调用方仍须传播原始异常。
+                return False
         except Exception as error:
             logger.warning(
                 "task_patch_settle_deferred execution_id={} error_type={}",
