@@ -1,0 +1,708 @@
+[
+  {
+    "op": "set_cell",
+    "source_symbol": "setCellSchema",
+    "source_fields": [
+      "sheetId",
+      "address",
+      "value",
+      "expectedValue"
+    ],
+    "local_native": "applyCellEdits",
+    "status": "partial",
+    "gap": "expectedValue is now typed/strictly checked against proposal-local sequential cell state; conditional writes after native/non-cell prefixes explicitly reject, not stale-base compare. See ../NATIVE_XLSX_AI_PRECONDITIONS_ACCEPTANCE_20261114.md. Full source/native field parity remains bounded."
+  },
+  {
+    "op": "set_formula",
+    "source_symbol": "setFormulaSchema",
+    "source_fields": [
+      "sheetId",
+      "address",
+      "formula",
+      "expectedFormula"
+    ],
+    "local_native": "applyCellEdits",
+    "status": "partial",
+    "gap": "expectedFormula now exact string checked against sequential formula state (including leading =); uncertain native/non-cell prefixes reject. Formula output still removes leading = for engine. Other source formula limits remain separate."
+  },
+  {
+    "op": "clear_cell",
+    "source_symbol": "clearCellSchema",
+    "source_fields": [
+      "sheetId",
+      "address"
+    ],
+    "local_native": "applyCellEdits",
+    "status": "partial",
+    "gap": "Direct DSL translation implemented; bounds and real-engine preview apply."
+  },
+  {
+    "op": "set_range",
+    "source_symbol": "setRangeSchema",
+    "source_fields": [
+      "sheetId",
+      "start",
+      "range",
+      "values"
+    ],
+    "local_native": "applyCellEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyCellEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "clear_range",
+    "source_symbol": "clearRangeSchema",
+    "source_fields": [
+      "sheetId",
+      "range"
+    ],
+    "local_native": "applyCellEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyCellEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "fill_range",
+    "source_symbol": "fillRangeSchema",
+    "source_fields": [
+      "sheetId",
+      "source",
+      "sourceSheetId",
+      "target"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "copy_range",
+    "source_symbol": "copyRangeSchema",
+    "source_fields": [
+      "sheetId",
+      "source",
+      "sourceSheetId",
+      "target",
+      "filterColumn",
+      "filterValues"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "move_range",
+    "source_symbol": "moveRangeSchema",
+    "source_fields": [
+      "sheetId",
+      "source",
+      "sourceSheetId",
+      "target"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "convert_to_values",
+    "source_symbol": "convertToValuesSchema",
+    "source_fields": [
+      "sheetId",
+      "range"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "insert_rows",
+    "source_symbol": "insertRowsSchema",
+    "source_fields": [
+      "sheetId",
+      "row",
+      "count"
+    ],
+    "local_native": "applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "delete_rows",
+    "source_symbol": "deleteRowsSchema",
+    "source_fields": [
+      "sheetId",
+      "row",
+      "count"
+    ],
+    "local_native": "applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "insert_cols",
+    "source_symbol": "insertColsSchema",
+    "source_fields": [
+      "sheetId",
+      "column",
+      "count"
+    ],
+    "local_native": "applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "delete_cols",
+    "source_symbol": "deleteColsSchema",
+    "source_fields": [
+      "sheetId",
+      "column",
+      "count"
+    ],
+    "local_native": "applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "add_sheet",
+    "source_symbol": "addSheetSchema",
+    "source_fields": [
+      "name",
+      "rows",
+      "columns"
+    ],
+    "local_native": "applySheetEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "delete_sheet",
+    "source_symbol": "deleteSheetSchema",
+    "source_fields": [
+      "sheetId"
+    ],
+    "local_native": "applySheetEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "edit_chart",
+    "source_symbol": "editChartSchema",
+    "source_fields": [
+      "chartPath",
+      "title",
+      "chartType",
+      "seriesColors",
+      "legend",
+      "dataLabels",
+      "grouping",
+      "axisTitles",
+      "seriesData"
+    ],
+    "local_native": "applyChartSource",
+    "status": "partial",
+    "gap": "Direct DSL supports format + seriesData; local title/name<=200 vs source255, seriesData<=32 vs source24, index<=9999 vs source255; vectors up to2000 cells vs source plan1000. Trusted unique chartPath/ownership required."
+  },
+  {
+    "op": "add_chart",
+    "source_symbol": "addChartSchema",
+    "source_fields": [
+      "sheetId",
+      "chartType",
+      "dataRange",
+      "title",
+      "anchorCell"
+    ],
+    "local_native": "applyChartSource",
+    "status": "partial",
+    "gap": "Direct DSL supported; all 9 source chart types/dataRange/title/anchorCell routed to real draft. Local title<=200 vs source255; local anchor accepts range syntax; no live provider evidence."
+  },
+  {
+    "op": "add_shape",
+    "source_symbol": "addShapeSchema",
+    "source_fields": [
+      "sheetId",
+      "shapeType",
+      "anchorCell",
+      "fillColor",
+      "text"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "edit_shape",
+    "source_symbol": "editShapeSchema",
+    "source_fields": [
+      "visualId",
+      "text",
+      "fillColor",
+      "anchorCell"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "add_image",
+    "source_symbol": "addImageSchema",
+    "source_fields": [
+      "sheetId",
+      "path",
+      "anchorCell"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "add_table",
+    "source_symbol": "addTableSchema",
+    "source_fields": [
+      "sheetId",
+      "range",
+      "name",
+      "style",
+      "bandedRows"
+    ],
+    "local_native": "applyTableAdditions",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyTableAdditions can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "add_table_row",
+    "source_symbol": "addTableRowSchema",
+    "source_fields": [
+      "sheetId",
+      "tableName",
+      "row",
+      "count"
+    ],
+    "local_native": "applyTableEdits / applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyTableEdits / applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "add_table_column",
+    "source_symbol": "addTableColumnSchema",
+    "source_fields": [
+      "sheetId",
+      "tableName",
+      "column",
+      "columnName",
+      "count"
+    ],
+    "local_native": "applyTableEdits / applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyTableEdits / applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "delete_table_row",
+    "source_symbol": "deleteTableRowSchema",
+    "source_fields": [
+      "sheetId",
+      "tableName",
+      "row",
+      "count"
+    ],
+    "local_native": "applyTableEdits / applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyTableEdits / applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "delete_table_column",
+    "source_symbol": "deleteTableColumnSchema",
+    "source_fields": [
+      "sheetId",
+      "tableName",
+      "column",
+      "count"
+    ],
+    "local_native": "applyTableEdits / applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyTableEdits / applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "add_pivot",
+    "source_symbol": "addPivotSchema",
+    "source_fields": [
+      "sheetId",
+      "sourceRange",
+      "targetCell",
+      "targetSheetId",
+      "rowFields",
+      "columnField",
+      "pageFields",
+      "values",
+      "groupings",
+      "filters",
+      "name"
+    ],
+    "local_native": "addPivot",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native addPivot can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_rows_hidden",
+    "source_symbol": "setRowsHiddenSchema",
+    "source_fields": [
+      "sheetId",
+      "row",
+      "count",
+      "hidden"
+    ],
+    "local_native": "applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_cols_hidden",
+    "source_symbol": "setColsHiddenSchema",
+    "source_fields": [
+      "sheetId",
+      "column",
+      "count",
+      "hidden"
+    ],
+    "local_native": "applyRowColumnOps",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyRowColumnOps can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_hyperlink",
+    "source_symbol": "setHyperlinkSchema",
+    "source_fields": [
+      "sheetId",
+      "address",
+      "target"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "protect_sheet",
+    "source_symbol": "protectSheetSchema",
+    "source_fields": [
+      "sheetId",
+      "protected",
+      "password",
+      "allow"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "set_filter",
+    "source_symbol": "setFilterSchema",
+    "source_fields": [
+      "sheetId",
+      "range"
+    ],
+    "local_native": "applySheetFilter",
+    "status": "partial",
+    "gap": "Direct DSL range sets empty columns criteria; prior criteria reset."
+  },
+  {
+    "op": "clear_filter",
+    "source_symbol": "clearFilterSchema",
+    "source_fields": [
+      "sheetId"
+    ],
+    "local_native": "applySheetFilter",
+    "status": "partial",
+    "gap": "Direct DSL maps to native filter=null."
+  },
+  {
+    "op": "set_filter_criteria",
+    "source_symbol": "setFilterCriteriaSchema",
+    "source_fields": [
+      "sheetId",
+      "column",
+      "values"
+    ],
+    "local_native": "applySheetFilter",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetFilter can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "add_conditional_format",
+    "source_symbol": "addConditionalFormatSchema",
+    "source_fields": [
+      "sheetId",
+      "range",
+      "rule"
+    ],
+    "local_native": "applyCfRules",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyCfRules can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "clear_conditional_formats",
+    "source_symbol": "clearConditionalFormatsSchema",
+    "source_fields": [
+      "sheetId"
+    ],
+    "local_native": "applyCfRules",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyCfRules can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_data_validation",
+    "source_symbol": "setDataValidationSchema",
+    "source_fields": [
+      "sheetId",
+      "range",
+      "validation"
+    ],
+    "local_native": "applyDvRules",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyDvRules can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_page_setup",
+    "source_symbol": "setPageSetupSchema",
+    "source_fields": [
+      "sheetId",
+      "orientation",
+      "paperSize",
+      "scale",
+      "fitToWidth",
+      "fitToHeight",
+      "margins",
+      "printGridlines",
+      "printHeadings",
+      "printArea",
+      "printTitles",
+      "header",
+      "footer",
+      "rowBreaks",
+      "colBreaks"
+    ],
+    "local_native": "applyPageSetups",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyPageSetups can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_note",
+    "source_symbol": "setNoteSchema",
+    "source_fields": [
+      "sheetId",
+      "address",
+      "text"
+    ],
+    "local_native": "applySheetNotes",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetNotes can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "refresh_pivot",
+    "source_symbol": "refreshPivotSchema",
+    "source_fields": [
+      "sheetId"
+    ],
+    "local_native": "refreshPivotCaches",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native refreshPivotCaches can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_freeze",
+    "source_symbol": "setFreezeSchema",
+    "source_fields": [
+      "sheetId",
+      "rows",
+      "columns"
+    ],
+    "local_native": "applySheetEdits (field equivalence unverified)",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetEdits (field equivalence unverified) can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "duplicate_sheet",
+    "source_symbol": "duplicateSheetSchema",
+    "source_fields": [
+      "sheetId",
+      "name"
+    ],
+    "local_native": "applySheetEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_sheet_hidden",
+    "source_symbol": "setSheetHiddenSchema",
+    "source_fields": [
+      "sheetId",
+      "hidden"
+    ],
+    "local_native": "applySheetEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "move_sheet",
+    "source_symbol": "moveSheetSchema",
+    "source_fields": [
+      "sheetId",
+      "position"
+    ],
+    "local_native": "applySheetEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "add_defined_name",
+    "source_symbol": "addDefinedNameSchema",
+    "source_fields": [
+      "name",
+      "ref"
+    ],
+    "local_native": "applyDefinedNames",
+    "status": "partial",
+    "gap": "Direct name/ref maps to native sets; source name/ref validators not reused."
+  },
+  {
+    "op": "delete_defined_name",
+    "source_symbol": "deleteDefinedNameSchema",
+    "source_fields": [
+      "name"
+    ],
+    "local_native": "applyDefinedNames",
+    "status": "partial",
+    "gap": "Direct name maps to native removes."
+  },
+  {
+    "op": "format_range",
+    "source_symbol": "formatRangeSchema",
+    "source_fields": [
+      "sheetId",
+      "range",
+      "format"
+    ],
+    "local_native": "applyCellEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyCellEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "sort_range",
+    "source_symbol": "sortRangeSchema",
+    "source_fields": [
+      "sheetId",
+      "range",
+      "byColumn",
+      "order",
+      "hasHeader"
+    ],
+    "local_native": "sortRange",
+    "status": "partial",
+    "gap": "Direct DSL byColumn/order/hasHeader maps to native spec; formulas/comments are engine-refused."
+  },
+  {
+    "op": "merge_cells",
+    "source_symbol": "mergeCellsSchema",
+    "source_fields": [
+      "sheetId",
+      "range"
+    ],
+    "local_native": "applySheetMerges",
+    "status": "partial",
+    "gap": "Direct DSL preserves existing merges through per-sheet batch merge state; real-engine checks."
+  },
+  {
+    "op": "unmerge_cells",
+    "source_symbol": "unmergeCellsSchema",
+    "source_fields": [
+      "sheetId",
+      "range"
+    ],
+    "local_native": "applySheetMerges",
+    "status": "partial",
+    "gap": "Direct DSL drops every existing merge overlapping target; exact source overlap behavior unverified."
+  },
+  {
+    "op": "set_row_height",
+    "source_symbol": "setRowHeightSchema",
+    "source_fields": [
+      "sheetId",
+      "row",
+      "count",
+      "heightPoints"
+    ],
+    "local_native": "applyRowHeights",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyRowHeights can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "set_col_width",
+    "source_symbol": "setColWidthSchema",
+    "source_fields": [
+      "sheetId",
+      "column",
+      "count",
+      "widthPx"
+    ],
+    "local_native": "applyColumnWidths",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyColumnWidths can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "rename_sheet",
+    "source_symbol": "renameSheetSchema",
+    "source_fields": [
+      "sheetId",
+      "name"
+    ],
+    "local_native": "applySheetEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applySheetEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "delete_visual",
+    "source_symbol": "deleteVisualSchema",
+    "source_fields": [
+      "visualId"
+    ],
+    "local_native": "applyChartDeletions (charts only)",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyChartDeletions (charts only) can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "delete_table",
+    "source_symbol": "deleteTableSchema",
+    "source_fields": [
+      "sheetId",
+      "tableName"
+    ],
+    "local_native": "applyTableEdits",
+    "status": "partial",
+    "gap": "Source DSL object rejected; alternate native applyTableEdits can express this family, exact source field/default/enum equivalence not established."
+  },
+  {
+    "op": "add_sparkline",
+    "source_symbol": "addSparklineSchema",
+    "source_fields": [
+      "sheetId",
+      "type",
+      "dataRange",
+      "targetCell",
+      "color"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  },
+  {
+    "op": "find_replace",
+    "source_symbol": "findReplaceSchema",
+    "source_fields": [
+      "sheetId",
+      "range",
+      "find",
+      "replace",
+      "matchCase",
+      "wholeCell"
+    ],
+    "local_native": "none",
+    "status": "missing",
+    "gap": "No source DSL translation or matching WorkbookAIProposal kind; manual engine/UI support does not make this an AI tool."
+  }
+]

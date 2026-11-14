@@ -713,7 +713,7 @@ export function diffToEdits(model: WorkbookModel, readback: ReadbackWorkbook): C
       const changedValue =
         after === undefined
           ? before !== undefined && (before.value !== null || before.formula !== undefined)
-          : before?.formula !== after.formula || before?.value !== after.value
+          : before?.formula !== after.formula || !after.formula && before?.value !== after.value
       const beforeStyle = importedStyleOf(model, sheet.name, address)
       const afterStyle = after?.style
       // The grid drops a cleared cell's style key entirely (Univer clears are

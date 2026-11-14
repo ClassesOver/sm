@@ -34,7 +34,7 @@ export async function assertSafePivotPackage(bytes: Uint8Array): Promise<void> {
 }
 
 /// One raw source row: value per cacheField, in fieldNames order.
-export type SourceValue = string | number | null
+export type SourceValue = string | number | boolean | null
 
 export function decodeEntities(input: string): string {
   return input
@@ -76,7 +76,7 @@ export function extractCellValue(
   if (rawValue === undefined) return null
   if (type === 's') return sharedStrings[Number(rawValue)] ?? null
   if (type === 'str') return decodeCellText(rawValue)
-  if (type === 'b') return rawValue === '1' ? 1 : 0
+  if (type === 'b') return rawValue === '1'
   const n = Number(rawValue)
   return Number.isFinite(n) ? n : decodeCellText(rawValue)
 }

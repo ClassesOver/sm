@@ -50,43 +50,43 @@ const MOVE_TO_LABELS: Record<PivotArea, StringKey> = {
   values: 'dlgPivotMoveToValues',
 }
 
-/// Every Excel "Summarize Values By" entry; the engine covers the first seven.
+/// Every Excel "Summarize Values By" entry; all eleven are supported by the engine.
 const AGG_OPTIONS: readonly { value: string; labelKey: StringKey; supported: boolean }[] = [
   { value: 'sum', labelKey: 'dlgPivotAggSum', supported: true },
   { value: 'count', labelKey: 'dlgPivotAggCount', supported: true },
   { value: 'average', labelKey: 'dlgPivotAggAverage', supported: true },
   { value: 'max', labelKey: 'dlgPivotAggMax', supported: true },
   { value: 'min', labelKey: 'dlgPivotAggMin', supported: true },
-  { value: 'product', labelKey: 'dlgPivotAggProduct', supported: false },
-  { value: 'countNums', labelKey: 'dlgPivotAggCountNums', supported: false },
-  { value: 'stdDev', labelKey: 'dlgPivotAggStdDev', supported: false },
-  { value: 'stdDevp', labelKey: 'dlgPivotAggStdDevp', supported: false },
-  { value: 'var', labelKey: 'dlgPivotAggVar', supported: false },
-  { value: 'varp', labelKey: 'dlgPivotAggVarp', supported: false },
+  { value: 'product', labelKey: 'dlgPivotAggProduct', supported: true },
+  { value: 'countNums', labelKey: 'dlgPivotAggCountNums', supported: true },
+  { value: 'stdDev', labelKey: 'dlgPivotAggStdDev', supported: true },
+  { value: 'stdDevp', labelKey: 'dlgPivotAggStdDevp', supported: true },
+  { value: 'var', labelKey: 'dlgPivotAggVar', supported: true },
+  { value: 'varp', labelKey: 'dlgPivotAggVarp', supported: true },
 ]
 
-/// Every Excel "Show Values As" entry; '' = No Calculation. All fifteen modes
-/// are baked by the pivot engine (percent spellings map to OOXML on save).
+/// Every source "Show Values As" entry; '' = No Calculation. All fourteen modes
+/// are supported, with base-field/item pickers for modes that need them.
 const SHOW_AS_OPTIONS: readonly { value: string; labelKey: StringKey; supported: boolean }[] = [
   { value: '', labelKey: 'dlgPivotShowAsNormal', supported: true },
   { value: 'percentOfTotal', labelKey: 'dlgPivotShowAsPctTotal', supported: true },
   { value: 'percentOfCol', labelKey: 'dlgPivotShowAsPctCol', supported: true },
   { value: 'percentOfRow', labelKey: 'dlgPivotShowAsPctRow', supported: true },
-  { value: 'percentOf', labelKey: 'dlgPivotShowAsPctOf', supported: false },
-  { value: 'percentOfParentRow', labelKey: 'dlgPivotShowAsPctParentRow', supported: false },
-  { value: 'percentOfParentCol', labelKey: 'dlgPivotShowAsPctParentCol', supported: false },
-  { value: 'percentOfParent', labelKey: 'dlgPivotShowAsPctParent', supported: false },
-  { value: 'difference', labelKey: 'dlgPivotShowAsDifference', supported: false },
-  { value: 'percentDiff', labelKey: 'dlgPivotShowAsPctDifference', supported: false },
-  { value: 'runTotal', labelKey: 'dlgPivotShowAsRunningTotal', supported: false },
+  { value: 'percentOf', labelKey: 'dlgPivotShowAsPctOf', supported: true },
+  { value: 'percentOfParentRow', labelKey: 'dlgPivotShowAsPctParentRow', supported: true },
+  { value: 'percentOfParentCol', labelKey: 'dlgPivotShowAsPctParentCol', supported: true },
+  { value: 'percentOfParent', labelKey: 'dlgPivotShowAsPctParent', supported: true },
+  { value: 'difference', labelKey: 'dlgPivotShowAsDifference', supported: true },
+  { value: 'percentDiff', labelKey: 'dlgPivotShowAsPctDifference', supported: true },
+  { value: 'runTotal', labelKey: 'dlgPivotShowAsRunningTotal', supported: true },
   {
     value: 'percentOfRunningTotal',
     labelKey: 'dlgPivotShowAsPctRunningTotal',
-    supported: false,
+    supported: true,
   },
-  { value: 'rankAscending', labelKey: 'dlgPivotShowAsRankAsc', supported: false },
-  { value: 'rankDescending', labelKey: 'dlgPivotShowAsRankDesc', supported: false },
-  { value: 'index', labelKey: 'dlgPivotShowAsIndex', supported: false },
+  { value: 'rankAscending', labelKey: 'dlgPivotShowAsRankAsc', supported: true },
+  { value: 'rankDescending', labelKey: 'dlgPivotShowAsRankDesc', supported: true },
+  { value: 'index', labelKey: 'dlgPivotShowAsIndex', supported: true },
 ]
 
 /// Dropdown value for "(All)"; a NUL prefix cannot collide with a source label
@@ -558,7 +558,7 @@ function ValueFieldSettingsDialog({
             <input
               type="text"
               className="cell-input"
-              disabled title="当前引擎暂不支持保存自定义标题" placeholder={valueCaption(t, fields, { ...draft, name: undefined })}
+              placeholder={valueCaption(t, fields, { ...draft, name: undefined })}
               value={draft.name ?? ''}
               onChange={(event) =>
                 setDraft({

@@ -9,6 +9,7 @@ import { sha256Hex } from './sha256'
 import { spillsDynamicArray, withFutureFunctionMarkers } from './future-functions'
 import { StylesheetEditor } from './styles-write'
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
+import { materializeEditedSharedFormulas } from './shared-formulas'
 import { assemblePackage, createBufferEntrySource, type EntrySource, type MutationPlan } from './zip'
 import { escapeXmlAttribute, escapeCellText, escapeXmlText, readXmlAttribute } from './xml'
 
@@ -335,6 +336,13 @@ export async function applyCellEdits(
   let workbookPatched = workbookXml
   const touchedEntries: string[] = []
   let sawFormula = false
+  const valueEditsBySheet = new Map<string, Set<string>>()
+  for (const edit of edits) {
+    if (!edit.writeValue) continue
+    const addresses = valueEditsBySheet.get(edit.sheetName) ?? new Set<string>()
+    addresses.add(`${columnLabelOf(edit.column)}${edit.row + 1}`)
+    valueEditsBySheet.set(edit.sheetName, addresses)
+  }
 
   for (const edit of edits) {
     let worksheetXml = worksheetXmlByName.get(edit.sheetName)
@@ -344,6 +352,8 @@ export async function applyCellEdits(
         (await findWorksheetPath(source, workbookXml, edit.sheetName))
       worksheetPathByName.set(edit.sheetName, path)
       worksheetXml = await source.readText(path)
+      const addresses = valueEditsBySheet.get(edit.sheetName)
+      if (addresses) worksheetXml = materializeEditedSharedFormulas(worksheetXml, addresses)
     }
     const address = `${columnLabelOf(edit.column)}${edit.row + 1}`
     const wantsStyle = edit.styleReset === true || hasStyleDelta(edit.style)

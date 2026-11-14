@@ -1,0 +1,597 @@
+[
+  {
+    "name": "installFilterRangeOutlineSuppression",
+    "sourceImport": "./filter-range-outline",
+    "line": 2248,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installVeryHiddenSheetGuard",
+    "sourceImport": "./very-hidden-sheets",
+    "line": 2249,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installInjectorResolutionGuard",
+    "sourceImport": "./univer-sync",
+    "line": 2260,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFindRevealFix",
+    "sourceImport": "./univer-sync",
+    "line": 2262,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installGridGrowth",
+    "sourceImport": "./grid-growth",
+    "line": 2265,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installWrapMeasureLifecycle",
+    "sourceImport": "./univer-sync",
+    "line": 2268,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installJournalSuppressionUndoFilter",
+    "sourceImport": "./univer-state",
+    "line": 2294,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installLoadAutoHeightGate",
+    "sourceImport": "./univer-state",
+    "line": 2298,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installBorderOverflowExclusionFix",
+    "sourceImport": "./border-overflow-exclusion",
+    "line": 2299,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCfEmptySheetFastPath",
+    "sourceImport": "./cf-empty-fast-path",
+    "line": 2300,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installOtherFormulaAnchor",
+    "sourceImport": "./other-formula-anchor",
+    "line": 2301,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCellClipAnchorFix",
+    "sourceImport": "./cell-clip-anchor-fix",
+    "line": 2302,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installMergeBorderFix",
+    "sourceImport": "./merge-border-fix",
+    "line": 2305,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installThickBorderFix",
+    "sourceImport": "./thick-border-fix",
+    "line": 2308,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installRtlTextDirectionFix",
+    "sourceImport": "./rtl-text-fix",
+    "line": 2311,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installRtlGridMirror",
+    "sourceImport": "./rtl-grid-mirror",
+    "line": 2314,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installRightToLeftCommand",
+    "sourceImport": "./sheet-rtl-view",
+    "line": 2317,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installRichTextBidiFix",
+    "sourceImport": "./rich-text-bidi-fix",
+    "line": 2318,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCenterContinuousRender",
+    "sourceImport": "./center-continuous",
+    "line": 2321,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installExcelFilterButton",
+    "sourceImport": "./filter-button-excel-style",
+    "line": 2322,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installLongTextRender",
+    "sourceImport": "./long-text-render",
+    "line": 2325,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installVertAlignRender",
+    "sourceImport": "./vert-align-render",
+    "line": 2328,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installAutofitWrapBudget",
+    "sourceImport": "./autofit-wrap-budget",
+    "line": 2329,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installAutofitLinePitch",
+    "sourceImport": "./autofit-line-pitch",
+    "line": 2332,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installHeaderUnhideDebounce",
+    "sourceImport": "./load-perf-patches",
+    "line": 2333,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCopyAnimationIdle",
+    "sourceImport": "./copy-animation-idle",
+    "line": 2336,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installNumberAsTextAlertSeverity",
+    "sourceImport": "./number-as-text-alert",
+    "line": 2337,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installForceStringMarkGate",
+    "sourceImport": "./long-text-render",
+    "line": 2338,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFormulaStreamHold",
+    "sourceImport": "./formula-stream-hold",
+    "line": 2341,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFilteredCopyHook",
+    "sourceImport": "./filtered-copy",
+    "line": 2372,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installSortFormulaRefs",
+    "sourceImport": "./sort-formula-refs",
+    "line": 2374,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installTsvClipboardFix",
+    "sourceImport": "./clipboard-tsv",
+    "line": 2376,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFormulaViewInterceptor",
+    "sourceImport": "./formula-view",
+    "line": 2378,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFormulaTextInterceptor",
+    "sourceImport": "./formula-view",
+    "line": 2381,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFormulaBarAutosize",
+    "sourceImport": "./formula-bar-autosize",
+    "line": 2383,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFxButtonHook",
+    "sourceImport": "./function-arguments-runtime",
+    "line": 2384,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installWorkbookPickRelay",
+    "sourceImport": "./function-arguments-runtime",
+    "line": 2387,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCachedValueFallbackInterceptor",
+    "sourceImport": "./formula-cached-fallback",
+    "line": 2390,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFormulaNewlineDisplay",
+    "sourceImport": "./formula-newline-display",
+    "line": 2392,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installSupportedFunctionProbe",
+    "sourceImport": "./function-registry-probe",
+    "line": 2396,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installNumberFormatFix",
+    "sourceImport": "./numfmt-fix",
+    "line": 2399,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installErrorValueAlignment",
+    "sourceImport": "./error-value-align",
+    "line": 2403,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCellFilenameFunction",
+    "sourceImport": "./cell-function",
+    "line": 2406,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installRateFallback",
+    "sourceImport": "./rate-function",
+    "line": 2413,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installIfsEmptySetFix",
+    "sourceImport": "./ifs-empty-set",
+    "line": 2415,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCriteriaCompareCacheFix",
+    "sourceImport": "./criteria-compare-cache",
+    "line": 2418,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFormulaLexerFix",
+    "sourceImport": "./formula-lexer-fix",
+    "line": 2421,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installSheetRenameFix",
+    "sourceImport": "./sheet-rename-fix",
+    "line": 2423,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installSelectionWrapGuard",
+    "sourceImport": "./selection-wrap-fix",
+    "line": 2425,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installArrowCollapse",
+    "sourceImport": "./arrow-collapse-fix",
+    "line": 2428,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installSheetProtectionGuard",
+    "sourceImport": "./sheet-protection",
+    "line": 2429,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCtrlDragFill",
+    "sourceImport": "./ctrl-drag-fill",
+    "line": 2436,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installRedactMenu",
+    "sourceImport": "./redact-menu",
+    "line": 2440,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installContextSubmenuReopenFix",
+    "sourceImport": "./context-submenu-reopen-fix",
+    "line": 2443,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installMenuInputEnter",
+    "sourceImport": "./menu-input-enter",
+    "line": 2446,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCellContextMenu",
+    "sourceImport": "./cell-context-menu",
+    "line": 2447,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installClipboardAnchorTile",
+    "sourceImport": "./clipboard-anchor-tile",
+    "line": 2450,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installMultiRowAutofit",
+    "sourceImport": "./autofit-multi-row",
+    "line": 2452,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFormatPainter",
+    "sourceImport": "./format-painter",
+    "line": 2453,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "registerExcelJumpNav",
+    "sourceImport": "./excel-jump-nav",
+    "line": 2459,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "registerEditorWordJump",
+    "sourceImport": "./editor-word-jump",
+    "line": 2461,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "registerExcelShortcuts",
+    "sourceImport": "./excel-shortcuts",
+    "line": 2465,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCfFormulaFold",
+    "sourceImport": "./cf-formula-fold",
+    "line": 2484,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCfDisplayKeyCompare",
+    "sourceImport": "./cf-duplicate-key",
+    "line": 2487,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installFormulaNullResultFix",
+    "sourceImport": "./formula-null-result",
+    "line": 2490,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCopyMaterialize",
+    "sourceImport": "./copy-materialize",
+    "line": 2493,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installStatusBarStatsFilter",
+    "sourceImport": "./status-bar-stats",
+    "line": 2494,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installStatusBarFileStats",
+    "sourceImport": "./statusbar-file-stats",
+    "line": 2500,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installActiveCellDataValidationChrome",
+    "sourceImport": "./data-validation-dropdown",
+    "line": 2507,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installInvalidDataMarkerSuppression",
+    "sourceImport": "./data-validation-marker",
+    "line": 2509,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installThreadedCommentAffordances",
+    "sourceImport": "./threaded-comment-marker",
+    "line": 2510,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installNotePopupCard",
+    "sourceImport": "./note-hover-card",
+    "line": 2516,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installRuleDetail",
+    "sourceImport": "./univer-rule-detail",
+    "line": 2535,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installLazyFindBridge",
+    "sourceImport": "./lazy-find",
+    "line": 2538,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installReplaceAutoSearch",
+    "sourceImport": "./replace-autosearch",
+    "line": 2541,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCrossHighlight",
+    "sourceImport": "./cross-highlight",
+    "line": 2550,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installOutlineGutter",
+    "sourceImport": "./outline-gutter",
+    "line": 2555,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installLargeFilterValues",
+    "sourceImport": "./large-filter",
+    "line": 3486,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installPictureTransfer",
+    "sourceImport": "./picture-paste",
+    "line": 3647,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installCellImagePreview",
+    "sourceImport": "./cell-image-preview",
+    "line": 3680,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installWheelZoomSteps",
+    "sourceImport": "./wheel-zoom",
+    "line": 3687,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installWorkbookVisuals",
+    "sourceImport": "./WorkbookVisuals",
+    "line": 4066,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installPageBreakPreview",
+    "sourceImport": "./page-break-preview",
+    "line": 4450,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "registerCellFontAliases",
+    "sourceImport": "./cell-font-fallback",
+    "line": 4955,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  },
+  {
+    "name": "installSheetsMcpBridge",
+    "sourceImport": "./mcp-bridge",
+    "line": 5620,
+    "status": "requires_semantic_comparison",
+    "note": "An imported installer declaration is not proof of a missing local behavior or of runtime parity."
+  }
+]

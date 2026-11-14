@@ -1,26 +1,33 @@
+import { projectPivotSourceGrid, readPivotSourcePatterns } from '@sheets-web/xlsx-engine/pivot-source-format'
 /** 固定源 pivot-actions 语义适配；布局与缓存/输出计算全部委托现有 XLSX 引擎。 */
 import { readWorkbook, parseAddress, parseRange, formatAddress, type PivotAddition } from '@sheets-web/xlsx-engine'
-import { buildPivotLayout, pivotOutputArea, type PivotLayoutValue, type PivotLayoutSpec, type PivotLayoutOptions } from '@sheets-web/xlsx-engine/pivot-layout'
-import { pivotHostSheet, readPivotState, resolvePivotTarget } from '@sheets-web/xlsx-engine/pivot-add'
+import { buildPivotLayout, pivotOutputArea, type PivotLayoutSpec, type PivotLayoutOptions } from '@sheets-web/xlsx-engine/pivot-layout'
+import { pivotHostSheet, readPivotState, resolvePivotTarget, pivotLayoutSpecOf } from '@sheets-web/xlsx-engine/pivot-add'
+import { readPivotValueBase, readPivotMemberOrder } from '@sheets-web/xlsx-engine/pivot-base-read'
+import { readPivotShowAs } from '@sheets-web/xlsx-engine/pivot-show-as'
+import { PIVOT_AGGREGATIONS, PIVOT_SHOW_DATA_AS } from '@sheets-web/xlsx-engine/pivot-value-modes'
 import { createPivotEntrySource } from '@sheets-web/xlsx-engine/pivot-source'
 import { decodeXmlText, readXmlAttribute, extractElements, sectionInner } from '@sheets-web/xlsx-engine/xml'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import type { WorkbookOperation } from './workbook-draft'
 import { supportsOwnedPivotControls } from '../../../reporting/workbook_engine/packages/xlsx-engine/src/pivot-controls'
 
-export type PivotValue = Omit<PivotLayoutValue,'fieldIndex'|'calcName'> & { field: string }
+export type PivotValue = PivotLayoutSpec['values'][number]
 export interface PivotConfig {
   name: string; sourceTableName?: string; sourceSheetName: string; sourceRange: string; targetSheetName: string; targetCell: string
+  dimensionFormatProjection?: boolean
   rowFields: string[]; columnFields: string[]; values: PivotValue[]
   hiddenMemberFields?: {row:readonly string[];column:readonly string[]}; pageFilters?: PivotLayoutSpec['pageFilters']; groupings?: PivotLayoutSpec['groupings']; filters?: PivotLayoutSpec['filters']; hiddenMembers?: PivotLayoutOptions['hiddenMembers']
+  memberOrder?: PivotLayoutOptions['memberOrder']; memberOrderFields?: {row:readonly string[];column:readonly string[]}
 }
 export interface WorkbookPivot extends PivotConfig {
   tablePath: string; cachePath: string; worksheetPath: string; location: PivotAddition['location']; fieldNames: string[]; readonlyReason?: string
 }
 const areaRef = (area: PivotAddition['location']) => formatAddress(area.startRow,area.startColumn)+':'+formatAddress(area.endRow,area.endColumn)
 const attribute = (tag: string, key: string) => decodeXmlText(readXmlAttribute(tag,key) ?? '')
-const builtinFormats:Record<string,string>={'1':'0','2':'0.00','3':'#,##0','4':'#,##0.00','9':'0%','10':'0.00%','11':'0.00E+00','12':'# ?/?','13':'# ??/??','14':'mm-dd-yy','15':'d-mmm-yy','18':'h:mm AM/PM','19':'h:mm:ss AM/PM','20':'h:mm','21':'h:mm:ss'}
-const aggregates: Record<string,PivotValue['agg']> = { sum:'sum',count:'count',avg:'average',average:'average',max:'max',min:'min' }
+const builtinFormats:Record<string,string>={'0':'General','1':'0','2':'0.00','3':'#,##0','4':'#,##0.00','9':'0%','10':'0.00%','11':'0.00E+00','12':'# ?/?','13':'# ??/??','14':'mm-dd-yy','15':'d-mmm-yy','18':'h:mm AM/PM','19':'h:mm:ss AM/PM','20':'h:mm','21':'h:mm:ss'}
+const showAsModes: readonly string[] = PIVOT_SHOW_DATA_AS
+const aggregates: Record<string,PivotValue['agg']> = { ...Object.fromEntries(PIVOT_AGGREGATIONS.map(agg=>[agg,agg])), avg:'average' }
 
 export async function readWorkbookPivots(bytes: Uint8Array): Promise<WorkbookPivot[]> {
   const source=await createPivotEntrySource(bytes),result:WorkbookPivot[]=[],workbook=await readWorkbook(bytes)
@@ -35,8 +42,14 @@ export async function readWorkbookPivots(bytes: Uint8Array): Promise<WorkbookPiv
     const sourceTag=cacheXml.match(/<worksheetSource\b[^>]*>/)?.[0] ?? ''
     const rowFields=state?.rowFieldIndices.map(index=>fieldNames[index]!) ?? extractElements(sectionInner(xml,'rowFields') ?? '','field').map(tag=>Number(attribute(tag,'x'))).filter(index=>index>=0).map(index=>fieldNames[index]!)
     const columnFields=state?.columnFieldIndices?.map(index=>fieldNames[index]!) ?? extractElements(sectionInner(xml,'colFields') ?? '','field').map(tag=>Number(attribute(tag,'x'))).filter(index=>index>=0).map(index=>fieldNames[index]!)
-    const values=state?.values.map(value=>({field:value.formula!==undefined?value.calcName!:fieldNames[value.fieldIndex]!,agg:value.agg,...(value.formula!==undefined?{formula:value.formula}:{}),...(value.numFmt?{numFmt:value.numFmt}:{}),...(value.showDataAs?{showDataAs:value.showDataAs}:{})})) ?? extractElements(sectionInner(xml,'dataFields') ?? '','dataField').map(tag=>({field:fieldNames[Number(attribute(tag,'fld'))]!,agg:aggregates[attribute(tag,'subtotal') || 'sum']!,...(builtinFormats[attribute(tag,'numFmtId')]?{numFmt:builtinFormats[attribute(tag,'numFmtId')]}:{}),...(['percentOfTotal','percentOfRow','percentOfCol'].includes(attribute(tag,'showDataAs'))?{showDataAs:attribute(tag,'showDataAs') as PivotValue['showDataAs']}:{})}))
-    const unsupported=!state && (Number(attribute(xml.match(/<pageFields\b[^>]*>/)?.[0] ?? '','count'))>0 || /<fieldGroup\b|\bformula=/.test(cacheXml) || /<(?:pivotFilters|filters)\b|<item\b[^>]*\bh="(?:1|true)"/.test(xml) || extractElements(sectionInner(xml,'dataFields') ?? '','dataField').some(tag=>(attribute(tag,'showDataAs')&&!['normal','percentOfTotal','percentOfRow','percentOfCol'].includes(attribute(tag,'showDataAs')))||(attribute(tag,'numFmtId')&&!['0',...Object.keys(builtinFormats)].includes(attribute(tag,'numFmtId')))))
+    const dataFieldModes=readPivotShowAs(xml)
+    const dataFields=extractElements(sectionInner(xml,'dataFields') ?? '','dataField')
+    const pivotFields=extractElements(sectionInner(xml,'pivotFields')??'','pivotField')
+    const foreignOrder=fieldNames.map((_name,index)=>readPivotMemberOrder(fieldTags[index]??'',pivotFields[index]??''))
+    const memberOrder=state?{rowLevelItems:state.rowLevelItems,colLevelItems:state.colLevelItems??[]}: [...rowFields,...columnFields].every(name=>foreignOrder[fieldNames.indexOf(name)]!==undefined)?{rowLevelItems:rowFields.map(name=>foreignOrder[fieldNames.indexOf(name)]!),colLevelItems:columnFields.map(name=>foreignOrder[fieldNames.indexOf(name)]!)}:undefined
+    const bases=dataFields.map((valueXml,index)=>readPivotValueBase({valueXml,mode:dataFieldModes[index],fieldNames,rows:rowFields.map(name=>fieldNames.indexOf(name)),columns:columnFields.map(name=>fieldNames.indexOf(name)),cacheFields:fieldTags,pivotFields:extractElements(sectionInner(xml,'pivotFields')??'','pivotField')}))
+    const values:PivotValue[]=state?pivotLayoutSpecOf(state).values.map(value=>({...value})):dataFields.map((tag,index)=>({field:fieldNames[Number(attribute(tag,'fld'))]!,agg:aggregates[attribute(tag,'subtotal') || 'sum']!,...(attribute(tag,'name')?{name:attribute(tag,'name')}:{}),...(builtinFormats[attribute(tag,'numFmtId')]?{numFmt:builtinFormats[attribute(tag,'numFmtId')]}:{}),...(showAsModes.includes(dataFieldModes[index]??attribute(tag,'showDataAs'))?{showDataAs:(dataFieldModes[index]??attribute(tag,'showDataAs')) as PivotValue['showDataAs']} :{}),...bases[index]!.base}))
+    const unsupported=!state && (bases.some(base=>base.unsupported) || !memberOrder&&values.some(value=>['runTotal','percentOfRunningTotal'].includes(value.showDataAs??'')) || Number(attribute(xml.match(/<pageFields\b[^>]*>/)?.[0] ?? '','count'))>0 || /<fieldGroup\b|\bformula=/.test(cacheXml) || /<(?:pivotFilters|filters)\b|<item\b[^>]*\bh="(?:1|true)"/.test(xml) || extractElements(sectionInner(xml,'dataFields') ?? '','dataField').some((tag,index)=>((dataFieldModes[index]??attribute(tag,'showDataAs'))&&!['normal',...showAsModes].includes(dataFieldModes[index]??attribute(tag,'showDataAs')))||(attribute(tag,'numFmtId')&&!['0',...Object.keys(builtinFormats)].includes(attribute(tag,'numFmtId')))))
     const pageFilters=state?.pageFilters?.map(({fieldIndex,selected})=>({field:fieldNames[fieldIndex]!,...(selected?{selected:[...selected]}:{})}))
     const groupings=state?.groupings?.map(({fieldIndex,...rule})=>({field:fieldNames[fieldIndex]!,...rule}))
     const filters=state?.filters?.map(filter=>filter.kind==='label'?{...filter,field:fieldNames[filter.field]!}:{...filter,field:fieldNames[filter.field]!,valueIndex:filter.dataField})
@@ -46,31 +59,36 @@ export async function readWorkbookPivots(bytes: Uint8Array): Promise<WorkbookPiv
     const sourceTableName=tableSource?.table.name ?? requestedTableName
     const sourceSheetName=tableSource?.sheet.name ?? (attribute(sourceTag,'sheet')||state?.sourceSheetName||''), sourceRange=tableSource?areaRef({...tableSource.table.range,endRow:tableSource.table.range.endRow-tableSource.table.totalsRowCount}):state?areaRef(state.sourceArea):attribute(sourceTag,'ref')
     const readonlyReason=sourceTableName&&!tableSource?'动态透视来源表不存在或无法读取。':unsupported?'该透视表包含报告筛选、分组、计算字段、筛选规则或未支持的显示格式，本次字段编辑不支持保留这些功能。':!sourceSheetName||!sourceRange?'透视表来源不是可解析的本工作簿单元格区域。':values.some(value=>!value.field||!value.agg)?'该透视表使用不支持的值字段或聚合方式。':undefined
-    result.push({tablePath,cachePath,worksheetPath:host.path,name:attribute(tableTag,'name'),...(sourceTableName?{sourceTableName}:{}),sourceSheetName,sourceRange,targetSheetName:host.name,targetCell:formatAddress(location.startRow,location.startColumn),location,fieldNames:[...fieldNames],rowFields,columnFields,values,...(pageFilters?.length?{pageFilters}:{}),...(groupings?.length?{groupings}:{}),...(filters?.length?{filters}:{}),...(hiddenMembers?{hiddenMembers,hiddenMemberFields:{row:[...rowFields],column:[...columnFields]}}:{}),...(readonlyReason?{readonlyReason}:{})})
+    result.push({dimensionFormatProjection:state?.dimensionFormatProjection===true,tablePath,cachePath,worksheetPath:host.path,name:attribute(tableTag,'name'),...(sourceTableName?{sourceTableName}:{}),sourceSheetName,sourceRange,targetSheetName:host.name,targetCell:formatAddress(location.startRow,location.startColumn),location,fieldNames:[...fieldNames],rowFields,columnFields,values,...(memberOrder?{memberOrder,memberOrderFields:{row:[...rowFields],column:[...columnFields]}}:{}),...(pageFilters?.length?{pageFilters}:{}),...(groupings?.length?{groupings}:{}),...(filters?.length?{filters}:{}),...(hiddenMembers?{hiddenMembers,hiddenMemberFields:{row:[...rowFields],column:[...columnFields]}}:{}),...(readonlyReason?{readonlyReason}:{})})
   }
   if((await source.paths()).some(path=>/^xl\/(?:slicerCaches|timelineCaches|slicers|timelines)\//i.test(path)) && !await supportsOwnedPivotControls(bytes))for(const pivot of result)pivot.readonlyReason='工作簿含现有 Excel 切片器/时间线控件，当前入口无法同步其控件状态，请在 Excel 中编辑。'
   return result
 }
 async function additionFor(bytes:Uint8Array,config:PivotConfig):Promise<PivotAddition>{
   if(!config.name.trim()||!config.rowFields.length||!config.values.length||config.values.length>8)throw new Error('请填写名称，至少选择一个行字段和1至8个值字段')
-  if(config.values.some(value=>value.numFmt && !Object.values(builtinFormats).includes(value.numFmt.trim())))throw new Error('值字段数字格式暂仅支持常用Excel内置格式，例如0.00、#,##0.00、0.00%')
+  if(config.values.some(value=>value.numFmt && value.numFmt.trim()!=='General' && !Object.values(builtinFormats).includes(value.numFmt.trim())))throw new Error('值字段数字格式暂仅支持常用Excel内置格式，例如General、0.00、#,##0.00、0.00%')
   const workbook=await readWorkbook(bytes),sheet=workbook.sheets.find(sheet=>sheet.name===config.sourceSheetName)
   if(!sheet||!workbook.sheets.some(sheet=>sheet.name===config.targetSheetName))throw new Error('透视表来源或目标工作表不存在')
   const tableName=config.sourceTableName?.toLowerCase(),table=tableName?(sheet.tables??[]).find(table=>table.name.toLowerCase()===tableName||table.displayName.toLowerCase()===tableName):undefined
   if(config.sourceTableName&&(!table||table.headerRowCount!==1))throw new Error('动态透视来源表不存在或没有单行表头')
   const sourceArea=table?{...table.range,endRow:table.range.endRow-table.totalsRowCount}:parseRange(config.sourceRange),anchor=parseAddress(config.targetCell)
   if(sourceArea.endRow-sourceArea.startRow>10000||sourceArea.endColumn-sourceArea.startColumn>=200)throw new Error('透视表来源最多10000条数据、200列')
-  const grid=[]
-  for(let row=sourceArea.startRow;row<=sourceArea.endRow;row++){const values=[];for(let column=sourceArea.startColumn;column<=sourceArea.endColumn;column++)values.push(sheet.cells[formatAddress(row,column)]?.value ?? null);grid.push(values)}
+  const rawGrid=[]
+  for(let row=sourceArea.startRow;row<=sourceArea.endRow;row++){const values=[];for(let column=sourceArea.startColumn;column<=sourceArea.endColumn;column++)values.push(sheet.cells[formatAddress(row,column)]?.value ?? null);rawGrid.push(values)}
   const hiddenByField=new Map<string,readonly string[]>()
   for(const axis of ['row','column'] as const){const names=config.hiddenMemberFields?.[axis]??(axis==='row'?config.rowFields:config.columnFields);names.forEach((field,index)=>{const hidden=config.hiddenMembers?.[axis]?.[index];if(hidden)hiddenByField.set(field,hidden)})}
   const hiddenMembers=config.hiddenMembers?{row:config.rowFields.map(field=>hiddenByField.get(field)??[]),column:config.columnFields.map(field=>hiddenByField.get(field)??[])}:undefined
   const dimensions=new Set([...config.rowFields,...config.columnFields])
   const date1904=['1','true'].includes(readXmlAttribute((await (await createPivotEntrySource(bytes)).readText('xl/workbook.xml')).match(/<workbookPr\b[^>]*>/)?.[0]??'','date1904')??'')
   const groupings=config.groupings?.filter(rule=>dimensions.has(rule.field)).map(rule=>rule.kind==='date'?{...rule,date1904}:rule),filters=config.filters?.filter(rule=>dimensions.has(rule.field))
-  const layout=buildPivotLayout(grid,{rowFields:config.rowFields,columnField:config.columnFields,values:config.values,pageFilters:config.pageFilters,groupings,filters},{subtotal:'小计',grandTotal:'总计'},{hiddenMembers})
+  const orderByField=new Map<string,readonly string[]>()
+  for(const axis of ['row','column'] as const){const names=config.memberOrderFields?.[axis]??(axis==='row'?config.rowFields:config.columnFields),items=axis==='row'?config.memberOrder?.rowLevelItems:config.memberOrder?.colLevelItems;names.forEach((name,index)=>{if(items?.[index])orderByField.set(name,items[index]!)})}
+  const memberOrder=config.memberOrder?{rowLevelItems:config.rowFields.map(name=>[...(orderByField.get(name)??[])]),colLevelItems:config.columnFields.map(name=>[...(orderByField.get(name)??[])])}:undefined
+  const entries=await createPivotEntrySource(bytes),patterns=await readPivotSourcePatterns(entries,await entries.readText(sheet.path),sourceArea)
+  const grid=projectPivotSourceGrid(rawGrid,patterns,{values:config.values,groupings,dimensionFormatProjection:config.dimensionFormatProjection!==false},date1904)
+  const layout=buildPivotLayout(grid,{rowFields:config.rowFields,columnField:config.columnFields,values:config.values,pageFilters:config.pageFilters,groupings,filters},{subtotal:'小计',grandTotal:'总计'},{hiddenMembers,memberOrder})
   const definition=layout.definition
-  return {worksheetSheetName:config.targetSheetName,...(table?{sourceTableName:table.name}:{}),sourceSheetName:config.sourceSheetName,sourceArea,name:config.name.trim(),location:pivotOutputArea(anchor,layout),
+  return {dimensionFormatProjection:config.dimensionFormatProjection!==false,worksheetSheetName:config.targetSheetName,...(table?{sourceTableName:table.name}:{}),sourceSheetName:config.sourceSheetName,sourceArea,name:config.name.trim(),location:pivotOutputArea(anchor,layout),
     fieldNames:definition.fieldNames,rowFieldIndices:definition.rowFieldIndices,columnFieldIndices:definition.columnFieldIndices ?? [],rowLevelItems:definition.rowLevelItems,rowLines:definition.rowLines,colLevelItems:definition.colLevelItems ?? (definition.columnItems?[definition.columnItems]:[]),colLines:definition.colLines ?? [],values:definition.values,
     ...(definition.manualHiddenMembers?{manualHiddenMembers:definition.manualHiddenMembers}:{}),
     ...(definition.pageFilters?{pageFilters:definition.pageFilters}:{}),

@@ -1,0 +1,49 @@
+{
+  "ref": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "treeTruncated": false,
+  "sourceFiles": 483,
+  "requiredSourceFiles": 479,
+  "rendererFiles": 363,
+  "rendererTextFiles": 358,
+  "excludedRendererAssets": [
+    {
+      "path": "apps/sheets/src/renderer/assets/app-icon.png",
+      "gitBlob": "69e0a67bb06199cfe27624d8078c7c47926a7929",
+      "size": 40849,
+      "reason": "non-code asset outside the textual capability inventory"
+    },
+    {
+      "path": "apps/sheets/src/renderer/assets/attach-icon.png",
+      "gitBlob": "cadd601f5943a7b00ea0f2d10ea22834668d007e",
+      "size": 1415,
+      "reason": "non-code asset outside the textual capability inventory"
+    },
+    {
+      "path": "apps/sheets/src/renderer/assets/send-enter-off.png",
+      "gitBlob": "8009f0b0e52e40501d5ad797a2e4a84624c14ca7",
+      "size": 4247,
+      "reason": "non-code asset outside the textual capability inventory"
+    },
+    {
+      "path": "apps/sheets/src/renderer/assets/send-enter-on.png",
+      "gitBlob": "83de4da09d01f8ab4194c98a90a5ef5ecb3dc2c5",
+      "size": 3742,
+      "reason": "non-code asset outside the textual capability inventory"
+    },
+    {
+      "path": "apps/sheets/src/renderer/assets/send-stop.png",
+      "gitBlob": "a2e625ddee04a59e0124783ced9a69362797784c",
+      "size": 2875,
+      "reason": "non-code asset outside the textual capability inventory"
+    }
+  ],
+  "localModules": 199,
+  "sourceSites": 2564,
+  "localSites": 1055,
+  "sourceCommandDeclarations": 260,
+  "localCommandDeclarations": 227,
+  "ipcChannels": 76,
+  "desktopMethods": 99,
+  "runtimeAdapters": 85,
+  "boundary": "Static declarations, not distinct features, passing tests, or runtime parity; dynamic expressions/imported package internals need separate verification."
+}

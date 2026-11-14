@@ -5,10 +5,11 @@
       "upstreamPath": "apps/pdf/src/renderer/search.ts",
       "localPath": "genoffice-pdf-search.ts",
       "upstreamSha256": "1ebe7106ab8f95726d86d570b0547864ded66ddbce268aa1aa049c3570d61eff",
-      "localSha256": "2760a821d793acfa786a4f91ce9694bb8521a58fde05c653b7082e815340fb4e",
+      "localSha256": "1bdf923ceb77876620404751889ac078ce77e69d53c924e2d376dcf2c2411d45",
       "adaptations": [
         "provenance notice added",
-        "UI helper import targets local pinned copy"
+        "UI helper import targets local pinned copy",
+        "whole-word boundaries read complete Unicode code points; preserve UTF-16 hit offsets and source CJK substring semantics"
       ]
     },
     {

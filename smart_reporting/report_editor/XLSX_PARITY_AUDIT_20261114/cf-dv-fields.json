@@ -1,0 +1,220 @@
+{
+  "boundary": "Supplementary field families overlap existing capability records; static representability, not new runtime verification.",
+  "records": [
+    {
+      "fieldFamily": "Native full-rule envelope",
+      "status": "done_bounded",
+      "sourceRow": "| Native full-rule envelope | done_bounded | G/gateway/xlsx-cf.ts:CfWireRule/applyCfRules → E/conditional-formatting-source.ts same; F/workbook-conditional-formatting.ts:conditionalFormattingWireRule | ranges, stopIfTrue, arbitrary rule object; canonical rule snapshot, zero-based grid areas. Local strict envelope validates ranges ordered, bounded grid, 1–10,000 areas/rule and ≤10,000 rules. No UI exactness inferred. |"
+    },
+    {
+      "fieldFamily": "Number highlight",
+      "status": "done_bounded",
+      "sourceRow": "| Number highlight | done_bounded | Both serializers:highlightRule subType number; S/univer-sync.ts:buildHighlightCondition → E/conditional-formatting-read.ts:cellIsCondition | Normal UI operators greaterThan/greaterThanOrEqual/lessThan/lessThanOrEqual/equal/notEqual/between/notBetween. Serializer itself merely requires string operator plus finite numeric values; it does not enforce recognized operator or exact operand count. Local importer validates supported operators and 1 versus 2 operands. This is a stricter import/schema guard, not proof source supports malformed operators. |"
+    },
+    {
+      "fieldFamily": "Number blank-cell compatibility",
+      "status": "done_bounded",
+      "sourceRow": "| Number blank-cell compatibility | done_bounded | S/univer-sync.ts:cellIsBlankDiverges/buildCellIsFormula → E/conditional-formatting-read.ts:cellIsCondition | Both selectively convert numeric conditions to formulas for Excel blank-value semantics at ≤20,000 cells; source uses CELLIS_FORMULA_CELL_LIMIT. Local preserves original cellIs XML identity during later style edits via conditional-formatting-snapshot.ts. Browser equivalence not run. |"
+    },
+    {
+      "fieldFamily": "CellIs nonnumeric/reference/formula operands",
+      "status": "done_bounded",
+      "sourceRow": "| CellIs nonnumeric/reference/formula operands | done_bounded | S/univer-sync.ts:buildCellIsNonNumeric → E/conditional-formatting-read.ts:cellIsCondition | Reference/text operands become anchored formula rules, with special equality escaping and sorted top-left anchor. Detailed formula-expression combinations remain unexecuted. |"
+    },
+    {
+      "fieldFamily": "Text contains/notContains/begins/ends",
+      "status": "partial",
+      "sourceRow": "| Text contains/notContains/begins/ends | partial | Both serializers:highlightRule text; S/univer-sync.ts:buildTextCondition/synthesizeTextConditionFormula → E/conditional-formatting-read.ts:readConditionalFormattingSnapshot | **Concrete imported-condition difference:** source small ranges (≤20,000) synthesizes SEARCH/LEFT/RIGHT formulas for case-insensitive comparison; local importer directly retains native text operator. Source comment documents Univer raw indexOf case sensitivity. Local formulaShape only adds '=' to formula rules and does not synthesize text formulas. Source deliberately retains cheaper native semantics for huge ranges. |"
+    },
+    {
+      "fieldFamily": "Text equal/notEqual",
+      "status": "done_bounded",
+      "sourceRow": "| Text equal/notEqual | done_bounded | Both serializers:highlightRule text equal/notEqual → local same serializer; local cellIsCondition import | Quoted strings serialized as cellIs; escaped doubled quotes. Imported text conditions may become anchored formula to match source semantics. |"
+    },
+    {
+      "fieldFamily": "Blank/nonblank",
+      "status": "done_bounded",
+      "sourceRow": "| Blank/nonblank | done_bounded | Both serializers:highlightRule text containsBlanks/notContainsBlanks; source buildHighlightCondition → local readConditionalFormattingSnapshot | LEN(TRIM(anchor))=0/>0 serializer; appropriate native text operators imported. |"
+    },
+    {
+      "fieldFamily": "Error/nonerror",
+      "status": "done_bounded",
+      "sourceRow": "| Error/nonerror | done_bounded | Source highlightRule; S/univer-sync.ts:patchBuiltHighlightRule → local source serializer/readConditionalFormattingSnapshot | containsErrors/notContainsErrors serialize ISERROR/NOT(ISERROR). Source patches builder operator; local builds operator directly. The underlying formula-error evaluation still needs runtime vectors. |"
+    },
+    {
+      "fieldFamily": "Duplicate/unique",
+      "status": "done_bounded",
+      "sourceRow": "| Duplicate/unique | done_bounded | Both serializers:highlightRule duplicateValues/uniqueValues → same local | Base rule support equal. Source S/cf-duplicate-key.ts/App.tsx:installCfDisplayKeyCompare additionally compares display strings; local native resource setup does not establish that correction. Dynamic display comparison remains unverified. |"
+    },
+    {
+      "fieldFamily": "Top/bottom rank/percent",
+      "status": "done_bounded",
+      "sourceRow": "| Top/bottom rank/percent | done_bounded | Both serializers:highlightRule rank → local same; source buildHighlightCondition(top10) → local reader top10 | value must be finite; isBottom/isPercent boolean true produce flags. Serializer does not impose integer/rank bounds. Source headless DSL cfRuleSchema imposes integer 1–1000; that is a separate API, not native panel schema. |"
+    },
+    {
+      "fieldFamily": "Average comparison",
+      "status": "done_bounded",
+      "sourceRow": "| Average comparison | done_bounded | Both serializers:highlightRule average → local same | greaterThan, greaterThanOrEqual, lessThan, lessThanOrEqual persist; equals/notEquals **source_boundary** (throws in both). Local reader projects aboveAverage. Source buildHighlightCondition has no aboveAverage branch, so do not claim source renderer displays all saveable average rules. |"
+    },
+    {
+      "fieldFamily": "Date-occurring / timePeriod CF",
+      "status": "source_boundary",
+      "sourceRow": "| Date-occurring / timePeriod CF | source_boundary | Both serializers:highlightRule timePeriod; S/App.tsx CF_RULE_COMMAND_PATTERN preflight | Explicit source rejection “Date-occurring rules cannot be saved yet”; source App cancels such proposed CF rule. Local rejection is matching persistence boundary, not migration gap. This is distinct from DV type date/time, which are supported. |"
+    },
+    {
+      "fieldFamily": "Formula highlight",
+      "status": "done_bounded",
+      "sourceRow": "| Formula highlight | done_bounded | Both serializers:highlightRule formula; S/buildHighlightCondition expression → E/readConditionalFormattingSnapshot expression + F/formulaShape | Nonempty formula string; strips leading '=' in OOXML, native gets '='. Local source canonicalization/structural paths preserve original formula identity where represented. |"
+    },
+    {
+      "fieldFamily": "Color scale stops/colors",
+      "status": "done_bounded",
+      "sourceRow": "| Color scale stops/colors | done_bounded | Both serializers:colorScaleRule → local same; source buildConditionalRule → local reader | ≥2 config stops sorted by index; threshold and color for each, default white. Source/full wire serializer does not restrict to exactly 2/3 stops; separate local headless cf-schemas.ts limits 2–3. That headless limit is not the native full-rule path. Imported legacy color-scale colors locally require explicit representable RGB; source Rust resolves more source colors—see color row. |"
+    },
+    {
+      "fieldFamily": "Data bar positive/show values/min/max",
+      "status": "done_bounded",
+      "sourceRow": "| Data bar positive/show values/min/max | done_bounded | Both serializers:dataBarRule → local same; source buildConditionalRule → local reader | config.min/max and positiveColor (default #638EC6); rule.isShowValue false suppresses values. Both source/local base writer omit negativeColor/nativeColor, gradient, border, axis and minLength/maxLength. |"
+    },
+    {
+      "fieldFamily": "Negative data-bar color/gradient edits",
+      "status": "source_boundary",
+      "sourceRow": "| Negative data-bar color/gradient edits | source_boundary | Both serializers:dataBarRule → local same | Source comment explicitly drops negative color (x14-only); isGradient is not serialized. Presence in source renderer is import/display support, not editor persistence. Do not mark this same writer limitation a migration gap. |"
+    },
+    {
+      "fieldFamily": "Imported x14/extended data bars / x14-only CF",
+      "status": "partial",
+      "sourceRow": "| Imported x14/extended data bars / x14-only CF | partial | N/worksheet.rs x14 rule/twin merge; S/univer-sync.ts:buildConditionalRule → E/conditional-formatting-read.ts:validateLinkedThresholds/readConditionalFormattingSnapshot | Source projects negative fill/same-as-positive/gradient from x14, and native reader reads x14-only CF into rule model. Local demands unique represented base/twin, identical scope/type/**priority**, threshold correspondence; unpaired extension adds issues. Any issues skip entire local sheet CF resource. Typical source native tests show x14 twins lacking priority while base has priority, which local equality rejects. These are narrower import guards/display coverage, not permission to edit x14. Source applyCfRules also guards existing linked base blocks against edits. |"
+    },
+    {
+      "fieldFamily": "Icons base set catalog",
+      "status": "done_bounded",
+      "sourceRow": "| Icons base set catalog | done_bounded | Both serializers:OOXML_ICON_SETS/iconSetRule → same local | 3Arrows,3ArrowsGray,3Flags,3TrafficLights1,3TrafficLights2,3Signs,3Symbols,3Symbols2,4Arrows,4ArrowsGray,4RedToBlack,4Rating,4TrafficLights,5Arrows,5ArrowsGray,5Quarters,5Rating (17 sets). |"
+    },
+    {
+      "fieldFamily": "Icons ordering/reverse/show values",
+      "status": "done_bounded",
+      "sourceRow": "| Icons ordering/reverse/show values | done_bounded | Both serializers:iconSetRule/WORST_FIRST_ICON_SETS → same local + local reader | One set only; natural or fully reversed ids; rating 4Rating/5Rating worst-first; descending native configs reversed into ascending file cfvos; first threshold catch-all percent 0; greaterThan yields gte=0, otherwise default >=; isShowValue false stored. Local importer checks threshold count equals set prefix; serializer only ≥2. |"
+    },
+    {
+      "fieldFamily": "Mixed/custom/x14-only icons",
+      "status": "source_boundary",
+      "sourceRow": "| Mixed/custom/x14-only icons | source_boundary | Both serializers:iconSetSaveable/iconSetRule; S/App.tsx preflight | 3Triangles/3Stars/5Boxes etc, mixed sets or arbitrary partial reorder fail source save as well. Source iconSetSaveable preflight is installed explicitly. Local uses same serializer oracle; no missing persistence requirement. |"
+    },
+    {
+      "fieldFamily": "CF thresholds",
+      "status": "done_bounded",
+      "sourceRow": "| CF thresholds | done_bounded | Both serializers:serializeCfvo; S/toCfValue → E/threshold | min/max no value; num/percent/percentile finite numeric conversion; formula raw string default '0'. Native wire serializer does not constrain percent 0–100 or forbid empty formula (headless local schema does). Source importer maps autoMin/autoMax to min/max and nonnumeric num values to formula; local bare threshold parser rejects autoMin/autoMax and nonnumeric num, except linked normalization comparison. Hence imported legacy-nonnumeric-num threshold is **partial** relative source fallback. |"
+    },
+    {
+      "fieldFamily": "Highlight font/fill colors and flags",
+      "status": "done_bounded",
+      "sourceRow": "| Highlight font/fill colors and flags | done_bounded | Both serializers:buildDxfXml/parseColor → local same | bl=1/it=1; strike/underline object.s=1; cl/bg rgb object. Hex optional #, 6 digits plus optional 2 suffix digits; first six used; rgb/rgba integer channels clamped 255, alpha discarded. Font/color and single fill emit dxfs; explicit-off/border/number formats not serialized. No claim all CSS color syntaxes accepted. |"
+    },
+    {
+      "fieldFamily": "Imported DXF number format/borders/other font styles",
+      "status": "partial",
+      "sourceRow": "| Imported DXF number format/borders/other font styles | partial | S/univer-sync.ts:applyDxfFormat/patchBuiltHighlightRule → E/conditional-formatting-read.ts:dxfStyle; F/withWorkbookConditionalFormatting | Source explicitly projects dxf numberFormat and t/b/l/r borders into built styles. Local dxfStyle permits only supported font flags/color and solid fill; additional dxf properties cause issue and skip entire sheet's CF native resource. Original XML is preserved but source render parity missing for these styles. Writer inability to create such dxf is shared; imported rendering is the actual difference. |"
+    },
+    {
+      "fieldFamily": "Existing theme/indexed/tint/ARGB colors",
+      "status": "partial",
+      "sourceRow": "| Existing theme/indexed/tint/ARGB colors | partial | N/stylesheet.rs resolve_color + S/buildConditionalRule → E/dxfStyle/color/canonical | Local dxfStyle resolves source theme/indexed/tint using shared stylesheet resolver with explicit limits theme≤11/indexed≤65/tint[-1,1], validates complete canonical roundtrip; ARGB alpha normalized away. Local colorScale/bar threshold color() requires RGB attributes and does not resolve theme/indexed there. Source native source color resolution supports existing palette colors. Schemas alone do not prove final swatch rendering. |"
+    },
+    {
+      "fieldFamily": "stopIfTrue/priority/reordering/ranges",
+      "status": "done_bounded",
+      "sourceRow": "| stopIfTrue/priority/reordering/ranges | done_bounded | Source attributes/applyCfRules/buildConditionalRule → same local writer + F/validateConditionalFormattingEdit | Source serializes stopIfTrue generally but source builder explicitly sets only highlights. Local wire carries flag for all; preserves ordered full snapshot and official moveByAnchor/clearRange subtraction. Linked rules remain identity-locked. Local issues block any CF edit; stricter whole-sheet guard than source per-rule install. |"
+    },
+    {
+      "fieldFamily": "CF panel formula labels / broken references",
+      "status": "partial",
+      "sourceRow": "| CF panel formula labels / broken references | partial | S/univer-rule-detail.ts:installRuleDetail/enhanceCfPanel; S/App.tsx registration → F/workbook-main.ts official CF panel setup | Source decorates formula labels with actual expression, #REF! warning and wrapping. Local full-rule persistence/projection does not reproduce this custom decoration in inspected panel initialization. Exact DOM rendering remains unverified; no package-level parity assumed. |"
+    },
+    {
+      "fieldFamily": "Types whole/decimal/list/date/time/textLength/custom",
+      "status": "done_bounded",
+      "sourceRow": "| Types whole/decimal/list/date/time/textLength/custom | done_bounded | G/gateway/xlsx-dv.ts:prepareRule/DV_TYPES → E/data-validation.ts same; S/toUniverDvRule → E/data-validation-read.ts:readEntry | Seven base types retained; any/none maps to attribute-less unconstrained messages form. Local read validator rejects unsupported source types/attributes instead of partially projecting. |"
+    },
+    {
+      "fieldFamily": "Multi-select list",
+      "status": "source_boundary",
+      "sourceRow": "| Multi-select list | source_boundary | Both prepareRule(listMultiple) | Explicit source fail-closed “Univer-only cannot be saved”; local preflight rejection is aligned, not gap. The panel naming enhancer handles listMultiple cosmetically but does not make it saveable. |"
+    },
+    {
+      "fieldFamily": "Operators",
+      "status": "done_bounded",
+      "sourceRow": "| Operators | done_bounded | Both DV_OPERATORS/entryAttributes → same local | between/notBetween/equal/notEqual/greaterThan/greaterThanOrEqual/lessThan/lessThanOrEqual. Empty/undefined accepted; between omitted as OOXML default; operator suppressed for list/custom/any. Local reader explicitly inserts between for whole/decimal/date/time/textLength when missing. |"
+    },
+    {
+      "fieldFamily": "formula1/formula2 + quotes",
+      "status": "done_bounded",
+      "sourceRow": "| formula1/formula2 + quotes | done_bounded | Both formulaText → same local | List literals quoted/double embedded quotes; '=' references/custom strip prefix; other nonempty expressions strip '='. Local read restores prefix for list refs/custom and nonnumeric numeric-type expressions. Missing/null/empty formulas omitted. Local literal beginning '=' is readonly because ambiguous in native model; this is a local import guard, not source schema requirement. |"
+    },
+    {
+      "fieldFamily": "Literal-list whitespace",
+      "status": "partial",
+      "sourceRow": "| Literal-list whitespace | partial | S/univer-sync.ts:trimListItems → E/data-validation-read.ts:readEntry | Source trims each comma-separated literal entry; local preserves spaces (explicit data-validation-read test). Example source \"Yes, No\" becomes native Yes,No; local native formula1 remains Yes, No. Underlying list validator may therefore treat ' No' differently. Writer strings are same; imported validation semantics differ. |"
+    },
+    {
+      "fieldFamily": "List source defined names / structured refs",
+      "status": "done_bounded",
+      "sourceRow": "| List source defined names / structured refs | done_bounded | S/resolveDvListSource → F/workbook-data-validation-names.ts:installDataValidationNames; F/workbook-tables.ts:resolveTableListSource | Local expands calculation copies through scoped names/table sources while preserving file rule original text; source resolves direct global name→structured reference at load. These are different strategies, not same-label assumption; exact complex aliases remain bounded. |"
+    },
+    {
+      "fieldFamily": "List formula2 junk/per-item colors",
+      "status": "partial",
+      "sourceRow": "| List formula2 junk/per-item colors | partial | S/toUniverDvRule drops formula2 for type list → E/readEntry + F/withWorkbookDataValidations spread all rule fields | Source explicitly suppresses incoming list formula2 because Univer interprets it as per-item color list (LibreOffice writes junk 0→black). Local reader retains formula2 and resource spread passes it along. Demonstrated field mapping difference; visual outcome not executed. |"
+    },
+    {
+      "fieldFamily": "Dropdown/text mode",
+      "status": "done_bounded",
+      "sourceRow": "| Dropdown/text mode | done_bounded | Both entryAttributes showDropDown; S/toUniverDvRule → E/readEntry + F/withWorkbookDataValidations | OOXML inverted showDropDown=1 means suppress; native showDropDown=false writes 1. Source uses TEXT rendering; local explicit renderMode:0. Exact active-cell arrow/input-message/circle marker behavior depends on source custom chrome patches and remains unverified. |"
+    },
+    {
+      "fieldFamily": "Date/time serialization",
+      "status": "done_bounded",
+      "sourceRow": "| Date/time serialization | done_bounded | Both formulaText/dateToSerial/timeToFraction | YYYY-MM-DD or slash form, optional time; Excel 1900 serial special 1–59 adjustment; pre-1900 throws; impossible dates/time keep original text; HH:mm[:ss] fraction; numeric/reference expressions pass through. Direct writer diff confirms same functions. No source/local 1904-system claim made. |"
+    },
+    {
+      "fieldFamily": "Blank allowed / message toggles",
+      "status": "done_bounded",
+      "sourceRow": "| Blank allowed / message toggles | done_bounded | Both entryAttributes → same local; E/readEntry | allowBlank/showInputMessage/showErrorMessage true emit 1; default false omitted. UI interactions/dynamic message placement separately unverified. |"
+    },
+    {
+      "fieldFamily": "Error styles",
+      "status": "done_bounded",
+      "sourceRow": "| Error styles | done_bounded | Both errorStyleName/DV_ERROR_STYLE_NAMES → same local + E/readEntry | Native INFO0→information; STOP1→omitted(default); WARNING2→warning; unexpected numeric style throws. Local importer maps stop→1/information→0/warning→2. |"
+    },
+    {
+      "fieldFamily": "Prompt/error title and text",
+      "status": "done_bounded",
+      "sourceRow": "| Prompt/error title and text | done_bounded | Both entryAttributes/escapeXmlAttribute → same local | errorTitle/error/promptTitle/prompt nonempty strings, XML escaped with newline &#10;; no independent per-field length cap in shared serializer. Local frontend aggregate draft budget may reject large options. |"
+    },
+    {
+      "fieldFamily": "Cross-sheet formulas/x14 DV",
+      "status": "done_bounded",
+      "sourceRow": "| Cross-sheet formulas/x14 DV | done_bounded | Both needsX14Extension/x14Entry/reconcileX14DataValidations → same local; E/readEntry | Sheet-qualified references in formula1/2 use own {CCE6A557…} DV extension, xm:f and xm:sqref, not CF extension; literal list only reference when prefixed '='. Local reads base and x14, removes/renames/structurally updates. Unsupported namespaces readonly. |"
+    },
+    {
+      "fieldFamily": "Checkbox insert/save/reopen",
+      "status": "partial",
+      "sourceRow": "| Checkbox insert/save/reopen | partial | Source prepareRule checkbox + S/toUniverDvRule → E/checkbox-validation.ts + E/data-validation.ts | Both fallback checkbox to two-value list default1,0/custom values. **Behavioral divergence:** source treats any imported literal list \"1,0\" as checkbox; local deliberately does not guess ordinary lists, restores checkbox only from own `urn:smart-reporting:xlsx:checkbox:1` metadata after matching fallback identity. This is a deliberate local representation choice, still not literal source parity. Source custom checkbox values generally reload as list; local preserves own metadata. No claim Excel modern cell controls. |"
+    },
+    {
+      "fieldFamily": "Ranges/append/delete",
+      "status": "done_bounded",
+      "sourceRow": "| Ranges/append/delete | done_bounded | Both applyDvRules/appendDvRules/toRef → same local + replaceSheetDataValidations | Multi-area snapshots; append replaces same normalized areas and retains other areas; whole row/column normalization; grid bounds; empty snapshot removes base/x14. Local package replacement refuses incomplete source projection and preserves unrelated parts. |"
+    },
+    {
+      "fieldFamily": "Rule panel list details / #REF badge",
+      "status": "partial",
+      "sourceRow": "| Rule panel list details / #REF badge | partial | S/univer-rule-detail.ts:enhanceDvRuleNames/installRuleDetail → F/workbook-main.ts official DV panel | Source list labels show options/address; types list/listMultiple/custom/decimal/whole/date/textLength get broken-ref badge. Local native rule resource alone does not implement this wrapper in inspected setup. Need UI checks to establish exact panel differences. |"
+    },
+    {
+      "fieldFamily": "Strict source completeness and budgets",
+      "status": "partial",
+      "sourceRow": "| Strict source completeness and budgets | partial | Source applyDataValidations per-rule install catch + serializer; local E/readDataValidations + F/validateDataValidationEdit | Local unknown attributes/children/container metadata/count mismatch/namespace set readOnlyReason; entire sheet DV projection/edit disabled. Source per-rule toUniverDvRule may skip unsupported rule while installing others. Local limits ≤10,000 rules/areas, combined staged+structure+new ≤450 and ≤8MiB; CF separate ≤10,000 and strict grid areas, formatCells budgets unrelated. These local safety/representability guards are real scope differences, not extra source unsupported features. |"
+    }
+  ]
+}

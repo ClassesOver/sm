@@ -1,0 +1,382 @@
+[
+  {
+    "name": "selectWorkbook",
+    "channel": "workbook:select",
+    "line": 49
+  },
+  {
+    "name": "openEncryptedWorkbook",
+    "channel": "workbook:open-encrypted",
+    "line": 50
+  },
+  {
+    "name": "updateWorkbookPassword",
+    "channel": "workbook:update-password",
+    "line": 51
+  },
+  {
+    "name": "selectWorkbooksForMerge",
+    "channel": "workbook:select-for-merge",
+    "line": 53
+  },
+  {
+    "name": "openWorkbooksForMerge",
+    "channel": "workbook:open-for-merge",
+    "line": 55
+  },
+  {
+    "name": "readWorkbookRange",
+    "channel": "workbook:read-range",
+    "line": 56
+  },
+  {
+    "name": "readWorkbookFormulas",
+    "channel": "workbook:read-formulas",
+    "line": 57
+  },
+  {
+    "name": "findWorkbookCells",
+    "channel": "workbook:find-cells",
+    "line": 59
+  },
+  {
+    "name": "sidecarCrashed",
+    "channel": "workbook:sidecar-crashed",
+    "line": 64
+  },
+  {
+    "name": "reopenWorkbook",
+    "channel": "workbook:reopen",
+    "line": 67
+  },
+  {
+    "name": "readWorkbookRowOutline",
+    "channel": "workbook:read-row-outline",
+    "line": 68
+  },
+  {
+    "name": "recalcWorkbook",
+    "channel": "workbook:recalc",
+    "line": 69
+  },
+  {
+    "name": "listExternalLinks",
+    "channel": "workbook:list-external-links",
+    "line": 70
+  },
+  {
+    "name": "updateExternalLinks",
+    "channel": "workbook:update-external-links",
+    "line": 71
+  },
+  {
+    "name": "readExternalLinkUsage",
+    "channel": "workbook:read-external-link-usage",
+    "line": 72
+  },
+  {
+    "name": "selectExternalLinkSource",
+    "channel": "workbook:select-external-link-source",
+    "line": 73
+  },
+  {
+    "name": "listWorkbookTabs",
+    "channel": "workbook:list-tabs",
+    "line": 77
+  },
+  {
+    "name": "armWorkbookPick",
+    "channel": "workbook:pick-arm",
+    "line": 78
+  },
+  {
+    "name": "sendWorkbookPickSelection",
+    "channel": "workbook:pick-select",
+    "line": 79
+  },
+  {
+    "name": "cancelWorkbookPick",
+    "channel": "workbook:pick-cancel",
+    "line": 80
+  },
+  {
+    "name": "workbookPickArmed",
+    "channel": "workbook:pick-armed",
+    "line": 81
+  },
+  {
+    "name": "workbookPickSelected",
+    "channel": "workbook:pick-selected",
+    "line": 82
+  },
+  {
+    "name": "workbookPickCancelled",
+    "channel": "workbook:pick-cancelled",
+    "line": 83
+  },
+  {
+    "name": "revealLinkSource",
+    "channel": "shell:reveal-link-source",
+    "line": 84
+  },
+  {
+    "name": "readWorkbookMedia",
+    "channel": "workbook:read-media",
+    "line": 85
+  },
+  {
+    "name": "readPivotDefinition",
+    "channel": "workbook:read-pivot-definition",
+    "line": 86
+  },
+  {
+    "name": "readWorkbookRedactions",
+    "channel": "workbook:read-redactions",
+    "line": 88
+  },
+  {
+    "name": "readWorkbookQueries",
+    "channel": "workbook:read-queries",
+    "line": 90
+  },
+  {
+    "name": "readLocalImage",
+    "channel": "shell:read-local-image",
+    "line": 91
+  },
+  {
+    "name": "closeWorkbook",
+    "channel": "workbook:close",
+    "line": 92
+  },
+  {
+    "name": "saveWorkbook",
+    "channel": "workbook:save",
+    "line": 93
+  },
+  {
+    "name": "listWorkbookConnections",
+    "channel": "workbook:list-connections",
+    "line": 95
+  },
+  {
+    "name": "refreshWorkbookConnection",
+    "channel": "workbook:refresh-connection",
+    "line": 97
+  },
+  {
+    "name": "saveEditsBegin",
+    "channel": "workbook:save-edits-begin",
+    "line": 99
+  },
+  {
+    "name": "saveEditsChunk",
+    "channel": "workbook:save-edits-chunk",
+    "line": 100
+  },
+  {
+    "name": "saveEditsAbort",
+    "channel": "workbook:save-edits-abort",
+    "line": 101
+  },
+  {
+    "name": "writeWorkbookRecovery",
+    "channel": "workbook:write-recovery",
+    "line": 103
+  },
+  {
+    "name": "recoveryPrompt",
+    "channel": "workbook:recovery-prompt",
+    "line": 105
+  },
+  {
+    "name": "recoveryPromptReply",
+    "channel": "workbook:recovery-prompt-reply",
+    "line": 106
+  },
+  {
+    "name": "autoRenameWorkbook",
+    "channel": "workbook:auto-rename",
+    "line": 107
+  },
+  {
+    "name": "workbookRenamed",
+    "channel": "workbook:renamed",
+    "line": 108
+  },
+  {
+    "name": "pendingEditsChanged",
+    "channel": "workbook:pending-edits",
+    "line": 109
+  },
+  {
+    "name": "closeSaveRequest",
+    "channel": "workbook:close-save-request",
+    "line": 110
+  },
+  {
+    "name": "closeSaveResult",
+    "channel": "workbook:close-save-result",
+    "line": 111
+  },
+  {
+    "name": "exportPdf",
+    "channel": "workbook:export-pdf",
+    "line": 112
+  },
+  {
+    "name": "printWorkbook",
+    "channel": "workbook:print",
+    "line": 113
+  },
+  {
+    "name": "listPrinters",
+    "channel": "workbook:list-printers",
+    "line": 114
+  },
+  {
+    "name": "exportCsv",
+    "channel": "workbook:export-csv",
+    "line": 115
+  },
+  {
+    "name": "csvSaveConfirm",
+    "channel": "workbook:csv-save-confirm",
+    "line": 116
+  },
+  {
+    "name": "createDocument",
+    "channel": "workbook:create-document",
+    "line": 118
+  },
+  {
+    "name": "openExternal",
+    "channel": "shell:open-external",
+    "line": 119
+  },
+  {
+    "name": "menuAction",
+    "channel": "menu:action",
+    "line": 120
+  },
+  {
+    "name": "userDisplayName",
+    "channel": "user:display-name",
+    "line": 121
+  },
+  {
+    "name": "aiGetSettings",
+    "channel": "ai:get-settings",
+    "line": 122
+  },
+  {
+    "name": "aiSetSettings",
+    "channel": "ai:set-settings",
+    "line": 123
+  },
+  {
+    "name": "aiSettingsChanged",
+    "channel": "ai:settings-changed",
+    "line": 124
+  },
+  {
+    "name": "aiOpenModelSettings",
+    "channel": "ai:open-model-settings",
+    "line": 125
+  },
+  {
+    "name": "aiChat",
+    "channel": "ai:chat",
+    "line": 126
+  },
+  {
+    "name": "aiStream",
+    "channel": "ai:stream",
+    "line": 127
+  },
+  {
+    "name": "aiStreamCancel",
+    "channel": "ai:stream-cancel",
+    "line": 128
+  },
+  {
+    "name": "aiStreamChunk",
+    "channel": "ai:stream-chunk",
+    "line": 129
+  },
+  {
+    "name": "aiGskStatus",
+    "channel": "ai:gsk-status",
+    "line": 130
+  },
+  {
+    "name": "aiGskLogin",
+    "channel": "ai:gsk-login",
+    "line": 131
+  },
+  {
+    "name": "aiImageSearch",
+    "channel": "ai:image-search",
+    "line": 132
+  },
+  {
+    "name": "aiFetchImage",
+    "channel": "ai:fetch-image",
+    "line": 133
+  },
+  {
+    "name": "aiGenerateImage",
+    "channel": "sheets:ai-generate-image",
+    "line": 135
+  },
+  {
+    "name": "mcpCommand",
+    "channel": "sheets:mcp-command",
+    "line": 138
+  },
+  {
+    "name": "mcpResult",
+    "channel": "sheets:mcp-result",
+    "line": 139
+  },
+  {
+    "name": "mcpReady",
+    "channel": "sheets:mcp-ready",
+    "line": 140
+  },
+  {
+    "name": "captureScreenSources",
+    "channel": "sheets:capture-screen-sources",
+    "line": 143
+  },
+  {
+    "name": "captureScreenSource",
+    "channel": "sheets:capture-screen-source",
+    "line": 144
+  },
+  {
+    "name": "filesPick",
+    "channel": "sheets:files-pick",
+    "line": 145
+  },
+  {
+    "name": "filesAdd",
+    "channel": "sheets:files-add",
+    "line": 146
+  },
+  {
+    "name": "filesAddPastedImage",
+    "channel": "sheets:files-add-pasted-image",
+    "line": 147
+  },
+  {
+    "name": "filesRead",
+    "channel": "sheets:files-read",
+    "line": 148
+  },
+  {
+    "name": "filesReadImage",
+    "channel": "sheets:files-read-image",
+    "line": 149
+  }
+]
