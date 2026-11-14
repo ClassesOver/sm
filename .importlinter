@@ -7,10 +7,8 @@ name = Office 及其共用模块（含间接依赖）不得依赖报告工作流
 type = forbidden
 source_modules =
     smart_reporting.office
-    smart_reporting.report_editor._edit_jobs
     smart_reporting.report_editor._file_identity
     smart_reporting.report_editor.agent_event_streams
-    smart_reporting.report_editor.capabilities
     smart_reporting.report_editor.native
     smart_reporting.report_editor.native_ai
     smart_reporting.report_editor.native_ai_api
@@ -66,58 +64,13 @@ source_modules =
     smart_reporting.report_editor.workbook_native_ai
     smart_reporting.report_editor.workbook_native_ai_api
 forbidden_modules =
-    smart_reporting.reporting.agent
-    smart_reporting.reporting.bootstrap
-    smart_reporting.reporting.code_agent
     smart_reporting.reporting.contract
     smart_reporting.reporting.data_sources
     smart_reporting.reporting.hospital_operation
-    smart_reporting.reporting.instructions
-    smart_reporting.reporting.phase
-    smart_reporting.reporting.presentation
     smart_reporting.reporting.profile
-    smart_reporting.reporting.saved_revision_reference
     smart_reporting.reporting.semantics
-    smart_reporting.reporting.template_semantic_review
-    smart_reporting.reporting.tools
     smart_reporting.reporting.trace
     smart_reporting.reporting.workflow
     smart_reporting.reporting.workspace
-    smart_reporting.report_editor.api
-    smart_reporting.report_editor.service
-    smart_reporting.report_editor.ai
-    smart_reporting.report_editor.chart_ai
-    smart_reporting.report_editor.chart_continuation
-    smart_reporting.report_editor.chart_edits
-    smart_reporting.report_editor.chart_templates
-    smart_reporting.report_editor.data_revisions
-    smart_reporting.report_editor.data_revision_contract
-    smart_reporting.report_editor.data_revision_exports
-    smart_reporting.report_editor.design
-    smart_reporting.report_editor.design_api
-    smart_reporting.report_editor.design_preview
-    smart_reporting.report_editor.design_repository
-    smart_reporting.report_editor.issue_reviews
-    smart_reporting.report_editor.office_refresh
-    smart_reporting.report_editor.policy_recovery
-    smart_reporting.report_editor.recalculation
-    smart_reporting.report_editor.render_preparation
-    smart_reporting.report_editor.revision_notice
-    smart_reporting.report_editor.revisions
-    smart_reporting.report_editor.slides
-    smart_reporting.report_editor.slides_api
-    smart_reporting.report_editor.slides_chart_ai
-    smart_reporting.report_editor.slides_image_ai
-    smart_reporting.report_editor.standard_charts
-    smart_reporting.report_editor.table_ai
-    smart_reporting.report_editor.template_provenance
-    smart_reporting.report_editor.template_render
-    smart_reporting.report_editor.template_source
-    smart_reporting.report_editor.trace_exports
-    smart_reporting.report_editor.trace_retention
-    smart_reporting.report_editor.trace_revisions
-    smart_reporting.report_editor.trace_sources
-    smart_reporting.report_editor.workbook
-    smart_reporting.report_editor.workbook_api
     smart_reporting.management
 allow_indirect_imports = False

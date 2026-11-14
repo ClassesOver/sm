@@ -29,8 +29,8 @@ from smart_reporting.report_editor.native_import_api import create_native_import
 from smart_reporting.report_editor.native_models import NativeScope
 from smart_reporting.report_editor.native_publication import NativePublicationService
 from smart_reporting.report_editor.native_repository import NativeDocumentRepository
-from smart_reporting.report_editor.repository import SqlAlchemyReportEditorRepository
-from smart_reporting.report_editor.service import ReportEditorGrantService
+from smart_reporting.office.editor_grant_repository import SqlAlchemyReportEditorRepository
+from smart_reporting.office.editor_grants import ReportEditorGrantService
 from smart_reporting.reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,

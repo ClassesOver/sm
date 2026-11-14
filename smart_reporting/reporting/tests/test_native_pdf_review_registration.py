@@ -15,7 +15,7 @@ from smart_reporting.report_editor.native_models import (
     NATIVE_MEDIA,
     NativeEditorContext,
 )
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )

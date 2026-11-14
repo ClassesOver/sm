@@ -4,7 +4,6 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit && vite build",
-    "build:slides": "tsc --noEmit && vite build --config vite.slides.config.ts",
     "build:management": "tsc --noEmit -p tsconfig.management.json && vite build --config vite.management.config.ts",
     "test:management": "vitest run --config vite.management.config.ts",
     "check:budget": "node scripts/check-build-budget.mjs",

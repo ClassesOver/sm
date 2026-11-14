@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from smart_reporting.report_editor.native_office import _pptx_arguments
-from smart_reporting.report_editor.slides import ReportSlidesEditorService
+from smart_reporting.report_editor.pptx_engine import PptxEngine
 
 ADD = {'kind': 'addTextBox', 'partPath': 'ppt/slideMasters/slideMaster1.xml', 'clientId': 'box-1',
        'text': '新品牌 <&>😀\r\n第二行', 'box': {'x': 48, 'y': 500, 'width': 480, 'height': 96}}
@@ -36,7 +36,7 @@ def test_python_transport_forwards_master_elements_to_existing_bridge(monkeypatc
         return SimpleNamespace(returncode=0, stderr='', stdout='{"issues":[]}')
 
     monkeypatch.setattr('smart_reporting.report_editor.pptx_engine.run_bridge', bridge)
-    result = ReportSlidesEditorService._run_engine(b'protocol-test-source', 'edit', master_element_edits=[ADD, DELETE])
+    result = PptxEngine._run_engine(b'protocol-test-source', 'edit', master_element_edits=[ADD, DELETE])
     assert result['bytes'] == b'protocol-test-output'
     engine, name, request = captured[0]
     assert (engine, name) == ('slides', 'edit-pptx')

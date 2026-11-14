@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from smart_reporting.report_editor.native_office import _pptx_arguments
-from smart_reporting.report_editor.slides import ReportSlidesEditorService
+from smart_reporting.report_editor.pptx_engine import PptxEngine
 
 ADD = {'slideIndex': 0, 'kind': 'add', 'clientId': 'comment-1', 'text': ' 保留中文😀 & <文字>\n '}
 DELETE = {'slideIndex': 1, 'kind': 'delete', 'authorId': 0, 'idx': 1}
@@ -59,7 +59,7 @@ def test_python_transport_injects_fixed_host_author_for_adds(monkeypatch):
         return SimpleNamespace(returncode=0, stderr='', stdout='{"issues":[]}')
 
     monkeypatch.setattr('smart_reporting.report_editor.pptx_engine.run_bridge', bridge)
-    result = ReportSlidesEditorService._run_engine(b'protocol-test-source', 'edit', comment_edits=[ADD])
+    result = PptxEngine._run_engine(b'protocol-test-source', 'edit', comment_edits=[ADD])
     assert result['bytes'] == b'protocol-test-output'
     engine, name, request = captured[0]
     assert (engine, name) == ('slides', 'edit-pptx')

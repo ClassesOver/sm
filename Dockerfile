@@ -103,7 +103,7 @@ RUN --mount=type=secret,id=proxy_ca \
     if [ -f /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     npm ci --registry="${NPM_REGISTRY}"
 COPY smart_reporting/report_editor/frontend ./
-RUN npm run build && npm run build:slides && npm run build:management
+RUN npm run build && npm run build:management
 
 # COPY smart_reporting 会再次带入引擎源码；在独立构建层裁剪，避免镜像层仍保存副本。
 FROM base AS app-source

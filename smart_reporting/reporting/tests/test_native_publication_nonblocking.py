@@ -16,7 +16,7 @@ from smart_reporting.report_editor.native_models import (
     NativeRevision,
     NativeScope,
 )
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )

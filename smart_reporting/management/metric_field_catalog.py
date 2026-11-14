@@ -3,8 +3,8 @@
 from sqlalchemy import select
 
 from ..reporting.contract import ModelTermsResponse
+from .data_sources.releases import resolve_published_source
 from .models import ManagementError
-from .report_bases import ReportBasisService
 from .repository import catalog_versions
 
 
@@ -27,7 +27,7 @@ async def read_field_catalog(
             connection, token, service.scopes.auth.clock()
         )
         scope_id = (await service.scopes.require_registered(connection, scope))["id"]
-        source_ref, catalog_ref = await ReportBasisService._source(
+        source_ref, catalog_ref = await resolve_published_source(
             connection, scope_id, source_id, source_revision
         )
         snapshot = await connection.scalar(

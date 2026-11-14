@@ -70,7 +70,7 @@ class PasswordInput(BaseModel):
 
 
 
-def create_management_router(auth: AdminAuthService, settings: ManagementSettings, *, report_runtime=None, startup_settings=None, system_configuration_state=None) -> APIRouter:
+def create_management_router(auth: AdminAuthService, settings: ManagementSettings, *, startup_settings=None, system_configuration_state=None) -> APIRouter:
     router = APIRouter(route_class=ManagementRoute, tags=["management"])
 
     async def require_admin(request: Request) -> AdminAccount:
@@ -201,14 +201,6 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
 
         router.include_router(create_configuration_router(auth, settings, startup_settings,
             system_configuration_state=system_configuration_state))
-    from .report_bases import ReportBasisService
-    from .report_issue_reviews import ReportIssueReviewService
-    from .report_issue_reviews_api import create_report_issue_reviews_router
-
-    router.include_router(create_report_issue_reviews_router(
-        ReportIssueReviewService(ReportBasisService(scopes)), settings, report_runtime=report_runtime,
-    ))
-
     def page():
         path = settings.static_dir / "management.html" if settings.static_dir else None
         if path is None or not path.is_file():

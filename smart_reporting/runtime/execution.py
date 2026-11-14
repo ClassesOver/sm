@@ -1,34 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from inspect import isawaitable
 from typing import Any
 
-from agno.agent import Agent
-from agno.db.base import AsyncBaseDb, BaseDb
-
-from ..integrations.agno_function_arguments import install_agno_function_argument_decoder
-from ..reporting.code_agent.lsp_process import ReportingLspProcessManager
-from ..reporting.code_mode import create_reporting_code_mode_runtime
-from ..reporting.host_workspace import ReportingWorkspaceRegistry
-from ..reporting.knowledge import ReportingKnowledgeIndex
-from ..reporting.workflow.runtime.standard_chart_proof import configure_render_proof_signing
-from ..task_execution import DEFAULT_TERMINAL_TIMEOUT
-from .database import AgentDatabase, create_agent_database
-from .observability import configure_tracing, flush_tracing
+from .database import AgentDatabase
+from .observability import configure_tracing
 from .settings import AgentSettings
-from .system_configuration import load_system_configuration
-
-
-@dataclass(frozen=True)
-class ExecutionContext:
-    settings: AgentSettings
-    database: AsyncBaseDb
-    trace_database: BaseDb | None = None
-    reporting_workspace_registry: ReportingWorkspaceRegistry | None = None
-    reporting_code_mode_runtime: Any | None = None
-    reporting_knowledge_index: ReportingKnowledgeIndex | None = None
-    reporting_lsp_process_manager: ReportingLspProcessManager | None = None
 
 
 def configure_execution_tracing(
@@ -42,97 +18,3 @@ def configure_execution_tracing(
         enabled=settings.tracing_enabled,
         batch_processing=True,
     )
-
-
-def create_execution_context(
-    settings: AgentSettings | None = None,
-    *,
-    database_factory: Any = create_agent_database,
-    tracing_configurer: Any = configure_tracing,
-) -> ExecutionContext:
-    install_agno_function_argument_decoder()
-    current_settings = settings or load_system_configuration(AgentSettings.from_environment()).settings
-    database = database_factory(current_settings.database_url)
-    configure_execution_tracing(
-        database,
-        current_settings,
-        tracing_configurer=tracing_configurer,
-    )
-    reporting_workspace_registry = ReportingWorkspaceRegistry(
-        current_settings.reporting_host_workspace_root,
-        secret=current_settings.workspace_hmac_secret,
-    )
-    # 标准渲染证明签名复用工作区密钥（按用途派生子密钥），使模板演进后旧证明仍可核验。
-    configure_render_proof_signing(current_settings.workspace_hmac_secret)
-    reporting_code_mode_runtime = create_reporting_code_mode_runtime(
-        reporting_workspace_registry.root,
-        analysis_concurrency=current_settings.report_analysis_concurrency,
-        section_concurrency=current_settings.report_section_concurrency,
-        timeout=DEFAULT_TERMINAL_TIMEOUT,
-    )
-    reporting_knowledge_index = ReportingKnowledgeIndex(reporting_workspace_registry.root)
-    reporting_lsp_process_manager = ReportingLspProcessManager()
-    return ExecutionContext(
-        settings=current_settings,
-        database=database.async_db,
-        trace_database=database.sync_db,
-        reporting_workspace_registry=reporting_workspace_registry,
-        reporting_code_mode_runtime=reporting_code_mode_runtime,
-        reporting_knowledge_index=reporting_knowledge_index,
-        reporting_lsp_process_manager=reporting_lsp_process_manager,
-    )
-
-
-async def close_execution_resources(
-    context: ExecutionContext,
-    *agents: Agent,
-    tracing_flusher: Any = flush_tracing,
-) -> None:
-    clients: list[Any] = []
-    seen: set[int] = set()
-    for agent in agents:
-        for model in (
-            getattr(agent, "model", None),
-            getattr(getattr(agent, "compression_manager", None), "model", None),
-            getattr(getattr(agent, "session_summary_manager", None), "model", None),
-        ):
-            client = getattr(model, "async_client", None)
-            if client is not None and id(client) not in seen:
-                seen.add(id(client))
-                clients.append(client)
-    clients.append(context.database)
-    reporting_registry = getattr(context, "reporting_workspace_registry", None)
-    code_mode_runtime = getattr(context, "reporting_code_mode_runtime", None)
-    knowledge_index = getattr(context, "reporting_knowledge_index", None)
-    lsp_process_manager = getattr(context, "reporting_lsp_process_manager", None)
-    trace_database = getattr(context, "trace_database", None)
-    if trace_database is not None:
-        clients.append(trace_database)
-    if code_mode_runtime is not None:
-        clients.append(code_mode_runtime)
-    if reporting_registry is not None:
-        clients.append(reporting_registry)
-    if knowledge_index is not None:
-        clients.append(knowledge_index)
-    if lsp_process_manager is not None:
-        clients.append(lsp_process_manager)
-
-    first_error: BaseException | None = None
-    try:
-        if not tracing_flusher():
-            first_error = RuntimeError("agent_tracing_flush_failed")
-    except BaseException as error:
-        first_error = error
-    for client in clients:
-        close = getattr(client, "aclose", None) or getattr(client, "close", None)
-        if not callable(close):
-            continue
-        try:
-            result = close()
-            if isawaitable(result):
-                await result
-        except BaseException as error:
-            if first_error is None:
-                first_error = error
-    if first_error is not None:
-        raise first_error
