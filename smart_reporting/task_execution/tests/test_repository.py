@@ -209,3 +209,56 @@ async def test_finish_is_two_phase_and_instruction_requires_successor(repository
     assert completed.state is TaskState.COMPLETED
     closed = await repository.get_attempt(completed.current_internal_run_id)
     assert closed is not None and closed.outcome is AttemptOutcome.FINISH_ACCEPTED
+
+
+@pytest.mark.anyio
+async def test_old_resume_rolls_back_after_concurrent_postgres_epoch_takeover(repository, monkeypatch):
+    """Two real PG transactions: takeover after snapshot, before old attempt write."""
+    import asyncio
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from smart_reporting.task_execution.models import utcnow
+
+    task = await repository.create_task_with_initial_attempt(scope("late-resume"), "目标")
+    old_lease = await repository.claim_lease(task.scope.external_run_id, "old-worker")
+    task, initial_attempt = await repository.open_initial(
+        task.scope.external_run_id, old_lease, task.state_version,
+    )
+    snapshot_read = asyncio.Event()
+    takeover_done = asyncio.Event()
+    original = repository._locked_task
+
+    async def pause_after_snapshot(*args, **kwargs):
+        row = await original(*args, **kwargs)
+        snapshot_read.set()
+        await asyncio.wait_for(takeover_done.wait(), timeout=5)
+        return row
+
+    monkeypatch.setattr(repository, "_locked_task", pause_after_snapshot)
+    old_resume = asyncio.create_task(repository.resume_current(
+        task.scope.external_run_id, old_lease, task.state_version,
+    ))
+    try:
+        await asyncio.wait_for(snapshot_read.wait(), timeout=5)
+        async with repository.db.db_engine.begin() as connection:
+            await connection.execute(update(repository.tasks).where(
+                repository.tasks.c.external_run_id == task.scope.external_run_id,
+            ).values(lease_expires_at=utcnow() - timedelta(seconds=1)))
+        new_lease = await repository.claim_lease(task.scope.external_run_id, "new-worker")
+        assert new_lease.epoch == old_lease.epoch + 1
+        takeover_done.set()
+        with pytest.raises(TaskExecutionRepositoryError) as captured:
+            await old_resume
+        assert captured.value.code == "task_cas_conflict"
+        after = await repository.get_attempt(initial_attempt.internal_run_id)
+        assert after.resume_count == initial_attempt.resume_count
+        assert after.lease_epoch == old_lease.epoch
+        current = await repository.get_task_snapshot(task.scope.external_run_id)
+        assert current.state_version == task.state_version
+        assert current.lease_owner == "new-worker"
+    finally:
+        takeover_done.set()
+        old_resume.cancel()
+        await asyncio.gather(old_resume, return_exceptions=True)

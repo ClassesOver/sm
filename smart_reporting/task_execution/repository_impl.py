@@ -1551,6 +1551,9 @@ class TaskExecutionRepository:
                 .where(
                     self.tasks.c.external_run_id == external_run_id,
                     self.tasks.c.state_version == expected_state_version,
+                    self.tasks.c.lease_owner == lease.owner,
+                    self.tasks.c.lease_epoch == lease.epoch,
+                    self.tasks.c.lease_expires_at > utcnow(),
                 )
                 .values(
                     status=TaskState.ACTIVE,
@@ -1633,11 +1636,14 @@ class TaskExecutionRepository:
                     updated_at=now,
                 )
             )
-            await connection.execute(
+            result = await connection.execute(
                 update(self.tasks)
                 .where(
                     self.tasks.c.external_run_id == external_run_id,
                     self.tasks.c.state_version == expected_state_version,
+                    self.tasks.c.lease_owner == lease.owner,
+                    self.tasks.c.lease_epoch == lease.epoch,
+                    self.tasks.c.lease_expires_at > utcnow(),
                 )
                 .values(
                     status=TaskState.ACTIVE,
@@ -1645,6 +1651,8 @@ class TaskExecutionRepository:
                     updated_at=now,
                 )
             )
+            if result.rowcount != 1:
+                raise TaskExecutionRepositoryError("task_cas_conflict", "任务状态或租约已发生变化。")
         return await self._required_current(external_run_id)
 
     async def close_and_decide(
@@ -1752,6 +1760,9 @@ class TaskExecutionRepository:
                 .where(
                     self.tasks.c.external_run_id == external_run_id,
                     self.tasks.c.state_version == expected_state_version,
+                    self.tasks.c.lease_owner == lease.owner,
+                    self.tasks.c.lease_epoch == lease.epoch,
+                    self.tasks.c.lease_expires_at > utcnow(),
                 )
                 .values(
                     **task_values,
@@ -1842,6 +1853,9 @@ class TaskExecutionRepository:
                 .where(
                     self.tasks.c.external_run_id == external_run_id,
                     self.tasks.c.state_version == expected_state_version,
+                    self.tasks.c.lease_owner == lease.owner,
+                    self.tasks.c.lease_epoch == lease.epoch,
+                    self.tasks.c.lease_expires_at > utcnow(),
                     self.tasks.c.status.in_([TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]),
                 )
                 .values(
@@ -1891,6 +1905,9 @@ class TaskExecutionRepository:
                 .where(
                     self.tasks.c.external_run_id == external_run_id,
                     self.tasks.c.state_version == expected_state_version,
+                    self.tasks.c.lease_owner == lease.owner,
+                    self.tasks.c.lease_epoch == lease.epoch,
+                    self.tasks.c.lease_expires_at > utcnow(),
                 )
                 .values(
                     status=TaskState.COMPLETED,
