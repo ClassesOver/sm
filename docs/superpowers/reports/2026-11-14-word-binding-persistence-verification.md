@@ -1,9 +1,11 @@
 # Word binding persistence: verification ledger
 
-Status: **minimal mutable-proposal fix staged for GREEN cloud validation**.
-The original expected-RED tree was verified in independent disposable PG18 before
-this fix. Final PG validation of the corrected tree is still pending. Do not enable
-or publish this tree, and do not treat focused local checks as a stage-complete result.
+Status: **targeted private-persistence/CAS stage validated for Draft PR review**.
+Independent disposable PG18 validation of exact commit 44181e6 reports 78 passed,
+0 failed, 0 skipped, exit 0, with one third-party deprecation warning. The original
+real PG RED regression is GREEN with the same test file. This is not a full-suite,
+production-ready or real-Codex-connected claim; the project suite collection blocker
+below remains open. Root authorized Draft review, not merging or deployment.
 Production is not enabled. No HTTP authentication, ticket minting, MCP registration,
 Codex/provider startup, worker environment or editor acceptance integration is added.
 
@@ -100,15 +102,16 @@ unidiff, dill and psycopg. The exact local log is retained in
 collection blockers, not evidence that unrun application tests passed. No unrelated
 dependencies were installed, and the project suite was not repeatedly rerun.
 
-## Pending real PostgreSQL validation
+## Independent PostgreSQL18 GREEN validation (completed)
 
 The new PG test file contains 20 cases (19 functions, one two-case parametrization).
-It must run on a dedicated disposable PostgreSQL database because fixtures TRUNCATE
+It ran on a dedicated disposable PostgreSQL18 database. Fixtures TRUNCATE
 agentos_coding tasks CASCADE and the migration test temporarily drops the four new
-columns. Never point REPORTING_TEST_DB_URL at business/shared databases.
+columns, so future reruns must likewise never use business/shared databases.
 
-Use the real locked project dependencies, then explicitly override default pytest
-integration deselection:
+The independent run used real locked project dependencies and env -i with a clean
+HOME and only a synthetic disposable database DSN. The test invocation explicitly
+overrode default pytest integration deselection:
 
 ```bash
 python -m pytest -q -o addopts='' \
@@ -127,11 +130,12 @@ changed instruction rejection, paired-column constraints, migration of old null 
 concurrent initializers, completed-after-lease behavior, wrong/missing finish reference,
 legacy-completion rejection, cancellation competition and takeover/expiry competition.
 The three final races use explicit barriers and pg_blocking_pids rather than assuming
-that asyncio.gather created real contention. Their real PG outcomes are still pending.
+that asyncio.gather created real contention. All targeted cases passed in the
+independent run: PG34 (new Word repository20 + existing repository14), existing
+SQLite22, and pure contracts22, for 78 total. This proves this targeted review gate,
+not the whole project or a production/provider integration.
 
-No stage-complete, all-tests-pass, production-ready or Codex-connected claim is made.
-
-Additional direct paragraph repr test produced an actual assertion RED for before/after/draft/style text; setting their repr=False made it GREEN. This does not change serialized content or resolve the pending mutable-proposal PG regression.
+Additional direct paragraph repr test produced an actual assertion RED for before/after/draft/style text; setting their repr=False made it GREEN. This does not change serialized content; the separate mutable-proposal PG regression is covered by the real RED/GREEN evidence below.
 
 ## Mutable caller proposal TOCTOU: real PG RED, then minimal correction
 
@@ -150,6 +154,33 @@ parses a private proposal snapshot from the verified bytes. The locked code uses
 that snapshot, never the caller-owned proposal dictionary. This is the root-cause
 correction, not a later comparison of already-mutated data.
 
-Pending GREEN: rerun that exact regression and all 20 new PG cases, plus affected
-existing repository/lease tests, on a new isolated PG instance using locked project
-dependencies. No provider or production environment is authorized by this step.
+GREEN is independently confirmed for exact commit
+44181e624e108d18efd76ed74d6df342374d1035 / tree
+702e6b6f71763adcb9e9ab04ced6696624dc79b9. The actual pytest log summary is
+`78 passed, 1 warning in 19.55s`; pytest exit code is 0. JUnit records the original
+RED node with no failure/error/skipped child. RED and GREEN use the same test file:
+SHA256 `68fa1e1285a4ee815953f5e28d8f9281b510f3f09adb7ae80cffecce4745f094`,
+Git blob `c2fc215f2a2595a18ebdadf0e652a1b09aceebfb`. The only executable-code change
+from RED to GREEN was the private canonical-bytes snapshot correction; the other
+change was this verification ledger. No test was weakened to obtain GREEN.
+
+The one warning is a third-party `DeprecationWarning` from
+`visions/utils/monkeypatches/imghdr_patch.py:2` (`from imghdr import tests`):
+`'imghdr' is deprecated and slated for removal in Python 3.13`.
+It was associated with
+`test_native_word_concurrent_commit_exact_retry_and_mismatch[asyncio]` and was not
+silently suppressed or misreported as warning-free output.
+
+The original command, pytest output, exit code, JUnit, source hashes and cleanup
+records were independently read from the completed cloud validation thread. Container
+and anonymous-volume inspect both returned no-such-resource after cleanup. These
+records support the exact tested commit/tree; they do not authorize a provider or
+production environment. This documentation-only follow-up must preserve all tested
+source/test/configuration blobs, which are compared against 44181e6 before publication.
+
+Astra's final independent review found no remaining blocker for this limited Draft
+candidate. No additional hard gate on provider agno_status is introduced: receipt-only
+recovery may not execute a provider at all. The gate is the versioned candidate/input
+finish reference plus the persisted CLOSED/FINISH_ACCEPTED current run. A future
+coordinator must distinguish provider success from receipt-only recovery and must
+never relabel provider ERROR/unknown status as a successful provider run.

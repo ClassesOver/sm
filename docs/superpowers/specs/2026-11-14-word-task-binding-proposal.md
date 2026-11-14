@@ -1,6 +1,12 @@
 # Word task binding and trusted MCP identity: review proposal
 
-Status: **proposal only, not implemented or enabled**. No task lifecycle, repository,
+Historical design proposal: the private persistence/CAS subset is now implemented
+and independently targeted-tested for Draft review in 44181e6; see the verification
+ledger for exact evidence and the full-suite collection blocker. Authentication,
+HTTP/MCP production registration, worker isolation and real Codex execution remain
+unimplemented/not enabled. The proposal below retains its original design context.
+
+Original proposal status: **not implemented or enabled at the time of writing**. No task lifecycle, repository,
 schema, shared authentication, HTTP route, provider or worker changes in this slice.
 
 ## Verified existing seams and gaps
