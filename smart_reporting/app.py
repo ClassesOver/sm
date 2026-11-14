@@ -96,6 +96,7 @@ from .report_editor.native_publication import NativePublicationService
 from .report_editor.native_readiness import native_readiness_checks
 from .report_editor.native_repository import NativeDocumentRepository
 from .report_editor.slides_chart_ai import ReportSlidesChartAIService
+from .office.model import create_office_model
 from .reporting.agent import create_report_agent
 from .reporting.bootstrap import create_report_runtime
 from .reporting.business_knowledge.originals import BusinessOriginalStore
@@ -369,35 +370,37 @@ native_editor = NativeEditorService(
     office_enabled=settings.native_upload_enabled,
     pdf_text_enabled=settings.native_pdf_text_enabled,
 )
+# Office 文件内 AI 独立按部署配置创建模型，不再借用报告运行时。
+office_model = create_office_model(settings)
 native_ai = create_native_ai_service(
-    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+    office_model, native_editor, enabled=settings.native_ai_enabled,
 )
 native_slides_ai = create_native_slides_ai_service(
-    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+    office_model, native_editor, enabled=settings.native_ai_enabled,
 )
 native_workbook_ai = create_native_workbook_ai_service(
-    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+    office_model, native_editor, enabled=settings.native_ai_enabled,
 )
 native_pdf_read_ai = NativePDFReadService(
-    native_editor, planner=create_native_pdf_read_planner(reporting_agent_template.model),
+    native_editor, planner=create_native_pdf_read_planner(office_model),
     enabled=settings.native_ai_enabled,
 )
 native_word_read_ai = NativeWordReadService(
-    native_editor, planner=AgnoNativeWordReadPlanner(reporting_agent_template.model),
+    native_editor, planner=AgnoNativeWordReadPlanner(office_model),
     enabled=settings.native_ai_enabled,
 )
 native_office_read_ai = NativeOfficeReadService(
     native_editor, planners={
-        "xlsx": AgnoNativeWorkbookReadPlanner(reporting_agent_template.model),
-        "pptx": AgnoNativeSlidesReadPlanner(reporting_agent_template.model),
+        "xlsx": AgnoNativeWorkbookReadPlanner(office_model),
+        "pptx": AgnoNativeSlidesReadPlanner(office_model),
     }, enabled=settings.native_ai_enabled,
 )
 native_pdf_review_ai = NativePDFReviewService(
-    native_editor, planner=create_native_pdf_review_planner(reporting_agent_template.model),
+    native_editor, planner=create_native_pdf_review_planner(office_model),
     enabled=settings.native_ai_enabled,
 )
 native_pdf_form_ai = NativePDFFormService(
-    native_editor, planner=AgnoNativePDFFormPlanner(reporting_agent_template.model),
+    native_editor, planner=AgnoNativePDFFormPlanner(office_model),
     enabled=settings.native_ai_enabled,
 )
 native_import = NativeImportService(native_workspace, native_document_repository, report_editor_grants)
