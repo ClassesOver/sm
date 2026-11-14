@@ -1,5 +1,8 @@
 # PDF desktop reading navigation
 
+> Historical slice record. Final integration evidence and the status of the old
+> pending checks are recorded in [the stage integration report](../reports/2026-11-14-editor-increment-stage-integration.md).
+
 ## Scope and source audit
 
 - Baseline: `680edfa` (integrated harness/revision-event branch).
