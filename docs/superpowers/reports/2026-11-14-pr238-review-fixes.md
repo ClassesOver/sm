@@ -45,7 +45,7 @@ The original implementation iterated physical JSON children but addressed TableM
 - Final existing three plus new eight: 11 passed, exit 0, 1.71s. No /V written for normal successful visual signatures.
 - Final combination selected smoke: direct/inherited ink refusals and writable ink success, 3 selected and passed, exit 0, 1.83s. Other nodes were not executed by this name-filtered run.
 - LOCAL-SHA256.json updated for changed source/test; both digests independently checked. No lock changes.
-- Coverage limit: writable control omits Ff (default); explicit child Ff=0 overriding a read-only parent and a nonzero non-ReadOnly Ff were NOT tested. Do not infer these cases from inherited rejection or default writable success.
+- Coverage at code commit 0d5c9d8: writable control omitted Ff (default); explicit child Ff=0 overriding a read-only parent and a nonzero non-ReadOnly Ff were NOT tested at that stage. The supplementary run below closes these two specific gaps; the historical results above do not imply that coverage.
 
 ## Commands and separately observed results
 
@@ -76,3 +76,17 @@ Python PDF originally had 2 failures before feature assertions because slides_en
 - Local only: no push (force or otherwise), new remote PR, remote merge, deployment, production service calls or production switches. Pending temporary integration was aborted before adding this ledger; code repair commits retained.
 - Independent full-diff review remained pending when this ledger was written; do not imply reviewer approval or an executed merge. Remote PR still lacks these fixes.
 - No full suite, GitHub CI, browser smoke, production build, Office/Acrobat manual verification, or real authorization/publication chain was rerun. Earlier PR acceptance documents are historical evidence, not executions in this repair round.
+
+
+## Supplementary PDF flag override check and authorized branch update
+
+- Independent reviewer subsequently read the complete 285-line repair diff and found the three repairs sufficient to close the reported issues, with no new Important finding. This is review evidence reported by the coordinating parent, not a claim that this agent performed that independent review.
+- Verified PDF 32000-1:2008 section 12.7.3.1 and Tables 220/221 from the Adobe-hosted standard: inheritable attributes come from the parent only when not explicitly specified; Ff is an inheritable integer defaulting to zero; ReadOnly is bit position 1 and Required is position 2. Source: https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf . Web text extraction could not handle the file size; downloaded the same primary PDF to /tmp and read pdftotext output. This is whole-attribute inheritance, not bitwise OR across ancestors.
+- Verified installed pdf-lib implementation: getInheritableAttribute visits the child before ancestors and retains the first PDF object found; a PDFNumber representing zero remains an object, so explicit zero is not skipped. Ff() resolves that object and getFlags()/hasFlag() inspect its bits.
+- Extended real fixture with parent Ff=1 and child explicit Ff=0 or Ff=2. Four new cases: each child value with ink and image. Through actual inspectPdf -> patchPdfWithReceipt -> PDFDocument/patched model readback, assert binding succeeds, local child flags and parent flags remain unchanged, isReadOnly=false, Required reflects 0 versus 2, no V is written, the annotation associates Group.Signature, and reinspection reports visuallySigned=true.
+- Retained default writable and inherited read-only controls. No production source change was necessary; these are compatibility checks that passed on first valid execution, not a new defect RED or a simulated RED.
+- Command, pdf_engine directory: `node --import tsx --test --test-name-pattern='child Ff=|inherited ReadOnly signature field is advertised|server still binds ink' bridge/signature-fields.test.ts`.
+- Observed result: 6 selected tests passed, 0 failed/cancelled/skipped, exit 0, 1.75s. Four are newly added override cases, two are existing controls; no full suite was rerun. An earlier command whose fixture-edit path was wrong executed only the two old controls; its two passes are not counted as the four new checks.
+- Updated only the test checksum in LOCAL-SHA256; existing production checksum retained and checked. Repository locks and production sources remain unchanged from 0d5c9d8. Original three defect RED/GREEN evidence and both prior repair commits remain intact.
+- Parent explicitly authorized a normal fast-forward push to existing PR branch claude/nice-franklin-3qpag8 only after this run and ledger update, conditional on re-fetching and observing PR/branch d421b911 and code 1e4a0a34 (full SHAs above). Independent review and that authorization do not themselves mean a push succeeded; the final tool result and coordinating parent must record the actual remote outcome.
+- This supplementary change does not run or authorize remote merge, deployment, new PR, force push, production switches, full tests, CI, browser smoke or Office/Acrobat checks.
