@@ -1589,9 +1589,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   bindPdfPageNavigation(viewport, {
     signal: abort.signal,
     available: () => !disposed && !!document && readingReady && !locked && mode === 'select'
-      && !previewing && !printing && !previewDocument && !draft.saving && !draft.closed
+      && !previewing && !printing && !previewDocument && !searchRendering && !draft.saving && !draft.closed
       && pendingMutations === 0 && !mutationBlocked?.() && !staticText?.incompleteReason() && !hasUnstagedText(),
-    pages: state, activePage: () => activeId, navigate: jumpToPageForIdentity,
+    pages: state,
+    readingPage: () => {
+      // Wheel scrolling does not change activeId. Read the existing DOM reading
+      // anchor against the current retained/reordered page identities instead.
+      const pages = state()
+      const reading = capturePdfReading(viewport, pages.map(page => page.pageId), scale, fitMode)
+      return reading ? pages[reading.page - 1]?.pageId ?? '' : ''
+    },
+    navigate: jumpToPageForIdentity,
   })
   function jumpToPage(input: HTMLInputElement) {
     if (!document) return

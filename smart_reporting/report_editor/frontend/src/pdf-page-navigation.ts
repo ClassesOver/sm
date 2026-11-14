@@ -3,7 +3,7 @@ export function bindPdfPageNavigation(viewport: HTMLElement, options: {
   signal: AbortSignal
   available(): boolean
   pages(): readonly { pageId: string }[]
-  activePage(): string
+  readingPage(): string
   navigate(pageId: string): void
 }) {
   let pointerDown = false
@@ -18,7 +18,7 @@ export function bindPdfPageNavigation(viewport: HTMLElement, options: {
     // A modal can be open while focus is being restored to the canvas.
     if (viewport.ownerDocument.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return
     const pages = options.pages()
-    const current = pages.findIndex(page => page.pageId === options.activePage())
+    const current = pages.findIndex(page => page.pageId === options.readingPage())
     if (current < 0) return
     let next: number
     switch (event.key) {
@@ -29,6 +29,7 @@ export function bindPdfPageNavigation(viewport: HTMLElement, options: {
       default: return
     }
     event.preventDefault()
-    options.navigate(pages[next]!.pageId)
+    // At the first/last page, consume paging without scrolling back to its top.
+    if (next !== current || event.key === 'Home' || event.key === 'End') options.navigate(pages[next]!.pageId)
   }, { signal: options.signal })
 }

@@ -21,3 +21,10 @@ Ignore descendant controls, modifiers, composition, consumed events, open modals
 - Added focused Vitest DOM coverage: boundaries, order changes, removed/empty pages, child controls, modifiers/IME, consumed events, availability, native/custom modals, pointer cancellation, focus retention, disposal/remount, unrelated keys.
 - Vitest and TypeScript build: **not run here**, because this executor lacks project node_modules. No dependencies were installed. Must run in configured sm cloud environment before acceptance.
 - Real browser focus/navigation and PDF regression tests: **pending** in the same configured environment. No PR/push/merge/deployment performed.
+
+## Astra review corrections
+
+- Navigation now derives its current reading page from the existing `capturePdfReading` DOM anchor using current `state()` page IDs. It no longer uses stale selection `activeId` after wheel scrolling. In two-page spread mode, this follows the existing reading-state row anchor (left page), not a new selection state.
+- At first/last-page PageUp/PageDown, consume the key without invoking navigation, preserving the current within-page scroll offset. Home/End remain explicit page-top jumps.
+- Disable shortcuts during `searchRendering`, which can temporarily detach/rebuild page rows. Unmeasurable layouts provide no reading anchor and do not navigate.
+- Added DOM geometry regression for stale selection versus scroll position, reordered/blank identities and last-page offset preservation. Revised Node smoke passed. Vitest, TypeScript and real browser checks remain pending; this change is not accepted as browser-verified.
