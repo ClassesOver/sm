@@ -31,7 +31,7 @@ from .native_models import (
     NativeSource,
     native_digest,
 )
-from .service import ReportEditorGrantService, ReportEditorSession
+from ..office.editor_grants import ReportEditorGrantService, ReportEditorSession
 
 _MAX_FILE_BYTES = 24 * 1024 * 1024
 _MEDIA = NATIVE_MEDIA

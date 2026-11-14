@@ -16,6 +16,7 @@ from uuid import uuid4
 from loguru import logger
 from pydantic import Field, ValidationError
 
+from ..office.editor_grants import ReportEditorSession
 from ..reporting.contract import StrictModel
 from ..reporting.models import ReportingError
 from ..reporting.structured_output.execution import (
@@ -24,7 +25,6 @@ from ..reporting.structured_output.execution import (
 )
 from .agent_event_streams import AgentEventLog, bind_agent_event_log, event_stream_response
 from .native_models import NativeEditorContext, native_digest
-from .service import ReportEditorSession
 
 
 class NativeAIOperation(StrictModel):

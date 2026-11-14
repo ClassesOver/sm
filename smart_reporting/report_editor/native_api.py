@@ -25,7 +25,7 @@ from ..reporting.delivery.docx_native import inspect_docx
 from ..reporting.delivery.pdf_native import inspect_pdf, read_pdf_image_background, read_pdf_image_pixels, shrink_pdf
 from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.models import ReportingError
-from .api import EDITOR_SESSION_COOKIE
+from ..office.editor_grants import EDITOR_SESSION_COOKIE
 from .native import NativeEditorService, bind_native_workspace
 from .native_mail_merge import decode_mail_merge_csv
 from .native_models import NATIVE_ARTIFACT_MEDIA, NativeScope
@@ -36,7 +36,7 @@ from .native_refresh import (
     native_refresh_status,
     start_native_refresh,
 )
-from .service import ReportEditorGrantService
+from ..office.editor_grants import ReportEditorGrantService
 
 NATIVE_SESSION_COOKIE = "native_editor_session"
 

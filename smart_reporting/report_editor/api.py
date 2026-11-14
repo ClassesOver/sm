@@ -33,11 +33,12 @@ from .recalculation import (
     RecalculationRequest,
 )
 from .data_revision_contract import ReportDataEditRequest
+from ..office.editor_grants import EDITOR_SESSION_COOKIE as OFFICE_SESSION_COOKIE
 from .service import EDITOR_SHARE_TTL, ReportEditorGrantService
 from .table_ai import TableAIEditRequest, TableTemplateApplyRequest
 from .trace_retention import SourceFileResponse
 
-EDITOR_SESSION_COOKIE = "report_editor_session"
+EDITOR_SESSION_COOKIE = OFFICE_SESSION_COOKIE
 _LEGACY_SESSION_COOKIE_PATH = "/reports/v1/editor"
 
 
