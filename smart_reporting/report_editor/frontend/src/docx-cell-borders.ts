@@ -48,6 +48,7 @@ export function docxCellBordersUnavailable(editor: Editor, anchors: readonly Doc
   const anchor = anchors.find(anchor => anchor.docxIndex === current.table.attrs.docxIndex)
   if (!anchor?.bordersEditable) return anchor?.bordersReadOnlyReason ?? '当前来源表格暂不能修改单元格边框'
   if (current.table.attrs.nativeTableStructure || current.table.attrs.nativeTableInsert) return '请先保存表格结构修改，再调整单元格边框'
+  if (current.table.attrs.nativeTableStyle) return '表格样式修改后不能与同表其他修改混用，请先保存'
   return null
 }
 export function applyDocxCellBorders(editor: Editor, mode: DocxCellBorderMode, pen: unknown, anchors: readonly DocxCellBordersAnchor[]): boolean {

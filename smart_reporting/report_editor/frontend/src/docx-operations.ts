@@ -42,6 +42,7 @@ import { normalizeDocxNumberingBinding, docxNumberingBindingId } from '../../../
 import { docxRulerIndentOperation, replayDocxRulerIndent, type DocxRulerIndentAnchor } from './docx-ruler-indent'
 import { docxTabStopsOperation, replayDocxTabStops, type DocxTabStopsAnchor } from './docx-tab-stops'
 import { normalizeDocxCellBorders, projectedDocxCellBordersBaseline, replayDocxCellBorders } from './docx-cell-borders'
+import { normalizeDocxTableStyle, replayDocxTableStyle, type DocxTableStyleAnchor } from './docx-table-style'
 import { highlightMap, paragraphHighlight, safeDocxHighlight, withoutHighlight } from './docx-highlight'
 import { docxBorderAttrs, paragraphBorders, safeDocxBorderSpec } from './docx-borders'
 import { safeDocxShading } from './docx-shading'
@@ -60,7 +61,7 @@ import { restoredDocxHeaderFooterOperations } from './docx-hf'
 export interface DocxAnchor extends DocxPictureAnchor, DocxTablePropertiesAnchor {
   fontDialogEditable?: boolean; nestedTables?: DocxNestedTableAnchor[]; bordersEditable?: boolean; bordersReadOnlyReason?: string; docxIndex: number; blockId: string; expectedObjectSha256: string; editable: boolean; deletable?: boolean; paragraphShadingEditable?: boolean; paragraphBordersEditable?: boolean; paragraphLayoutEditable?: boolean; paragraphStyleEditable?: boolean; paragraphStyleReadOnlyReason?: string | null; links?: { from: number; to: number; href: string }[]; cells?: DocxCellAnchor[][]; structureEditable?: boolean; structureReadOnlyReason?: string | null; tableWidthsTwips?: number[]; tableHeaderCount?: number }
 export interface DocxAnchor { cellShapeEditable?: boolean; cellShapeReadOnlyReason?: string | null; cellShapeWidthsTwips?: number[]; cellShapeCells?: DocxCellShapeSource[] }
-export interface DocxAnchor extends DocxTextRevisionAnchor, DocxTableAltTextAnchor, DocxCellWrapAnchor, DocxColumnWidthAnchor, DocxRowHeightAnchor, DocxAutoFitAnchor, DocxCellTextDirectionAnchor, DocxCellAlignmentAnchor, DocxCellMarginsAnchor, DocxCellMarginOverridesAnchor, DocxRowBreakAnchor, DocxTableAlignmentAnchor, DocxRulerIndentAnchor { columnWidthSectionId?: string; rowHeightSectionId?: string; autoFitSectionId?: string; sourceSectionId?: string }
+export interface DocxAnchor extends DocxTextRevisionAnchor, DocxTableAltTextAnchor, DocxCellWrapAnchor, DocxColumnWidthAnchor, DocxRowHeightAnchor, DocxAutoFitAnchor, DocxCellTextDirectionAnchor, DocxCellAlignmentAnchor, DocxCellMarginsAnchor, DocxCellMarginOverridesAnchor, DocxRowBreakAnchor, DocxTableAlignmentAnchor, DocxTableStyleAnchor, DocxRulerIndentAnchor { columnWidthSectionId?: string; rowHeightSectionId?: string; autoFitSectionId?: string; sourceSectionId?: string }
 export interface DocxPmNode { type: string; attrs?: Record<string, unknown>; text?: string; marks?: { type: string; attrs?: Record<string, unknown> }[]; content?: DocxPmNode[] }
 export interface DocxAnchor extends DocxTabStopsAnchor { paragraphPropertiesEditable?: boolean; dropCapEditable?: boolean }
 /** 固定源 ribbon-tabs.tsx clearAllFormatting：先清选区 marks，再应用默认样式及 Ctrl+Q。 */
@@ -467,6 +468,9 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
   current = revisions.current
   const nested = normalizeDocxNestedTables(original, current, anchors)
   current = nested.current
+  // 表格样式为整表独占写回：先校验并还原为来源，后续差异比对不再看到该表的样式/预设变化。
+  const tableStyle = normalizeDocxTableStyle(original, current, anchors)
+  current = tableStyle.current
   // 先从原始身份投影边框，再剥离与边框可交换的fill；最终边框投影仍完整核验。
   const borderBaseline = projectedDocxCellBordersBaseline(original, current, anchors)
   const shading = normalizeDocxCellShading(borderBaseline, current, anchors)
@@ -871,7 +875,8 @@ export function docxOperations(original: DocxPmNode, current: DocxPmNode, anchor
   }
   if (sectionOperation) ops.push(...(Array.isArray(sectionOperation) ? sectionOperation : [sectionOperation]))
   if (headerFooterOperations?.length) ops.push(...headerFooterOperations)
-  const all = [...revisions.operations, ...nested.operations, ...ops, ...cellBorders.operations, ...shading.operations]
+  const all = [...revisions.operations, ...nested.operations, ...ops, ...tableStyle.operations, ...cellBorders.operations, ...shading.operations]
+  for (const operation of tableStyle.operations) if (all.some(other => other !== operation && other.blockId === operation.blockId)) throw new Error('表格样式修改不能与同表文字、格式或其他结构修改混用，请先保存')
   assertColumnWidthSections(all, anchors)
   if (all.length > 500) throw new Error('操作超过 500 条，请分批保存')
   assertDocxNestedOperationBatch(all)
@@ -922,7 +927,7 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     structural.add(id)
   }
   for (const operation of operations) {
-    if (operation.kind === 'resolveTextRevision' || operation.kind === 'replaceNestedCellText' || operation.kind === 'setSectionLayout' || operation.kind === 'setHeaderFooter' || operation.kind === 'setHeaderFooterLink' || operation.kind === 'setPageColor' || operation.kind === 'setWatermark' || operation.kind === 'setTrackRevisions' || operation.kind === 'upsertStyle' || operation.kind === 'setCellShading' || operation.kind === 'setTableCellBorders') continue
+    if (operation.kind === 'resolveTextRevision' || operation.kind === 'replaceNestedCellText' || operation.kind === 'setSectionLayout' || operation.kind === 'setHeaderFooter' || operation.kind === 'setHeaderFooterLink' || operation.kind === 'setPageColor' || operation.kind === 'setWatermark' || operation.kind === 'setTrackRevisions' || operation.kind === 'upsertStyle' || operation.kind === 'setCellShading' || operation.kind === 'setTableCellBorders' || operation.kind === 'setTableStyle') continue
     const anchor = byId.get(String(operation.blockId)), node = anchor && originalNodes.get(anchor.docxIndex)
     if (!anchor || !node) throw new Error('草稿对象不属于当前 Word 文件')
     if (operation.kind === 'replaceImage') {
@@ -1294,5 +1299,5 @@ export function replayDocxOperations(original: DocxPmNode, operations: NativeOpe
     if (!result.content?.includes(node)) throw new Error('首字下沉目标已删除')
     replayDocxDropCap(node, anchor, operation)
   }
-  return replayDocxTextRevisions(replayDocxCellShading(replayDocxCellBorders(result, operations, anchors), operations, anchors), operations, anchors, schema)
+  return replayDocxTextRevisions(replayDocxCellShading(replayDocxCellBorders(replayDocxTableStyle(result, operations, anchors), operations, anchors), operations, anchors), operations, anchors, schema)
 }
