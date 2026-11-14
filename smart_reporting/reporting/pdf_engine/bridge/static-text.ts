@@ -60,16 +60,23 @@ export function verifyStaticTextOutput(before:InspectedText,output:InspectedText
  }
  return null
 }
+function staticTextTarget(document:PDFDocument,operation:StaticTextOperation,sourceSha256:string){
+ if(operation.sourceSha256!==sourceSha256)throw Error('PDF 来源摘要不匹配')
+ const pageIndex=document.getPages().findIndex((_,index)=>operation.pageId===`sha256:${sourceSha256}:page:${index}`)
+ if(pageIndex<0)throw Error('PDF 页面身份无效')
+ const page=document.getPage(pageIndex),box=page.getCropBox(),[x,y]=operation.origin
+ if(x<box.x||x>box.x+box.width||y<box.y||y>box.y+box.height)throw Error('插入文字基线起点超出来源裁切范围')
+ return pageIndex
+}
+
 export async function insertStaticText(content:Uint8Array,operation:StaticTextOperation,expectedSha256:string){
  const sourceSha256=hash(content)
  if(expectedSha256!==sourceSha256||operation.sourceSha256!==sourceSha256)throw Error('PDF 来源摘要不匹配')
  const document=await PDFDocument.load(content,{updateMetadata:false})
  const availability=staticTextAvailability(document)
  if(!availability.insertText)throw Error(availability.insertTextReason!)
- const pageIndex=document.getPages().findIndex((_,index)=>operation.pageId===`sha256:${sourceSha256}:page:${index}`)
- if(pageIndex<0)throw Error('PDF 页面身份无效')
- const page=document.getPage(pageIndex),box=page.getCropBox(),[x,y]=operation.origin
- if(x<box.x||x>box.x+box.width||y<box.y||y>box.y+box.height)throw Error('插入文字基线起点超出来源裁切范围')
+ const pageIndex=staticTextTarget(document,operation,sourceSha256)
+ const page=document.getPage(pageIndex),box=page.getCropBox()
  const skip=(reason:string)=>({operationIndex:0,kind:'insertText' as const,pageId:operation.pageId,reason})
  let bytes=content,skippedOperations:ReturnType<typeof skip>[]=[]
  try{
@@ -104,4 +111,40 @@ export async function insertStaticText(content:Uint8Array,operation:StaticTextOp
  }
  const outputSha256=hash(bytes),appliedOperationIndices=skippedOperations.length?[]:[0]
  return {bytes,sourceSha256,sha256:outputSha256,size:bytes.length,appliedOperationIndices,skippedOperations,previewDigest:hash(JSON.stringify({sourceSha256,operation,outputSha256,appliedOperationIndices,skippedOperations}))}
+}
+
+/** Read-only preflight against the immutable original, shared by mixed text batches. */
+export async function staticTextTargets(content:Uint8Array,operations:StaticTextOperation[],expectedSha256:string){
+ const sourceSha256=hash(content)
+ if(expectedSha256!==sourceSha256)throw Error('PDF 来源摘要不匹配')
+ const document=await PDFDocument.load(content,{updateMetadata:false}),availability=staticTextAvailability(document)
+ if(!availability.insertText)throw Error(availability.insertTextReason!)
+ return operations.map(operation=>staticTextTarget(document,operation,sourceSha256))
+}
+
+/** Validate every original identity before writing; only the server rebinds intermediate bytes. */
+export async function insertStaticTexts(content:Uint8Array,operations:StaticTextOperation[],expectedSha256:string){
+ if(operations.length===1)return insertStaticText(content,operations[0]!,expectedSha256)
+ const sourceSha256=hash(content)
+ if(expectedSha256!==sourceSha256)throw Error('PDF 来源摘要不匹配')
+ const document=await PDFDocument.load(content,{updateMetadata:false}),availability=staticTextAvailability(document)
+ if(!availability.insertText)throw Error(availability.insertTextReason!)
+ const targets=operations.map(operation=>staticTextTarget(document,operation,sourceSha256))
+ let bytes=content
+ const appliedOperationIndices:number[]=[],skippedOperations:{operationIndex:number;kind:'insertText';pageId:string;reason:string}[]=[]
+ for(const [index,operation]of operations.entries()){
+  const intermediateSha256=hash(bytes),pageId=`sha256:${intermediateSha256}:page:${targets[index]}`
+  try{
+   const result=await insertStaticText(bytes,{...operation,sourceSha256:intermediateSha256,pageId},intermediateSha256)
+   bytes=result.bytes
+   if(result.appliedOperationIndices.includes(0))appliedOperationIndices.push(index)
+   skippedOperations.push(...result.skippedOperations.map(skip=>({...skip,operationIndex:index,pageId:operation.pageId})))
+  }catch(error){
+   // Original input failures were rejected before writing. An intermediate
+   // resource/load failure must not discard earlier generated text.
+   skippedOperations.push({operationIndex:index,kind:'insertText',pageId:operation.pageId,reason:`pdf_insert_text_failed: ${error instanceof Error?error.message:String(error)}`})
+  }
+ }
+ const outputSha256=hash(bytes)
+ return {bytes,sourceSha256,sha256:outputSha256,size:bytes.length,appliedOperationIndices,skippedOperations,previewDigest:hash(JSON.stringify({sourceSha256,operations,outputSha256,appliedOperationIndices,skippedOperations}))}
 }

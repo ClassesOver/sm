@@ -1,4 +1,5 @@
 /** Strict source-bound adapter around pinned Form Design widget removal. */
+import {inspectFormCopy} from './form-copy-safety'
 import { createHash } from 'node:crypto'
 import { PDFArray, PDFCheckBox, PDFDict, PDFDocument, PDFDropdown, PDFName, PDFNumber, PDFRef, PDFTextField, PDFRadioGroup, PDFSignature, PDFString, PDFHexString, PDFRawStream, PDFStream, type PDFField } from 'pdf-lib'
 import { applyFormWidgetEdits } from '../src/main/save-pdf'
@@ -17,6 +18,8 @@ export interface DesignWidgetIdentity {
   expectedWidgetSha256: string
   pageIndex: number
   rect: [number, number, number, number]
+  copyEditable?: boolean
+  copyReason?: string | null
   required?: boolean
   designEditable?: boolean
   designReason?: string | null
@@ -204,6 +207,7 @@ function census(document: PDFDocument, sourceSha256: string) {
         choiceOptionsEditable,
         choiceOptionsReason:choiceOptionsEditable?null:choiceOptions.reason||'控件身份或来源保护未通过设计复核',
         ...(choiceOptionsEditable?{choiceOptions:choiceOptions.options,choiceValue:choiceOptions.value,choiceDefaultValue:choiceOptions.defaultValue}:{}),
+        ...inspectFormCopy(field,designEditable,radioRequired.editable,emptySignature),
         designEditable,
         designReason:designEditable?null:'控件层级、共享引用、保护或动作未通过安全复核；仅支持未签名 AcroForm 的精确控件设计',
         fieldKind:field instanceof PDFSignature?'signature':field instanceof PDFRadioGroup?'radio':field instanceof PDFDropdown?'choice':field instanceof PDFCheckBox?'checkbox':date?'date':field instanceof PDFTextField?'text':'unsupported',

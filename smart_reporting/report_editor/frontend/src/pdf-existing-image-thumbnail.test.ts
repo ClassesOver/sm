@@ -129,3 +129,9 @@ it('atomically mounts a normal-blend background sibling before the original z-ba
  expect(host.querySelector('.pdf-existing-image-thumbnail-veil')).toBeNull()
  cleanup();host.remove()
 })
+it('does not redraw the original foreground as a moved image for a pending deletion',()=>{
+ expect(pdfExistingImageThumbnailPlan({sourceSha256:sha,page,operation:{...operation,remove:true,rect:image.rect},images:[{...image,removable:true}],viewport})).toBeNull()
+})
+it('defers a layer change thumbnail to the actual PDF instead of repainting the old text band',()=>{
+ expect(pdfExistingImageThumbnailPlan({sourceSha256:sha,page,operation:{...operation,rect:image.rect,layer:'belowText'},images:[{...image,layerable:true}],viewport})).toBeNull()
+})

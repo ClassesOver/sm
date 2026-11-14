@@ -14,9 +14,9 @@ it.each([
 ])('rejects invalid or stale inserted text %j', patch => {
   expect(() => pdfPageState(pages, [{ ...operation, ...patch }])).toThrow()
 })
-it('refuses insertion with another operation or multiple insertions', () => {
+it('refuses insertion with another operation', () => {
   expect(() => pdfPageState(pages, [operation, { kind: 'rotatePage', pageId, delta: 90 }])).toThrow('单独')
-  expect(() => pdfPageState(pages, [operation, operation])).toThrow('单独')
+
 })
 
 it('accepts source supported multiline fonts styles and alignments', () => {
@@ -24,4 +24,15 @@ it('accepts source supported multiline fonts styles and alignments', () => {
 })
 it.each([{font:'other'},{bold:'true'},{italic:1},{align:'justify'},{lineLeading:0},{lineLeading:Infinity},{text:'a\rb'}])('rejects unsupported text options %j', patch => {
  expect(() => validatePdfStaticText(pages, [{...operation,...patch}])).toThrow()
+})
+
+it('accepts multiple source-bound inserts and validates every later entry',()=>{
+ const second={...operation,text:'Second',origin:[120,240]}
+ expect(pdfPageState(pages,[operation,second])).toEqual(pages)
+ for(const patch of [{sourceSha256:'b'.repeat(64)},{origin:[0,0]},{text:' '},{font:'invalid'}])expect(()=>pdfPageState(pages,[operation,{...second,...patch}])).toThrow()
+})
+
+it('retains the existing operation budget for a text-only draft',()=>{
+ expect(()=>validatePdfStaticText(pages,Array.from({length:500},()=>operation))).not.toThrow()
+ expect(()=>validatePdfStaticText(pages,Array.from({length:501},()=>operation))).toThrow('超限')
 })

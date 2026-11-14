@@ -31,8 +31,8 @@ async function fixture(editingEnabled = true, capability = true, skipped = false
   const identity = { documentId: `static-${views.length}`, revision: 1, sourceSha256, scope: { database: 'db', companyId: 'c', userId: 'u', threadId: 't' } }
   const draft = new NativeDraft(identity, localStorage)
   const api = { file: async () => new Uint8Array([1, 2]).buffer, previewFile: async () => new Uint8Array([3, 4]).buffer,
-    preview: async () => ({ sourceSha256, previewDigest: 'f'.repeat(64), appliedOperationIndices: skipped ? [] : [0], skippedOperations: skipped ? [{ operationIndex: 0, kind: 'insertText', pageId, reason: 'missing embedded glyph' }] : [], model: { sourceSha256, pages: [{ pageId, notesReadSafe: true }], attachments: [], attachmentsEditable: true, capabilities: { insertText: capability, insertTextReason: capability ? null : '来源含批注，暂不支持插入文字' } } }) } as unknown as ReturnType<typeof createNativeApi>
-  const context = { context: { documentId: identity.documentId, revision: 1, format: 'pdf', scope: identity.scope, sourceFile: { sha256: sourceSha256 } }, editingEnabled, pdfTextEnabled } as NativeContextResponse
+    preview: async () => ({ sourceSha256, previewDigest: 'f'.repeat(64), appliedOperationIndices: skipped ? [] : [0], skippedOperations: skipped ? [{ operationIndex: 0, kind: 'insertText', pageId, reason: 'missing embedded glyph' }] : [], model: { sourceSha256, pages: [{ pageId, notesReadSafe: true,textObjects:[{objectId:'original',expectedTextSha256:'b'.repeat(64),text:'Original',rect:[60,300,130,315],fontSize:14,fontName:'Arial',fontSha256:null}] }], attachments: [], attachmentsEditable: true, capabilities: { moveText:capability,insertText: capability, insertTextReason: capability ? null : '来源含批注，暂不支持插入文字' } } }) } as unknown as ReturnType<typeof createNativeApi>
+  const context = { context: { documentId: identity.documentId, revision: 1, format: 'pdf', scope: identity.scope, sourceFile: { sha256: sourceSha256, path: 'source.pdf', size: 2 } }, editingEnabled, pdfTextEnabled } as NativeContextResponse
   const view = await createPdfEditorView({ editor: root, save: document.createElement('button') } as unknown as EditorShell, { api, context, draft }); views.push(view)
   const open = root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.edit.insertText"]')!
   return { root, draft, view, open, pageId, sourceSha256 }
@@ -146,4 +146,63 @@ it('stages multiline font styles alignment and leading through the public insert
  await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(1))
  expect(f.draft.operations[0]).toMatchObject({kind:'insertText',text:'First\n\nSecond',font:'times',bold:true,italic:true,align:'right',lineLeading:21,origin:[100,200]})
  await expect(f.view.prepareSave()).rejects.toThrow('请核对实际 PDF 预览')
+})
+it('public commands permit consecutive text inserts and exact management while isolating other mutations',async()=>{
+ const f=await fixture();await configure(f,'First');await place(f)
+ await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(1))
+ expect(f.open.disabled).toBe(false)
+ await configure(f,'Second');await place(f);await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(2))
+ const manage=f.root.querySelector<HTMLButtonElement>('[data-pdf-pending-text-manage]')!
+ expect(manage.disabled).toBe(false);manage.click()
+ await vi.waitFor(()=>expect(f.root.querySelector<HTMLDialogElement>('[aria-label="管理插入文字"]')?.open).toBe(true))
+ f.root.querySelectorAll<HTMLButtonElement>('[data-pdf-pending-text-edit]')[1]!.click()
+ const dialog=f.root.querySelector<HTMLDialogElement>('[aria-label="编辑待保存文字"]')!
+ expect(dialog.open).toBe(true);dialog.querySelector<HTMLTextAreaElement>('textarea')!.value='Updated second'
+ dialog.querySelector<HTMLButtonElement>('[data-pdf-static-text-confirm]')!.click()
+ await vi.waitFor(()=>expect(f.draft.operations.map(operation=>operation.text)).toEqual(['First','Updated second']))
+ const rotate=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.rotateRight"]')!
+ expect(rotate.disabled).toBe(true);rotate.dispatchEvent(new MouseEvent('click'));await Promise.resolve()
+ expect(f.draft.operations).toHaveLength(2)
+})
+it('full text operation budget still permits editing and deletion through host commands',async()=>{
+ const f=await fixture();await configure(f);await place(f);await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(1))
+ f.draft.setOperations(Array.from({length:500},()=>f.draft.operations[0]!));await f.view.refresh()
+ expect(f.open.disabled).toBe(true)
+ const manage=f.root.querySelector<HTMLButtonElement>('[data-pdf-pending-text-manage]')!
+ expect(manage.disabled).toBe(false);manage.click()
+ await vi.waitFor(()=>expect(f.root.querySelector<HTMLDialogElement>('[aria-label="管理插入文字"]')?.open).toBe(true))
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-pending-text-delete]')!.click()
+ await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(499))
+})
+it.each(['insert-first','replace-first'])('public text commands stage both directions without losing existing operations: %s',async order=>{
+ const f=await fixture()
+ if(order==='insert-first'){await configure(f,'Added');await place(f);await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(1))}
+ const edit=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.edit.editText"]')!
+ expect(edit.disabled).toBe(false);edit.click();await Promise.resolve()
+ expect(f.root.querySelector<HTMLSelectElement>('[aria-label="待修改文字对象"]')!.disabled).toBe(false)
+ const replacement=f.root.querySelector<HTMLTextAreaElement>('[aria-label="替换后的文字"]')!;replacement.value='Updated original'
+ const stage=[...f.root.querySelectorAll<HTMLButtonElement>('button')].find(button=>button.textContent==='加入文字修改')!;expect(stage.disabled).toBe(false);stage.click()
+ await vi.waitFor(()=>expect(f.draft.operations.some(op=>op.kind==='replaceText')).toBe(true))
+ if(order==='replace-first'){await configure(f,'Added');await place(f)}
+ await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(2))
+ expect(f.draft.operations.map(op=>op.kind)).toEqual(order==='insert-first'?['insertText','replaceText']:['replaceText','insertText'])
+ expect(f.draft.operations.find(op=>op.kind==='replaceText')).toEqual(expect.objectContaining({newText:'Updated original',sourceSha256:f.sourceSha256}))
+ const rotate=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.rotateRight"]')!;expect(rotate.disabled).toBe(true)
+})
+it('the Edit-tab text entry is usable alongside the Home entry in an insertion draft',async()=>{
+ const f=await fixture();await configure(f,'Added');await place(f);await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(1))
+ const editButtons=[...f.root.querySelectorAll<HTMLButtonElement>('button.pdf-tool')].filter(button=>button.querySelector('span')?.textContent==='原位改字')
+ expect(editButtons).toHaveLength(2)
+ for(const button of editButtons){expect(button.disabled).toBe(false);button.click();await Promise.resolve();expect(f.root.dataset.pdfMode).toBe('text')}
+})
+
+it('public source move controls retain the original object identity and isolate rewrite and insert',async()=>{
+ const f=await fixture();f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.edit.editText"]')!.click();await Promise.resolve()
+ const x=f.root.querySelector<HTMLInputElement>('[aria-label="原文位移 X"]')!,y=f.root.querySelector<HTMLInputElement>('[aria-label="原文位移 Y"]')!,submit=f.root.querySelector<HTMLButtonElement>('[data-pdf-move-text]')!
+ x.value='35';y.value='-25';submit.click();await vi.waitFor(()=>expect(f.draft.operations).toEqual([{kind:'moveText',sourceSha256:f.sourceSha256,pageId:f.pageId,objectId:'original',expectedTextSha256:'b'.repeat(64),delta:[35,-25]}]))
+ expect(f.open.disabled).toBe(true);expect(f.root.querySelector<HTMLTextAreaElement>('[aria-label="替换后的文字"]')!.disabled).toBe(true)
+ expect(f.root.querySelector<HTMLSelectElement>('[aria-label="待修改文字对象"]')!.disabled).toBe(false)
+ x.value='10';y.value='20';submit.click();await vi.waitFor(()=>expect(f.draft.operations[0]!.delta).toEqual([10,20]))
+ await expect(f.view.prepareSave()).rejects.toThrow('请核对实际 PDF 预览')
+ expect(f.root.dataset.pdfPreview).toBe('true')
 })

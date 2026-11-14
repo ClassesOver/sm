@@ -19,6 +19,7 @@ function viewportBox(rect:Rect,viewport:PdfImageThumbnailViewport):PdfImageThumb
 }
 
 export function pdfExistingImageThumbnailPlan({sourceSha256,page,operation,images,viewport}:{sourceSha256:string;page:PdfPageIdentity;operation:NativeOperation;images:PdfExistingImage[];viewport:PdfImageThumbnailViewport}):PdfExistingImageThumbnailPlan|null{
+ if(operation.remove===true||operation.layer!==undefined)return null // Actual PDF preview supplies deletion thumbnails; do not redraw the removed foreground.
  if(operation.kind!=='transformExistingImage'||operation.sourceSha256!==sourceSha256||operation.pageId!==page.pageId||page.pageId!==`sha256:${sourceSha256}:page:${page.index}`||![0,90,180,270].includes(((page.rotation%360)+360)%360))return null
  const matches=images.filter(image=>image.pageId===page.pageId&&image.pageIndex===page.index&&image.imageId===operation.imageId&&image.expectedImageSha256===operation.expectedImageSha256)
  if(matches.length!==1||!matches[0]!.editable)return null
