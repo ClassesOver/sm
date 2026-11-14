@@ -1,3 +1,4 @@
+import { bindPdfPageNavigation } from './pdf-page-navigation'
 import {bindPdfStampDialog} from './pdf-stamp-dialog'
 import {bindPdfStaticFill,staticFillsForDraft} from './pdf-static-fill'
 import {pendingStaticFillsForThumbnail,pdfStaticFillThumbnailPosition} from './pdf-static-fill-thumbnail'
@@ -79,7 +80,7 @@ import { markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupS
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
 
 import { loadViewState, saveViewState, type PdfFitMode, type PdfViewState } from './genoffice-pdf-reading-state'
-import { pdfReadingKey, capturePdfReading, restorePdfReading } from './pdf-reading-state'
+import { pdfReadingKey, capturePdfReading, restorePdfReading, pdfReadingRows } from './pdf-reading-state'
 
 import { PdfAttachmentCache, humanBytes, attachmentDownloadName, type PdfAttachmentRow } from './pdf-attachments'
 
@@ -109,6 +110,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   root.replaceChildren()
   const abort = new AbortController()
   let disposed = false, locked = true, generation = 0, document: PDFDocumentProxy | undefined
+  let pageNavigation: ReturnType<typeof bindPdfPageNavigation> | undefined
   let pendingMutations = 0
   // HTTP 或文件读取开始即登记；取消只作废结果，尾部 finally 才释放。
   function beginMutation() {
@@ -1562,6 +1564,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of viewport.querySelectorAll('.pdf-comment-selected')) node.classList.remove('pdf-comment-selected')
     if (note) { const details = note.closest('details'); if (details) details.open = true; note.classList.add('pdf-comment-selected'); note.tabIndex = -1; note.scrollIntoView({ block: 'center' }); note.focus({ preventScroll: true }) }
     else { card.scrollIntoView({ block: 'start' }); status.textContent = '已定位所在页；此批注无法唯一匹配页内卡片' }
+    pageNavigation?.recordNavigation(target.node.pageId)
     activeId = target.node.pageId; for (const node of pageNodes.values()) node.classList.toggle('is-active', node === card)
     pendingCommentJump = null; updateControls(); renderTextPanel(true)
   }
@@ -1575,14 +1578,36 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     outlinePanel.append(notice)
     appendPdfOutlineLinks(outlinePanel, outline, state(), jumpToPageForIdentity)
   }
-  function jumpToPageForIdentity(pageId: string) {
+  function jumpToPageForIdentity(pageId: string, behavior: ScrollBehavior = 'smooth') {
     const page = state().find(candidate => candidate.pageId === pageId)
     if (!page) return
     activeId = pageId
-    pageNodes.get(pageId)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    pageNodes.get(pageId)?.scrollIntoView({ block: 'start', behavior })
+    pageNavigation?.recordNavigation(pageId)
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
+  // Keep desktop reading shortcuts local to the explicitly focused canvas.
+  viewport.setAttribute('aria-keyshortcuts', 'PageUp PageDown Home End')
+  pageNavigation = bindPdfPageNavigation(viewport, {
+    signal: abort.signal,
+    available: () => !disposed && !!document && readingReady && !locked && mode === 'select'
+      && !previewing && !printing && !previewDocument && !searchRendering && !draft.saving && !draft.closed
+      && pendingMutations === 0 && !mutationBlocked?.() && !staticText?.incompleteReason() && !hasUnstagedText(),
+    navigationKey: () => `${generation}:${scale}:${twoPageView}:${viewport.clientWidth}:${viewport.clientHeight}`,
+    pages: state,
+    readingRows: () => pdfReadingRows(viewport, state().map(page => page.pageId)),
+    readingPage: () => {
+      // Wheel scrolling does not change activeId. Read the existing DOM reading
+      // anchor against the current retained/reordered page identities instead.
+      const pages = state()
+      const rows = pdfReadingRows(viewport, pages.map(page => page.pageId))
+      if (viewport.scrollHeight > viewport.clientHeight && viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 1) return rows.at(-1)?.pageId ?? ''
+      const reading = capturePdfReading(viewport, pages.map(page => page.pageId), scale, fitMode)
+      return reading ? pages[reading.page - 1]?.pageId ?? '' : ''
+    },
+    navigate: pageId => jumpToPageForIdentity(pageId, 'instant'),
+  })
   function jumpToPage(input: HTMLInputElement) {
     if (!document) return
     const pages = state(), requested = Number(input.value)
@@ -1590,6 +1615,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const page = pages[requested - 1]!
     activeId = page.pageId
     pageNodes.get(page.pageId)?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    pageNavigation?.recordNavigation(page.pageId)
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
@@ -1944,6 +1970,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const bounds = holder.getBoundingClientRect(), scroll = viewport.getBoundingClientRect()
     viewport.scrollTop = Math.max(0, viewport.scrollTop + bounds.top - scroll.top + point[1] - viewport.clientHeight * .35)
     searchJumpPending = false
+    pageNavigation?.recordNavigation(page.pageId)
     activeId = page.pageId
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
@@ -2529,6 +2556,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     return entry
   }
   async function refresh() {
+    pageNavigation?.invalidate()
     if (disposed || !document) return
     clearFormCanvases()
     clearDrawingCanvases()
@@ -2729,7 +2757,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
         }
       }
       const label = documentElement('span'); label.textContent = `${position + 1}`; thumbnail.append(thumbPage,label)
-      thumbnail.addEventListener('click', () => { activeId = page.pageId; card.scrollIntoView({ block: 'start', behavior: 'smooth' }); updateControls(); renderTextPanel() })
+      thumbnail.addEventListener('click', () => { pageNavigation?.recordNavigation(page.pageId); activeId = page.pageId; card.scrollIntoView({ block: 'start', behavior: 'smooth' }); updateControls(); renderTextPanel() })
       thumbnail.addEventListener('contextmenu', event => {
         if (!response.editingEnabled || locked || previewing || printing || previewDocument || draft.closed) return
         event.preventDefault(); event.stopPropagation()

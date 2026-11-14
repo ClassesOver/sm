@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from builtins import range as iter_range
 from collections import Counter
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -33,6 +34,7 @@ class WorkbookAIToolkit(Toolkit):
         self._model, self._scope = deepcopy(model), scope
         self._selection, self._preview = deepcopy(selection), preview
         self.proposal: WorkbookAIProposal | None = None
+        self._submitting = False
         self._sheets = {sheet['name']: sheet for sheet in self._model['sheets']
                         if scope == 'workbook' or sheet['name'] == selection['sheetName']}
         super().__init__(name='workbook_candidate', tools=[
@@ -305,7 +307,7 @@ class WorkbookAIToolkit(Toolkit):
 
     async def propose_operations(self, operations: list[dict[str, Any]], summary: str) -> dict[str, Any]:
         """提交结构化候选，经范围校验和真实引擎预览；不保存文件，等待用户显式采纳。"""
-        if self.proposal is not None:
+        if self.proposal is not None or self._submitting:
             raise ValueError('workbook_ai_proposal_already_submitted')
         if not 1 <= len(operations) <= 100:
             raise ValueError('workbook_ai_operations_invalid')
@@ -327,9 +329,16 @@ class WorkbookAIToolkit(Toolkit):
                     if type(edit.get('row')) is not int or type(edit.get('column')) is not int:
                         raise ValueError('workbook_ai_selection_mismatch')
                     self._authorized(self._sheet(edit.get('sheetName')), (edit['row'], edit['row'], edit['column'], edit['column']))
-        preview = await self._preview(candidate)
-        self.proposal = proposal
-        return {'status': 'previewed', 'summary': proposal.summary, 'operationCount': len(candidate), 'previewSha256': preview['draftSha256'], 'requiresAcceptance': True}
+        self._submitting = True
+        try:
+            preview = await self._preview(candidate)
+            digest = preview.get('draftSha256') if isinstance(preview, Mapping) else None
+            if not isinstance(digest, str) or re.fullmatch(r'[0-9a-fA-F]{64}', digest) is None:
+                raise ValueError('workbook_ai_preview_invalid')
+            self.proposal = proposal
+        finally:
+            self._submitting = False
+        return {'status': 'previewed', 'summary': proposal.summary, 'operationCount': len(candidate), 'previewSha256': digest, 'requiresAcceptance': True}
 
 
 def _overlaps(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> bool:
