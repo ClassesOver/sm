@@ -476,3 +476,39 @@ async def test_gateway_rejects_non_mapping_adapter_status():
     gateway = DocumentCandidateGateway(registry, resolve)
     with pytest.raises(ValueError, match="document_task_status_invalid"):
         await gateway.status("channel-a", "member", "expected-task")
+
+
+@pytest.mark.anyio
+async def test_document_task_status_identity_mismatch_is_hidden_at_http_boundary():
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+
+    identity = ConnectorIdentity("dsh", "member", "session")
+
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def status(self, authorized_scope, task_id):
+            return {"taskId": "another-task", "status": "preview_ready",
+                    "changes": [{"private": "unrelated-content"}]}
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+
+    async def resolve(channel, caller):
+        return scope() if channel == "channel-a" and caller == identity else None
+
+    async def authenticate(request):
+        return identity
+
+    repository = type("Repository", (), {"has_member": AsyncMock(return_value=True)})()
+    app = FastAPI()
+    app.include_router(create_report_channel_router(
+        repository, authenticate, document_gateway=DocumentCandidateGateway(registry, resolve),
+    ))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        result = await http.get("/reports/v1/channels/channel-a/document-tasks/expected-task")
+    assert result.status_code == 403
+    assert "unrelated-content" not in result.text
+    assert result.json()["detail"] == "document_channel_authorization_required"
