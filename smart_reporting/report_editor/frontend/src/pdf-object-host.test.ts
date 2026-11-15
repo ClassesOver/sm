@@ -465,6 +465,38 @@ it('thumbnail context menu edits its stable page identity and inserts blank page
  expect(f.root.querySelector('[data-pdf-thumbnail-menu]')).toBeNull()
  view.dispose()
 })
+it('works on a pending blank page from its thumbnail context menu', async () => {
+ const flush=vi.fn(async()=>undefined)
+ const f=await fixture({flushForFileOperation:flush});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.insertBlank"]')!.click()
+ await vi.waitFor(()=>expect(f.root.querySelector('.pdf-thumbnail[data-page-id^="blank:"]')).not.toBeNull())
+ const first=f.root.querySelector<HTMLElement>('.pdf-thumbnail[data-page-id^="blank:"]')!.dataset.pageId!
+ function choose(label:string){
+  const current=f.root.querySelector<HTMLButtonElement>('.pdf-thumbnail[data-page-id="'+first+'"]')!
+  current.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:25,clientY:50}))
+  const control=[...f.root.querySelectorAll<HTMLButtonElement>('[data-pdf-thumbnail-menu] button')].find(button=>button.textContent===label)
+  expect(control?.disabled).toBe(false)
+  control!.click()
+ }
+ choose('提取页面')
+ const extract=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="提取页面"]')!
+ await vi.waitFor(()=>expect(extract.open).toBe(true))
+ expect(extract.querySelector('input')?.value).toBe('2')
+ expect(flush).not.toHaveBeenCalled()
+ extract.close()
+ choose('向左旋转')
+ await vi.waitFor(()=>expect(f.draft.operations).toContainEqual({kind:'rotatePage',pageId:first,delta:270}))
+ await vi.waitFor(()=>expect(f.root.querySelector('.pdf-thumbnail[data-page-id="'+first+'"]')).not.toBeNull())
+ choose('插入空白页')
+ await vi.waitFor(()=>expect(f.root.querySelectorAll('.pdf-thumbnail[data-page-id^="blank:"]')).toHaveLength(2))
+ const order=f.draft.operations.find(op=>op.kind==='reorderPages')!.pageIds as string[]
+ expect(order).toEqual([pageId,first,expect.stringMatching(/^blank:/)])
+ choose('删除页面')
+ await vi.waitFor(()=>expect(f.root.querySelector('.pdf-thumbnail[data-page-id="'+first+'"]')).toBeNull())
+ expect(f.draft.operations.some(op=>op.pageId===first || op.kind==='deletePage')).toBe(false)
+ f.draft.undo()
+ expect(f.draft.operations).toContainEqual({kind:'rotatePage',pageId:first,delta:270})
+})
 it('signature dialog imports a normalized image and starts image placement',async()=>{
  const close=vi.fn(),drawImage=vi.fn(),f=await fixture();await f.create()
  vi.stubGlobal('createImageBitmap',vi.fn(async()=>({width:3200,height:800,close})))

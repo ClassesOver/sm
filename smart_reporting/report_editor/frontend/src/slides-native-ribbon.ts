@@ -21,6 +21,7 @@ import { slidesRibbonIcons, slidesRibbonSourceIcons } from './slides-native-ribb
 import { IconPrintLayout, IconArrangeAll, IconOutlineView, IconReadMode, IconZoomIn, IconZoomOut, IconZoom100, IconFitWindow, IconRotateRight, IconRotateLeft, IconObjFlipH, IconObjFlipV } from './vendor/genoffice-slides/components/icons'
 import { createNativeChartGallery, type NativeChartGalleryState } from './slides-native-chart-gallery'
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
+import iconTransparency from './vendor/genoffice-slides/components/icon-transparency.png'
 
 /**
  * Native web subset of GenOffice Slides Ribbon at f8c17004fb730df11f0f743164ffd8b4281bb38c.
@@ -53,6 +54,7 @@ type Group = { label: string; controls: Control[] }
 type Tab = { id: string; label: string; groups: Group[]; context?: NativeSlidesContext }
 
 const noWrite = (operation: string) => `${operation} 尚无受支持的 editSlides 写回操作。`
+const PICTURE_TRANSPARENCY_PRESETS = ['0', '15', '30', '50', '65', '80', '95']
 const desktop = (operation: string) => `${operation} 依赖桌面 IPC 或本机资源；浏览器没有授权的 Web 等价操作。`
 // Kept in sync with the fixed upstream @genoffice/pptx-ops font-size ladder.
 const FONT_SIZE_LADDER = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96]
@@ -247,7 +249,7 @@ const tabs: Tab[] = [
   ] },
   { id: 'tableDesign', label: 'Table Design', context: 'table', groups: [{ label: 'Table Styles', controls: [{ id: 'tableStructure', label: 'Rows and Columns', caption: '行列操作', sourceActionId: 'editTableStructure' }, { id: 'tableStyle', label: 'Table Style', caption: '表格样式', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...SLIDES_TABLE_PRESETS.map(item => item.name)], optionLabels: ['来源样式或未选择', ...SLIDES_TABLE_PRESETS.map(item => item.label)] }, { id: 'tableFirstRow', label: '标题行', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableBandRow', label: '斑马纹', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableRtl', label: '从右到左表格', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableShadingWholeTable', label: '底纹作用于整表', sourceActionId: 'onEditTableStyle' }, { id: 'tableShading', label: 'Shading', caption: '底纹', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...TABLE_SHADING_COLORS, 'none'], optionLabels: ['选择底纹', '白色', '浅灰', '浅青', '淡蓝', '灰蓝', '浅黄', '浅橙', '浅桃', '浅绿', '浅紫', '无填充'] }, { id: 'tableAllBorders', label: 'All Borders', caption: '所有边框', sourceActionId: 'onEditTableStyle' }, { id: 'tableNoBorders', label: 'No Borders', caption: '无边框', sourceActionId: 'onEditTableStyle' }] }] },
   { id: 'chartDesign', label: 'Chart Design', context: 'chart', groups: [{ label: 'Chart Elements', controls: [{ id: 'chartElements', label: 'Chart Elements', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Styles', controls: [{ id: 'chartDesignPresets', label: 'Chart Colors and Styles', sourceActionId: 'onEditChart', sourceIcon: IconChart }, { id: 'chartPointColors', label: 'Chart Point Colors', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Data', controls: [{ id: 'chartSwitchRowCol', label: 'Switch Row/Column', sourceActionId: 'onEditChart', sourceIcon: IconSwitchRowCol }, { id: 'chartType', label: 'Change Chart Type', sourceActionId: 'onChartType' }, { id: 'chartData', label: 'Edit Data', sourceActionId: 'onChartData' }] }] },
-  { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id:'removeBackground',label:'去除背景',sourceActionId:'onPictureCutout' }, { id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'cropPicture', label: 'Crop', sourceActionId: 'onPictureCrop' }, { id: 'pictureOpacity', label: 'Transparency', caption: '透明度 %', kind: 'number', sourceActionId: 'onPictureOpacity' }] },
+  { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id:'removeBackground',label:'去除背景',sourceActionId:'onPictureCutout' }, { id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'pictureOpacity', label: 'Transparency', kind: 'select', options: PICTURE_TRANSPARENCY_PRESETS, optionLabels: PICTURE_TRANSPARENCY_PRESETS.map(value => `${value}%`), sourceActionId: 'onPictureOpacity' }, { id: 'cropPicture', label: 'Crop', sourceActionId: 'onPictureCrop' }] },
     { label: 'Arrange', controls: [
       { id: 'rotatePictureRight', label: 'Rotate Right 90°', sourceIcon: IconRotateRight, sourceActionId: 'onPictureRotate:90' },
       { id: 'rotatePictureLeft', label: 'Rotate Left 90°', sourceIcon: IconRotateLeft, sourceActionId: 'onPictureRotate:-90' },
@@ -495,7 +497,15 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (control.id === 'print') element.setAttribute('aria-keyshortcuts', 'Control+P Meta+P')
         if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = localizedLabel + '：作用于当前对象的全部段落；自定义输入 Enter 提交'
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
-        if (control.caption || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
+        if (control.id === 'pictureOpacity') {
+          const label = document.createElement('label')
+          label.className = 'slides-ribbon-field'
+          const icon = new Image(22, 22)
+          icon.src = iconTransparency
+          icon.alt = ''
+          label.append(icon, element)
+          group.append(label)
+        } else if (control.caption || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
           const label = document.createElement('label')
           label.htmlFor = controlId
           label.className = 'slides-ribbon-field'
@@ -576,6 +586,15 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setValue(command, value, hint) {
       for (const element of controls.get(command) ?? []) {
+        if (command === 'pictureOpacity' && element instanceof HTMLSelectElement) {
+          element.querySelector('[data-source-value]')?.remove()
+          if (value && !PICTURE_TRANSPARENCY_PRESETS.includes(value)) {
+            const sourceValue = new Option(`${value}%`, value)
+            sourceValue.dataset.sourceValue = 'true'
+            sourceValue.disabled = true
+            element.add(sourceValue, 0)
+          }
+        }
         if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
           element.value = value
           if (command === 'bulletColor') {

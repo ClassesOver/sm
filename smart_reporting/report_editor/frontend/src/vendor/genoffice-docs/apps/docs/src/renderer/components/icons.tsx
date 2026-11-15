@@ -2013,3 +2013,31 @@ export function IconChevronRight(props: IconProps) {
     </Svg>
   )
 }
+
+export function IconDeleteCells(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M 2.5 2.9 h 7 v 10.2 h -7 z M 2.5 8 h 7 M 6 2.9 v 10.2" />
+      <path d="M 11.2 6.6 l 2.8 2.8 M 14 6.6 l -2.8 2.8" />
+    </Svg>
+  )
+}
+
+/** a grid with the caret's row filled: Table Layout ▸ Select */
+export function IconSelectCells(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="2.5" width="12" height="11" rx="1" />
+      <path d="M2 6.2h12M2 9.8h12M6 2.5v11" />
+      <rect
+        x="2"
+        y="6.2"
+        width="12"
+        height="3.6"
+        fill="currentColor"
+        opacity="0.35"
+        stroke="none"
+      />
+    </Svg>
+  )
+}

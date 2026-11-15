@@ -963,6 +963,45 @@ it('steps paragraph indentation and only enables list levels present in the sour
   editor.destroy()
 })
 
+it('opens GenOffice Table Layout Select and Delete command menus with current capabilities', () => {
+  const host=document.body.appendChild(document.createElement('div'))
+  const editor=new Editor({element:host,extensions:[Doc,Paragraph,Table,Text],content:{type:'doc',content:[{type:'docTable',content:[{type:'docParagraph',content:[{type:'text',text:'内容'}]}]}]}})
+  let blocked: string | null = '请先选择一列'
+  const run=vi.fn(), reason=(id:string)=>id==='table-delete-column'?blocked:null
+  const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,[],{reason,run})
+  document.body.append(ribbon)
+  try {
+    editor.commands.setNodeSelection(0)
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
+    const command=(name:string)=>ribbon.querySelector<HTMLButtonElement>(`[data-action="${name}"]`)!
+    const select=command('table-select-menu'), remove=command('table-delete-menu')
+    select.click()
+    const menu=select.parentElement!.querySelector('[role="menu"]')!
+    expect(menu.hasAttribute('hidden')).toBe(false)
+    expect(Array.from(menu.querySelectorAll<HTMLButtonElement>('button'),button=>button.dataset.action)).toEqual(['table-select-cell','table-select-column','table-select-row','table-select-all'])
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true,cancelable:true}))
+    expect(document.activeElement).toBe(command('table-select-all'))
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+    expect(document.activeElement).toBe(select)
+    expect(menu.hasAttribute('hidden')).toBe(true)
+    select.click()
+    command('table-select-row').click()
+    expect(run).toHaveBeenLastCalledWith('table-select-row')
+    expect(select.getAttribute('aria-expanded')).toBe('false')
+    remove.click()
+    expect(command('table-delete-column').disabled).toBe(true)
+    blocked=null
+    editor.view.dispatch(editor.state.tr.setMeta('table-menu-capabilities',true))
+    expect(command('table-delete-column').disabled).toBe(false)
+    command('table-delete-column').click()
+    expect(run).toHaveBeenLastCalledWith('table-delete-column')
+    editor.setEditable(false)
+    editor.view.dispatch(editor.state.tr.setMeta('table-menu-readonly',true))
+    expect(remove.disabled).toBe(true)
+    expect(select.disabled).toBe(false)
+  } finally {editor.destroy()}
+})
+
 it.each([false, true])('commits the Layout right-indent field with section settings=%s through an anchored DOCX operation', withSection => {
   const host = document.createElement('div')
   document.body.append(host)

@@ -591,13 +591,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       item.addEventListener('click', () => { closeThumbnailMenu(); void Promise.resolve().then(action).catch(showError) })
       menu.append(item)
     }
-    const sourcePage = targetPageId ? model.pages.find(page => page.pageId === targetPageId) : undefined
-    if (targetPageId && !sourcePage) return
-    if (sourcePage) {
-      addAction('向左旋转', () => append({ kind: 'rotatePage', pageId: sourcePage.pageId, delta: 270 }))
-      addAction('向右旋转', () => append({ kind: 'rotatePage', pageId: sourcePage.pageId, delta: 90 }))
-      addAction('删除页面', async () => { draft.setOperations(deletePdfPage(model.pages, draft.operations, sourcePage.pageId)); await refresh() }, state().length <= 1)
-      addAction('提取页面', () => { activeId = sourcePage.pageId; updateControls(); extraction.open(pdfFileCurrentPage()) }, pageExtractionUnavailable() !== null)
+    const visiblePages = state()
+    const target = targetPageId ? visiblePages.find(page => page.pageId === targetPageId) : undefined
+    if (targetPageId && !target) return
+    if (target) {
+      addAction('向左旋转', () => append({ kind: 'rotatePage', pageId: target.pageId, delta: 270 }))
+      addAction('向右旋转', () => append({ kind: 'rotatePage', pageId: target.pageId, delta: 90 }))
+      addAction('删除页面', async () => { draft.setOperations(deletePdfPage(model.pages, draft.operations, target.pageId)); await refresh() }, visiblePages.length <= 1)
+      addAction('提取页面', () => { activeId = target.pageId; updateControls(); extraction.open(pdfFileCurrentPage()) }, pageExtractionUnavailable() !== null)
     }
     addAction('插入 PDF', () => {
       if (afterPageId !== null) activeId = afterPageId

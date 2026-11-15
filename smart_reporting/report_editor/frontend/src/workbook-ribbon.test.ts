@@ -940,7 +940,7 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
     ['toggle-page-break-preview', '分页预览'], ['toggle-gridlines', '显示网格线'],
     ['toggle-formula-bar', '编辑栏'], ['toggle-headings', '显示标题'],
     ['toggle-right-to-left', '从右到左'], ['toggle-cross-highlight', '突出显示活动行和列'],
-    ['zoom-reset', '重置缩放'], ['zoom-to-selection', '缩放到选定区域'],
+    ['zoom-reset', '100%'], ['zoom-to-selection', '缩放到选定区域'],
     ['zoom-in', '放大'], ['zoom-out', '缩小'],
     ['new-window', '新建窗口'], ['arrange-all', '全部重排'],
     ['split-window', '拆分窗口'], ['hide-window', '隐藏窗口'], ['switch-window', '切换窗口'],
@@ -1049,9 +1049,9 @@ it('keeps selection zoom available on protected and read-only sheets', () => {
 it('offers all source zoom presets and the full dialog while respecting view readiness', () => {
   document.body.innerHTML = '<main></main>'
   const command = vi.fn()
-  let ready = true
+  let ready = true, selected = true
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
-    editable: () => false, rotation: () => 0, zoomSelectionAvailable: () => ready,
+    editable: () => false, rotation: () => 0, hasSelection: () => selected, zoomSelectionAvailable: () => ready,
     protection: () => ({ sheet: { protected: true }, workbook: { locked: false } }),
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
@@ -1061,6 +1061,16 @@ it('offers all source zoom presets and the full dialog while respecting view rea
   const presets = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')!
   expect([...presets.options].map(option => option.value)).toEqual(['', '50', '75', '100', '125', '150', '200'])
   expect(presets.disabled).toBe(false)
+  expect(presets.getAttribute('aria-label')).toBe('缩放')
+  expect(presets.title).toBe('缩放工作表')
+  const group = presets.closest('.workbook-ribbon-group')!
+  const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
+  expect(buttons.slice(0, 2).map(button => button.dataset.ribbonCommand)).toEqual(['zoom-reset', 'zoom-to-selection'])
+  const [reset, fit] = buttons
+  expect(reset!.querySelector('span:not(.workbook-ribbon-icon)')?.textContent).toBe('100%')
+  expect(reset!.title).toBe('重置缩放')
+  expect(reset!.disabled).toBe(false)
+  reset!.click(); expect(command).toHaveBeenLastCalledWith('zoom-reset')
   presets.value = '125'; presets.dispatchEvent(new Event('change'))
   expect(command).toHaveBeenLastCalledWith('zoom:125')
   expect(presets.value).toBe('')

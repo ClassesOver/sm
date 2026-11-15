@@ -426,7 +426,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let disposeCsvImport: (() => void) | undefined
   let printPreviewDialog: { open(options: { hasSelection: boolean; sheetCount: number }): void; dispose(): void } | undefined
   const formulaBarAvailable = () => !loading && !saving && !disposed && !calculationBusy
-  const zoomAvailable = editable
+  const zoomAvailable = () => formulaBarAvailable() && !reloadUnavailable && !pictureEditBusy && !shell.editor.inert && !shell.editor.closest('[inert]')
+    && !!runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
   const runZoom = (command: WorkbookZoomCommand | 'zoom-in' | 'zoom-out' | 'zoom-reset', target?: WorkbookZoomTarget) => {
     if (!zoomAvailable()) return
     if (target && !isWorkbookZoomTargetCurrent(runtime, target)) { feedback.textContent = '原工作表已切换，请重新打开缩放设置'; return }

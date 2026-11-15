@@ -1,10 +1,15 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createEditorShell } from './shell'
 import { createSlidesEditorView } from './slides-main'
 import { NativeDraft } from './native-draft'
 
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
-afterEach(() => { document.body.innerHTML = ''; document.documentElement.lang = '' })
+beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }))
+afterEach(() => {
+  document.body.innerHTML = ''
+  document.documentElement.lang = ''
+  vi.unstubAllGlobals()
+})
 const geometry = (x: number, y: number, width = 80, height = 40) => ({ x, y, width, height })
 const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [
   { slideIndex: 0, elements: [
@@ -12,7 +17,7 @@ const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5
     { id: 'two', type: 'shape', name: '二', text: '二', editable: true, deletable: true, arrangeEditable: true, geometry: geometry(200, 90) },
     { id: 'three', type: 'shape', name: '三', text: '', editable: true, deletable: true, arrangeEditable: true, geometry: geometry(400, 150) },
     { id: 'picture', type: 'picture', name: '图片', text: '', editable: false, deletable: true, arrangeEditable: true, pictureCropEditable: true,
-      pictureTransform: { rot: 0, flipH: false, flipV: false }, pictureReplaceable: true, pictureSha256: 'b'.repeat(64), pictureSize: 68, srcRect: null, geometry: geometry(40, 200, 200, 100) },
+      pictureOpacityEditable: true, pictureTransform: { rot: 0, flipH: false, flipV: false }, pictureReplaceable: true, pictureSha256: 'b'.repeat(64), pictureSize: 68, srcRect: null, geometry: geometry(40, 200, 200, 100) },
   ] },
   { slideIndex: 1, elements: [{ id: 'other', type: 'text', name: '其他页', text: '其他页', editable: true, arrangeEditable: true, geometry: geometry(40, 40) }] },
 ] }
@@ -72,7 +77,6 @@ it('分布需至少三项，切换页面后不沿用上页选择', async () => {
 })
 
 it('stages picture rotation and flips from the ribbon with one undo step per command', async () => {
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   const app = await open()
   try {
     const rotate = app.command('rotatePictureRight')
@@ -93,6 +97,27 @@ it('stages picture rotation and flips from the ribbon with one undo step per com
     ])
   } finally {
     app.view.dispose()
-    vi.unstubAllGlobals()
+  }
+})
+it('selects a GenOffice picture transparency preset and saves against the original picture identity', async () => {
+  const app = await open()
+  try {
+    const picker = app.shell.editor.querySelector<HTMLSelectElement>('select[data-command="pictureOpacity"]')!
+    expect(picker.disabled).toBe(true)
+    const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    object.value = 'picture'
+    object.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(picker.disabled).toBe(false)
+    expect(Array.from(picker.options, option => option.textContent)).toEqual(['0%', '15%', '30%', '50%', '65%', '80%', '95%'])
+    picker.value = '65'
+    picker.dispatchEvent(new Event('change', { bubbles: true }))
+    app.shell.save.click()
+    await vi.waitFor(() => expect(app.request.mock.calls.some(([path]) => path === 'save')).toBe(true))
+    const call = app.request.mock.calls.find(([path]) => path === 'save')!
+    expect(JSON.parse(call[1]!.body as string).operations[0].pictureOpacities).toEqual([
+      { slideIndex: 0, elementId: 'picture', expectedSha256: 'b'.repeat(64), expectedSize: 68, opacity: 0.35 },
+    ])
+  } finally {
+    app.view.dispose()
   }
 })

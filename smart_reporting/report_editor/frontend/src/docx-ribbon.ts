@@ -12,6 +12,7 @@ import { docxDefaultPageBox } from '../../../reporting/doc_engine/bridge/docx-se
 import { openDocxParagraphDialog, docxParagraphDialogUnavailable } from './docx-paragraph-dialog'
 import { fillDocxCommandIcons } from './docx-command-icons'
 import { isDocxTableStyleAction } from './docx-table-style'
+import { createDocxTableLayoutMenu } from './docx-table-layout-menu'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { createDocxCellBorderUiState, createDocxCellBordersControls } from './docx-cell-borders-controls'
 import type { DocxTocControls } from './docx-toc'
@@ -119,15 +120,11 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
   ],
   tableLayout: [
     ['选择与属性', [
-      command('table-select-menu', '选择'), command('table-select-cell', '选择单元格'),
-      command('table-select-column', '选择列'), command('table-select-row', '选择行'),
-      command('table-select-all', '选择表格'), command('table-view-gridlines', '查看网格线'),
+      command('table-select-menu', '选择'), command('table-view-gridlines', '查看网格线'),
       command('table-properties', '表格属性'),
     ]],
     ['删除', [
-      command('table-delete-menu', '删除菜单'), command('table-delete-cells', '删除单元格'),
-      command('table-delete-column', '删除列'), command('table-delete-row', '删除行'),
-      command('table-delete', '删除表格'),
+      command('table-delete-menu', '删除'),
     ]],
     ['行和列', [
       command('table-insert-row-before', '在上方插入行'), command('table-insert-row-after', '在下方插入行'),
@@ -188,6 +185,10 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeSpecialIndent: (() => void) | undefined
   const contextTabs = new Map<string, HTMLButtonElement>()
   const body = document.createElement('div')
+  const tableLayoutMenus: ReturnType<typeof createDocxTableLayoutMenu>[] = []
+  const closeTableLayoutMenus = () => {
+    for (const menu of tableLayoutMenus.splice(0)) menu.close()
+  }
   const pictureSize = document.createElement('section')
   const pictureWrap = document.createElement('div')
   pictureWrap.className = 'table-tool-row'
@@ -535,6 +536,20 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       items.className = 'ribbon-group-items'
       for (const item of commands) {
         const { id: actionId, label } = item
+        if (id === 'tableLayout' && (actionId === 'table-select-menu' || actionId === 'table-delete-menu')) {
+          const selecting = actionId === 'table-select-menu'
+          const menu = createDocxTableLayoutMenu(selecting ? 'select' : 'delete', tableCommands ? action => {
+            if (selecting) editor.view.focus()
+            tableCommands.run(action)
+          } : undefined, action => {
+            if (!tableCommands) return tableUnavailable
+            if (!selecting && (!editable || !editor.isEditable)) return '当前文档不可编辑或正在保存'
+            return tableCommands.reason(action)
+          })
+          tableLayoutMenus.push(menu)
+          items.append(menu.root)
+          continue
+        }
         if(id==='file'&&tools?.files&&['新建','保存','另存为'].includes(label)){
           const files=tools.files,kind=label==='新建'?'new':label==='另存为'?'save-as':'save',button=document.createElement('button');button.type='button';button.className='rb-btn';button.textContent=label;button.dataset.fileAction=kind;button.dataset.action='file-'+kind
           const reason=kind==='save'?files.saveReason():files.reason(kind);button.disabled=reason!==null;button.title=reason??(kind==='save-as'?'将当前已保存修订另存为独立文档':label);button.onclick=()=>kind==='save'?files.save():files.open(kind);items.append(button);continue
@@ -985,6 +1000,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
+    closeTableLayoutMenus()
     tools?.pictureFormat?.closeArrangeMenu()
     if (id !== 'pictureFormat' && pictureWrapRoot) {
       pictureWrapRoot.unmount()
@@ -1427,7 +1443,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if (reason === null) button.removeAttribute('aria-description'); else button.setAttribute('aria-description', reason)
       }
     }
+    if (active === 'tableLayout') for (const menu of tableLayoutMenus) menu.refresh()
     if (active === 'tableLayout' && tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action]')) {
+      if (button.closest('[data-docx-table-layout-menu]')) continue
       const action = button.dataset.action!
       if (!TABLE_SELECTION_ACTIONS[action] && !TABLE_ACTIONS[action] && !['table-insert-cells', 'table-delete-cells', 'table-delete', 'table-split-table', 'table-repeat-header-rows', 'table-merge-cells', 'table-split-cells', 'table-column-width', 'table-distribute-columns', 'table-row-height', 'table-distribute-rows', 'table-autofit-contents', 'table-autofit-window', 'table-autofit-fixed', 'table-text-direction-horizontal', 'table-text-direction-rotate-90', 'table-text-direction-rotate-270', 'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left', 'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center', 'table-align-bottom-right', 'table-cell-margins', 'table-properties'].includes(action)) continue
       const selectionOnly = !!TABLE_SELECTION_ACTIONS[action]
@@ -1455,7 +1473,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
-    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); numberingValueControl.destroy()
+    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)

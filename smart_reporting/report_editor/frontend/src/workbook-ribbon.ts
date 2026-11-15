@@ -550,7 +550,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('突出显示活动行和列', 'toggle-cross-highlight', 'toggle-cross-highlight'),
     ] },
     { title: '缩放', actions: [
-      action('缩放', 'zoom-open', 'zoom-open'), action('重置缩放', 'zoom-reset', 'zoom-reset'), action('缩放到选定区域', 'zoom-to-selection', 'zoom-to-selection'),
+      action('100%', 'zoom-reset', 'zoom-reset'), action('缩放到选定区域', 'zoom-to-selection', 'zoom-to-selection'), action('自定义缩放', 'zoom-open', 'zoom-open'),
       action('放大', 'zoom-in', 'zoom-in'), action('缩小', 'zoom-out', 'zoom-out'),
     ] },
     { title: '窗口', actions: [
@@ -1120,7 +1120,13 @@ export function mountWorkbookRibbon(
         button.setAttribute('aria-pressed', String(state?.active ?? false))
         button.title = button.disabled ? '工作簿正在加载或保存' : button.textContent ?? ''
       }
-      if ((id === 'zoom-to-selection' || id === 'zoom-open') && view.zoomSelectionAvailable?.() === false) { button.disabled = true; button.title = '工作表视图尚未就绪' }
+      if (['zoom-to-selection', 'zoom-open', 'zoom-reset', 'zoom-in', 'zoom-out'].includes(id)) {
+        const available = view.zoomSelectionAvailable?.() !== false
+        button.disabled = !available || (id === 'zoom-to-selection' && !selected)
+        button.title = !available ? '工作表视图尚未就绪'
+          : id === 'zoom-to-selection' ? selected ? '缩放至选区大小' : '请先选择单元格或区域'
+          : id === 'zoom-reset' ? '重置缩放' : button.textContent ?? ''
+      }
       if (id === 'sheet-protect' || id === 'workbook-protect') {
         const state = id === 'sheet-protect' ? { on: !!protection?.sheet.protected, reason: protection?.sheet.reason } : { on: !!protection?.workbook.locked, reason: protection?.workbook.reason }
         const label = id === 'sheet-protect' ? (state.on ? '撤销工作表保护' : '保护工作表') : (state.on ? '撤销工作簿保护' : '保护工作簿')
@@ -1241,7 +1247,7 @@ export function mountWorkbookRibbon(
     const zoomMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')
     if (zoomMenu) {
       zoomMenu.disabled = view.zoomSelectionAvailable?.() === false
-      zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放比例'
+      zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放工作表'
     }
     const freezeMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-control="freeze-panes"]')
     if (freezeMenu) {
@@ -1558,14 +1564,21 @@ export function mountWorkbookRibbon(
         section.append(wrapper)
       }
       if (active === 'View' && group.title === '缩放') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span')
+        icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true')
+        icon.innerHTML = workbookCommandIcon('', '🔍') ?? ''
         const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '缩放比例'); select.dataset.ribbonMenu = 'zoom'
-        const title = document.createElement('option'); title.value = ''; title.textContent = '缩放比例'
+        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '缩放'); select.dataset.ribbonMenu = 'zoom'
+        const title = document.createElement('option'); title.value = ''; title.textContent = '缩放'
         select.append(title, ...[50, 75, 100, 125, 150, 200].map(percent => {
           const option = document.createElement('option'); option.value = String(percent); option.textContent = `${percent}%`; return option
         }))
         select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`zoom:${Number(value)}`) })
-        section.append(select)
+        wrapper.append(icon, select)
+        section.append(wrapper)
       }
       for (const item of group.actions) {
         if (active === 'Home' && item.id === 'cell-style') continue
@@ -1575,6 +1588,7 @@ export function mountWorkbookRibbon(
         const button = document.createElement('button')
         button.type = 'button'; button.dataset.ribbonCommand = item.id; button.title = item.label; button.setAttribute('aria-label', item.label)
         if (item.id === 'format-as-table') button.setAttribute('aria-label', '创建表格')
+        if (item.id === 'zoom-reset') button.setAttribute('aria-label', '重置缩放至 100%')
         const icon = workbookCommandIcon(item.id, COMMAND_GLYPHS[item.id])
         if (icon) {
           const iconHost = document.createElement('span'); iconHost.className = 'workbook-ribbon-icon'; iconHost.setAttribute('aria-hidden', 'true'); iconHost.innerHTML = icon
