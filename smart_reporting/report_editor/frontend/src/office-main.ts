@@ -61,6 +61,7 @@ let spacesRequest = 0
 const knowledgeGeneration = new Map<string, number>()
 
 const paths = {
+  database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/>',
   home: '<path d="m3 10 9-7 9 7v10H3z"/><path d="M9 20v-6h6v6"/>',
   menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
@@ -808,11 +809,11 @@ function render() {
     <div class="logo office-brand"><span class="office-brand-mark">${icon('file', 19)}</span><span>DyOffice</span></div>
     <select class="space-selector" aria-label="当前工作区" ${busy ? 'disabled' : ''}>${spaces.map(item =>
       `<option value="${escape(item.id)}" ${item.id === currentSpace ? 'selected' : ''}>${escape(item.name)}${item.archived ? '（已归档）' : ''}</option>`).join('')}</select>
-    <nav>${nav('recent', '最近', 'clock', library.entries.filter(item => !item.recentHidden).length)}${nav('starred', '收藏', 'star', library.entries.filter(item => item.starred).length)}${nav('ask', '智能问答', 'chat')}</nav>
+    <nav>${nav('recent', '最近', 'clock', library.entries.filter(item => !item.recentHidden).length)}${nav('starred', '收藏', 'star', library.entries.filter(item => item.starred).length)}${nav('ask', 'AI 问答', 'chat')}</nav>
     <div class="folders-head"><span>文件夹</span><div><button data-action="browse-directory" ${canWrite() ? '' : 'disabled'}>导入文件夹</button><button data-action="new-folder" aria-label="新建文件夹" ${canWrite() ? '' : 'disabled'}>${icon('plus', 14)}</button></div></div>
     ${folderTree('', 0)}
     <div class="space-controls">
-      ${currentUser ? '<button data-action="space-sources">数据连接</button>' : ''}
+      ${currentUser ? `<button data-action="space-sources">${icon('database')}数据连接</button>` : ''}
 
       ${spaces.find(item => item.id === currentSpace)?.role === 'owner' && !spaces.find(item => item.id === currentSpace)?.personal_user ? '<button data-action="members">成员管理</button>' : ''}
       ${currentUser?.role === 'admin' ? '<a href="/office/admin" target="_blank" rel="noopener noreferrer">管理后台</a><button data-action="new-space">新建团队工作区</button>' : ''}

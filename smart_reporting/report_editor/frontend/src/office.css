@@ -11,7 +11,7 @@ body { margin: 0; }
 button, input, textarea { font: inherit; color: inherit; }
 button { border: 0; background: transparent; cursor: pointer; }
 button:disabled { cursor: default; }
-button:focus-visible, input:focus-visible { outline: 2px solid #0f7fff; outline-offset: 2px; }
+button:focus-visible, input:focus-visible, .office-body select:focus-visible, .office-body a:focus-visible { outline: 2px solid #0f7fff; outline-offset: 2px; }
 [hidden] { display: none !important; }
 svg { flex: none; vertical-align: middle; }
 .tabbar { height: 40px; display: flex; align-items: flex-end; background: #eaeaea; overflow: auto hidden; }
@@ -27,7 +27,8 @@ aside { display: flex; flex: 0 0 232px; flex-direction: column; padding: 18px 12
 .logo { height: 28px; width: max-content; margin: 0 8px 20px; }
 .space-selector { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; background: white; }
 .space-controls { display: grid; gap: 6px; margin-top: 16px; }
-.space-controls button { text-align: left; padding: 8px 10px; }
+.space-controls button { display:flex; align-items:center; gap:9px; text-align:left; min-height:36px; padding:8px 10px; border-radius:8px; }
+.space-controls button:hover { background:#f2f2f2; }
 .office-administration { width: min(900px, 95vw); max-height: 85vh; overflow: auto; border: 1px solid var(--line); border-radius: 12px; }
 .office-administration::backdrop { background: #0005; }
 .office-admin-row, .office-administration form { display: flex; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
@@ -44,7 +45,7 @@ aside { display: flex; flex: 0 0 232px; flex-direction: column; padding: 18px 12
 .source-query-result table { width: 100%; border-collapse: collapse; }
 .source-query-result th, .source-query-result td { padding: 8px; border: 1px solid var(--line); text-align: left; }
 nav { display: grid; gap: 2px; }
-.nav, .folder-row { min-height: 34px; border-radius: 8px; }
+.nav, .folder-row { min-height: 36px; border-radius: 8px; }
 .nav { display: flex; align-items: center; gap: 9px; text-align: left; padding: 0 10px; }
 .nav small { margin-left: auto; margin-right: 7px; color: var(--muted); font-weight: 400; }
 .nav.active, .folder-row.active, .nav:hover, .folder-row:hover { background: #f2f2f2; }
@@ -61,24 +62,26 @@ nav { display: grid; gap: 2px; }
 .folder-create-row .folder-name-input { margin-left: 18px; }
 .folder-row button[aria-expanded=false] svg { transform: rotate(-90deg); }
 footer { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 18px 8px 7px; border-top: 1px solid #eee; font-weight: 600; }
-footer span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #e8ebef; color: #59626f; }
+.office-account-avatar { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #e8ebef; color: #59626f; }
 main { flex: 1; min-width: 0; overflow: auto; }
-.workspace { min-height: 100%; display: flex; flex-direction: column; padding: 29px 36px 0; }
-h1 { margin: 27px 0 19px; font-size: 28px; line-height: 1.3; }
+.workspace { min-height:100%; display:flex; flex-direction:column; padding:32px 36px 0; }
+h1 { margin:27px 0 19px; font-size:28px; line-height:1.3; }
+.workspace h1 { margin:20px 0 24px; font-size:26px; line-height:1.4; letter-spacing:-.5px; }
+.office-body select { font:inherit; }
 h1 span { display: block; font-weight: 500; }
 .quick-heading { margin: 0 0 10px; font-size: 14px; color: #80868b; }
-.quick-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(148px, 100%), 1fr)); gap: 10px; }
-.quick-card { min-width: 0; min-height: 116px; display: flex; flex-direction: column; align-items: flex-start; gap: 14px; padding: 18px 18px 16px; text-align: left; border: 1px solid var(--line); border-radius: 12px; background: #fff; overflow: hidden; }
+.quick-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(148px, 100%), 1fr)); gap: 12px; }
+.quick-card { min-width: 0; min-height:120px; display: flex; flex-direction: column; align-items: flex-start; gap:16px; padding:18px 18px 16px; text-align: left; border: 1px solid var(--line); border-radius: 12px; background: #fff; overflow: hidden; }
 .quick-card:hover { border-color: #c6c7c9; box-shadow: 0 3px 12px #0001; }
 .quick-card b { display: inline-block; margin-left: 2px; padding: 2px 5px; border-radius: 4px; background: #eaf0fd; color: #0080ff; font-size: 11px; }
 .quick-card small, .kb-steps small { display: block; margin-top: 3px; color: var(--muted); }
 .open-icon { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 6px; }
-.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 34px; min-height: 40px; }
-.filters { display: flex; align-items: center; padding: 4px; background: #eaeaea; border-radius: 12px; }
+.toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:28px; min-height:36px; }
+.filters { display: flex; align-items: center; padding:3px; background:#ededee; border-radius:9px; }
 [data-favorite-groups] { flex-wrap: wrap; }
-.filters button { min-height: 32px; padding: 0 14px; color: #50545a; border-radius: 8px; }
+.filters button { min-height:30px; padding: 0 14px; color: #50545a; border-radius: 8px; }
 .filters button.active { background: white; box-shadow: 0 1px 2px #0002; color: #171717; font-weight: 600; }
-.search { display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 0 12px; width: min(39%, 425px); min-width: 180px; height: 40px; background: white; border-radius: 10px; border: 1px solid var(--line); }
+.search { display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 0 12px; width: min(39%, 425px); min-width: 180px; height:36px; background:white; border-radius:8px; border: 1px solid var(--line); }
 .search input { border: 0; width: 100%; padding: 0; background: transparent; }
 .sort, .file-count { color: var(--muted); }
 .file-list { flex: 1; display: flex; flex-direction: column; min-height: 160px; margin: 12px 0 24px; }
@@ -145,3 +148,30 @@ h1 span { display: block; font-weight: 500; }
 .office-context-menu button:hover, .office-context-menu button:focus-visible { background: #f2f2f2; }
 
 .office-brand{display:flex;align-items:center;gap:9px;font-size:21px;font-weight:700;letter-spacing:-.5px}.office-brand-mark{display:flex;align-items:center;justify-content:center;width:28px;height:28px;background:#111;color:#fff;border-radius:7px}
+
+/* Refined workspace chrome: stable baselines, clear focus, and restrained states. */
+.office-account-entry{display:flex;align-items:center;gap:10px;width:100%;min-width:0;padding:8px;border-radius:8px;text-align:left}
+.office-account-entry:hover{background:#f2f2f2}
+.office-account-entry .office-account-name{display:block;flex:1;min-width:0;width:auto;height:auto;background:none;border-radius:0;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.office-account-avatar{flex:none;width:30px;height:30px;background:#f1f2f4;color:#60666f;font-size:13px;font-weight:500}
+.office-account-entry>svg{width:14px;height:14px;color:var(--muted)}
+.office-body>aside>footer{padding:12px 0 0;margin-top:auto}
+.quick-card strong{font-size:14px;font-weight:600;line-height:20px}
+.quick-card small{font-size:12px;line-height:18px;margin-top:3px}
+.quick-card img{display:block;flex:none}
+.quick-card:active:not(:disabled){background:#fafafa;border-color:#b7bcc4}
+.quick-card:disabled{opacity:.55}
+.search:focus-within{border-color:#9ebbec;box-shadow:0 0 0 2px #0f7fff12}
+.search input:focus-visible{outline:none}
+.sort{display:inline-flex;align-items:center;justify-content:center;min-width:32px;min-height:32px;border-radius:6px}
+.sort:hover{background:#eee}
+.file-count{font-size:12px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.empty p{font-size:13px;line-height:1.7;margin-top:14px}
+@media(prefers-reduced-motion:no-preference){.quick-card,.nav,.space-controls button,.office-account-entry{transition:background-color .14s,border-color .14s,box-shadow .14s}}
+@media(max-width:720px){.office-brand{font-size:17px;gap:7px;margin-inline:4px}.workspace{padding-top:20px}.workspace h1{font-size:23px;margin-top:12px}.toolbar .filters{max-width:100%;overflow-x:auto;flex-wrap:nowrap}.filters button{flex:none}.search{width:100%;min-width:0}.file-count{margin-left:auto}}
+.file-list .file-row{gap:4px;min-height:52px;padding:4px 8px}
+.file-list .file-row>input[type=checkbox]{width:14px;height:14px;margin:0 8px 0 0;flex:none;accent-color:#3478d4}
+.file-list .file-row>button[data-star],.file-list .file-row>button[data-file-actions],.file-list .file-row>button[data-folder-actions]{display:grid;place-items:center;flex:none;width:32px;height:32px;padding:0;border-radius:6px}
+.file-list .file-row>button[data-star]:hover,.file-list .file-row>button[data-file-actions]:hover{background:#eceef1}
+@media(max-width:720px){.folders-head{flex-wrap:wrap;gap:4px}.folders-head>span{white-space:nowrap}.folders-head>div{display:flex;align-items:center}.office-account-entry{gap:6px;padding:6px}.office-account-entry .office-account-name{font-size:12px}.office-account-avatar{width:26px;height:26px}.quick-card{min-height:84px;flex-direction:row;align-items:center;padding:14px 12px;gap:12px}.quick-card>span:last-child{min-width:0}.quick-card small{overflow-wrap:anywhere}.file-location{display:none}}
+html[data-office-theme=dark] .office-body :is(.quick-card:active,.space-controls button:hover,.office-account-entry:hover){background:#333}
