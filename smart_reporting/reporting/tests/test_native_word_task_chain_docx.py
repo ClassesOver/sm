@@ -887,3 +887,34 @@ async def test_word_service_shutdown_allows_same_attempt_recovery(chain, mode):
     attempt = await chain.repository.get_attempt(completed.current_internal_run_id)
     assert attempt.resume_count == 1
     assert chain.transport.calls == 2
+
+async def test_reconnecting_word_service_waits_for_current_lease_holder(chain, monkeypatch):
+    chain.transport.release = asyncio.Event()
+    first = await started(chain)
+    await asyncio.wait_for(chain.transport.proposed.wait(), 10)
+    lease_observed = asyncio.Event()
+    get_snapshot = chain.repository.get_task_snapshot
+
+    async def observe_snapshot(task_id):
+        task = await get_snapshot(task_id)
+        if task is not None and task.lease_owner is not None:
+            lease_observed.set()
+        return task
+
+    monkeypatch.setattr(chain.repository, "get_task_snapshot", observe_snapshot)
+    observer = asyncio.create_task(restart_projection(chain))
+    try:
+        await asyncio.wait_for(lease_observed.wait(), 20)
+        chain.transport.release.set()
+        original = await settled(chain, first["editId"])
+        restored = await asyncio.wait_for(observer, 20)
+        assert original["status"] == "succeeded", original
+        assert restored["editId"] == first["editId"]
+        assert restored["status"] == "succeeded", restored
+        assert restored["proposal"] == original["proposal"]
+        assert chain.transport.calls == 1
+    finally:
+        chain.transport.release.set()
+        if not observer.done():
+            observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)

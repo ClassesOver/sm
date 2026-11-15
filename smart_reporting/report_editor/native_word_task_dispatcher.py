@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -119,13 +120,29 @@ class WordTaskDispatcher:
 
     async def execute(self, ref, *, shutdown_requested=None):
         self.require_available()
-        task = await self.repository.get_task_snapshot(ref.scope.external_run_id)
-        if task is None or task.scope != ref.scope:
-            raise _invalid()
-        if task.state is TaskState.COMPLETED:
-            return await self._completed_proposal(ref)
-        async with TaskSession(self.repository, ref.scope) as task_session:
-            return await self._execute_claim(ref, task_session, shutdown_requested=shutdown_requested)
+        while True:
+            task = await self.repository.get_task_snapshot(ref.scope.external_run_id)
+            if task is None or task.scope != ref.scope:
+                raise _invalid()
+            if task.state is TaskState.COMPLETED:
+                return await self._completed_proposal(ref)
+            if task.state is TaskState.CANCELLED:
+                raise asyncio.CancelledError
+            now = datetime.now(UTC)
+            if task.state is TaskState.FAILED or task.deadline_at <= now:
+                raise _invalid()
+            if task.lease_owner is not None and task.lease_expires_at is not None and task.lease_expires_at > now:
+                await asyncio.sleep(0.5)
+                continue
+            async with AsyncExitStack() as stack:
+                try:
+                    task_session = await stack.enter_async_context(TaskSession(self.repository, ref.scope))
+                except TaskExecutionRepositoryError as error:
+                    if error.code != 'task_lease_conflict':
+                        raise
+                else:
+                    return await self._execute_claim(ref, task_session, shutdown_requested=shutdown_requested)
+            await asyncio.sleep(0.5)
 
     async def _completed_proposal(self, ref):
         receipt = await self.repository.get_completed_native_word_candidate(ref.scope,
