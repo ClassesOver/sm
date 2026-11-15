@@ -239,33 +239,3 @@ async def test_non_tool_planner_cannot_bypass_trusted_chart_validation():
     await ai.aclose()
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize('trusted', [True, False])
-async def test_report_workbook_planner_uses_the_same_frozen_chart_contract(trusted):
-    from unittest.mock import AsyncMock
-
-    from smart_reporting.report_editor.workbook_ai import ReportWorkbookAIService
-    from smart_reporting.reporting.tests.test_workbook_editor import _bytes, _context, _session
-
-    context = _context(_bytes())
-    preview = AsyncMock(return_value={})
-
-    class Workbooks:
-        async def context_for_session(self, _session):
-            return context
-
-        async def snapshot_for_session(self, _session, _operations):
-            return {'snapshotSha256': 'c' * 64, 'workbook': chart_model() if trusted else {'sheets': []}}
-
-        preview_operations = preview
-
-    async def planner(*_args, **_kwargs):
-        return WorkbookAIProposal.model_validate({'summary': 'Format chart', 'operations': [edit(title='Updated')]})
-
-    ai = ReportWorkbookAIService(Workbooks(), planner=planner)
-    session = _session(context)
-    job = await ai.start_edit(session, 'Format chart1', [])
-    result = await ai.wait_edit_status(session, job['editId'])
-    assert result['status'] == ('succeeded' if trusted else 'failed')
-    assert result['accepted'] is False
-    assert preview.await_count == int(trusted)

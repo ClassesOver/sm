@@ -22,7 +22,6 @@ it.each([
   '/management/metrics?editMetric=budget&metricId=budget&revision=1',
   '/management/statistical-policies?editPolicy=monthly',
   '/management/knowledge?documentId=rules&revision=2',
-  '/management/report-issues?issueId=review-1',
   '/management/system-configuration',
   '/management/preferences',
 ])('重新登录保留当前维护任务及精确版本：%s', value => {

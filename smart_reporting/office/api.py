@@ -70,10 +70,6 @@ class Input(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ReportClarification(Input):
-    feedback: str = Field(min_length=1, max_length=2000)
-    retry_count: int = Field(ge=0, strict=True)
-
 
 class SearchRerank(Input):
     query: str = Field(min_length=1, max_length=160)
@@ -164,7 +160,7 @@ def create_office_router(
     office: OfficeRepository, *, public_origin: str | None, cookie_secure=True,
     documents=None,
     source_vault=None, metadata_client=None,
-    knowledge=None, report_runtime=None, report_workflow=None,
+    knowledge=None,
 ) -> APIRouter:
     router = APIRouter(route_class=OfficeRoute, prefix="/office/api")
     def origin(request: Request):
@@ -178,26 +174,6 @@ def create_office_router(
             if not hmac.compare_digest(request.headers.get("x-csrf-token", ""), csrf_token(raw)):
                 raise OfficeError("office_csrf_invalid", "请求校验失败，请刷新。")
         return identity
-
-    if report_runtime is not None and report_workflow is not None:
-        from .report_resume import latest_office_clarification, pending_office_clarification, resume_office_report
-
-        @router.get("/workspaces/{space}/reports/pending")
-        async def get_latest_report_clarification(space: str, identity: Identity = Depends(actor)):
-            return await latest_office_clarification(office, report_runtime, report_workflow, identity, space)
-
-        @router.get("/workspaces/{space}/reports/{run_id}/clarification")
-        async def get_report_clarification(space: str, run_id: str, identity: Identity = Depends(actor)):
-            return await pending_office_clarification(office, report_runtime, report_workflow, identity, space, run_id)
-
-        @router.post("/workspaces/{space}/reports/{run_id}/clarification")
-        async def clarify_report(space: str, run_id: str, body: ReportClarification,
-                                 identity: Identity = Depends(actor)):
-            feedback = body.feedback.strip()
-            if not feedback:
-                raise OfficeError("office_report_feedback_empty", "请填写补充说明。", 422)
-            return await resume_office_report(office, report_runtime, report_workflow, identity,
-                                              space, run_id, feedback, body.retry_count)
 
     @router.post("/session")
     async def login(body: LoginInput, request: Request):

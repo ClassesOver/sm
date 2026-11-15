@@ -1,6 +1,5 @@
 import type { renderOfficeAnswer } from './office-answer'
 import { showOfficeAssistantPreferences } from './office-assistant-preferences'
-import { showOfficeReport } from './office-report'
 import { bm25Score, mergeSearchCorpus, type SearchCorpus } from './office-search-rank'
 import './office.css'
 import { officeRequest, officeSession, loginOffice, OfficeRequestError, type OfficeLibrary, type OfficeSpace, type OfficeUser } from './office-client'
@@ -491,7 +490,6 @@ function render() {
     <div class="space-controls">
       ${currentUser ? '<button data-action="space-sources">工作区数据源</button>' : ''}
       ${currentUser ? '<button data-action="assistant-settings">AI 助手设置</button>' : ''}
-      ${currentUser && canWrite() ? '<button data-action="create-report">生成报告</button>' : ''}
       ${spaces.find(item => item.id === currentSpace)?.role === 'owner' && !spaces.find(item => item.id === currentSpace)?.personal_user ? '<button data-action="members">成员管理</button>' : ''}
       ${currentUser?.role === 'admin' ? '<button data-action="users">用户管理</button><button data-action="company-sources">公司数据源管理</button><button data-action="new-space">新建团队工作区</button>' : ''}
     </div>
@@ -930,18 +928,6 @@ root.addEventListener('click', event => {
   }
   if (data.action === 'login') { showLogin(); return }
   if (data.action === 'assistant-settings' && currentUser) { showOfficeAssistantPreferences(root); return }
-  if (data.action === 'create-report') {
-    const space = spaces.find(item => item.id === currentSpace)
-    if (currentUser && space && canWrite()) {
-      const account = accountGeneration
-      showOfficeReport(root, space, async () => {
-        if (account !== accountGeneration || currentSpace !== space.id) return
-        await refreshLibrary()
-        if (account === accountGeneration && currentSpace === space.id) render()
-      }, currentUser.user)
-    }
-    return
-  }
   if (data.action === 'company-sources' || data.action === 'space-sources') {
     if (currentUser) void showOfficeSources(root, {
       admin: data.action === 'company-sources', space: spaces.find(item => item.id === currentSpace),

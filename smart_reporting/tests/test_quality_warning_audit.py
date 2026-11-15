@@ -234,39 +234,6 @@ async def test_incomplete_audit_records_findings_without_reconciliation() -> Non
 
 
 @pytest.mark.anyio
-async def test_publication_audit_skips_invalid_notices_without_blocking() -> None:
-    from smart_reporting.reporting.workflow.runtime.publication import _record_publication_audit
-
-    calls = []
-
-    class Service:
-        async def record_successful_checks(self, *, tenant, checks):
-            calls.append(checks)
-
-    collector = QualityAuditCollector(report_run_id="run-1", revision=1)
-    invalid = await _record_publication_audit(
-        collector,
-        [
-            {"code": "report_unregistered_future_rule", "message": "新规则忘记登记"},
-            {
-                "code": "report_period_basis_conflict",
-                "message": "期间口径冲突",
-                "details": {"claimId": "claim_001"},
-            },
-        ],
-        service=Service(),
-        tenant=TenantScope(database_name="db", company_id="42"),
-        complete=True,
-    )
-
-    assert invalid == 1
-    recorded = [finding.subject_id for check in calls[0] for finding in check.findings]
-    assert recorded == ["run-1:claim_001"]
-    # 有告警被跳过时审计不完整，不得关闭既有告警。
-    assert all(check.reconcile is False for check in calls[0])
-
-
-@pytest.mark.anyio
 async def test_flush_keeps_check_ids_within_limit_for_long_run_ids() -> None:
     calls = []
 
@@ -298,44 +265,3 @@ def test_informational_normalization_rules_keep_their_declared_subjects() -> Non
         rule = get_warning_rule(code)
         assert rule.subject_types == frozenset({"report", "section"})
         assert rule.disposition == "informational"
-
-
-def test_every_section_tool_warning_code_is_registered() -> None:
-    import re
-    from pathlib import Path
-
-    from smart_reporting.quality_warnings.policy import get_warning_rule
-
-    source = (Path(__file__).parents[1] / "reporting" / "tools" / "sections.py").read_text(
-        encoding="utf-8"
-    )
-    codes = set(re.findall(r'"code": "(report_[a-z_]+)"', source))
-
-    assert codes
-    for code in sorted(codes):
-        get_warning_rule(code)
-
-
-def test_residual_content_review_notices_are_block_level_quality_warnings() -> None:
-    # 纠错后残留的正文复核告警与“待核实”替换随章节产物进入发布审计，按 block 归属，不阻断。
-    import re
-    from pathlib import Path
-
-    from smart_reporting.quality_warnings.policy import get_warning_rule
-    from smart_reporting.reporting.workflow.runtime.publication import _publication_warning_notice
-
-    source = (Path(__file__).parents[1] / "reporting" / "workflow" / "runtime" / "sections.py").read_text(
-        encoding="utf-8"
-    )
-    codes = set(re.findall(r'"code": "(report_section_block_[a-z_]+)"', source))
-    assert codes == {"report_section_block_content_review", "report_section_block_unverified_numbers"}
-    for code in sorted(codes):
-        rule = get_warning_rule(code)
-        assert rule.disposition == "quality_warning"
-        assert rule.subject_types == {"section_block"}
-        notice = _publication_warning_notice(
-            {"code": code, "message": "复核提示。", "details": {"sectionCode": "section_001", "blockId": "block_1"}},
-            run_id="run-1", source_phase="publication",
-        )
-        assert (notice.subject_type, notice.subject_id) == ("section_block", "block_1")
-

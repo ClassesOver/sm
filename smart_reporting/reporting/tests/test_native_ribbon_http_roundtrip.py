@@ -238,8 +238,7 @@ async def test_ribbon_operations_use_real_http_save_download_and_reopen(tmp_path
     publication, _, downloads = await create_publication(tmp_path)
     publication.repository = Repository()
     publication.validator = AsyncMock(side_effect=RuntimeError("ribbon_acceptance_review"))
-    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
-                                 report_editor=None, docx_enabled=True, pdf_enabled=True,
+    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants, docx_enabled=True, pdf_enabled=True,
                                  office_enabled=True, publication=publication)
     importer = NativeImportService(publication.workspace, publication.repository, publication.editor_grants)
     app = FastAPI()

@@ -3,14 +3,14 @@
 import pytest
 from pydantic import ValidationError
 
-from smart_reporting.tests.test_report_basis_persistence import (
+from smart_reporting.tests.management_source_fixtures import (
     auth_context as auth_context,
 )
-from smart_reporting.tests.test_report_basis_persistence import basis_context as basis_context
-from smart_reporting.tests.test_report_basis_persistence import (
+from smart_reporting.tests.management_source_fixtures import basis_context as basis_context
+from smart_reporting.tests.management_source_fixtures import (
     document_context as document_context,
 )
-from smart_reporting.tests.test_report_basis_persistence import (
+from smart_reporting.tests.management_source_fixtures import (
     index_context as index_context,
 )
 
@@ -103,31 +103,6 @@ async def test_source_file_rejects_old_profile_binding_and_omits_it_from_public_
     parsed = parse_starrocks_source(raw, environ)
     assert not hasattr(parsed, "reporting_profile")
     assert "reportingProfile" not in parsed.public_dict()
-
-
-async def test_retired_freeze_and_restore_refuse_before_any_configuration_io(basis_context):
-    from sqlalchemy import event
-
-    from smart_reporting.management.models import ManagementError
-    from smart_reporting.management.runtime import ManagedConfigurationProvider
-    ctx = basis_context
-    provider = ManagedConfigurationProvider(ctx["scopes"], ctx["vault"])
-    statements = []
-    def observe(conn, cursor, statement, parameters, context, executemany):
-        statements.append(statement)
-    engine = ctx["repository"].engine.sync_engine
-    event.listen(engine, "before_cursor_execute", observe)
-    try:
-        for operation in (
-            lambda: provider.freeze("run-basis", ctx["scope"]),
-            lambda: provider.load_pinned(ctx["scope"], {"runId": "run-basis", "sources": []}),
-        ):
-            with pytest.raises(ManagementError) as error:
-                await operation()
-            assert error.value.code == "report_contract_retired" and error.value.status == 409
-        assert not statements
-    finally:
-        event.remove(engine, "before_cursor_execute", observe)
 
 
 async def test_old_profile_http_routes_are_authenticated_retired_tombstones(basis_context, monkeypatch):

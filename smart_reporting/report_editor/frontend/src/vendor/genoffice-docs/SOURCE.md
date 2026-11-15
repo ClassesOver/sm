@@ -33,7 +33,7 @@
 
 2026-11-09 Home 大小写菜单迁入固定版本 `editor/case-transform.ts`（原样）；宿主仅开放同一来源正文段落内的选中文字，并要求整段字符格式统一、无链接及复杂内联对象，保证 replaceParagraph 变长转换的格式写回一致。菜单七项和关闭行为复用上游标签与 popover helper。
 
-2026-11-10 普通段落Ribbon样式：本地 `src/docx-style-majority.ts` 精确复用固定源 `components/ribbon-tabs.tsx:193–251` 的八项多数直接格式移除函数（上游文件SHA256 `d475b39d10a2b8dacfcf6a5293ec87f15e0a2d00b9d22d46f8e35ebb39e1cff2`）。本地扩展仅记录来源Ribbon样式意图，完整来源段投影验证后以受限 `setParagraphStyle/ribbon:true` 保存；旧无flag/AI样式入口不调用多数规则。桥接来源XML仅移除命中的direct属性，保留少数强调、显式关闭、pPr及字体非目标槽/主题。该本地适配文件位于vendor树外，源码身份和验证记录在 `report_editor/NATIVE_WORD_STYLE_MAJORITY_ACCEPTANCE.md`，vendor文件身份仍由本LOCAL清单登记。
+2026-11-10 普通段落Ribbon样式：本地 `src/docx-style-majority.ts` 精确复用固定源 `components/ribbon-tabs.tsx:193–251` 的八项多数直接格式移除函数（上游文件SHA256 `d475b39d10a2b8dacfcf6a5293ec87f15e0a2d00b9d22d46f8e35ebb39e1cff2`）。本地扩展仅记录来源Ribbon样式意图，完整来源段投影验证后以受限 `setParagraphStyle/ribbon:true` 保存；旧无flag/AI样式入口不调用多数规则。桥接来源XML仅移除命中的direct属性，保留少数强调、显式关闭、pPr及字体非目标槽/主题。该本地适配文件位于vendor树外，源码身份和验证记录在 `docs/archive/office-acceptance/NATIVE_WORD_STYLE_MAJORITY_ACCEPTANCE.md`，vendor文件身份仍由本LOCAL清单登记。
 
 2026-11-10 Home全选源入口：固定源 `components/Ribbon.tsx:4534–4544` 的直接“全选”按钮接入本地Home，复用 `IconSelectAll` 和 `ribbonSelectAll/Tip`，命令仍为 `editor.chain().focus().selectAll().run()`；只读文档可选，不增加文件操作或草稿。宿主适配位于vendor树外的 `docx-home-source.tsx` / `docx-ribbon.ts`，定向记录见 `NATIVE_WORD_SELECT_ALL_INVESTIGATION.md`。
 

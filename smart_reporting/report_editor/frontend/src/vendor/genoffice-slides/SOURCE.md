@@ -6,7 +6,7 @@ React Portal 委托注册前安装冒泡守卫，保护组合输入、旧式229�
 `color-input.ts` 继续保持下文登记的原始字节，没有派生另一套颜色图库。
 参考线和标尺的宿主适配也保护上述 Escape，并保留普通取消、松开提交及
 本机视图状态存储；不把参考线写进幻灯片草稿。验证范围及实机限制见
-`report_editor/NATIVE_OFFICE_UI_AUDIT_20261112.md` 的后续批次记录。
+`docs/archive/office-acceptance/NATIVE_OFFICE_UI_AUDIT_20261112.md` 的后续批次记录。
 
 2026-11-11 相对图片原始尺寸：`slides-geometry-pane.ts` 适配固定源
 `FormatPane.tsx` 的 `naturalSize`、`relOriginal` 与 `scaleBasis`，复用当前渲染树
@@ -16,14 +16,14 @@ React Portal 委托注册前安装冒泡守卫，保护组合输入、旧式229�
 解码失败或替换待保存时回退会话基准并说明原因，不提交未完成厘米输入。
 这是宿主行为适配，未复制完整FormatPane、修改引擎或新增wire字段。
 来源文件与中文文案SHA沿用已登记身份；验收记录：
-`report_editor/NATIVE_PPTX_ORIGINAL_SIZE_ACCEPTANCE.md`。
+`docs/archive/office-acceptance/NATIVE_PPTX_ORIGINAL_SIZE_ACCEPTANCE.md`。
 
 2026-11-11 会话基准百分比缩放：`slides-geometry-pane.ts` 扩展固定源
 `FormatPane.tsx` 的 `scaleBaseRef`、`commitScale`、`stepScale` 行为，选中时尺寸为100%，
 同目标编辑和历史回填保留基准，切对象、结束选择或刷新后重建。百分比输入与厘米、
 纵横比锁定和1%步进共享现有geometry提交；显示整数百分比不舍入写回真实尺寸，
 可选%后缀保持相同的无变化语义。图片会话基准仍用选中时可见框；后续原始尺寸基准见下项。
-验收记录：`report_editor/NATIVE_PPTX_SCALE_ACCEPTANCE.md`。
+验收记录：`docs/archive/office-acceptance/NATIVE_PPTX_SCALE_ACCEPTANCE.md`。
 
 2026-11-11 填充与轮廓分组：`slides-shape-format-pane.tsx` 是固定源
 `FormatPane.tsx` 的简单填充/线条分组宿主适配，复用已登记的共享颜色图库与 ColorWell。
@@ -31,7 +31,7 @@ React Portal 委托注册前安装冒泡守卫，保护组合输入、旧式229�
 支持无填充、无线条、逐字段恢复来源、单笔历史及保存前 flush。
 bridge 仅摘要明确简单 RGB 轮廓及简单 noFill，不用显示默认值覆盖复杂或继承来源。
 不宣称完整 FormatPane 或复杂样式编辑已对齐。
-验收记录：`report_editor/NATIVE_PPTX_SHAPE_FORMAT_PANE_ACCEPTANCE.md`。
+验收记录：`docs/archive/office-acceptance/NATIVE_PPTX_SHAPE_FORMAT_PANE_ACCEPTANCE.md`。
 
 2026-11-11 大小与位置分组：`slides-geometry-pane.ts` 是固定源
 `FormatPane.tsx` 的厘米输入、0.1cm步进、`sizeCommit`纵横比锁定与独立水平/垂直
@@ -40,7 +40,7 @@ bridge 仅摘要明确简单 RGB 轮廓及简单 noFill，不用显示默认值�
 viewScale；限定现有geometry协议及arrangeEditable来源，合并裁切框、单笔历史与
 保存前flush，保留未编辑维度的来源精度。原生模式替换可见像素输入，legacy模式
 保留原输入。会话百分比缩放的后续适配见上项；旋转及完整FormatPane仍未对齐；原始图片尺寸基准见上项。
-验收记录：`report_editor/NATIVE_PPTX_GEOMETRY_PANE_ACCEPTANCE.md`。
+验收记录：`docs/archive/office-acceptance/NATIVE_PPTX_GEOMETRY_PANE_ACCEPTANCE.md`。
 
 2026-11-11 chart format section: `ui/color-picker.tsx`, `ui/color-picker.css`
 and `color-input.ts` are byte-identical copies of the pinned shared picker and

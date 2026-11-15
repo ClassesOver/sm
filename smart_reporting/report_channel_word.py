@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from .report_channel_api import ConnectorIdentity, DelegateRequest
 from .report_channel_repository import ReportChannelRepository
 from .report_editor.native_ai import NativeAIService
-from .report_editor.service import ReportEditorSession
+from .office.editor_grants import ReportEditorSession
 from .reporting.models import ReportingError
 
 

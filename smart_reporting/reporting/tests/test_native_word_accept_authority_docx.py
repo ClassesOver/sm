@@ -12,7 +12,7 @@ from docx import Document
 from smart_reporting.report_editor.native import bind_native_workspace
 from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
 from smart_reporting.report_editor.native_models import NativeScope
-from smart_reporting.report_editor.service import token_hash
+from smart_reporting.office.editor_grants import token_hash
 from smart_reporting.reporting.tests.test_native_word_task_chain_docx import (
     chain as chain,
 )

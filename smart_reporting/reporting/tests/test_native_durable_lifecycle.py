@@ -22,6 +22,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from smart_reporting.office.editor_grant_repository import SqlAlchemyReportEditorRepository
+from smart_reporting.office.editor_grants import ReportEditorGrantService
 from smart_reporting.report_editor.native import NativeEditorService
 from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_import import NativeImportService
@@ -29,8 +31,6 @@ from smart_reporting.report_editor.native_import_api import create_native_import
 from smart_reporting.report_editor.native_models import NativeScope
 from smart_reporting.report_editor.native_publication import NativePublicationService
 from smart_reporting.report_editor.native_repository import NativeDocumentRepository
-from smart_reporting.report_editor.repository import SqlAlchemyReportEditorRepository
-from smart_reporting.report_editor.service import ReportEditorGrantService
 from smart_reporting.reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
@@ -101,7 +101,7 @@ async def build_services(engine, workspace_root):
         public_base_url="http://test",
     )
     editor = NativeEditorService(
-        workspace, native, grants, report_editor=None,
+        workspace, native, grants,
         docx_enabled=True, pdf_enabled=True, office_enabled=True,
         pdf_text_enabled=True, publication=publication,
     )

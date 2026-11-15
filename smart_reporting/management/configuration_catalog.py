@@ -7,6 +7,8 @@ from dataclasses import dataclass, replace
 from typing import Literal
 from urllib.parse import urlsplit
 
+from loguru import logger
+
 from ..runtime.settings import AgentSettings
 
 
@@ -56,7 +58,6 @@ CONFIGURATION_CATALOG = (
     _item("AGENT_MODEL_STANDARD_STRUCTURED_MODE", "model_standard_structured_mode", "标准模型结构化输出", "模型与服务", choices=("json_object", "json_schema")),
     _item("AGENT_MODEL_STRONG_STRUCTURED_MODE", "model_strong_structured_mode", "强模型结构化输出", "模型与服务", choices=("json_object", "json_schema")),
     _flag("AGENT_MODEL_STRUCTURED_STRICT", "model_structured_strict", "严格结构化输出", "模型与服务"),
-    _flag("AGENT_ENABLE_TOOL_RESULT_COMPRESSION", "enable_tool_result_compression", "工具结果压缩"),
     _flag("AGENT_ENABLE_SESSION_SUMMARIES", "enable_session_summaries", "会话摘要"),
     _flag("AGENT_REPORT_CODING_ENABLE_THINKING", "report_phase_enable_thinking", "分析阶段思考"),
     _item("AGENT_REPORT_CODING_TEMPERATURE", "report_phase_temperature", "分析温度", value_type="number", minimum=0, maximum=2),
@@ -65,36 +66,13 @@ CONFIGURATION_CATALOG = (
     _flag("AGENT_REPORT_ENABLE_THINKING", "report_enable_thinking", "报告规划思考"),
     _item("AGENT_REPORT_PLANNER_REASONING_EFFORT", "report_planner_reasoning_effort", "规划推理强度", choices=("low", "high", "max")),
     _integer("AGENT_REPORT_PLANNER_THINKING_BUDGET", "report_planner_thinking_budget", "规划思考预算", maximum=131072, unit="token"),
-    _flag("AGENT_REPORT_ENABLE_VISION", "report_enable_vision", "视觉审查"),
-    _item("AGENT_REPORT_VISION_MODEL", "report_vision_model", "视觉审查模型", "模型与服务", dependencies=("AGENT_REPORT_ENABLE_VISION",)),
     _integer("AGENT_REPORT_CONTEXT_TOKEN_BUDGET", "report_context_token_budget", "上下文预算", unit="token"),
     _integer("AGENT_REPORT_OUTPUT_TOKEN_RESERVE", "report_output_token_reserve", "输出预留预算", unit="token", dependencies=("AGENT_REPORT_CONTEXT_TOKEN_BUDGET",)),
-    _integer("AGENT_REPORT_ANALYSIS_CONCURRENCY", "report_analysis_concurrency", "分析并发上限", maximum=5, unit="项", dependencies=("AGENT_REPORT_CODING_EXECUTION_MODE",)),
-    _integer("AGENT_REPORT_SECTION_CONCURRENCY", "report_section_concurrency", "章节并发上限", maximum=5, unit="项"),
-    _item("AGENT_REPORT_CODING_EXECUTION_MODE", "reporting_execution_mode", "分析执行方式", choices=("sequential", "parallel")),
-    _flag("AGENT_REPORT_SECTION_WHOLE_GENERATION", "report_section_whole_generation", "整章生成"),
-    _integer("AGENT_REPORT_VISUALIZATION_SECTION_DEADLINE_SECONDS", "report_visualization_section_deadline_seconds", "单章可视化时限", maximum=7200, unit="秒"),
-    _integer("AGENT_REPORT_VISUALIZATION_TOTAL_DEADLINE_SECONDS", "report_visualization_total_deadline_seconds", "全报告可视化时限", maximum=14400, unit="秒"),
-    _flag("AGENT_REPORT_STANDARD_SUPPLEMENTAL_ENABLED", "report_standard_supplemental_enabled", "标准补充分析"),
-    _flag("AGENT_REPORT_LINEAGE_REGISTRATION_ENABLED", "report_lineage_registration_enabled", "追溯登记"),
-    _flag("AGENT_REPORT_LINEAGE_PANEL_ENABLED", "report_lineage_panel_enabled", "追溯面板", "编辑与导出"),
-    _flag("AGENT_REPORT_LINEAGE_DOWNLOAD_ENABLED", "report_lineage_download_enabled", "追溯下载", "编辑与导出"),
-    _flag("AGENT_REPORT_LINEAGE_DRILLDOWN_ENABLED", "report_lineage_drilldown_enabled", "追溯下钻", "编辑与导出"),
-    _flag("AGENT_REPORT_LINEAGE_EXPORT_SOURCES_ENABLED", "report_lineage_export_sources_enabled", "导出来源附录", "编辑与导出"),
-    _integer("AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS", "report_editor_export_timeout_seconds", "编辑器导出超时", "编辑与导出", maximum=3600, unit="秒"),
     *(_flag(f"AGENT_REPORT_EDITOR_{name}_ENABLED", attribute, label, "编辑与导出",
         aliases=(f"AGENT_NATIVE_{name}_ENABLED",)) for name, attribute, label in (
         ("DOCX", "native_docx_enabled", "Word 原生编辑"), ("PDF", "native_pdf_enabled", "PDF 原生编辑"),
         ("AI", "native_ai_enabled", "原生 AI 编辑"), ("PDF_TEXT", "native_pdf_text_enabled", "PDF 文本编辑"),
         ("UPLOAD", "native_upload_enabled", "原生文件上传"))),
-    _flag("AGENT_REPORT_EDITOR_CHART_AI_ENABLED", "report_editor_chart_ai_enabled", "AI 改图", "编辑与导出"),
-    _integer("AGENT_REPORT_EDITOR_CHART_AI_HOURLY_LIMIT", "report_editor_chart_ai_hourly_limit", "每小时改图上限", "编辑与导出", maximum=1000, unit="次"),
-    _integer("AGENT_REPORT_EDITOR_CHART_AI_TIMEOUT_SECONDS", "report_editor_chart_ai_timeout_seconds", "单次改图超时", "编辑与导出", maximum=900, unit="秒"),
-    _flag("AGENT_REPORT_EDITOR_TABLE_AI_ENABLED", "report_editor_table_ai_enabled", "AI 改表", "编辑与导出"),
-    _integer("AGENT_REPORT_EDITOR_TABLE_AI_HOURLY_LIMIT", "report_editor_table_ai_hourly_limit", "每小时改表上限", "编辑与导出", maximum=1000, unit="次"),
-    _integer("AGENT_REPORT_EDITOR_TABLE_AI_TIMEOUT_SECONDS", "report_editor_table_ai_timeout_seconds", "单次改表超时", "编辑与导出", maximum=900, unit="秒"),
-    _item("AGENT_REPORT_SLIDES_IMAGE_MODEL", "report_slides_image_model", "幻灯片图像模型", "模型与服务"),
-    _item("AGENT_REPORT_COMPLETION_TEMPLATE", "report_completion_template", "完成消息模板", "编辑与导出", nullable=True),
     _item("AGENT_REPORT_METADATA_URL", "report_metadata_url", "业务元数据服务地址", "模型与服务", nullable=True),
     _item("AGENT_REPORT_METADATA_TOKEN", "report_metadata_token", "元数据服务凭据", "模型与服务", sensitive=True),
     _item("AGENT_REPORT_PUBLIC_BASE_URL", "report_public_base_url", "报告公开地址", "部署与启动", activation="deployment", nullable=True),
@@ -110,14 +88,10 @@ CONFIGURATION_CATALOG = (
     _integer("AGENT_OS_WORKERS", "workers", "工作进程数", "部署与启动", maximum=1, activation="deployment"),
     _flag("AGENT_OS_RELOAD", "reload", "开发自动重载", "部署与启动", activation="deployment"),
     _item("AGENTOS_CORS_ORIGINS", "cors_allowed_origins", "允许的跨域来源", "部署与启动", value_type="list", activation="deployment"),
-    _item("AGENT_REPORTING_MCP_ALLOWED_HOSTS", "reporting_mcp_allowed_hosts", "MCP 允许主机", "部署与启动", value_type="list", activation="deployment"),
     _item("AGENT_DB_URL", "database_url", "系统数据库连接", "部署与启动", sensitive=True, activation="deployment", aliases=("DATABASE_URL",)),
     _item("AGENT_WORKSPACE_HMAC_SECRET", "workspace_hmac_secret", "工作区签名密钥", "部署与启动", sensitive=True, activation="deployment"),
-    _item("AGENT_SKILLS_DIR", "skills_dir", "技能目录", "部署与启动", nullable=True, activation="deployment"),
-    _item("AGENT_REPORT_DATA_SOURCES_DIR", "report_data_sources_dir", "数据源兼容目录", "部署与启动", nullable=True, activation="deployment"),
     _item("REPORTING_HOST_WORKSPACE_ROOT", "reporting_host_workspace_root", "报告宿主工作区", "部署与启动", activation="deployment"),
     _item("AGENT_REPORT_EDITOR_STATIC_DIR", "report_editor_static_dir", "编辑器静态资源目录", "部署与启动", nullable=True, activation="deployment"),
-    _item("AGENT_REPORT_CONFIGURATION_MODE", "report_configuration_mode", "业务配置存储方式", "部署与启动", activation="deployment", choices=("database",)),
     *(_item(f"DINGYI_PLATFORM_{suffix}", f"platform_settings.{attribute}", label,
         "模型与服务", activation="deployment", sensitive=sensitive,
         value_type="number" if suffix == "REQUEST_TIMEOUT" else "text",
@@ -144,6 +118,37 @@ CONFIGURATION_CATALOG = (
         ("FOOTER_RIGHT", "page_layout.footer_right", "页脚右侧"))),
 )
 _BY_KEY = {item.key: item for item in CONFIGURATION_CATALOG}
+# 报告工作流退役后移除的配置项；已保存的系统配置中如仍含这些键，读取时忽略并告警，不阻断启动。
+RETIRED_SYSTEM_KEYS = frozenset({
+    "AGENT_REPORTING_MCP_ALLOWED_HOSTS",
+    "AGENT_SKILLS_DIR",
+    "AGENT_REPORT_DATA_SOURCES_DIR",
+    "AGENT_ENABLE_TOOL_RESULT_COMPRESSION",
+    "AGENT_REPORT_ENABLE_VISION",
+    "AGENT_REPORT_VISION_MODEL",
+    "AGENT_REPORT_ANALYSIS_CONCURRENCY",
+    "AGENT_REPORT_SECTION_CONCURRENCY",
+    "AGENT_REPORT_CODING_EXECUTION_MODE",
+    "AGENT_REPORT_SECTION_WHOLE_GENERATION",
+    "AGENT_REPORT_LINEAGE_REGISTRATION_ENABLED",
+    "AGENT_REPORT_LINEAGE_PANEL_ENABLED",
+    "AGENT_REPORT_LINEAGE_DOWNLOAD_ENABLED",
+    "AGENT_REPORT_LINEAGE_DRILLDOWN_ENABLED",
+    "AGENT_REPORT_LINEAGE_EXPORT_SOURCES_ENABLED",
+    "AGENT_REPORT_STANDARD_SUPPLEMENTAL_ENABLED",
+    "AGENT_REPORT_VISUALIZATION_SECTION_DEADLINE_SECONDS",
+    "AGENT_REPORT_VISUALIZATION_TOTAL_DEADLINE_SECONDS",
+    "AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS",
+    "AGENT_REPORT_EDITOR_CHART_AI_ENABLED",
+    "AGENT_REPORT_EDITOR_CHART_AI_HOURLY_LIMIT",
+    "AGENT_REPORT_EDITOR_CHART_AI_TIMEOUT_SECONDS",
+    "AGENT_REPORT_EDITOR_TABLE_AI_ENABLED",
+    "AGENT_REPORT_SLIDES_IMAGE_MODEL",
+    "AGENT_REPORT_EDITOR_TABLE_AI_HOURLY_LIMIT",
+    "AGENT_REPORT_EDITOR_TABLE_AI_TIMEOUT_SECONDS",
+    "AGENT_REPORT_COMPLETION_TEMPLATE",
+    "AGENT_REPORT_CONFIGURATION_MODE",
+})
 
 
 def _value(settings, attribute):
@@ -184,6 +189,9 @@ def validate_system_values(values: dict) -> dict:
     """只校验可纳管普通值；部署基础项、偏好和凭据不走此文档。"""
     result = {}
     for key, value in values.items():
+        if key in RETIRED_SYSTEM_KEYS:
+            logger.warning("system_configuration_retired_key_ignored key={}", key)
+            continue
         item = _BY_KEY.get(key)
         if item is None or item.activation != "restart" or item.sensitive:
             raise ValueError("此配置不允许作为普通系统值修改")

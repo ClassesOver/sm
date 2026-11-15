@@ -73,7 +73,7 @@ def test_empty_boolean_primary_keeps_its_actual_priority_over_nonempty_alias(key
 
 
 def test_empty_boolean_without_alias_is_an_explicit_false_deployment_value():
-    key = "AGENT_REPORT_EDITOR_CHART_AI_ENABLED"
+    key = "AGENT_DEBUG"
     startup = AgentSettings.from_environment({key: ""}, load_env_file=False)
     item = next(item for item in configuration_inventory(startup) if item["key"] == key)
     assert item["value"] is False

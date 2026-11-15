@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 
 from loguru import logger
 
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
+from ..office.artifacts import ArtifactFile
 from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.delivery.pdf_native import extract_pdf_pages, inspect_pdf
 from ..reporting.models import ReportingError

@@ -51,8 +51,8 @@ async def repositories():
 
 
 def inputs():
+    from smart_reporting.office.artifacts import ArtifactFile
     from smart_reporting.report_editor.native_models import NativeScope, NativeSource
-    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 
     scope = NativeScope(database="db", company_id="c", user_id="u", thread_id="t")
     source = NativeSource(
@@ -305,36 +305,6 @@ async def test_saved_revision_is_immutable_and_failed_retry_recovers_same_reserv
             reservation, context=context, artifacts=artifacts, validation=NativeValidation(ok=True)
         )
     assert (await repo.get_revision(doc.document_id, 2, scope=scope)) == saved
-
-
-def test_legacy_context_digest_remains_unchanged():
-    import hashlib
-    import json
-
-    from smart_reporting.report_editor.service import ReportEditorContext
-
-    context = ReportEditorContext(
-        reportId="r",
-        revision=1,
-        jobId="j",
-        job={"jobId": "j"},
-        workflowRunId="w",
-        markdownPath="r/report.md",
-        scope={"database": "db"},
-    )
-    payload = {
-        "reportId": "r",
-        "revision": 1,
-        "jobId": "j",
-        "job": {"jobId": "j"},
-        "workflowRunId": "w",
-        "markdownPath": "r/report.md",
-        "scope": {"database": "db"},
-    }
-    expected = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    assert context.digest() == expected
 
 
 @pytest.mark.anyio

@@ -17,9 +17,8 @@ def test_reporting_compose_uses_image_owned_package_entrypoint():
         repository_root / "Dockerfile"
     ).read_text(encoding="utf-8")
     assert service["environment"]["AGENT_OS_WORKERS"] == "1"
-    assert service["environment"]["AGENT_REPORTING_MCP_ALLOWED_HOSTS"] == (
-        "${AGENT_REPORTING_MCP_ALLOWED_HOSTS:-}"
-    )
+    # 报告工作流 MCP 入口已退役，不再声明 Host 白名单。
+    assert "AGENT_REPORTING_MCP_ALLOWED_HOSTS" not in service["environment"]
 
 
 def test_reporting_runtime_image_includes_git_patch_kernel() -> None:
@@ -93,16 +92,14 @@ def test_smart_reporting_readme_uses_existing_database_service() -> None:
     assert "docker compose up -d reporting-db" in readme
 
 
-def test_smart_reporting_readme_names_the_production_mcp_surface() -> None:
+def test_smart_reporting_readme_states_retired_report_surfaces() -> None:
     repository_root = Path(__file__).parents[2]
     readme = (repository_root / "smart_reporting" / "README.md").read_text(encoding="utf-8")
-    mcp_section = readme.split("## Reporting MCP", maxsplit=1)[1].split("\n## ", maxsplit=1)[0]
 
-    assert all(
-        f"`{name}`" in mcp_section
-        for name in ("run_reporting_workflow", "continue_run", "cancel_run")
-    )
-    assert "不在生产 `/mcp` 工具列表中" in mcp_section
+    assert "## Reporting MCP" not in readme
+    assert "run_reporting_workflow" not in readme
+    assert "Reporting MCP" in readme and "已退役" in readme
+    assert "`410`" in readme
 
 
 def test_reporting_compose_public_download_example_uses_published_port() -> None:

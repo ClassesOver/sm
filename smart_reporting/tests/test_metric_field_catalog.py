@@ -8,11 +8,11 @@ from smart_reporting.management.api import SESSION_COOKIE
 from smart_reporting.reporting.tests.test_business_evidence_index import (
     index_context as index_context,
 )
+from smart_reporting.tests.management_source_fixtures import basis_context as basis_context
 from smart_reporting.tests.test_business_document_ingestion import (
     document_context as document_context,
 )
 from smart_reporting.tests.test_management_persistence import auth_context as auth_context
-from smart_reporting.tests.test_report_basis_persistence import basis_context as basis_context
 
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 

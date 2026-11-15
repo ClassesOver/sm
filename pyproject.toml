@@ -85,6 +85,7 @@ dev = [
     "xlwt>=1.3,<2.0",
     "pytest-playwright>=0.7,<1.0",
     "hypothesis>=6.100,<7",
+    "import-linter>=2.1,<3",
 ]
 
 [tool.uv]
@@ -100,7 +101,6 @@ environments = ["sys_platform != 'emscripten'"]
 testpaths = [
     "smart_reporting/task_execution/tests",
     "smart_reporting/reporting/tests",
-    "smart_reporting/reporting_mcp/tests",
     "smart_reporting/tests",
 ]
 pythonpath = ["."]

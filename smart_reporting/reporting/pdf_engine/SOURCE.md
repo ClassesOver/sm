@@ -128,7 +128,7 @@ map through output deletion/reorder, using the same pdf-lib `setCropBox` primiti
 as pinned `cropPagesBytes`, with automatic field appearances disabled. MediaBox
 and underlying content remain. This is a source-space native adapter, not a new
 PDF serializer or redaction. Browser display margins are converted with PDF.js.
-See `report_editor/NATIVE_PDF_CROP_ACCEPTANCE.md` for independent pypdf, browser,
+See `docs/archive/office-acceptance/NATIVE_PDF_CROP_ACCEPTANCE.md` for independent pypdf, browser,
 ASGI and Node22 boundaries. Vendor and SOURCE hashes are unchanged. Local SHA
 audit refreshes the bridge and one historical stale existing-test record.
 
@@ -145,7 +145,7 @@ The source writer's already-matching-page skip and changed-page crop reset are
 retained. Output identity is included in the size preview digest; the native
 service returns a receipt even when the independent text feature is disabled.
 No vendor or upstream hash change. See
-`report_editor/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md` for raw UserUnit limitation,
+`docs/archive/office-acceptance/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md` for raw UserUnit limitation,
 actual files/browser/service/Node22 evidence and exact restrictions.
 
 
@@ -163,8 +163,8 @@ feature flag, binding the preview digest to markup output SHA as well as intent.
 The renderer annotations helper is separately adapted with source/current SHA,
 local type import/content-box selector and prominent notice under frontend/src.
 No Node vendor or upstream SOURCE hash changed. See
-`report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`; safe saved-markup removal is now implemented by a strict source adapter; see
-`report_editor/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`. Generic vendor deletion
+`docs/archive/office-acceptance/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`; safe saved-markup removal is now implemented by a strict source adapter; see
+`docs/archive/office-acceptance/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`. Generic vendor deletion
 requests remain unsupported.
 
 
@@ -181,7 +181,7 @@ Raw AcroForm/XFA must be captured before pdf-lib getForm(), which deletes XFA in
 its memory model. That source flag now protects note/markup mutations, size and
 form-field editability. This does not certify arbitrary XFA operations. Tests,
 artifact identities, original-source references and runtime evidence are in
-`report_editor/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`; whole PDF parity remains open.
+`docs/archive/office-acceptance/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`; whole PDF parity remains open.
 
 
 ## Pending-note actual preview and creation time (2026-11-06)
@@ -195,7 +195,7 @@ old save-time default for legacy new annotations without inventing a creation da
 The actual output SHA now binds their preview receipt. No global TZ/clock override
 is used in product code. Source-writer cross-zone counterexample, guards, actual
 preview/save/download and legacy compatibility proof are documented in
-`report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`. Vendor SOURCE hashes unchanged.
+`docs/archive/office-acceptance/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`. Vendor SOURCE hashes unchanged.
 
 
 Inspect note references (2026-11-09): optional note `sourceRef` is the original
@@ -225,7 +225,7 @@ Native operation count/JSON and online source size limits remain in force.
 Attachment writes run after page/form/note work and verify source survivors.
 Text-replacement combinations are refused until their preservation contract is
 verified. No vendor source, WASM, dependency or signing route changed.
-See `report_editor/NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`.
+See `docs/archive/office-acceptance/NATIVE_PDF_ATTACHMENT_WRITE_ACCEPTANCE.md`.
 
 
 ## Native exact-parent reply adapter (2026-11-09)
@@ -241,7 +241,7 @@ parent reference/dictionary must still match before writing; appended counts,
 payload, IRT/RT, UTC dates and every pre-existing annotation are verified after.
 Root edit/delete and text/crop/page-size mixtures are refused. Five new engine
 cases include actual original-writer orphan and wrong-identical-parent
-counterexamples. See `report_editor/NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
+counterexamples. See `docs/archive/office-acceptance/NATIVE_PDF_REPLIES_ACCEPTANCE.md`.
 
 
 ## Native pending-root reply adapter (2026-11-09)
@@ -258,7 +258,7 @@ to old or other new notes, checks root/IRT/RT and payload/date contracts, and
 preserves every existing annotation dictionary/reference. Draft local IDs are not
 written into PDF metadata. The source/visit census is shared with saved-root reply
 validation. Existing ordinary-note/text combinations retain their prior checks.
-See `report_editor/NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
+See `docs/archive/office-acceptance/NATIVE_PDF_LOCAL_REPLIES_ACCEPTANCE.md`.
 
 
 ## Native saved flat-leaf reply mutation (2026-11-09)
@@ -276,7 +276,7 @@ mutations remain unsupported. Leaf mutations cannot mix with text/crop/size work
 The original annot-delete.ts blob660951ad1e2556276245f64054af23fd4929e081
 was fetched at the fixed ref as a semantic/fallback reference; its PDFium matching
 path is not shipped or executed for these operations. No vendor/dependency/WASM
-change. See `report_editor/NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
+change. See `docs/archive/office-acceptance/NATIVE_PDF_SAVED_REPLY_EDITS_ACCEPTANCE.md`.
 
 
 ## Native secure redaction adapter (2026-11-10)

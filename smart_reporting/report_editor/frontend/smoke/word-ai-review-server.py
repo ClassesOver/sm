@@ -26,11 +26,11 @@ from smart_reporting.report_editor.native_word_ai import (
     AgnoNativeWordProposalPlanner,
     word_candidate,
 )
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.delivery.docx_native import inspect_docx, patch_docx
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
@@ -61,7 +61,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
                 return SimpleNamespace(status='saved', context=context)
 
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
-    editor = NativeEditorService(workspace, ScopedRepository(), grants, report_editor=None, docx_enabled=True)
+    editor = NativeEditorService(workspace, ScopedRepository(), grants, docx_enabled=True)
     planner_calls = []
 
     class Planner:

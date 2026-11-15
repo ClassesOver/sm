@@ -28,11 +28,11 @@ from smart_reporting.report_editor.native_pdf_review_ai_api import (
     create_native_pdf_review_ai_router,
 )
 from smart_reporting.report_editor.native_pdf_review_ai_tasks import NativePDFReviewService
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
 )
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.delivery.pdf_native import inspect_pdf
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
@@ -101,7 +101,6 @@ async def create_app(directory: Path, port: int):
         workspace,
         ScopedRepository(),
         grants,
-        report_editor=None,
         pdf_enabled=True,
         pdf_text_enabled=True,
     )

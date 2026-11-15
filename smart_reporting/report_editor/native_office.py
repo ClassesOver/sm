@@ -14,10 +14,10 @@ from urllib.parse import urlsplit
 from PIL import Image
 
 from ..reporting.delivery.xlsx import inspect_workbook, patch_workbook
-from .slides import (
+from .pptx_engine import (
     _SLIDE_ANIMATION_EFFECTS,
     _SLIDE_ANIMATION_TRIGGERS,
-    ReportSlidesEditorService,
+    PptxEngine,
     _number,
     _slide_index,
     _validate_structure_edits,
@@ -86,7 +86,7 @@ def _content(format: str, content: bytes) -> None:
 def inspect_office(format: str, content: bytes) -> dict[str, Any]:
     _content(format, content)
     try:
-        return inspect_workbook(content) if format == 'xlsx' else ReportSlidesEditorService._run_engine(content, 'inspect')
+        return inspect_workbook(content) if format == 'xlsx' else PptxEngine._run_engine(content, 'inspect')
     except Exception:
         raise ValueError('native_office_inspect_failed') from None
 
@@ -807,7 +807,7 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], 
             if len(operations) != 1:
                 raise ValueError('native_office_operations_invalid')
             arguments = _pptx_arguments(operations[0])
-            result = ReportSlidesEditorService._run_engine(content, 'edit', **arguments)['bytes']
+            result = PptxEngine._run_engine(content, 'edit', **arguments)['bytes']
         return result
     except Exception:
         raise ValueError('native_office_operations_invalid') from None

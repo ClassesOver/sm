@@ -126,7 +126,7 @@ async def test_docx_preview_checks_doc_runtime_independently_of_slides(tmp_path,
     inspect = Mock(return_value={'paragraphs': []})
     monkeypatch.setattr(native, 'inspect_docx', inspect)
     service, context, _ = await create_publication(tmp_path / 'workspace')
-    editor = native.NativeEditorService(service.workspace, service.repository, service.editor_grants, report_editor=None, docx_enabled=True)
+    editor = native.NativeEditorService(service.workspace, service.repository, service.editor_grants, docx_enabled=True)
     try:
         result = await editor.preview(context, expected_sha256=context.source_file.sha256, operations=[])
         assert result['model'] == {'paragraphs': []}

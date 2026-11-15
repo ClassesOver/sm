@@ -10,7 +10,7 @@ from smart_reporting.report_editor.native_ai_api import create_native_ai_router
 from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
 from smart_reporting.report_editor.native_word_ai import selected_word_objects
 from smart_reporting.report_editor.native_word_task_dispatcher import WordTaskDispatcher
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
     token_hash,

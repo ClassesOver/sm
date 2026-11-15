@@ -220,9 +220,6 @@
 #management-root .ant-alert + .ant-alert {
   margin-top: 8px;
 }
-#management-root .management-report-issues > .ant-card {
-  margin-top: 16px;
-}
 #management-root .ant-table-wrapper {
   overflow-x: auto;
 }

@@ -19,6 +19,10 @@ from agno.run import RunContext
 from loguru import logger
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from ...office.run_context import (
+    bind_reporting_run_context,
+    reporting_model_route_from_run_context,
+)
 from ...task_execution import TaskExecutionScope
 from ..model_policy import (
     ThinkingFailureKind,
@@ -27,7 +31,6 @@ from ..model_policy import (
     select_reporting_thinking,
 )
 from ..models import ReportingError
-from ..phase import bind_reporting_run_context, reporting_model_route_from_run_context
 from .policy import (
     REPORTING_STRUCTURED_MODES_MODEL_ATTR,
     REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,

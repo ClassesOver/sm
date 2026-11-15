@@ -7,7 +7,7 @@ from typing import Literal
 
 from pydantic import Field, StrictFloat, StrictInt, StrictStr
 
-from ..reporting.contract import StrictModel
+from ..office.contract import StrictModel
 from .slides_ai import SlidesAIProposal, _validate_proposal
 
 NativeChartKind = Literal['bar', 'barStacked', 'barPercentStacked', 'barH', 'bar3D', 'line',
