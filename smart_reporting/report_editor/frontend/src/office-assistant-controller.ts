@@ -47,10 +47,11 @@ export class OfficeAssistantController<Input, Job> {
         // An aborted HTTP request may still have created a server-side task.
         // A late task is independent of the active run. Keep its cleanup handle
         // until cancellation succeeds, without restoring it over a replacement.
-        const returnedTaskId = this.transport.id(job)
-        // cancel() already queued cleanup for a known followed task. Do not
-        // enqueue the same successful cancellation again after a late response.
-        if (!knownTaskId || returnedTaskId !== knownTaskId) {
+        // A followed task was already identified by the caller. A late status
+        // response must never authorize cancelling a different task ID.
+        // cancel() queued cleanup for knownTaskId before this await finished.
+        if (!knownTaskId) {
+          const returnedTaskId = this.transport.id(job)
           await this.cleanup(this.transport.cancel ? '' : requestId, this.transport.cancel ? returnedTaskId : '')
         }
         return undefined
