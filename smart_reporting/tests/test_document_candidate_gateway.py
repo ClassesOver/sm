@@ -88,3 +88,39 @@ async def test_unregistered_format_cannot_execute():
             "channel-a", "member", request_id="one", instruction="Edit",
             selection=({"cell": "A1"},),
         )
+
+
+@pytest.mark.anyio
+async def test_gateway_rechecks_scope_before_dispatch():
+    initial = scope()
+    calls = 0
+    executed = []
+
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def prepare(self, request):
+            executed.append("prepare")
+            return "task"
+
+        async def status(self, authorized_scope, task_id):
+            executed.append("status")
+            return {"status": "ready"}
+
+    async def resolve(channel, identity):
+        nonlocal calls
+        calls += 1
+        return initial if calls == 1 else replace(initial, revision="2")
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+    gateway = DocumentCandidateGateway(registry, resolve)
+    with pytest.raises(DocumentCandidateDenied, match="document_scope_changed"):
+        await gateway.prepare("channel-a", "member", request_id="one",
+                              instruction="Edit", selection=({"objectId": "one"},))
+    assert executed == []
+
+    calls = 0
+    with pytest.raises(DocumentCandidateDenied, match="document_scope_changed"):
+        await gateway.status("channel-a", "member", "task")
+    assert executed == []
