@@ -136,12 +136,22 @@ export function showOfficeReport(
   legend.textContent = '数据源（未勾选时使用全部已授权来源）'
   sources.append(legend)
   sources.hidden = true
+  const sourceNotice = document.createElement('p')
+  sourceNotice.setAttribute('aria-live', 'polite')
+  sourceNotice.textContent = '正在读取工作区数据源…'
+  let sourcesReady = false
+  let restoring = true
+  let submitting = false
   let paused: ReportPause | undefined
-  form.append(prompt, format, sources, start, newReport)
+  form.append(prompt, format, sources, sourceNotice, start, newReport)
   panel.append(title, locationLabel, form, status, links, close)
   panel.onclose = () => panel.remove()
   host.append(panel)
   panel.showModal()
+  function updateSubmit() {
+    start.disabled = restoring || submitting || (!paused && !sourcesReady)
+    sourceNotice.hidden = Boolean(paused) || sourcesReady
+  }
   function setPause(value?: ReportPause, question?: string) {
     paused = value
     rememberPause(key, value?.runId)
@@ -153,6 +163,7 @@ export function showOfficeReport(
     newReport.hidden = !value
     format.hidden = Boolean(value)
     sources.hidden = Boolean(value) || sources.childElementCount === 1
+    updateSubmit()
     if (question) status.textContent = question
   }
   async function restore(runId?: string) {
@@ -179,8 +190,10 @@ export function showOfficeReport(
         status.textContent = error instanceof Error ? error.message : '无法恢复报告。'
       }
     } finally {
-      start.disabled = prompt.disabled = false
+      restoring = false
+      prompt.disabled = false
       format.disabled = sources.disabled = Boolean(paused)
+      updateSubmit()
       if (paused && panel.open) prompt.focus()
     }
   }
@@ -200,14 +213,20 @@ export function showOfficeReport(
       sources.append(label)
     }
     sources.hidden = Boolean(paused) || sources.childElementCount === 1
-  }).catch(() => { /* Report workflow still applies live authorization. */ })
+    sourcesReady = true
+  }).catch(error => {
+    const reason = error instanceof Error ? error.message : '无法读取工作区数据源。'
+    sourceNotice.textContent = `${reason} 请重新打开报告窗口重试。`
+  }).finally(updateSubmit)
   form.onsubmit = async event => {
     event.preventDefault()
     const message = prompt.value.trim()
     if (!message || start.disabled) return
     const sourceIds = [...sources.querySelectorAll<HTMLInputElement>('input:checked')].map(input => input.value)
     if (sourceIds.length > 20) { status.textContent = '最多选择 20 个数据源。'; return }
-    start.disabled = prompt.disabled = format.disabled = sources.disabled = newReport.disabled = true
+    submitting = true
+    updateSubmit()
+    prompt.disabled = format.disabled = sources.disabled = newReport.disabled = true
     links.replaceChildren()
     status.textContent = paused ? '正在继续生成报告…' : '正在生成报告…'
     try {
@@ -253,8 +272,10 @@ export function showOfficeReport(
         setPause(error.pause, error.message)
       }
     } finally {
-      start.disabled = prompt.disabled = newReport.disabled = false
+      submitting = false
+      prompt.disabled = newReport.disabled = false
       format.disabled = sources.disabled = Boolean(paused)
+      updateSubmit()
       if (paused && panel.open) prompt.focus()
     }
   }

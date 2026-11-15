@@ -3,6 +3,37 @@ import { showOfficeReport, submitOfficeReport } from './office-report'
 
 afterEach(() => vi.unstubAllGlobals())
 
+it('waits for the workspace source list before submitting a new report', async () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {configurable:true, value:function (this: HTMLDialogElement) { this.open = true }})
+  let resolveSources!: (response: Response) => void
+  const sourceList = new Promise<Response>(resolve => { resolveSources = resolve })
+  const send = vi.fn(async (url: string) => {
+    if (url.endsWith('/data-sources')) return sourceList
+    if (url.endsWith('/reports/pending')) return Response.json({pending:null})
+    return Response.json({status:'COMPLETED', content:{reportId:'r1'}})
+  })
+  vi.stubGlobal('fetch', send)
+  try {
+    const done = vi.fn().mockResolvedValue(undefined)
+    showOfficeReport(host, {id:'catalog-team',name:'团队',role:'owner',personal_user:null,archived:false}, done)
+    const prompt = host.querySelector('textarea')!
+    const submit = host.querySelector<HTMLButtonElement>('button[type=submit]')!
+    await vi.waitFor(() => expect(prompt.disabled).toBe(false))
+    prompt.value = '生成报告'
+    expect(submit.disabled).toBe(true)
+    host.querySelector('form')!.dispatchEvent(new Event('submit', {cancelable:true}))
+    expect(send.mock.calls.some(([url]) => url.endsWith('/runs'))).toBe(false)
+    resolveSources(Response.json({items:[{id:'sales',name:'销售',available:true}]}))
+    await vi.waitFor(() => expect(submit.disabled).toBe(false))
+    submit.click()
+    await vi.waitFor(() => expect(done).toHaveBeenCalledOnce())
+  } finally {
+    Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+    host.remove()
+  }
+})
+
 it('submits the selected workspace and preserves downloads when acceptance fails', async () => {
   const report = {
     reportId: 'r1',
@@ -72,7 +103,8 @@ it.each([false, true])('restores a suspended report (saved browser locator: %s)'
   if (saved) sessionStorage.setItem(key, 'saved-run')
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {configurable:true, value:function (this: HTMLDialogElement) { this.open = true }})
   const send = vi.fn().mockImplementation(async (url: string, request: RequestInit) => {
-    if (url.endsWith('/data-sources')) return Response.json({items:[]})
+    if (url.endsWith('/data-sources')) return saved
+      ? Response.json({message:'数据源暂不可用。'}, {status:503}) : Response.json({items:[]})
     if (request.method === 'GET') return Response.json({pending:{runId:'saved-run',retryCount:2,question:'请补充区域。'}})
     return Response.json({status:'COMPLETED', content:{reportId:'saved-run'}})
   })
@@ -82,6 +114,7 @@ it.each([false, true])('restores a suspended report (saved browser locator: %s)'
     showOfficeReport(host, space, refresh, 'writer')
     const prompt = host.querySelector('textarea')!
     await vi.waitFor(() => expect(prompt.getAttribute('aria-label')).toBe('补充说明'))
+    expect(host.querySelector<HTMLButtonElement>('button[type=submit]')!.disabled).toBe(false)
     expect(host.querySelector('[role=status]')!.textContent).toBe('请补充区域。')
     expect(sessionStorage.getItem(key)).toBe('saved-run')
     prompt.value = '华东'
