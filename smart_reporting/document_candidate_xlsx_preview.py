@@ -78,6 +78,14 @@ class XlsxLiteralPreviewEngine:
                     "sheet": sheet_name, "cell": address,
                     "before": old, "after": operation["value"],
                 })
+            # A literal edit can change formula results even without editing a
+            # formula cell. Do not imply that this read-only preview recalculated
+            # workbook formulas or verified their dependencies.
+            formula_count = sum(
+                1 for sheet in workbook.worksheets
+                for row in sheet.iter_rows()
+                for cell in row if cell.data_type == "f"
+            )
             # Never mutate or save the workbook: a diff is the only output.
             if task_id in self._tasks:
                 previous_scope, previous_fingerprint, previous = self._tasks[task_id]
@@ -87,6 +95,8 @@ class XlsxLiteralPreviewEngine:
                 self._tasks[task_id] = (request.scope, fingerprint, {
                     "taskId": task_id, "status": "preview_ready",
                     "accepted": False, "changes": changes,
+                    "formulaCount": formula_count,
+                    "requiresFormulaRecalculation": formula_count > 0,
                 })
             return task_id
         finally:
