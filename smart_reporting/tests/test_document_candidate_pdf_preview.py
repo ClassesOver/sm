@@ -153,3 +153,47 @@ async def test_pdf_preview_maps_rotated_page_selection_into_text_coordinates():
     preview = await engine.status(scope, task_id)
     assert preview["accepted"] is False
     assert "ROTATED_EVIDENCE" in preview["changes"][0]["context"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+@pytest.mark.parametrize("cropped", [False, True])
+async def test_pdf_preview_resolves_rendered_selection_for_rotated_cropped_page(rotation, cropped):
+    document = fitz.open()
+    page = document.new_page(width=500, height=400)
+    page.insert_text((140, 140), "ROTATED_EVIDENCE")
+    if cropped:
+        page.set_cropbox(fitz.Rect(60, 60, 460, 360))
+    page.set_rotation(rotation)
+    word = page.get_text("words")[0]
+    rendered = fitz.Rect(word[:4]) * page.rotation_matrix
+    bounds = page.rect
+    padding = 5
+    normalized = [
+        (rendered.x0 - padding - bounds.x0) / bounds.width,
+        (rendered.y0 - padding - bounds.y0) / bounds.height,
+        (rendered.x1 + padding - bounds.x0) / bounds.width,
+        (rendered.y1 + padding - bounds.y0) / bounds.height,
+    ]
+    assert all(0 <= value <= 1 for value in normalized)
+    original = document.tobytes()
+    document.close()
+    scope = DocumentScope(
+        "channel", "grant", "rotated-cropped", "1",
+        hashlib.sha256(original).hexdigest(), DocumentFormat.PDF,
+    )
+
+    async def source(_):
+        return original
+
+    async def propose(_):
+        return ({"page": 0, "rect": normalized, "note": "Review"},)
+
+    engine = PdfAnnotationPreviewEngine(source, propose)
+    request = DocumentCandidateRequest(
+        scope, "rotation-test", "Annotate",
+        ({"page": 0, "rect": normalized},),
+    )
+    task = await engine.prepare(request)
+    preview = await engine.status(scope, task)
+    assert "ROTATED_EVIDENCE" in preview["changes"][0]["context"]
