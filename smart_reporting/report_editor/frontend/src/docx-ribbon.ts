@@ -145,8 +145,7 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
       command('table-align-top-right', '顶端右对齐'), command('table-align-middle-left', '垂直居中左对齐'),
       command('table-align-middle-center', '垂直居中'), command('table-align-middle-right', '垂直居中右对齐'),
       command('table-align-bottom-left', '底端左对齐'), command('table-align-bottom-center', '底端居中'),
-      command('table-align-bottom-right', '底端右对齐'), command('table-text-direction-horizontal', '横排文字'),
-      command('table-text-direction-rotate-90', '文字旋转 90 度'), command('table-text-direction-rotate-270', '文字旋转 270 度'),
+      command('table-align-bottom-right', '底端右对齐'), command('table-text-direction-menu', '文字方向'),
       command('table-cell-margins', '单元格边距'),
     ]],
     ['表格数据', [command('table-repeat-header-rows', '重复标题行')]],
@@ -536,9 +535,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       items.className = 'ribbon-group-items'
       for (const item of commands) {
         const { id: actionId, label } = item
-        if (id === 'tableLayout' && (actionId === 'table-select-menu' || actionId === 'table-delete-menu' || actionId === 'table-autofit-menu')) {
+        if (id === 'tableLayout' && (actionId === 'table-select-menu' || actionId === 'table-delete-menu' || actionId === 'table-autofit-menu' || actionId === 'table-text-direction-menu')) {
           const selecting = actionId === 'table-select-menu'
-          const kind = selecting ? 'select' : actionId === 'table-delete-menu' ? 'delete' : 'autofit'
+          const kind = selecting ? 'select' : actionId === 'table-delete-menu' ? 'delete' : actionId === 'table-autofit-menu' ? 'autofit' : 'text-direction'
           const menu = createDocxTableLayoutMenu(kind, tableCommands ? action => {
             if (selecting) editor.view.focus()
             tableCommands.run(action)

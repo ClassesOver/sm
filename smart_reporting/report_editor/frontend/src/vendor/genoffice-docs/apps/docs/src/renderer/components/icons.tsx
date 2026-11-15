@@ -2014,6 +2014,16 @@ export function IconChevronRight(props: IconProps) {
   )
 }
 
+export function IconTextDirection(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="2.9" width="11" height="10.2" rx="0.7" />
+      <path d="M 5.2 10.6 V 5.4 M 5.2 5.4 L 6.9 10.6 M 5.2 5.4 L 3.5 10.6 M 4.1 8.9 h 2.2" />
+      <path d="M 9.6 5 v 6 M 9.6 11 l -1.4 -1.4 M 9.6 11 l 1.4 -1.4" />
+    </Svg>
+  )
+}
+
 export function IconDeleteCells(props: IconProps) {
   return (
     <Svg {...props}>

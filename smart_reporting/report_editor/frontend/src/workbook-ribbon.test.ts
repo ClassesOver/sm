@@ -625,9 +625,9 @@ it('dispatches clear formats/all through the official selection commands and ref
   expect(clear.closest('label')?.previousElementSibling?.querySelector('[data-ribbon-control="fill-menu"]')).not.toBeNull()
   expect(Array.from(clear.options, option => [option.text, option.disabled])).toEqual([
     ['清除', false], ['全部清除', false], ['清除格式', false], ['清除内容', false],
-    ['清除批注和注释', true], ['清除超链接', true],
+    ['清除批注和注释', true], ['清除超链接', false],
   ])
-  for (const id of ['clear-all', 'clear-formats', 'clear-contents']) {
+  for (const id of ['clear-all', 'clear-formats', 'clear-contents', 'clear-hyperlinks']) {
     clear.value = id
     clear.dispatchEvent(new Event('change'))
     expect(onCommand).toHaveBeenLastCalledWith(id)
@@ -635,7 +635,7 @@ it('dispatches clear formats/all through the official selection commands and ref
   }
   clear.selectedIndex = 4
   clear.dispatchEvent(new Event('change'))
-  expect(onCommand).toHaveBeenCalledTimes(3)
+  expect(onCommand).toHaveBeenCalledTimes(4)
   protectedSheet = true; ribbon.refreshState()
   expect(clear.disabled).toBe(true)
   ribbon.dispose()

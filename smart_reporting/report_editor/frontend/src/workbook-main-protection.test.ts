@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { applyCellEdits, applyTableAdditions, applyPageSetups, createBufferEntrySource, assemblePackage, applySheetEdits, createBlankWorkbook, protectSheet, readWorkbook } from '@sheets-web/xlsx-engine'
+import { applyCellEdits, applySheetHyperlinks, readPackageSheetHyperlinks, applyTableAdditions, applyPageSetups, createBufferEntrySource, assemblePackage, applySheetEdits, createBlankWorkbook, protectSheet, readWorkbook } from '@sheets-web/xlsx-engine'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import { createWorkbookEditorView } from './workbook-main'
 import { createNativeOfficeTransport } from './native-office-view'
@@ -93,6 +93,45 @@ const write = (row: number, column: number, value: string) => grid.api.executeCo
 afterEach(() => {
   for (const instance of grid.instances.splice(0)) instance.dispose()
   document.body.replaceChildren()
+})
+
+it('clears only the selection hyperlinks through the draft and preserves cell content', async () => {
+  const source = await applySheetHyperlinks(await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'Label' }, style: { bold: true, underline: true, fontColor: '#0563C1' } },
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: null, formula: '=1+2' } },
+  ]), 'Sheet1', [
+    { ref: 'A1', expectedTarget: null, target: 'https://example.com' },
+    { ref: 'A2', expectedTarget: null, target: '#Sheet1!A1' },
+    { ref: 'B2', expectedTarget: null, target: 'https://example.org' },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let output: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    output = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/links.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('A1:A2').activate()
+    grid.ribbon('clear-hyperlinks')
+    await vi.waitFor(() => expect(kinds(draft)).toContain('applySheetHyperlinks'))
+    expect(draft.operations.find(operation => operation.kind === 'applySheetHyperlinks')).toMatchObject({
+      edits: [
+        { ref: 'A1', expectedTarget: 'https://example.com', target: null },
+        { ref: 'A2', expectedTarget: '#Sheet1!A1', target: null },
+      ],
+    })
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    expect(await readPackageSheetHyperlinks(output!, 'Sheet1')).toEqual([
+      { ref: 'B2', target: 'https://example.org', readOnlyReason: null },
+    ])
+    const saved = await readWorkbook(output!)
+    expect(saved.sheets[0]!.cells.A1?.value).toBe('Label')
+    expect(saved.sheets[0]!.cells.A2?.formula).toBe('=1+2')
+    const { importedStyleOf } = await import('./workbook-vendor/core/session-core')
+    expect(importedStyleOf(saved, 'Sheet1', 'A1')).toMatchObject({ bold: true })
+    expect(importedStyleOf(saved, 'Sheet1', 'A1')?.underline).not.toBe(true)
+  } finally { current.view?.dispose() }
 })
 
 it('routes GenOffice Freeze Panes commands, preserves source protection and writes the selected pane to XLSX', async () => {

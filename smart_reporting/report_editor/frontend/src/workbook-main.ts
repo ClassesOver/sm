@@ -81,8 +81,9 @@ import CoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN'
 import FindReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN'
 import SortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN'
 import '@univerjs/preset-sheets-core/lib/index.css'
-import { formatAddress, parseRange, matchMarginPreset, readWorkbook, recommendCharts, readXmlAttribute, readPackageSheetHyperlinks, cellHyperlinkState, type WorkbookModel, type ChartGridValue } from '@sheets-web/xlsx-engine'
+import { formatAddress, parseAddress, parseRange, HYPERLINK_EDIT_LIMIT, matchMarginPreset, readWorkbook, recommendCharts, readXmlAttribute, readPackageSheetHyperlinks, cellHyperlinkState, type WorkbookModel, type ChartGridValue } from '@sheets-web/xlsx-engine'
 import { createWorkbookLinkDialog, LINK_TEXT } from './workbook-link-dialog'
+import { assertClearLinkSelection, hyperlinksToClear } from './workbook-link-selection'
 import { createSparklineDialog } from './workbook-sparkline-dialog'
 import { createChartDesignDialog } from './workbook-chart-design-dialog'
 import { createWorkbookChartFormatPane } from './workbook-chart-format-pane'
@@ -610,6 +611,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       ? await operation(operations.length ? await applyWorkbookOperations(original, operations) : original) : [operation]
     validate()
     if (generation !== mergeGeneration) throw new Error('工作簿内容已变化，请重新打开设置')
+    if (!additions.length) return
     const next = [...operations, ...additions]
     validateFormatCellsBudget(next)
     // 文件身份/旧锚点校验在改变 loading 和网格前完成；失败不能锁住现有人工草稿。
@@ -1278,6 +1280,36 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
     feedback.textContent = `${target === null ? LINK_TEXT.removed : LINK_TEXT.saved}修改尚未保存。`
   }
+  const clearSelectedHyperlinks = async () => {
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
+    const range = sheet?.getSelection()?.getActiveRange()
+    if (!workbook || !sheet || !range) throw new Error('请先选择单元格或区域')
+    const bookCore = workbook.getWorkbook(), sheetCore = sheet.getSheet(), sheetId = sheet.getSheetId()
+    const sheetName = sheet.getSheetName(), selection = { ...range.getRange() }
+    assertClearLinkSelection(selection)
+    const validate = () => {
+      if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+      if (sheetProtected(sheetId)) throw new Error('工作表受保护，请先撤销保护')
+      const active = runtime.univerAPI.getActiveWorkbook(), activeSheet = active?.getActiveSheet()
+      const bounds = activeSheet?.getSelection()?.getActiveRange()?.getRange()
+      if (active?.getWorkbook() !== bookCore || activeSheet?.getSheet() !== sheetCore || !bounds
+        || bounds.startRow !== selection.startRow || bounds.endRow !== selection.endRow
+        || bounds.startColumn !== selection.startColumn || bounds.endColumn !== selection.endColumn)
+        throw new Error('超链接选区已变化，请重新选择后操作')
+    }
+    await applyWorkbookDraftOperation(validate, async bytes => {
+      const edits = hyperlinksToClear(await readPackageSheetHyperlinks(bytes, sheetName), selection)
+      if (!edits.length) return []
+      const steps: WorkbookOperation[] = []
+      for (let start = 0; start < edits.length; start += HYPERLINK_EDIT_LIMIT)
+        steps.push({ kind: 'applySheetHyperlinks', sheetName, edits: edits.slice(start, start + HYPERLINK_EDIT_LIMIT) })
+      steps.push({ kind: 'applyCellEdits', edits: edits.map(({ ref }) => ({
+        sheetName, ...parseAddress(ref), writeValue: false, cell: { value: null },
+        style: { underline: false, fontColor: null },
+      })) })
+      return steps
+    }, '已清除选区中的超链接，修改尚未保存。')
+  }
   const linkDialog = createWorkbookLinkDialog(shell.editor, applyLink)
   // 视图▸拆分窗口：固定源没有拆分窗口、网格没有拆分视口，只提供取消文件中已有的拆分窗格（Excel 再次点击“拆分”的行为）。
   // 以草稿重放后字节读取的拆分窗格为来源身份，追加 removeSheetSplitPane 后由浏览器内引擎重放并回读。
@@ -1826,6 +1858,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           }
           feedback.textContent = unfrozen ? '已取消冻结窗格。' : '冻结窗格已更新。'
         } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'clear-hyperlinks') {
+        void clearSelectedHyperlinks().catch(error => { feedback.textContent = (error as Error).message })
         return
       }
       if (command === 'link-open') {

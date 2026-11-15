@@ -2,7 +2,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { DocxTableCommands } from './docx-tables'
 import { TABLE_AUTO_FIT_OPTIONS } from './docx-table-properties-source'
-import { IconAutoFit, IconCaret, IconColDelete, IconDeleteCells, IconRowDelete, IconSelectCells, IconTableDelete } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconAutoFit, IconCaret, IconColDelete, IconDeleteCells, IconRowDelete, IconSelectCells, IconTableDelete, IconTextDirection } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { zh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/zh'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 
@@ -37,6 +37,14 @@ const menus = {
     label: '自动调整', icon: IconAutoFit, className: 'table-command-button table-autofit-button',
     items: TABLE_AUTO_FIT_OPTIONS.map(([mode, label]) => [`table-autofit-${mode}`, autoFitLabels[label], IconAutoFit] as const),
   },
+  'text-direction': {
+    label: zh.ribbonTextDirection, icon: IconTextDirection, className: 'table-command-row table-command-row-caret',
+    items: [
+      ['table-text-direction-horizontal', zh.ribbonTextDirectionHorizontal, IconTextDirection],
+      ['table-text-direction-rotate-90', zh.ribbonTextDirectionRotate90, IconTextDirection],
+      ['table-text-direction-rotate-270', zh.ribbonTextDirectionRotate270, IconTextDirection],
+    ],
+  },
 } as const
 
 export function createDocxTableLayoutMenu(
@@ -46,6 +54,7 @@ export function createDocxTableLayoutMenu(
   active?: DocxTableCommands['active'],
 ) {
   const definition = menus[type]
+  const radio = type === 'autofit' || type === 'text-direction'
   const root = document.createElement('div'), trigger = document.createElement('button'), panel = document.createElement('div')
   root.className = 'rb-split-wrap'
   root.dataset.docxTableLayoutMenu = type
@@ -88,7 +97,7 @@ export function createDocxTableLayoutMenu(
     iconButton(button, label, icon)
     button.dataset.action = action
     button.dataset.sourceAction = action
-    button.setAttribute('role', type === 'autofit' ? 'menuitemradio' : 'menuitem')
+    button.setAttribute('role', radio ? 'menuitemradio' : 'menuitem')
     if (type === 'autofit') {
       const marker = document.createElement('span')
       marker.className = 'table-menu-state'
@@ -112,7 +121,7 @@ export function createDocxTableLayoutMenu(
     const reasons = items.map(({ button, action, label }) => {
       const unavailable = reason(action)
       update(button, label, unavailable)
-      if (type === 'autofit') {
+      if (radio) {
         const selected = active?.(action) ?? false
         button.setAttribute('aria-checked', String(selected))
         button.classList.toggle('active', selected)

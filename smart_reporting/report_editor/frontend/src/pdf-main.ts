@@ -307,7 +307,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const formCanvases = new Set<ReturnType<typeof mountPdfFormDesignCanvas>>()
   const formSelection:PdfFormDesignSelection={ids:new Set()}
   const formClipboard=new PdfFormClipboard(draft.identity.sourceSha256)
-  let formDesignTool:FormDesignTool|null=null,formDesignPreview=false
+  let formDesignTool:FormDesignTool|null=null,formDesignPreview=false,formDesignKeepTool=false
   function clearFormCanvases(){for(const controller of formCanvases)controller.dispose();formCanvases.clear()}
   function syncFormCanvases(){
     if(root.querySelector('[data-pdf-ribbon-tab="formDesign"]')?.getAttribute('aria-selected')!=='true'){formSelection.ids.clear();formSelection.pageId=undefined;formDesignTool=null;formDesignPreview=false}
@@ -764,6 +764,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   for(const[kind,label,id]of [['signature','签名字段','formDesign.addSignatureField'],['date','日期字段','formDesign.addDateField'],['radio','单选按钮','formDesign.addRadioGroup'],['choice','下拉列表','formDesign.addDropdown']]as const){
     const control=button(label,()=>{if(kind==='radio'){if(!formCreationUnavailable())formCreatePanel?.open(kind)}else armFormTool(kind)});sourceCommand(control,id);extendedFormCreationButtons.push(control)
   }
+  const keepFormTool = button('连续添加', () => {
+    if (formCreationUnavailable() || model.capabilities?.createFormField !== true) return
+    formDesignKeepTool = !formDesignKeepTool
+    keepFormTool.setAttribute('aria-pressed', String(formDesignKeepTool))
+  }, true, 'formKeep')
+  sourceCommand(keepFormTool, 'formDesign.keepTool')
+  keepFormTool.setAttribute('aria-pressed', 'false')
+  keepFormTool.title = '放置后保持工具激活（或按住 Ctrl/⌘）'
   commandGroup=ribbon.group('formDesign','字段检测')
   const detectFormFields=button('自动检测',async()=>{
     if(objectDesignUnavailable()||model.capabilities?.createFormField!==true)return
@@ -779,7 +787,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const formSelectTool=button('选择控件',()=>{formDesignTool=null;formDesignPreview=false;syncFormCanvases()},false)
   sourceCommand(formSelectTool,'formDesign.selectFields')
   const formSettings=button('字段设置',()=>{if(!formCreationUnavailable())formCreatePanel?.open('text')});sourceCommand(formSettings,'formDesign.fieldSettings')
-  function creationDraftControl(control:HTMLButtonElement){return draft.operations.length>0&&draft.operations.every(op=>op.kind==='createFormField')&&[createTextField,createCheckBox,...extendedFormCreationButtons,formSettings].includes(control)}
+  function creationDraftControl(control:HTMLButtonElement){return draft.operations.length>0&&draft.operations.every(op=>op.kind==='createFormField')&&[createTextField,createCheckBox,...extendedFormCreationButtons,keepFormTool,formSettings].includes(control)}
   commandGroup = ribbon.group('formDesign', '字段管理')
   const formDesignDelete = button('删除字段', () => { if (!formDesignUnavailable()) formDesignPanel?.open() })
   sourceCommand(formDesignDelete, 'formDesign.deleteField')
@@ -2038,7 +2046,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     cropFields.disabled = cropApplying || locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed
     const exclusiveDraft=draft.operations.some(operation=>PDF_EXCLUSIVE_DRAFT_KINDS.includes(operation.kind))
     if (exclusiveDraft) for (const control of editableButtons) if (control !== undo && control !== redo && !textDraftControl(control) && !creationDraftControl(control)) control.disabled = true
-    for(const control of [createTextField,createCheckBox,...extendedFormCreationButtons,formSettings])control.disabled ||= formCreationUnavailable()!==null||model.capabilities?.createFormField!==true
+    for(const control of [createTextField,createCheckBox,...extendedFormCreationButtons,keepFormTool,formSettings])control.disabled ||= formCreationUnavailable()!==null||model.capabilities?.createFormField!==true
     detectFormFields.disabled ||= objectDesignUnavailable()!==null||model.capabilities?.createFormField!==true
     detectFormFields.title=objectDesignUnavailable()??model.capabilities?.createFormFieldReason??'检测文字与线框候选，逐项确认创建；每项须单独预览并保存'
     fieldProperties.disabled ||= objectDesignUnavailable()!==null||model.capabilities?.editFormWidget!==true
@@ -2312,7 +2320,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       current:()=>source===document&&sourceGeneration===generation&&mode==='select'&&pagesCached.get(page.index)?.userUnit===1&&root.querySelector('[data-pdf-ribbon-tab="formDesign"]')?.getAttribute('aria-selected')==='true'&&formCanvasCurrent(),
       selection:formSelection,clipboard:formClipboard,pasteTarget:()=>activeId===page.pageId,tool:()=>formDesignTool,preview:()=>formDesignPreview,fieldValues:()=>model.formFields??[],
       select(){if(formSelection.pageId){activeId=formSelection.pageId;for(const node of pageNodes.values())node.classList.toggle('is-active',node.dataset.pageId===activeId)}syncFormCanvases()},
-      created(keep){if(!keep)formDesignTool=null;syncFormCanvases()},cancelled(){formDesignTool=null;formDesignPreview=false;for(const controller of formCanvases)controller.clear()},
+      created(keep){if(!keep && !formDesignKeepTool)formDesignTool=null;syncFormCanvases()},cancelled(){formDesignTool=null;formDesignPreview=false;for(const controller of formCanvases)controller.clear()},
       properties(){formCreatePanel?.open('properties')},remove(){formDesignPanel?.open()},
       commit(operations){draft.setOperations(operations);review.invalidate(draft.operations);reviewPanel.hidden=true;confirmPreview.checked=false;status.textContent=draft.persistenceError??(draft.dirty?'表单设计已加入草稿，请校验实际 PDF 后保存':'已取消字段设计');updateControls();onDraftChange?.()},error:showError,
     }))

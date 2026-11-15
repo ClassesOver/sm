@@ -901,7 +901,7 @@ it('keeps source Table Design and Layout commands unavailable when source capabi
     'table-autofit-window', 'table-autofit-fixed', 'table-distribute-rows', 'table-distribute-columns',
     'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left',
     'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center',
-    'table-align-bottom-right', 'table-text-direction-horizontal', 'table-text-direction-rotate-90',
+    'table-align-bottom-right', 'table-text-direction-menu', 'table-text-direction-horizontal', 'table-text-direction-rotate-90',
     'table-text-direction-rotate-270', 'table-cell-margins', 'table-repeat-header-rows',
   ])
   editor.destroy()

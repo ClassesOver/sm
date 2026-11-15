@@ -495,6 +495,10 @@ dialog:is(.pdf-layout-dialog, .slides-table-dialog, .slides-native-chart-dialog,
 /* 段落参数统一标签宽度，让相邻列输入框对齐。 */
 .slides-native-ribbon .slides-ribbon-field { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; white-space: nowrap; }
 .slides-native-ribbon .slides-ribbon-field > :is(input, select) { width: 112px; min-width: 0; }
+.slides-picture-outline-menu { position: fixed; inset: auto; margin: 0; z-index: 30; min-width: 144px; padding: 6px; color: var(--office-ink); background: var(--office-chrome); border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); }
+.slides-picture-outline-menu:not([hidden]) { display: grid; gap: 4px; }
+.slides-picture-outline-menu fieldset { display: grid; gap: 2px; margin: 0; padding: 4px 0; border: 0; border-block: 1px solid var(--office-border-strong); }
+.slides-picture-outline-menu legend { padding: 0; }
 /* PowerPoint 字体首行选择字体和字号，正文在画布及对象面板编辑。 */
 .slides-native-ribbon [data-ribbon-group=Font] { grid-template-columns: repeat(6, 32px); grid-auto-flow: row; }
 .slides-native-ribbon [data-ribbon-group=Font] > [data-command=fontFamily] { grid-area: 1 / 1 / 2 / 5; width: 100%; min-width: 0; }

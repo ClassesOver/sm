@@ -778,6 +778,40 @@ it('编辑关闭时数字签名入口仍可只读加载，且不调用修改预�
  expect(readModel).toHaveBeenCalledOnce();expect(f.api.preview).not.toHaveBeenCalled();expect(f.draft.operations).toEqual([])
  await act(async()=>document.querySelector('dialog.pdf-digital-signatures-dialog')!.dispatchEvent(new Event('cancel',{cancelable:true})))
 })
+it('keeps the form placement tool armed across multiple clicks until Keep adding is turned off',async()=>{
+ const observers:Array<{targets:Element[];callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void}>=[]
+ vi.stubGlobal('IntersectionObserver',class{
+  targets:Element[]=[]
+  constructor(readonly callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void){observers.push(this)}
+  observe(target:Element){this.targets.push(target)}disconnect(){}unobserve(){}
+ })
+ const f=await fixture();await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="formDesign"]')!.click()
+ const keep=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.formDesign.keepTool"]')!
+ const text=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.formDesign.addTextField"]')!
+ expect(keep?.getAttribute('aria-pressed')).toBe('false')
+ await act(async()=>keep.click())
+ expect(keep.getAttribute('aria-pressed')).toBe('true')
+ await act(async()=>text.click())
+ const card=f.root.querySelector<HTMLElement>('.pdf-page')!
+ await act(async()=>observers.find(observer=>observer.targets.includes(card))!.callback([{target:card,isIntersecting:true}]))
+ await vi.waitFor(()=>expect(f.root.querySelector('.pdf-formdesign-layer')).not.toBeNull())
+ async function place(y:number){
+  const layer=f.root.querySelector<HTMLElement>('.pdf-formdesign-layer')!
+  layer.getBoundingClientRect=()=>new DOMRect(0,0,300,400)
+  layer.setPointerCapture=vi.fn()
+  for(const type of ['pointerdown','pointerup']){
+   await act(async()=>{layer.dispatchEvent(new MouseEvent(type,{bubbles:true,cancelable:true,clientX:35,clientY:y}))})
+  }
+ }
+ await place(80);await place(150)
+ expect(f.draft.operations.map(op=>op.fieldName)).toEqual(['Field1','Field2'])
+ expect(keep.disabled).toBe(false)
+ await act(async()=>keep.click())
+ expect(keep.getAttribute('aria-pressed')).toBe('false')
+ await place(220);await place(290)
+ expect(f.draft.operations.map(op=>op.fieldName)).toEqual(['Field1','Field2','Field3'])
+})
 it('creation commands remain available for a pure creation draft and settings append another field',async()=>{
  const first=operation('createFormField'),f=await fixture({restored:first});await f.create()
  const create=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.formDesign.addTextField"]')!,settings=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.formDesign.fieldSettings"]')!

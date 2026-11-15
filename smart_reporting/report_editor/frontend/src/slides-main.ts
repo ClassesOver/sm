@@ -2546,7 +2546,7 @@ function renderInspector() {
     ['removeBackground',!cutoutReason(),cutoutReason()??''],
     ['cropPicture',!cropReason(),cropReason()??''],
     ['pictureOpacity', !opacityReason(), opacityReason() ?? '图片透明度（0–100%）：0 为不透明'],
-    ...(['pictureOutlineColor', 'pictureOutlineWidth', 'pictureNoOutline'].map(command =>
+    ...(['pictureOutlineMenu', 'pictureOutlineColor', 'pictureOutlineWidth', 'pictureNoOutline'].map(command =>
       [command, selectedObjects.size === 1 && pictureOutlineEnabled(element) && !pendingGroup(selectedSlide), '请选择支持轮廓编辑的来源图片'] as const)),
     ...(['rotatePictureRight', 'rotatePictureLeft', 'flipPictureH', 'flipPictureV'].map(command =>
       [command, selectedObjects.size === 1 && !!element?.pictureTransform && !pendingGroup(selectedSlide), '请选择支持旋转或翻转的来源图片'] as const)),
@@ -2808,8 +2808,8 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         markDirty()
         if (command === 'pictureNoOutline') {
           nativeRibbon?.setValue('pictureOutlineColor', '#000000')
-          nativeRibbon?.setValue('pictureOutlineWidth', '1')
-        }
+          nativeRibbon?.setValue('pictureOutlineWidth', '')
+        } else nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
         return
       }
       case 'pictureOpacity': {

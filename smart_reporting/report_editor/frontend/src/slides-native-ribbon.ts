@@ -23,6 +23,7 @@ import { createNativeChartGallery, type NativeChartGalleryState } from './slides
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 import iconTransparency from './vendor/genoffice-slides/components/icon-transparency.png'
 import { IconPageBorders } from './vendor/genoffice-slides/components/icons'
+import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 
 /**
  * Native web subset of GenOffice Slides Ribbon at f8c17004fb730df11f0f743164ffd8b4281bb38c.
@@ -295,6 +296,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let activeTab = 'home'
   let activeContext: NativeSlidesContext = null
   let chartGallery: ReturnType<typeof createNativeChartGallery> | undefined
+  let closePictureOutline: (() => void) | undefined
   let locked = options.locked === true
   let currentAnimationEffect = ''
   let listTargets = { bullets: false, numbers: false, hanging: false }
@@ -335,6 +337,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
   const selectTab = (id: string) => {
     if (id !== 'chartDesign') chartGallery?.close()
+    if (id !== 'pictureFormat') closePictureOutline?.()
     activeTab = id
     for (const tab of tabs) {
       const selected = tab.id === id
@@ -388,6 +391,59 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       const heading = document.createElement('h2')
       heading.textContent = groupLabel
       group.append(heading)
+      let controlHost: HTMLElement = group
+      if (tab.id === 'pictureFormat' && groupDefinition.label === 'Outline') {
+        const trigger = document.createElement('button')
+        trigger.type = 'button'
+        trigger.disabled = true
+        trigger.dataset.command = 'pictureOutlineMenu'
+        trigger.dataset.sourceAction = 'onPictureStroke'
+        trigger.innerHTML = renderToStaticMarkup(reactElement(IconPageBorders, { size: 15 }))
+        trigger.append(document.createTextNode(groupLabel + ' ▾'))
+        trigger.setAttribute('aria-haspopup', 'dialog')
+        trigger.setAttribute('aria-expanded', 'false')
+        controls.set('pictureOutlineMenu', [trigger])
+
+        const menu = document.createElement('div')
+        menu.className = 'slides-picture-outline-menu'
+        menu.setAttribute('popover', 'manual')
+        menu.setAttribute('role', 'dialog')
+        menu.setAttribute('aria-label', groupLabel)
+        menu.hidden = true
+        group.append(trigger, menu)
+        controlHost = menu
+        let dismiss: (() => void) | undefined
+        const close = (focus = false) => {
+          if (menu.hidden) return
+          dismiss?.()
+          dismiss = undefined
+          menu.hidePopover?.()
+          menu.hidden = true
+          trigger.setAttribute('aria-expanded', 'false')
+          if (focus) trigger.focus()
+        }
+        closePictureOutline = close
+        trigger.onclick = () => {
+          if (!menu.hidden) { close(); return }
+          if (trigger.disabled) return
+          menu.hidden = false
+          menu.showPopover?.()
+          trigger.setAttribute('aria-expanded', 'true')
+          const anchor = trigger.getBoundingClientRect(), box = menu.getBoundingClientRect()
+          menu.style.left = Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8)) + 'px'
+          menu.style.top = Math.max(8, Math.min(anchor.bottom + 4, innerHeight - box.height - 8)) + 'px'
+          dismiss = installPopoverDismiss(close, { inside: () => [trigger, menu] })
+          menu.querySelector('input')?.focus({ preventScroll: true })
+        }
+        menu.onkeydown = event => {
+          if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+          event.preventDefault()
+          close(true)
+        }
+        menu.addEventListener('click', event => {
+          if (event.target instanceof Element && event.target.closest('[data-outline-width], [data-command="pictureNoOutline"]')) close(true)
+        })
+      }
       if (groupDefinition.label === 'AI 助手') {
         group.classList.add('office-ai-group')
         group.append(createOfficeAIEntry(options.onAssistant))
@@ -420,6 +476,22 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           buttonElement.dataset.command = control.id
           buttonElement.dataset.unavailable = 'true'
           element = buttonElement
+        } else if (control.id === 'pictureOutlineWidth') {
+          const widths = document.createElement('fieldset')
+          widths.dataset.command = control.id
+          const legend = document.createElement('legend')
+          legend.textContent = localizedLabel
+          widths.append(legend)
+          for (const [index, value] of (control.options ?? []).entries()) {
+            const button = document.createElement('button')
+            button.type = 'button'
+            button.dataset.outlineWidth = value
+            button.textContent = control.optionLabels?.[index] ?? value
+            button.setAttribute('aria-pressed', 'false')
+            button.onclick = () => options.onAction(control.id, value)
+            widths.append(button)
+          }
+          element = widths
         } else if (control.kind === 'select') {
           const select = document.createElement('select')
           select.setAttribute('aria-label', localizedLabel)
@@ -511,8 +583,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           icon.src = iconTransparency
           icon.alt = ''
           label.append(icon, element)
-          group.append(label)
-        } else if (control.caption || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
+          controlHost.append(label)
+        } else if ((control.caption && control.id !== 'pictureOutlineWidth') || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
           const label = document.createElement('label')
           label.htmlFor = controlId
           label.className = 'slides-ribbon-field'
@@ -523,8 +595,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
             status.className = 'bullet-color-state'
             label.append(status)
           }
-          group.append(label)
-        } else group.append(element)
+          controlHost.append(label)
+        } else controlHost.append(element)
       }
       if (tab.id === 'chartDesign' && groupDefinition.label === 'Chart Styles') {
         chartGallery = createNativeChartGallery(group, (command, value) => options.onAction(command, value))
@@ -593,6 +665,9 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setValue(command, value, hint) {
       for (const element of controls.get(command) ?? []) {
+        if (command === 'pictureOutlineWidth') for (const button of element.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
+          button.setAttribute('aria-pressed', String(button.dataset.outlineWidth === value))
+        }
         if (command === 'pictureOpacity' && element instanceof HTMLSelectElement) {
           element.querySelector('[data-source-value]')?.remove()
           if (value && !PICTURE_TRANSPARENCY_PRESETS.includes(value)) {
@@ -644,9 +719,10 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
+      if (value) closePictureOutline?.()
       chartGallery?.setLocked(value)
       for (const elements of controls.values()) for (const element of elements) {
-        if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+        if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement || element instanceof HTMLFieldSetElement) {
           element.disabled = locked || element.dataset.unavailable === 'true'
         }
       }
@@ -659,7 +735,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateCommentEdit()
       updateAIEdit()
     },
-    dispose() { chartGallery?.dispose(); disposeScroll(); root.remove() },
+    dispose() { chartGallery?.dispose(); closePictureOutline?.(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

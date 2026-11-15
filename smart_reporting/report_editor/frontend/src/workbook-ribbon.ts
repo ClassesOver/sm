@@ -77,6 +77,7 @@ type RibbonCommand =
   | 'insert-col-here'
   | 'delete-col-here'
   | 'clear-contents'
+  | 'clear-hyperlinks'
   | 'clear-formats'
   | 'clear-all'
   | 'insert-sheet'
@@ -682,7 +683,7 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
       { command: 'clear-formats', label: '清除格式' },
       { command: 'clear-contents', label: '清除内容' },
       { label: '清除批注和注释' },
-      { label: '清除超链接' },
+      { command: 'clear-hyperlinks', label: '清除超链接' },
     ],
   },
   {

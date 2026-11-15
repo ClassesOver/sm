@@ -48,17 +48,22 @@ it('stages and clears picture outlines from the Picture Format ribbon', async ()
     const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
     object.value = 'picture'
     object.dispatchEvent(new Event('change', { bubbles: true }))
+    app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-pictureFormat')!.click()
+    const menu = app.command('pictureOutlineMenu')
+    menu.click()
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
     const color = app.shell.editor.querySelector<HTMLInputElement>('[data-command="pictureOutlineColor"]')!
     expect(color.disabled).toBe(false)
     color.value = '#123456'
     color.dispatchEvent(new Event('change', { bubbles: true }))
-    const width = app.shell.editor.querySelector<HTMLSelectElement>('[data-command="pictureOutlineWidth"]')!
-    expect([...width.options].map(option => option.value)).toEqual(['0.5', '1', '1.5', '2.25', '3', '4.5', '6'])
-    width.value = '2.25'
-    width.dispatchEvent(new Event('change', { bubbles: true }))
+    const widths = [...app.shell.editor.querySelectorAll<HTMLButtonElement>('[data-outline-width]')]
+    expect(widths.map(button => button.dataset.outlineWidth)).toEqual(['0.5', '1', '1.5', '2.25', '3', '4.5', '6'])
+    widths.find(button => button.dataset.outlineWidth === '2.25')!.click()
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
     expect(app.draft.operations[0]?.shapeStyles).toEqual([
       { slideIndex: 0, elementId: 'picture', stroke: { color: '#123456', widthPt: 2.25 } },
     ])
+    menu.click()
     app.command('pictureNoOutline').click()
     expect(app.draft.operations[0]?.shapeStyles).toEqual([{ slideIndex: 0, elementId: 'picture', stroke: null }])
     app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
