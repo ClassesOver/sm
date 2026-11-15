@@ -144,4 +144,4 @@ h1 span { display: block; font-weight: 500; }
 .office-context-menu button { display: block; padding: 6px 10px; width: 100%; text-align: left; border-radius: 4px; }
 .office-context-menu button:hover, .office-context-menu button:focus-visible { background: #f2f2f2; }
 
-.office-brand{display:flex;align-items:center;gap:9px;font-size:21px;font-weight:700;letter-spacing:-.5px}.office-brand-mark{display:flex;align-items:center;justify-content:center;width:28px;height:28px;background:#111;color:#fff;border-radius:7px}.office-file-badge{display:inline-flex;align-items:center;justify-content:center;flex:none;border-radius:6px;font-weight:600;color:#fff;line-height:1}.office-file-badge-docx{background:#327bd7}.office-file-badge-xlsx{background:#49a16c}.office-file-badge-pptx{background:#dc3927}.office-file-badge-pdf{background:#f34048}
+.office-brand{display:flex;align-items:center;gap:9px;font-size:21px;font-weight:700;letter-spacing:-.5px}.office-brand-mark{display:flex;align-items:center;justify-content:center;width:28px;height:28px;background:#111;color:#fff;border-radius:7px}

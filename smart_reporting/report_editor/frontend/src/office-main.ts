@@ -14,7 +14,7 @@ const formats = {
   docx: ['文档', '文档', '未命名文档'],
   xlsx: ['表格', '表格', '未命名表格'],
   pptx: ['演示文稿', '演示', '未命名演示'],
-  pdf: ['版式文档', '版式文档', '未命名版式文档'],
+  pdf: ['PDF', 'PDF', '未命名 PDF'],
 } as const
 type Format = keyof typeof formats
 type Folder = { id: string; parent: string; name: string }
@@ -236,7 +236,7 @@ function showLogin() {
 }
 
 function badge(format: Format, size = 30) {
-  return `<span class="office-file-badge office-file-badge-${format}" style="width:${size}px;height:${size}px;font-size:${Math.round(size * .55)}px" aria-hidden="true">${({docx: '文', xlsx: '表', pptx: '演', pdf: '版'})[format]}</span>`
+  return `<img src="${assets}file-${format}.svg" width="${size}" height="${size}" alt="">`
 }
 
 function folderTree(parent: string, depth: number): string {
@@ -255,8 +255,8 @@ function nav(item: View, label: string, glyph: keyof typeof paths, count?: numbe
 
 function quickStart() {
   return `<div class="quick-cards">${Object.entries(formats).map(([format, [title]]) =>
-    `<button class="quick-card" data-new="${format}" ${canWrite() ? '' : 'disabled'}>${badge(format as Format)}<span><strong>${title}</strong> <b>智能</b><small>${({docx: '文字编辑与排版', xlsx: '数据整理与分析', pptx: '演示设计与制作', pdf: '阅读与批注'})[format as Format]}</small></span></button>`).join('')}
-    <button class="quick-card" data-action="browse" ${canWrite() ? '' : 'disabled'}><span class="open-icon">${icon('folder', 19)}</span><span><strong>打开本地文件</strong><small>文档、表格、演示、版式文档</small></span></button></div>`
+    `<button class="quick-card" data-new="${format}" ${canWrite() ? '' : 'disabled'}>${badge(format as Format)}<span><strong>${title}</strong><small>.${format}</small></span></button>`).join('')}
+    <button class="quick-card" data-action="browse" ${canWrite() ? '' : 'disabled'}><span class="open-icon">${icon('folder', 19)}</span><span><strong>打开本地文件</strong><small>.docx / .xlsx / .pptx / .pdf</small></span></button></div>`
 }
 
 function canSendKnowledge(draft: string) {

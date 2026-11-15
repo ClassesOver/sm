@@ -10,7 +10,7 @@ beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} unobserv
 afterEach(async () => { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 it('只提供通用及四种文档偏好，不提供 Markdown 和导出设置', async () => {
   await act(async () => root.render(<DocumentPreferencesPanel initial={initial} save={async x => x} close={() => {}} />))
-  expect([...document.querySelectorAll('[role="tab"]')].map(x => x.textContent)).toEqual(['通用', '文档', '表格', '演示', '版式文档'])
+  expect([...document.querySelectorAll('[role="tab"]')].map(x => x.textContent)).toEqual(['通用', '文档', '表格', '演示', 'PDF'])
   expect(formatOptions.some(x => x.key === 'md')).toBe(false)
   expect(document.body.textContent).not.toMatch(/Markdown|导出设置|生成目录|压缩/)
 })
