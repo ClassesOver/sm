@@ -8,7 +8,7 @@ import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import (
@@ -68,6 +68,13 @@ class NativeSavePayload(BaseModel):
     confirmed_preview_digest: str | None = Field(default=None, alias="confirmedPreviewDigest", pattern=SHA256_PATTERN)
 
 
+class NativeWordFilePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=256)
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
+    filename: str = Field(default="document.docx", min_length=1, max_length=160, pattern=r'^[^\\/:*?"<>|\x00-\x1f\x7f]+\.[dD][oO][cC][xX]$')
+
+
 class NativeMailMergeSourcePayload(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     request_id: str = Field(alias="requestId", min_length=1, max_length=256)
@@ -75,6 +82,34 @@ class NativeMailMergeSourcePayload(BaseModel):
     bytes_base64: str = Field(alias="bytesBase64", min_length=4, max_length=6 * 1024 * 1024)
 
 
+
+
+class NativeMailMergeAveryLayout(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    stock: Literal['avery5160']
+
+
+class NativeMailMergeCustomLayout(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    stock: Literal['custom']
+    paper: Literal['letter', 'a4']
+    columns: StrictInt = Field(ge=1, le=20)
+    rows: StrictInt = Field(ge=1, le=20)
+
+
+class NativeMailMergeEnvelopeLayout(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    envelope: Literal['size10', 'dl', 'c5', 'c6']
+
+
+class NativeWordMailMergeExportPayload(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    documentSha256: str = Field(pattern=SHA256_PATTERN)
+    sourceSha256: str = Field(pattern=SHA256_PATTERN)
+    sourceBase64: str = Field(min_length=4, max_length=6*1024*1024)
+    mode: Literal['perRecord', 'labels', 'envelopes']
+    namePattern: str = Field(default='', max_length=256, pattern=r'^[^\x00-\x1f\x7f]*$')
+    layout: NativeMailMergeAveryLayout | NativeMailMergeCustomLayout | NativeMailMergeEnvelopeLayout | None = None
 
 
 class NativePreviewPayload(BaseModel):
@@ -174,7 +209,7 @@ def _error(error: ReportingError) -> HTTPException:
         status = 503
     elif code in ("native_source_changed", "native_revision_conflict", "report_download_file_changed", "native_pdf_text_preview_changed", "report_editor_conflict"):
         status = 409
-    elif code in ("native_format_invalid", "native_operations_invalid", "native_pdf_text_confirmation_required", "native_pdf_image_export_invalid"):
+    elif code in ("native_format_invalid", "native_operations_invalid", "native_pdf_text_confirmation_required", "native_pdf_image_export_invalid", "native_mail_merge_export_invalid"):
         status = 422
     return HTTPException(status_code=status, detail={"code": code, "message": error.message})
 
@@ -195,6 +230,19 @@ def _csrf(
         raise HTTPException(status_code=403, detail={"code": "native_csrf_invalid"})
 
 
+def _native_disposition(display_name: str | None, suffix: str) -> str:
+    if not display_name:
+        return f'attachment; filename="report.{suffix}"'
+    name = display_name
+    if display_name:
+        from .native_word_file_actions import word_filename
+        try:
+            name = word_filename(display_name).rsplit('.', 1)[0] + '.' + suffix
+        except ReportingError:
+            name = f"report.{suffix}"
+    return f"attachment; filename*=UTF-8''{quote(name, safe='')}"
+
+
 def create_native_editor_router(
     grants: ReportEditorGrantService,
     *,
@@ -204,6 +252,7 @@ def create_native_editor_router(
     static_dir: str | Path | None = None,
     download_service: Any = None,
     ai_enabled: bool = False,
+    report_channel_enabled: bool = False,
 ) -> APIRouter:
     router = APIRouter()
     root = Path(static_dir) if static_dir else Path(__file__).with_name("static")
@@ -219,6 +268,19 @@ def create_native_editor_router(
                 raise ReportingError("native_permission_denied", "原生会话与请求版本不一致。")
             return session, await editor.context_for_session(session)
         except ReportingError as error:
+            raise _error(error) from None
+
+    @router.post("/reports/v1/native/{document_id}/{revision}/api/word/{action}")
+    async def word_file_action(document_id: str, revision: int, action: Literal["new", "save-as"],
+                               request: Request, payload: NativeWordFilePayload):
+        from .native_word_file_actions import create_word_file
+        _, context = await session_context(request, document_id, revision, write=True)
+        try:
+            return await create_word_file(editor, context, action=action,
+                expected_sha256=payload.expected_sha256, request_id=payload.request_id, filename=payload.filename)
+        except ReportingError as error:
+            if error.code in {"native_word_filename_invalid", "native_word_file_action_invalid"}:
+                raise HTTPException(422, detail={"code":error.code,"message":error.message}) from None
             raise _error(error) from None
 
     @router.get("/reports/v1/native/open/{raw_grant}", include_in_schema=False)
@@ -259,7 +321,7 @@ def create_native_editor_router(
             headers={
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
-                "Content-Disposition": f'attachment; filename="report.{suffix}"',
+                "Content-Disposition": _native_disposition((session.capabilities or {}).get("context", {}).get("displayName"), suffix),
             },
         )
 
@@ -285,6 +347,13 @@ def create_native_editor_router(
                 or grant.scope.thread_id != key
             ):
                 raise ReportingError("native_permission_denied", "下载作用域与原生文档不一致。")
+            display_name = None
+            try:
+                named_revision = await editor.repository.get_revision(document_id, grant.revision, scope=scope)
+                if named_revision and named_revision.context:
+                    display_name = named_revision.context.display_name
+            except Exception:
+                pass
             grant, stream = await download_service.stream(raw_grant, artifact=artifact)
         except ReportingError as error:
             raise _error(error) from None
@@ -299,7 +368,7 @@ def create_native_editor_router(
             headers={
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",
-                "Content-Disposition": f'attachment; filename="report.{suffix}"',
+                "Content-Disposition": _native_disposition(display_name, suffix),
             },
         )
 
@@ -344,6 +413,7 @@ def create_native_editor_router(
             ),
             "pdfReadAIEnabled": ai_enabled and context.format == "pdf",
             "wordReadAIEnabled": ai_enabled and context.format == "docx",
+            "reportChannelEnabled": report_channel_enabled and context.format == "docx" and editor.docx_enabled,
             "officeReadAIEnabled": ai_enabled and context.format in {"xlsx", "pptx"},
             "pdfFormAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled,
             "pdfReviewAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled,
@@ -361,7 +431,8 @@ def create_native_editor_router(
         return Response(
             content,
             media_type=context.source_file.media_type,
-            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+                     "Content-Disposition": _native_disposition(context.display_name, context.format)},
         )
 
     @router.post('/reports/v1/native/{document_id}/{revision}/api/image-pixels')
@@ -492,6 +563,25 @@ def create_native_editor_router(
                 "recordCount": parsed['recordCount']}}
         except ReportingError as error:
             raise _error(error) from None
+
+
+    @router.post('/reports/v1/native/{document_id}/{revision}/api/mail-merge/export')
+    async def native_mail_merge_export(document_id: str, revision: int, request: Request, payload: NativeWordMailMergeExportPayload):
+        from .native_word_mail_merge_export import export_word_mail_merge
+
+        _, context = await session_context(request, document_id, revision, write=True)
+        try:
+            receipt = await export_word_mail_merge(editor, context, document_sha256=payload.documentSha256,
+                source_sha256=payload.sourceSha256, source_base64=payload.sourceBase64, mode=payload.mode,
+                name_pattern=payload.namePattern, layout=payload.layout.model_dump() if payload.layout else None)
+        except ReportingError as error:
+            raise _error(error) from None
+        return Response(receipt['content'], media_type=receipt['mediaType'], headers={
+            'Cache-Control':'no-store', 'X-Content-Type-Options':'nosniff',
+            'Content-Disposition':f'attachment; filename="{receipt["filename"]}"',
+            'X-Native-Export-Sha256':receipt['sha256'], 'X-Native-Export-Size':str(receipt['size']),
+            'X-Native-Source-Sha256':receipt['sourceSha256'],
+        })
 
 
     @router.post("/reports/v1/native/{document_id}/{revision}/api/extract-pages")

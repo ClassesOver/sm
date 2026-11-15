@@ -1,0 +1,32 @@
+# Office shared controller integration
+
+## Design and boundaries
+
+Reuse OfficeAIEntry, office-task-dock, office-assistant-panel, progress and NativeDraft without visual changes. One view-free TypeScript controller owns task polling, request/task cancellation, late-start cleanup and acceptance-response fencing. Format adapters capture their existing trusted context and map typed transport calls. UI generations continue to fence asynchronous context capture and rendering, not execute a second polling loop.
+
+A new backend Office task table/state machine is rejected: task_execution remains the intended production truth. Merely sharing dock presentation is insufficient. This patch is the common frontend control seam, reviewed with the Office strategy coordinator, not a completed Codex integration.
+
+Legacy Word/PDF/Office read and Word/PDF/XLSX/PPTX candidate APIs are transitional transport adapters. No runner/model selection or new permission is accepted from the browser. The Word trusted coordinator and Codex launch gate are separate backend changes. A completed read task does not mutate the draft. A successful edit task is a candidate, explicit accept puts it into NativeDraft, and saving remains an independent existing action.
+
+## Implementation
+
+- [x] Add controller contract tests before implementation: shared polling, repeated-start exclusion, request/late-task cancellation, acceptance exclusion and stale fencing, failed-start cleanup.
+- [x] Implement OfficeAssistantController without view or format-engine ownership.
+- [x] Migrate Word/XLSX/PPTX/PDF read and edit lifecycle adapters, retaining snapshot checks, explicit accept, draft preservation and close/cancel behavior.
+- [x] Run focused regressions and controller type check.
+- [x] Attempt the frontend suite once; interrupted for full /tmp volume, not a passing suite.
+- [ ] Independent review and live browser acceptance in the combined integration stage.
+
+## Verification limits
+
+This patch does not launch Codex, provision a sandbox, register a production route, deploy, or claim real-provider validation. Existing task IDs are opaque; server-side scope/lease/attempt enforcement remains on the backend. Full frontend TypeScript checking exceeded the environment heap at the default limit, and was killed at a 6 GiB heap limit; the isolated controller type check passed. No full-build success is claimed. The single full frontend suite attempt was stopped with exit 130 when /tmp was full; its partial output included 52 slides-native tests failing with ResizeObserver not defined and two slides-native-ribbon availability assertion failures, so it is not represented as a green suite.
+
+## Independent review correction
+
+The review reproduced an orphaned known task: start returned a task ID, status failed, then a read adapter's finally/release discarded the cancellation handle. The shared catch now launches cleanup with captured request/task identities without waiting on the cancellation endpoint. Handles are retained until cleanup succeeds; release only releases an observed terminal task. Failed explicit cancellation retains retry handles only while its generation is still current. Replacement runs clean captured previous handles, never the new request. The original transport/progress error remains the user-visible error.
+
+Regression evidence after the correction: 13 shared-controller tests including old/new start/status, old acceptance finally, late failed cancellation and hung cleanup; nine adapter/controller test files with 78 passing tests using the standard project Vite configuration. Strict isolated controller TypeScript checking passed again. Logs remain in the execution workspace; no full suite was repeated.
+
+Second review correction: repeated close/dispose cancellation of the same generation now shares its pending cancellation result. An empty second cancel no longer advances the fence and loses the first request's failed-cleanup retry identity. A replacement run uses a different generation and never shares or restores the old task's handles. The duplicate-cancel test was observed red before this fix; all previous 13 controller tests remain green. Final targeted run: nine files, 79 tests passed; isolated strict controller type check passed. Full suite was not repeated.
+
+Cloud combined-tree type check found TS2774 at native-ai.ts:110: the API method is required, so its leftover existence check was always true. A local TypeScript program rooted in the actual native-ai.ts and repository compiler options reproduced that exact diagnostic before the fix. Removed only the redundant method-existence conjunct, retaining the job/request identity check. The targeted TS2774 diagnostic is now zero and native-ai/controller regressions pass; the full native-main combined closure still requires cloud revalidation against the new exact tree. No prior-tree browser/type evidence is treated as validation of this correction.

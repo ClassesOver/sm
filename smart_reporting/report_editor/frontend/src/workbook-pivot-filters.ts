@@ -1,6 +1,6 @@
+import { projectPivotSourceGrid, readPivotSourcePatterns } from '@sheets-web/xlsx-engine/pivot-source-format'
 import { readWorkbook, parseRange, formatAddress } from '@sheets-web/xlsx-engine'
 import { buildPivotLayout } from '@sheets-web/xlsx-engine/pivot-layout'
-import { formatCodeFor } from '@sheets-web/xlsx-engine/style-read'
 import { createPivotEntrySource } from '@sheets-web/xlsx-engine/pivot-source'
 import { readXmlAttribute } from '@sheets-web/xlsx-engine/xml'
 import type { PivotConfig, WorkbookPivot } from './workbook-pivot'
@@ -8,7 +8,7 @@ import { supportsOwnedPivotControls } from '@sheets-web/xlsx-engine/pivot-contro
 
 export interface PivotFilterField {
   name: string
-  axis: 'row' | 'column'
+  axis: 'row' | 'column' | 'page'
   level: number
   timeline: boolean
   members: { value: string; date?: string }[]
@@ -40,27 +40,27 @@ export async function readPivotFilterFields(bytes: Uint8Array, pivot: WorkbookPi
   if (!sheet) throw new Error('透视表来源工作表不存在')
   const area = parseRange(pivot.sourceRange)
   if (area.endRow - area.startRow > 10000 || area.endColumn - area.startColumn >= 200) throw new Error('透视表来源最多10000条数据、200列')
-  const grid = []
+  const rawGrid = [], patterns = await readPivotSourcePatterns(source,await source.readText(sheet.path),area)
   for (let row = area.startRow; row <= area.endRow; row++) {
     const cells = []
     for (let column = area.startColumn; column <= area.endColumn; column++) cells.push(sheet.cells[formatAddress(row, column)]?.value ?? null)
-    grid.push(cells)
+    rawGrid.push(cells)
   }
-  const layout = buildPivotLayout(grid, { rowFields: pivot.rowFields, columnField: pivot.columnFields, values: pivot.values, groupings: pivot.groupings })
   const workbookXml = await source.readText('xl/workbook.xml')
   const epoch1904 = /^(?:1|true)$/.test(readXmlAttribute(workbookXml.match(/<(?:\w+:)?workbookPr\b[^>]*>/)?.[0] ?? '', 'date1904') ?? '')
-  return (['row', 'column'] as const).flatMap(axis => {
-    const names = axis === 'row' ? pivot.rowFields : pivot.columnFields
-    const levels = axis === 'row' ? layout.definition.rowLevelItems : layout.definition.colLevelItems ?? []
+  const grid=projectPivotSourceGrid(rawGrid,patterns,pivot,epoch1904)
+  const layout = buildPivotLayout(grid, { rowFields: pivot.rowFields, columnField: pivot.columnFields, pageFilters: pivot.pageFilters, values: pivot.values, groupings: pivot.groupings })
+  return (['row', 'column', 'page'] as const).flatMap(axis => {
+    const names = axis === 'row' ? pivot.rowFields : axis === 'column' ? pivot.columnFields : (pivot.pageFilters ?? []).map(filter => filter.field)
+    const levels = axis === 'row' ? layout.definition.rowLevelItems : axis === 'column' ? layout.definition.colLevelItems ?? [] : layout.definition.pageLevelItems ?? []
     return names.map((name, level) => {
       const column = area.startColumn + layout.definition.fieldNames.indexOf(name), dates = new Map<string, string | undefined>()
       for (let row = area.startRow + 1; row <= area.endRow; row++) {
-        const cell = sheet.cells[formatAddress(row, column)], value = cell?.value, key = String(value ?? '')
+        const cell = sheet.cells[formatAddress(row, column)], value = cell?.value, key = String(grid[row-area.startRow]?.[column-area.startColumn] ?? '')
         let date: string | undefined
         if (typeof value === 'string') date = validDate(value)
         else if (typeof value === 'number') {
-          const xf = workbook.styles.cellXfs[cell?.styleIndex ?? 0]
-          const format = xf ? formatCodeFor(workbook.styles, xf).replace(/"[^"]*"|\[[^\]]*\]|\\./g, '') : ''
+          const format = (patterns[row-area.startRow]?.[column-area.startColumn] ?? '').replace(/"[^"]*"|\[[^\]]*\]|\\./g, '')
           if (/[dy]/i.test(format)) date = serialDate(value, epoch1904)
         }
         dates.set(key, dates.has(key) && dates.get(key) !== date ? undefined : date)
@@ -72,12 +72,27 @@ export async function readPivotFilterFields(bytes: Uint8Array, pivot: WorkbookPi
   })
 }
 
+/** Selection projection shared by the modal and worksheet control overlay. */
+export function pivotFilterHiddenMembers(pivot: PivotConfig, field: PivotFilterField): string[] {
+  if (field.axis !== 'page') return [...(pivot.hiddenMembers?.[field.axis]?.[field.level] ?? [])]
+  const selected = pivot.pageFilters?.find(filter => filter.field === field.name)?.selected
+  const allowed = selected ? new Set(selected) : undefined
+  return allowed ? field.members.filter(member => !allowed.has(member.value)).map(member => member.value) : []
+}
+
 export function pivotMemberFilterConfig(pivot: PivotConfig, fields: PivotFilterField[], name: string, selected: string[]): PivotConfig {
   const field = fields.find(field => field.name === name)
-  if (!field) throw new Error('请选择现有行字段或列字段')
+  if (!field) throw new Error('请选择现有行、列或报表筛选字段')
   if (!selected.length) throw new Error('至少选择一个成员；清除筛选请使用“全选”')
-  if (selected.some(value => !field.members.some(member => member.value === value))) throw new Error('透视表成员已变化，请重新打开筛选')
+  const members = new Set(field.members.map(member => member.value))
+  if (selected.some(value => !members.has(value))) throw new Error('透视表成员已变化，请重新打开筛选')
   const next = structuredClone(pivot), allowed = new Set(selected)
+  if (field.axis === 'page') {
+    next.pageFilters = pivot.pageFilters?.map(filter => filter.field === name
+      ? { field: name, ...(field.members.every(member => allowed.has(member.value)) ? {} : { selected: field.members.filter(member => allowed.has(member.value)).map(member => member.value) }) }
+      : structuredClone(filter))
+    return next
+  }
   const hidden = { row: pivot.rowFields.map((_, level) => [...(pivot.hiddenMembers?.row?.[level] ?? [])]), column: pivot.columnFields.map((_, level) => [...(pivot.hiddenMembers?.column?.[level] ?? [])]) }
   hidden[field.axis][field.level] = field.members.filter(member => !allowed.has(member.value)).map(member => member.value)
   next.hiddenMembers = hidden

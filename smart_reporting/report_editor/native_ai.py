@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import secrets
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
@@ -101,6 +101,8 @@ class _NativeAIJob:
     event_log: AgentEventLog = field(default_factory=AgentEventLog)
     client_request_id: str = ""
     request_sha256: str | None = None
+    word_task_reference: Any = field(default=None, repr=False)
+    authorization_check: Callable[[], Awaitable[bool]] | None = field(default=None, repr=False)
 
 
 def _invalid(code: str, message: str) -> ReportingError:
@@ -132,12 +134,18 @@ class NativeAIService:
         planner: NativeProposalPlanner,
         enabled: bool = False,
         timeout_seconds: float = 120,
+        word_task_dispatcher: Any = None,
     ):
         self.editor, self.planner, self.enabled = editor, planner, enabled
         self.timeout_seconds = timeout_seconds
+        self.word_task_dispatcher = word_task_dispatcher
         self._jobs: dict[str, _NativeAIJob] = {}
         self._requests: dict[tuple[str, str], str] = {}
         self._closed = False
+
+    def _word_tasks_enabled(self, context):
+        return (context.format == 'docx' and self.word_task_dispatcher is not None
+                and self.word_task_dispatcher.enabled)
 
     @staticmethod
     def _request_id(value: str) -> str:
@@ -208,10 +216,14 @@ class NativeAIService:
         operations: list[dict[str, Any]],
         selection: list[dict[str, str]],
         client_request_id: str | None = None,
+        server_session_reference: str | None = None,
+        authorization_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict[str, Any]:
         if self._closed:
             raise _invalid("native_ai_closed", "AI 候选服务已关闭。")
         context = await self._context(session)
+        if self._word_tasks_enabled(context):
+            self.word_task_dispatcher.require_available()
         if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 2000:
             raise _invalid("native_ai_instruction_invalid", "请输入不超过 2000 字的修改要求。")
         if expected_sha256 != context.source_file.sha256:
@@ -228,7 +240,7 @@ class NativeAIService:
         original = await self.editor.preview(
             context, expected_sha256=expected_sha256, operations=[]
         )
-        if context.format == "docx" and callable(getattr(type(self.planner), "plan_word", None)):
+        if context.format == "docx" and (self._word_tasks_enabled(context) or callable(getattr(type(self.planner), "plan_word", None))):
             selected_blocks = {
                 item["blockId"] for item in selection
                 if isinstance(item, dict) and isinstance(item.get("blockId"), str)
@@ -238,7 +250,7 @@ class NativeAIService:
                 "insertTableColumn", "deleteTableColumn",
             } for op in base):
                 raise _invalid("native_ai_selection_invalid", "所选表格结构已有草稿修改，请先保存并重新打开后选择。")
-        if context.format == "docx" and callable(getattr(type(self.planner), "plan_word", None)):
+        if context.format == "docx" and (self._word_tasks_enabled(context) or callable(getattr(type(self.planner), "plan_word", None))):
             from .native_word_ai import selected_word_objects
 
             selected = selected_word_objects(original["model"], base, selection)
@@ -282,14 +294,33 @@ class NativeAIService:
             self._jobs.pop(previous.edit_id, None)
         if len(self._jobs) >= 128:
             raise _invalid("native_ai_busy", "AI 候选任务繁忙，请稍后重试。")
+        word_reference = None
+        if self._word_tasks_enabled(context):
+            word_reference = await self.word_task_dispatcher.prepare(context=context,
+                session_reference=server_session_reference, instruction=instruction,
+                expected_sha256=expected_sha256, operations=base, selection=selection,
+                request_id=request_id or uuid4().hex)
+            previous = self._request_job(context, request_id, fingerprint) if request_id else None
+            if previous:
+                if previous.status == 'cancelled' or self._closed:
+                    await self.word_task_dispatcher.cancel(word_reference)
+                return self._serialize(previous)
+            if self._closed:
+                await self.word_task_dispatcher.cancel(word_reference)
+                raise _invalid('native_ai_closed', 'AI 候选服务已关闭。')
+            if sum(item.status == 'running' for item in self._jobs.values()) >= 32 or len(self._jobs) >= 128:
+                await self.word_task_dispatcher.cancel(word_reference)
+                raise _invalid('native_ai_busy', 'AI 候选任务繁忙，请稍后重试。')
         job = _NativeAIJob(
-            uuid4().hex,
+            word_reference.scope.external_run_id if word_reference else uuid4().hex,
             context.digest(),
             self._snapshot(context, base),
             context.scope.user_id,
             datetime.now(UTC),
             client_request_id=request_id or "",
             request_sha256=fingerprint,
+            word_task_reference=word_reference,
+            authorization_check=authorization_check,
         )
         self._jobs[job.edit_id] = job
         if request_id:
@@ -304,7 +335,7 @@ class NativeAIService:
             "不能提交 XML、文件路径、脚本、图片替换或外部请求。\n"
             f"用户要求：{instruction.strip()}\n包含人工未保存修改的授权选区：{material}"
         )
-        if context.format == "docx" and callable(getattr(type(self.planner), "plan_word", None)):
+        if context.format == "docx" and (self._word_tasks_enabled(context) or callable(getattr(type(self.planner), "plan_word", None))):
             prompt = (
                 "忠实编辑授权Word选区，只使用工具给出的allowedOperations；"
                 "必须先完整读取目标，再通过propose_operations登记候选。"
@@ -522,6 +553,23 @@ class NativeAIService:
             ],
         }
 
+    async def _while_job_authorized(self, job: _NativeAIJob, work: Awaitable[Any]) -> Any:
+        if job.authorization_check is None:
+            return await work
+        pending = asyncio.ensure_future(work)
+        try:
+            while True:
+                done, _ = await asyncio.wait({pending}, timeout=0.5)
+                await self._require_job_authorization(job)
+                if done:
+                    return await pending
+        finally:
+            if not pending.done():
+                pending.cancel()
+            # Preserve the authorization/cancellation error even if a dependency
+            # raises while shutting down or returns a late result after cancel.
+            await asyncio.gather(pending, return_exceptions=True)
+
     async def _run_job(
         self,
         job: _NativeAIJob,
@@ -532,16 +580,26 @@ class NativeAIService:
         prompt: str,
     ) -> None:
         try:
+            await self._require_job_authorization(job)
             await job.event_log.emit("phase", label="正在生成候选")
-            planned = await asyncio.wait_for(
-                self._plan_with_events(job, prompt, selected, format=context.format),
-                timeout=self.timeout_seconds,
-            )
+            if job.word_task_reference is not None:
+                execution = self.word_task_dispatcher.execute(
+                    job.word_task_reference,
+                    **({"authorization_check": job.authorization_check}
+                       if job.authorization_check is not None else {}),
+                )
+                planned = await self._while_job_authorized(job, asyncio.wait_for(
+                    execution, timeout=self.timeout_seconds))
+            else:
+                planned = await self._while_job_authorized(job, asyncio.wait_for(
+                    self._plan_with_events(job, prompt, selected, format=context.format),
+                    timeout=self.timeout_seconds,
+                ))
             if job.status != "running":
                 return
             if planned is None:
                 raise _invalid("native_ai_output_empty", "AI 未返回候选，人工草稿已保留。")
-            if context.format == "docx" and callable(getattr(type(self.planner), "plan_word", None)):
+            if context.format == "docx" and (self._word_tasks_enabled(context) or callable(getattr(type(self.planner), "plan_word", None))):
                 from .native_word_ai import NativeWordAIProposal
 
                 planned = NativeWordAIProposal.model_validate(planned)
@@ -576,6 +634,14 @@ class NativeAIService:
             preview = await self.editor.preview(
                 context, expected_sha256=context.source_file.sha256, operations=combined
             )
+            if job.word_task_reference is not None:
+                restored = await self.word_task_dispatcher.completed(job.word_task_reference,
+                    session_reference=job.word_task_reference.word_input.binding.server_session_reference, base=base)
+                if restored.model_dump(mode='json') != planned.model_dump(mode='json'):
+                    raise _invalid('native_ai_snapshot_changed', 'Word 候选回执已变化。')
+            if job.status != "running":
+                return
+            await self._require_job_authorization(job)
             if job.status != "running":
                 return
             job.proposal = {
@@ -641,7 +707,13 @@ class NativeAIService:
             or job.created_at < datetime.now(UTC) - timedelta(hours=1)
         ):
             raise _invalid("native_ai_job_missing", "AI 候选任务不存在或已过期。")
+        await self._require_job_authorization(job)
         return job, context
+
+    @staticmethod
+    async def _require_job_authorization(job: _NativeAIJob) -> None:
+        if job.authorization_check is not None and not await job.authorization_check():
+            raise _invalid("native_permission_denied", "频道编辑授权已撤销。")
 
     async def wait_edit_status(
         self, session: ReportEditorSession, edit_id: str, *, wait_ms: int = 20000
@@ -657,6 +729,7 @@ class NativeAIService:
                 current = asyncio.current_task()
                 if (current is not None and current.cancelling()) or not job.task.cancelled():
                     raise
+        await self._require_job_authorization(job)
         return self._serialize(job)
 
     async def accept_edit(
@@ -667,6 +740,8 @@ class NativeAIService:
         expected_sha256: str,
         operations: list[dict[str, Any]],
         snapshot_sha256: str,
+        server_session_reference: str | None = None,
+        revalidate_session=None,
     ) -> dict[str, Any]:
         started = perf_counter()
         job, context = await self._job(session, edit_id)
@@ -679,11 +754,12 @@ class NativeAIService:
             raise _invalid("native_ai_snapshot_changed", "完整草稿已变化，请重新生成候选。")
         if job.status != "succeeded" or job.proposal is None or self._closed:
             raise _invalid("native_ai_not_ready", "AI 候选尚不可采纳。")
-        combined = self._combined_operations(context, base, job.proposal["operations"])
+        proposal = job.proposal
+        combined = self._combined_operations(context, base, proposal["operations"])
         preview = await self.editor.preview(
             context, expected_sha256=expected_sha256, operations=combined
         )
-        if job.status != "succeeded" or job.proposal is None or self._closed:
+        if job.status != "succeeded" or job.proposal is not proposal or self._closed:
             raise _invalid("native_ai_not_ready", "AI 候选已取消，未加入草稿。")
         if context.format == "pdf" and preview.get("previewDigest") != job.proposal.get(
             "previewDigest"
@@ -691,6 +767,31 @@ class NativeAIService:
             raise _invalid(
                 "native_ai_preview_changed", "PDF 候选预览或字体资源已变化，请重新生成建议。"
             )
+        if job.word_task_reference is not None:
+            trusted = await self.word_task_dispatcher.completed(job.word_task_reference,
+                session_reference=server_session_reference, base=base)
+            if job.status != 'succeeded' or job.proposal is not proposal or self._closed:
+                raise _invalid('native_ai_not_ready', 'Word 候选已失效。')
+            if trusted.engine_operations() != job.proposal['operations']:
+                raise _invalid('native_ai_not_ready', 'Word 候选已失效。')
+        # HTTP authority is observed again after preview/receipt awaits. Direct service
+        # callers retain their existing session contract; routes supply this callback.
+        if revalidate_session is not None:
+            current_session = await revalidate_session()
+            current_context = await self._context(current_session)
+            if current_context.digest() != context.digest():
+                raise _invalid("native_ai_snapshot_changed", "完整草稿已变化，请重新生成候选。")
+            await self.editor.read_file(current_context)
+            # The file/context read also yields: recheck registry/expiry last.
+            if await revalidate_session() != current_session:
+                raise _invalid("native_permission_denied", "原生会话权限已变化。")
+        if snapshot_sha256 != job.snapshot_sha256:
+            raise _invalid("native_ai_snapshot_changed", "完整草稿已变化，请重新生成候选。")
+        if job.status != "succeeded" or job.proposal is not proposal or self._closed:
+            raise _invalid("native_ai_not_ready", "AI 候选已取消，未加入草稿。")
+        await self._require_job_authorization(job)
+        if job.status != "succeeded" or job.proposal is not proposal or self._closed:
+            raise _invalid("native_ai_not_ready", "AI 候选已失效。")
         job.accepted = True
         logger.bind(
             format=context.format, document_id=context.document_id, revision=context.revision,
@@ -710,6 +811,8 @@ class NativeAIService:
         # 依赖可能吞回 CancelledError，先登记终态，禁止迟到结果重新发布候选。
         job.status = "cancelled"
         job.proposal = None
+        if job.word_task_reference is not None:
+            await self.word_task_dispatcher.cancel(job.word_task_reference)
         if job.task and not job.task.done():
             job.task.cancel()
             await asyncio.gather(job.task, return_exceptions=True)

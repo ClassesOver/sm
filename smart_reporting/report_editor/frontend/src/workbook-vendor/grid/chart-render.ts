@@ -107,6 +107,18 @@ const textsOf = (
   }
 }
 
+function seriesStroke(spec: ChartReadSpec, seriesIndex: number, defaultWidth: number) {
+  const series = spec.series[seriesIndex]!, width = series.lineWidth ?? defaultWidth
+  if (series.lineColor === 'none' || series.lineColorUnavailable || !Number.isFinite(width) || width <= 0) return undefined
+  return { color: series.lineColor ?? chartSeriesColor(series, seriesIndex, spec.palette), width }
+}
+
+function nearStroke(x: number, y: number, a: {x:number;y:number}, b: {x:number;y:number}, width: number) {
+  const dx=b.x-a.x,dy=b.y-a.y,length=dx*dx+dy*dy
+  const fraction=length===0?0:Math.max(0,Math.min(1,((x-a.x)*dx+(y-a.y)*dy)/length))
+  return Math.hypot(x-(a.x+fraction*dx),y-(a.y+fraction*dy))<=Math.max(4,width/2+2)
+}
+
 function drawChart(
   ctx: UniverRenderingContext,
   spec: ChartReadSpec,
@@ -163,14 +175,29 @@ function drawChart(
   if(spec.legend){const position=spec.legend.position;if(position==='left')hitRect({kind:'legend'},basePlot.left,basePlot.top,legendPlot.left,basePlot.bottom);else if(position==='right'||position==='top-right')hitRect({kind:'legend'},legendPlot.right,basePlot.top,basePlot.right,basePlot.bottom);else if(position==='top')hitRect({kind:'legend'},basePlot.left,basePlot.top,basePlot.right,legendPlot.top);else hitRect({kind:'legend'},basePlot.left,legendPlot.bottom,basePlot.right,basePlot.bottom)}
   const titledPlot = hasSeriesLegend ? paintAxisTitles(ctx, spec, worksheet, legendPlot) : legendPlot
   const slots = hasSeriesLegend ? spec.series.map(entry => entry.valuesRef ? numberSlotsOf(worksheet, entry.valuesRef) : (entry.values ?? []).map(value => Number.isFinite(value) ? value : null)) : []
-  const scale = hasSeriesLegend && !spec.valueScaleUnavailable ? barValueScale(spec.kind === 'combo' ? slots.filter((_, index) => !spec.series[index]?.secondaryAxis) : slots, spec.axes?.value.scaling) : undefined
+  const stacked = (spec.kind === 'bar' || spec.kind === 'column') && slots.length > 1 &&
+    (spec.design?.grouping === 'stacked' || spec.design?.grouping === 'percentStacked')
+  const percentStacked = stacked && spec.design?.grouping === 'percentStacked'
+  // Pinned BarChart stacks nonnegative components only. Keep raw values and
+  // source point slots intact for labels/identities; no synthetic negative bars.
+  const stackTotals: number[] = []
+  if (stacked) for (const values of slots) values.forEach((value,index) => {
+    stackTotals[index] = (stackTotals[index] ?? 0) + Math.max(0,value ?? 0)
+  })
+  const stackOverflow = stacked && stackTotals.some(value => !Number.isFinite(value))
+  const scaleSlots = stacked ? percentStacked ? [[1]] : [stackTotals]
+    : spec.kind === 'combo' ? slots.filter((_, index) => !spec.series[index]?.secondaryAxis) : slots
+  const scale = hasSeriesLegend && !spec.valueScaleUnavailable && !stackOverflow
+    ? barValueScale(scaleSlots, percentStacked ? {
+      min:0,max:1,majorUnit:0.25,reversed:spec.axes?.value.scaling?.reversed === true,
+    } : spec.axes?.value.scaling) : undefined
   const secondaryScale = spec.kind === 'combo' ? barValueScale(slots.filter((_, index) => spec.series[index]?.secondaryAxis), spec.secondaryAxes?.value.scaling) : undefined
   const categoryCount = spec.kind === 'line' || spec.kind === 'area'
     ? Math.max(1, slots[0]?.length ?? 0)
     : slots.reduce((count, values) => Math.max(count, values.length), 1)
   const category = scale && flat.length > 0 ? planCategoryAxis(ctx,spec,worksheet,categoryCount,titledPlot) : undefined
   const axisPlot = secondaryScale && spec.secondaryAxes ? paintValueAxis(ctx, { ...spec, axes: spec.secondaryAxes }, secondaryScale, category?.plot ?? titledPlot) : category?.plot ?? titledPlot
-  const plot = scale && flat.length > 0 ? paintValueAxis(ctx, spec, scale, axisPlot) : axisPlot
+  const plot = scale && flat.length > 0 ? paintValueAxis(ctx, spec, scale, axisPlot, percentStacked ? '0%' : undefined) : axisPlot
   category?.paint(plot)
   const { top: plotTop, bottom: plotBottom, left: plotLeft, right: plotRight } = plot
   const plotHeight = Math.max(4, plotBottom - plotTop)
@@ -196,17 +223,24 @@ function drawChart(
     }
     const horizontal = spec.kind === 'bar'
     const band = (horizontal ? plotHeight : plotWidth) / categoryCount
-    const thickness = band / (Math.max(1, slots.length) + (spec.gapWidthPct ?? 150) / 100)
-    const groupInset = (band - thickness * slots.length) / 2
-    const zero = horizontal ? plotLeft + plotWidth * fraction(0) : plotBottom - plotHeight * fraction(0)
+    const groupSize = stacked ? 1 : Math.max(1,slots.length)
+    const thickness = band / (groupSize + (spec.gapWidthPct ?? 150) / 100)
+    const groupInset = (band - thickness * groupSize) / 2
+    const position = (value:number) => horizontal ? plotLeft + plotWidth * fraction(value) : plotBottom - plotHeight * fraction(value)
+    const baseZero = position(0), cursors: number[] = []
     const labelPoints: BarLabelDatum[] = []
     const wantsLabels = flat.length <= 500 && (spec.dataLabels !== undefined || spec.series.some(series=>series.dataLabels !== undefined))
     slots.forEach((values, seriesIndex) => {
       values.forEach((value, index) => {
         if (value === null) return
+        const positive = Math.max(0,value)
+        if (stacked && positive === 0) return
+        const start = stacked ? cursors[index] ?? 0 : 0
+        const endValue = stacked ? start + (percentStacked ? positive / stackTotals[index]! : positive) : value
+        if (stacked) cursors[index] = endValue
         ctx.fillStyle = chartPointColor(spec, seriesIndex, index)
-        const offset = band * chartCategorySlot(spec,index,categoryCount) + groupInset + thickness * chartCategorySlot(spec,seriesIndex,slots.length)
-        const end = horizontal ? plotLeft + plotWidth * fraction(value) : plotBottom - plotHeight * fraction(value)
+        const offset = band * chartCategorySlot(spec,index,categoryCount) + groupInset + (stacked ? 0 : thickness * chartCategorySlot(spec,seriesIndex,slots.length))
+        const zero = stacked ? position(start) : baseZero, end = position(endValue)
         if (end === zero && value !== 0) return
         const rect = horizontal ? {left:Math.min(zero,end),top:plotTop+offset,right:Math.max(zero,end),bottom:plotTop+offset+thickness}
           : {left:plotLeft+offset,top:Math.min(zero,end),right:plotLeft+offset+thickness,bottom:Math.max(zero,end)}
@@ -215,7 +249,7 @@ function drawChart(
         if (wantsLabels && (value !== 0 || scale!.min <= 0 && scale!.max >= 0)) labelPoints.push({value,index,seriesIndex,zero,end,rect})
       })
     })
-    if (wantsLabels) paintBarDataLabels(ctx,spec,labelPoints,plot)
+    if (wantsLabels) paintBarDataLabels(ctx,spec,labelPoints,plot,stacked)
     if (spec.legend?.overlay) paintChartLegend(ctx, spec, worksheet, basePlot)
     ctx.restore()
     return
@@ -360,6 +394,7 @@ function drawChart(
     }
     const labelPoints: Array<{value:number;index:number;seriesIndex:number;x:number;y:number}> = []
     radarValues.forEach((values,seriesIndex) => {
+      const stroke = seriesStroke(spec, seriesIndex, 2.5)
       const points = Array.from({ length: axisCount }, (_, axis) => values[axis] ?? 0)
       const polygon = points.map((value, axis) => {
         const distance = radius * Math.max(0, Math.min(maximum, value)) / maximum
@@ -372,10 +407,9 @@ function drawChart(
           const a=polygon[i]!,b=polygon[j]!
           if((a.y>y)!==(b.y>y)&&x<(b.x-a.x)*(y-a.y)/(b.y-a.y)+a.x)inside=!inside
         }
-        return inside
+        return inside || !!stroke && polygon.some((a,index)=>nearStroke(x,y,a,polygon[(index+1)%polygon.length]!,stroke.width))
       }})
-      ctx.strokeStyle = chartSeriesColor(spec.series[seriesIndex]!,seriesIndex,spec.palette)
-      ctx.fillStyle = ctx.strokeStyle
+      ctx.fillStyle = chartSeriesColor(spec.series[seriesIndex]!,seriesIndex,spec.palette)
       ctx.globalAlpha = 0.18
       ctx.beginPath()
       points.forEach((value, axis) => {
@@ -389,7 +423,7 @@ function drawChart(
       ctx.closePath()
       ctx.fill()
       ctx.globalAlpha = 1
-      ctx.stroke()
+      if (stroke) { ctx.strokeStyle = stroke.color; ctx.lineWidth = stroke.width; ctx.stroke() }
       values.forEach((value,index)=>{if(value===null||index>=axisCount)return;const angle=-Math.PI/2+Math.PI*2*index/axisCount,distance=radius*Math.max(0,Math.min(maximum,value))/maximum,px=cx+distance*Math.cos(angle),py=cy+distance*Math.sin(angle);hitPoint(seriesIndex,index,px,py);ctx.beginPath();ctx.arc(px,py,2.5,0,Math.PI*2);ctx.fillStyle=chartPointColor(spec,seriesIndex,index);ctx.fill();labelPoints.push({value,index,seriesIndex,x:px,y:py})})
     })
     paintLineDataLabels(ctx,spec,labelPoints,plot)
@@ -408,6 +442,9 @@ function drawChart(
   if (spec.kind === 'line' || spec.kind === 'area') {
     const labelPoints:Array<{value:number;index:number;seriesIndex:number;x:number;y:number}>=[]
     slots.forEach((values, seriesIndex) => {
+      // Area keeps the source area's independent outline behavior.
+      const stroke = spec.kind === 'line' ? seriesStroke(spec, seriesIndex, 3)
+        : { color: chartSeriesColor(spec.series[seriesIndex]!,seriesIndex,spec.palette), width: 1.5 }
       const points=values.flatMap((value,index)=>value===null||!Number.isFinite(value)?[]:[{x:plotLeft+plotWidth*index/Math.max(1,values.length-1),y:valueY(value),index,value}])
       if(!points.length)return
       const runs:Array<typeof points>=[]
@@ -433,14 +470,14 @@ function drawChart(
           // Fill only contiguous spans so blank categories remain real gaps.
           ctx.globalAlpha=0.35;ctx.beginPath();run.forEach(({x,y},index)=>index===0?ctx.moveTo(x,y):ctx.lineTo(x,y));ctx.lineTo(run[run.length-1]!.x,plotBottom);ctx.lineTo(run[0]!.x,plotBottom);ctx.closePath();ctx.fill();ctx.globalAlpha=1
         }
-        ctx.strokeStyle=chartSeriesColor(spec.series[seriesIndex]!,seriesIndex,spec.palette);ctx.lineWidth=1.5;ctx.beginPath()
-        run.forEach(({x,y},index)=>index===0?ctx.moveTo(x,y):ctx.lineTo(x,y));ctx.stroke()
-        for(let index=1;index<run.length;index++){
+        if (stroke) {
+          ctx.strokeStyle=stroke.color;ctx.lineWidth=stroke.width;ctx.beginPath()
+          run.forEach(({x,y},index)=>index===0?ctx.moveTo(x,y):ctx.lineTo(x,y));ctx.stroke()
+        }
+        for(let index=1;stroke && index<run.length;index++){
           const a=run[index-1]!,b=run[index]!
           regions.push({element:{kind:'series',seriesIndex},contains:(x,y)=>{
-            const dx=b.x-a.x,dy=b.y-a.y,length=dx*dx+dy*dy
-            const fraction=length===0?0:Math.max(0,Math.min(1,((x-a.x)*dx+(y-a.y)*dy)/length))
-            return Math.hypot(x-(a.x+fraction*dx),y-(a.y+fraction*dy))<=4
+            return nearStroke(x,y,a,b,stroke.width)
           }})
         }
       })

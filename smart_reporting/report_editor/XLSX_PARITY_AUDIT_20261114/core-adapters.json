@@ -1,0 +1,1071 @@
+{
+  "source_ref": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "local_head_supplied": "1e4a0a34 plus current uncommitted implementation",
+  "scope": "Finite mapping of requested core/UI installers; not per-operator/browser certification. No product edits or tests.",
+  "count": 50,
+  "status_legend": {
+    "done_bounded": "Explicit actual adapter/counterpart established statically; runtime extent still bounded.",
+    "partial": "Concrete narrower/different behavior or architectural counterpart with named remainder.",
+    "missing": "Demonstrated missing prerequisite/semantic feature from actual model/initialization flow, not grep absence alone.",
+    "unverified": "Source correction mapped to concrete local base capability, exact correction not established; not a claim it is absent."
+  },
+  "excluded_owned_by_data_agent": [
+    "installFindRevealFix",
+    "installOtherFormulaAnchor",
+    "installCfFormulaFold",
+    "installFormulaNullResultFix",
+    "all formula/math/cache/source-find installers at App.tsx2339–2422"
+  ],
+  "adapters": [
+    {
+      "source_symbol": "installFilterRangeOutlineSuppression",
+      "source_import": "./filter-range-outline",
+      "source_path": "apps/sheets/src/renderer/filter-range-outline.ts",
+      "source_line": 14,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2248",
+      "capability_family": "Filters / header rendering",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-filters.ts",
+          "symbol": "withWorkbookFilters",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target imports filter resources and uses official filter preset; source specifically stubs the filter-range outline painter.",
+      "remaining": "Compare filtered-range outline rendering; no equivalent suppression established by resource import."
+    },
+    {
+      "source_symbol": "installVeryHiddenSheetGuard",
+      "source_import": "./very-hidden-sheets",
+      "source_path": "apps/sheets/src/renderer/very-hidden-sheets.ts",
+      "source_line": 42,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2249",
+      "capability_family": "Sheet tab visibility",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target projection emits hidden:1 for sheet.hidden, collapsing visibility presentation; source explicitly vetoes SetWorksheetShowCommand for veryHidden.",
+      "remaining": "Verify veryHidden provenance/Unhide refusal through all target commands; basic hidden projection does not prove veryHidden guard."
+    },
+    {
+      "source_symbol": "installInjectorResolutionGuard",
+      "source_import": "./univer-sync",
+      "source_path": "apps/sheets/src/renderer/univer-sync.ts",
+      "source_line": 1024,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2260",
+      "capability_family": "Grid lifecycle resilience",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source repairs injector resolution depth after throwing construction; target constructs runtime with local createUniver helper.",
+      "remaining": "Whether injector error can poison target resolution counter; no dedicated recovery patch established."
+    },
+    {
+      "source_symbol": "installGridGrowth",
+      "source_import": "./grid-growth",
+      "source_path": "apps/sheets/src/renderer/grid-growth.ts",
+      "source_line": 127,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2265",
+      "capability_family": "Grid bounds and blank-sheet scroll",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "MINIMUM_SHEET_ROW_COUNT/buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target initially allocates at least1000 rows/26columns; source grows dimensions ahead of approaching viewport. Target paste-special explicitly grows required dimensions, which is narrower.",
+      "remaining": "Approaching empty-grid edge must continue scrolling/growing like source; no comparative viewport run."
+    },
+    {
+      "source_symbol": "installWrapMeasureLifecycle",
+      "source_import": "./univer-sync",
+      "source_path": "apps/sheets/src/renderer/univer-sync.ts",
+      "source_line": 4789,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2268",
+      "capability_family": "Wrap/autofit lifecycle",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source queues wrap-row measurement until Rendered interceptor exists; target projects row geometry and normal styles before workbook creation.",
+      "remaining": "Initial wrapped-auto-row measurement queue and readiness behavior."
+    },
+    {
+      "source_symbol": "installJournalSuppressionUndoFilter",
+      "source_import": "./univer-state",
+      "source_path": "apps/sheets/src/renderer/univer-state.ts",
+      "source_line": 305,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2294",
+      "capability_family": "Undo initialization integrity",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView/loadOperations",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target reloads a workbook snapshot and separately retains native draft history; source filters programmatic installs out of LocalUndoRedoService prototype. Strategies differ.",
+      "remaining": "Unrelated programmatic commands/notes/resource installs must not create user Undo entries; source prototype guard not assumed."
+    },
+    {
+      "source_symbol": "installLoadAutoHeightGate",
+      "source_import": "./univer-state",
+      "source_path": "apps/sheets/src/renderer/univer-state.ts",
+      "source_line": 355,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2298",
+      "capability_family": "Stored row height preservation",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target projects explicit source heights as h pixels and ia:0; source gates automatic height mutations during load/journal suppression.",
+      "remaining": "Rows without explicit heights, multiline load and later queued interceptors may differ; no initial-load remeasurement run."
+    },
+    {
+      "source_symbol": "installBorderOverflowExclusionFix",
+      "source_import": "./border-overflow-exclusion",
+      "source_path": "apps/sheets/src/renderer/border-overflow-exclusion.ts",
+      "source_line": 44,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2299",
+      "capability_family": "Cell border overflow performance",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/style-map.ts",
+          "symbol": "toUniverStyle",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target represents border styles; source changes per-border overflow lookup from scanning all rows to direct row access.",
+      "remaining": "Bordered overflowing-text scroll cost/geometry; style serialization is not optimization parity."
+    },
+    {
+      "source_symbol": "installCfEmptySheetFastPath",
+      "source_import": "./cf-empty-fast-path",
+      "source_path": "apps/sheets/src/renderer/cf-empty-fast-path.ts",
+      "source_line": 18,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2300",
+      "capability_family": "Conditional-formatting empty-sheet performance",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-conditional-formatting.ts",
+          "symbol": "withWorkbookConditionalFormatting",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target omits CF resource when no supported rules; source also bypasses empty-rule view-model cache/R-tree lookups per cell.",
+      "remaining": "Per-cell no-rule evaluation overhead remains unverified."
+    },
+    {
+      "source_symbol": "installCellClipAnchorFix",
+      "source_import": "./cell-clip-anchor-fix",
+      "source_path": "apps/sheets/src/renderer/cell-clip-anchor-fix.ts",
+      "source_line": 75,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2302",
+      "capability_family": "Clipped multiline text",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target retains cell values/wrap/alignment and row heights; source patches both text render paths to show first line of vertically overflowing fixed-height cells.",
+      "remaining": "Bottom/middle-aligned multiline clipping must compare first vs last line; no visual run."
+    },
+    {
+      "source_symbol": "installMergeBorderFix",
+      "source_import": "./merge-border-fix",
+      "source_path": "apps/sheets/src/renderer/merge-border-fix.ts",
+      "source_line": 35,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2305",
+      "capability_family": "Merged cell border rendering",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-grid-operations.ts",
+          "symbol": "gridMergeChanges",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/style-map.ts",
+          "symbol": "toUniverStyle",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target saves merges/borders; source patches skeleton cache so main-cell-only merge borders reach edge segments.",
+      "remaining": "Imported main-cell-only merged border rendering; package/merge support does not establish it."
+    },
+    {
+      "source_symbol": "installThickBorderFix",
+      "source_import": "./thick-border-fix",
+      "source_path": "apps/sheets/src/renderer/thick-border-fix.ts",
+      "source_line": 107,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2308",
+      "capability_family": "Thick/medium border paint weights",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/style-map.ts",
+          "symbol": "toUniverStyle",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target maps stored border weights; source patches border extension to distinguish3px thick from blurred2px medium.",
+      "remaining": "Actual zoom/DPI stroke footprints and half-pixel positioning."
+    },
+    {
+      "source_symbol": "installRtlTextDirectionFix",
+      "source_import": "./rtl-text-fix",
+      "source_path": "apps/sheets/src/renderer/rtl-text-fix.ts",
+      "source_line": 102,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2311",
+      "capability_family": "Mixed-direction cell reading order",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/style-map.ts",
+          "symbol": "toUniverStyle",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target RTL grid adapter exists; source separately resolves content-based text direction and patches font cache/paint. Grid geometry is a different capability.",
+      "remaining": "Mixed Arabic/digits context order in plain and wrapped cells."
+    },
+    {
+      "source_symbol": "installRtlGridMirror",
+      "source_import": "./rtl-grid-mirror",
+      "source_path": "apps/sheets/src/renderer/rtl-grid-mirror.ts",
+      "source_line": 231,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2314",
+      "capability_family": "Whole-grid RTL geometry",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-rtl.ts",
+          "symbol": "installWorkbookRtl",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/vendor/genoffice-rtl/rtl-grid-mirror.ts",
+          "symbol": "installRtlGridMirror",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "done_bounded",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target explicitly invokes vendored RTL grid mirror and imports exact rendering adapter rather than relying on config flag.",
+      "remaining": "All mirrored hit-test/freeze/filter/drawing combinations need runtime verification; existing RTL tests not rerun."
+    },
+    {
+      "source_symbol": "installRightToLeftCommand",
+      "source_import": "./sheet-rtl-view",
+      "source_path": "apps/sheets/src/renderer/sheet-rtl-view.ts",
+      "source_line": 51,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2317",
+      "capability_family": "RTL toggle mutation/viewport refresh",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-rtl.ts",
+          "symbol": "installWorkbookRtl",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "done_bounded",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target explicitly registers SetWorksheetRightToLeftCommand/Mutation when absent and refreshes skeleton active operation; reference-counted dispose and target identity guards.",
+      "remaining": "Full source screen geometry integration not proven by successful command; existing workbook-rtl tests only inspected."
+    },
+    {
+      "source_symbol": "installRichTextBidiFix",
+      "source_import": "./rich-text-bidi-fix",
+      "source_path": "apps/sheets/src/renderer/rich-text-bidi-fix.ts",
+      "source_line": 539,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2318",
+      "capability_family": "Rich-text bidi render",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "UniverCellData/buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "missing",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target XLSX reader joins rich text runs into scalar string and projects no p document; source keeps logical rich stream and reorders paint/layout.",
+      "remaining": "Rich model/projection plus logical editing/save preservation required before matching rich bidi correction."
+    },
+    {
+      "source_symbol": "installCenterContinuousRender",
+      "source_import": "./center-continuous",
+      "source_path": "apps/sheets/src/renderer/center-continuous.ts",
+      "source_line": 32,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2321",
+      "capability_family": "Center Across Selection display",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/style-map.ts",
+          "symbol": "toUniverStyle",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source marks anchor custom run-end and widens overflow geometry across blank same-format neighbors without merges. Target style mapper does not establish that run geometry.",
+      "remaining": "Imported centerContinuous display/blank-neighbor clipping; distinguish from ordinary centered cells and merge-center."
+    },
+    {
+      "source_symbol": "installExcelFilterButton",
+      "source_import": "./filter-button-excel-style",
+      "source_path": "apps/sheets/src/renderer/filter-button-excel-style.ts",
+      "source_line": 145,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2322",
+      "capability_family": "AutoFilter button visual language",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-filters.ts",
+          "symbol": "withWorkbookFilters",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-table-filter-button.ts",
+          "symbol": "installTableFilterButton",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target configures filter/table filter flags; source patches Scene objects into bordered down-arrow/funnel button.",
+      "remaining": "Exact header button shapes/criteria state/click area."
+    },
+    {
+      "source_symbol": "installLongTextRender",
+      "source_import": "./long-text-render",
+      "source_path": "apps/sheets/src/renderer/long-text-render.ts",
+      "source_line": 264,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2325",
+      "capability_family": "Long text clipped rendering performance",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target projects full scalar strings; source slices plain unwrapped/unrotated text to visible clip window before Chromium shapes it.",
+      "remaining": "Paragraph-sized cell scrolling/shaping cost and slice correctness."
+    },
+    {
+      "source_symbol": "installVertAlignRender",
+      "source_import": "./vert-align-render",
+      "source_path": "apps/sheets/src/renderer/vert-align-render.ts",
+      "source_line": 104,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2328",
+      "capability_family": "Whole-cell superscript/subscript paint",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/style-map.ts",
+          "symbol": "toUniverStyle/fromUniverStyle",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-ribbon.ts",
+          "symbol": "applyWorkbookRibbonCommand",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target explicitly maps logical vertAlign↔va2/3 and ribbon sets it; source additionally patches plain paint path because upstream ignores va.",
+      "remaining": "Actual baseline displacement/font scale in fast and document render paths; saved style alone is not paint evidence."
+    },
+    {
+      "source_symbol": "installAutofitWrapBudget",
+      "source_import": "./autofit-wrap-budget",
+      "source_path": "apps/sheets/src/renderer/autofit-wrap-budget.ts",
+      "source_line": 27,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2329",
+      "capability_family": "Wrapped autofit line-break budget",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-ribbon.ts",
+          "symbol": "applyWorkbookRibbonCommand",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target exposes autofit; source temporarily narrows column measurement by extra12px beyond upstream padding, preserving paint breaks.",
+      "remaining": "Calibrated width thresholds and derived auto-height."
+    },
+    {
+      "source_symbol": "installAutofitLinePitch",
+      "source_import": "./autofit-line-pitch",
+      "source_path": "apps/sheets/src/renderer/autofit-line-pitch.ts",
+      "source_line": 255,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2332",
+      "capability_family": "Wrapped autofit font metrics",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-ribbon.ts",
+          "symbol": "applyWorkbookRibbonCommand",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target invokes normal autofit; source rescales wrap height with font-specific Excel line pitches (e.g.Calibri10→12.75pt).",
+      "remaining": "Font-specific multiple-line height and zoom/DPI behavior."
+    },
+    {
+      "source_symbol": "installHeaderUnhideDebounce",
+      "source_import": "./load-perf-patches",
+      "source_path": "apps/sheets/src/renderer/load-perf-patches.ts",
+      "source_line": 14,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2333",
+      "capability_family": "Hidden-axis header render performance",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target projects hd:1 and stored hidden axes; source coalesces HeaderUnhideRenderController._update bursts with120ms delay.",
+      "remaining": "Header arrow rebuild count/correctness under source-like load bursts; local full-load architecture changes trigger frequency."
+    },
+    {
+      "source_symbol": "installCopyAnimationIdle",
+      "source_import": "./copy-animation-idle",
+      "source_path": "apps/sheets/src/renderer/copy-animation-idle.ts",
+      "source_line": 176,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2336",
+      "capability_family": "Clipboard marching-ants idle lifecycle",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-clipboard.ts",
+          "symbol": "CLIPBOARD_COMMANDS",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target invokes normal copy/cut; source pauses dashed animation while hidden/idle and resumes on interaction without clearing copied content.",
+      "remaining": "Background/idle memory and redraw behavior; copy command support does not prove animation lifecycle."
+    },
+    {
+      "source_symbol": "installNumberAsTextAlertSeverity",
+      "source_import": "./number-as-text-alert",
+      "source_path": "apps/sheets/src/renderer/number-as-text-alert.ts",
+      "source_line": 19,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2337",
+      "capability_family": "Cell numeric-text alert severity",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source patches SHEET_NUMFMT_ALERT/SHEET_FORCE_STRING_ALERT ERROR into WARNING; target uses normal core preset locales.",
+      "remaining": "Alert warning type/title/icon under text-stored number and forced string cases."
+    },
+    {
+      "source_symbol": "installForceStringMarkGate",
+      "source_import": "./long-text-render",
+      "source_path": "apps/sheets/src/renderer/long-text-render.ts",
+      "source_line": 397,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2338",
+      "capability_family": "Forced string and long text indicator",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source contributes gate to SheetInterceptorService within long-text handling; target plain string projection alone cannot establish interceptor behavior.",
+      "remaining": "Precise marks across imported strings/long strings and edits; no runtime vector."
+    },
+    {
+      "source_symbol": "installSheetRenameFix",
+      "source_import": "./sheet-rename-fix",
+      "source_path": "apps/sheets/src/renderer/sheet-rename-fix.ts",
+      "source_line": 73,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2423",
+      "capability_family": "Case-only sheet rename",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-grid-operations.ts",
+          "symbol": "planGridSheets",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target journal can represent arbitrary final renamed sheet names; source patches Workbook.checkSheetName self-case comparison before UI accepts case-only rename.",
+      "remaining": "Whether native tab UI accepts Sheet1→SHEET1 without duplicate error; package plan does not establish UI acceptance."
+    },
+    {
+      "source_symbol": "installSelectionWrapGuard",
+      "source_import": "./selection-wrap-fix",
+      "source_path": "apps/sheets/src/renderer/selection-wrap-fix.ts",
+      "source_line": 61,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2425",
+      "capability_family": "Arrow navigation sheet-edge behavior",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source vetoes MoveSelectionCommand when no visible cell exists in arrow direction; target initializes official grid and narrower custom shortcut helpers.",
+      "remaining": "Arrow edge stop vs opposite-edge wrap with hidden rows/columns."
+    },
+    {
+      "source_symbol": "installArrowCollapse",
+      "source_import": "./arrow-collapse-fix",
+      "source_path": "apps/sheets/src/renderer/arrow-collapse-fix.ts",
+      "source_line": 67,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2428",
+      "capability_family": "Arrow collapse on multiselection",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source collapses non-Shift plain/Ctrl arrow to active cell before replay, leaving Enter/Tab range traversal untouched.",
+      "remaining": "K97:L97 activeK97 ArrowRight should landL97, notM97; no interaction run."
+    },
+    {
+      "source_symbol": "installSheetProtectionGuard",
+      "source_import": "./sheet-protection",
+      "source_path": "apps/sheets/src/renderer/sheet-protection.ts",
+      "source_line": 412,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2429",
+      "capability_family": "Protected sheet command/save enforcement",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-protection.ts",
+          "symbol": "protectionBlockReason/assertProtectionRespected",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target explicit command and save guard supports passwordless protection/default flags and value-only allowed ranges. Source runtime guard reads source allow flags/password capabilities.",
+      "remaining": "Permission flags/unlocked xf cells/password unlock remain differences; see core protection row. Not blanket missing AllowEditRanges."
+    },
+    {
+      "source_symbol": "installCtrlDragFill",
+      "source_import": "./ctrl-drag-fill",
+      "source_path": "apps/sheets/src/renderer/ctrl-drag-fill.ts",
+      "source_line": 42,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2436",
+      "capability_family": "Ctrl fill-handle copy semantics",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-fill-series.ts",
+          "symbol": "module initialization",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target fill/series exists; source captures pointerup modifier and forces COPY mode to prevent numeric series under Ctrl.",
+      "remaining": "Ctrl+drag current numeric/date selection copy versus generated series; no pointer run."
+    },
+    {
+      "source_symbol": "installRedactMenu",
+      "source_import": "./redact-menu",
+      "source_path": "apps/sheets/src/renderer/redact-menu.ts",
+      "source_line": 41,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2440",
+      "capability_family": "AI selected-cell withholding menu",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-ai-read-context.ts",
+          "symbol": "captureWorkbookReadContext",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "missing",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target captures scope/operations only; actual backend frozen read copies value/formula without gxRedactions transform. Source menu creates/clears withholding marks and source AI reads respect them.",
+      "remaining": "Requires mark/import/persistence/menu plus derived-cell withholding; no actual user document tested."
+    },
+    {
+      "source_symbol": "installContextSubmenuReopenFix",
+      "source_import": "./context-submenu-reopen-fix",
+      "source_path": "apps/sheets/src/renderer/context-submenu-reopen-fix.ts",
+      "source_line": 14,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2443",
+      "capability_family": "Context submenu reopen interaction",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source detects submenu still hidden after close/reenter delay and retriggers position; target official contextMenu:true plus specific PasteSpecial contribution.",
+      "remaining": "Leave/reenter Clear/Insert submenu within500ms and verify visibility/position."
+    },
+    {
+      "source_symbol": "installMenuInputEnter",
+      "source_import": "./menu-input-enter",
+      "source_path": "apps/sheets/src/renderer/menu-input-enter.ts",
+      "source_line": 51,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2446",
+      "capability_family": "Context-menu number input Enter",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source patches MenuItemInput so Enter executes row action after commit; target built-in count/axis menu runs through normal core UI.",
+      "remaining": "Enter insert-N/width/height should execute and close rather than only commit input."
+    },
+    {
+      "source_symbol": "installCellContextMenu",
+      "source_import": "./cell-context-menu",
+      "source_path": "apps/sheets/src/renderer/cell-context-menu.ts",
+      "source_line": 405,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2447",
+      "capability_family": "Excel added context menu entry set",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-paste-special.ts",
+          "symbol": "createWorkbookPasteSpecial",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-ribbon.ts",
+          "symbol": "mountWorkbookRibbon",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target explicitly contributes Paste Special to IMenuManagerService and exposes Format Cells/name/link/function in ribbon; source contributes additional Filter,Number Format,Format Cells,Pick From List,Define Name,Link,Insert Function in context menu.",
+      "remaining": "Context-entry availability/routing differs from equivalent ribbon actions; remaining entries not confirmed in local complete menu registration."
+    },
+    {
+      "source_symbol": "installClipboardAnchorTile",
+      "source_import": "./clipboard-anchor-tile",
+      "source_path": "apps/sheets/src/renderer/clipboard-anchor-tile.ts",
+      "source_line": 90,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2450",
+      "capability_family": "Anchor-shaped repeat paste",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-paste-special.ts",
+          "symbol": "createWorkbookPasteSpecial",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/grid/paste-special.ts",
+          "symbol": "applyPasteSpecial",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target full PasteSpecial transforms include transpose/arithmetics and official ordinary paste commands; source patches clipboard selection tiling when only one target dimension is multiple.",
+      "remaining": "Copy1×3 into13×1 must repeat13rows and full3width; normal paste and custom PasteSpecial paths need comparative checks."
+    },
+    {
+      "source_symbol": "installMultiRowAutofit",
+      "source_import": "./autofit-multi-row",
+      "source_path": "apps/sheets/src/renderer/autofit-multi-row.ts",
+      "source_line": 52,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2452",
+      "capability_family": "Selected-row doubleclick autofit",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-ribbon.ts",
+          "symbol": "applyWorkbookRibbonCommand",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target provides row autofit command; source cancels single-row resize command and redispatches every selected full-row span when header doubleclicked.",
+      "remaining": "Doubleclick inside multi-row selection must autofit each selected row independently."
+    },
+    {
+      "source_symbol": "installFormatPainter",
+      "source_import": "./format-painter",
+      "source_path": "apps/sheets/src/renderer/format-painter.ts",
+      "source_line": 68,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2453",
+      "capability_family": "Painter single/double/Escape",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-format-painter.ts",
+          "symbol": "installFormatPainter/applyFormatPainterClick",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "done_bounded",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Actual adapted source painter installer exists; target has readiness checks and turnOff on lock/save; explicit command service/Esc registration in existing tests.",
+      "remaining": "Browser lifecycle hook readiness and complete selected source-style transfer not rerun."
+    },
+    {
+      "source_symbol": "registerExcelJumpNav",
+      "source_import": "./excel-jump-nav",
+      "source_path": "apps/sheets/src/renderer/excel-jump-nav.ts",
+      "source_line": 392,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2459",
+      "capability_family": "CtrlArrow formula-aware data edges",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Source overrides content predicate so formulas count even when display empty/cache not materialized. Target official navigation registration does not establish this supplemental predicate.",
+      "remaining": "Ctrl/Shift+Arrow across empty-result and cached formulas, hidden/merged cells."
+    },
+    {
+      "source_symbol": "registerEditorWordJump",
+      "source_import": "./editor-word-jump",
+      "source_path": "apps/sheets/src/renderer/editor-word-jump.ts",
+      "source_line": 180,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2461",
+      "capability_family": "Cell editor word-level caret keys",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-function-shortcuts.ts",
+          "symbol": "installFunctionShortcuts",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target custom function shortcut targets are gated to grid; source separately registers CtrlArrow text-caret Intl.Segmenter word jumps only when editor active.",
+      "remaining": "PC editor/formula-bar CtrlArrow and CtrlShiftArrow word movement across languages/IME."
+    },
+    {
+      "source_symbol": "registerExcelShortcuts",
+      "source_import": "./excel-shortcuts",
+      "source_path": "apps/sheets/src/renderer/excel-shortcuts.ts",
+      "source_line": 237,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2465",
+      "capability_family": "Supplemental PC Excel keys",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-function-shortcuts.ts",
+          "symbol": "installFunctionShortcuts",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-outline-shortcuts.ts",
+          "symbol": "installOutlineShortcuts",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-paste-special.ts",
+          "symbol": "createWorkbookPasteSpecial",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target explicitly covers ShiftF3,function/outline/PasteSpecial families; source registry adds tab switching,Home/End,whole axis,current region,insert/delete,digit styles,CtrlShiftEnter. Exact per-key mappings not equivalent from inspection.",
+      "remaining": "Finite source registry key list in core.md; validate each PC selection/editor gate, no same-package claim."
+    },
+    {
+      "source_symbol": "installCfDisplayKeyCompare",
+      "source_import": "./cf-duplicate-key",
+      "source_path": "apps/sheets/src/renderer/cf-duplicate-key.ts",
+      "source_line": 94,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2487",
+      "capability_family": "Duplicate/unique displayed-value semantics",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-conditional-formatting.ts",
+          "symbol": "withWorkbookConditionalFormatting",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target installs full native rules; source wraps CF view-model cell access to compare display text/case-insensitively (numeric1981233 and text1981233).",
+      "remaining": "Actual duplicate keys across number/string/case/formatted values; persisted rule equality not semantic evaluator proof."
+    },
+    {
+      "source_symbol": "installCopyMaterialize",
+      "source_import": "./copy-materialize",
+      "source_path": "apps/sheets/src/renderer/copy-materialize.ts",
+      "source_line": 140,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2493",
+      "capability_family": "Copy complete-file data",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "loadOperations",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target loads complete model snapshot rather than source lazy viewport windows, so source never-viewed-window blank hazard has different architecture. Source loads selected window before copy and handles file-wide fallback.",
+      "remaining": "Copy completeness across offscreen/large selection and formatting under target load budgets; not missing merely because lazy hook absent."
+    },
+    {
+      "source_symbol": "installStatusBarStatsFilter",
+      "source_import": "./status-bar-stats",
+      "source_path": "apps/sheets/src/renderer/status-bar-stats.ts",
+      "source_line": 112,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2494",
+      "capability_family": "Footer aggregate preference controls",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-statistics.ts",
+          "symbol": "readWorkbookStatistics",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target enables official statisticBar and separate workbook statistics command. Source filters six aggregate outputs via app preference state before footer renders. Workbook statistics sheets/cells/formulas is not selected-range six-function preference.",
+      "remaining": "Which selected-range aggregates display, persistence of toggles and click-copy."
+    },
+    {
+      "source_symbol": "installStatusBarFileStats",
+      "source_import": "./statusbar-file-stats",
+      "source_path": "apps/sheets/src/renderer/statusbar-file-stats.ts",
+      "source_line": 122,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2500",
+      "capability_family": "Selected-range full-file aggregates",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "loadOperations",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts",
+          "symbol": "buildWorkbookData",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target full model avoids source viewport-only matrix by design; source overrides aggregate footer from real file and skips hidden rows.",
+      "remaining": "Selected whole columns, filtered/hidden rows, count vs numericcount,formatted sum/min/max/average; no runtime values asserted."
+    },
+    {
+      "source_symbol": "installActiveCellDataValidationChrome",
+      "source_import": "./data-validation-dropdown",
+      "source_path": "apps/sheets/src/renderer/data-validation-dropdown.tsx",
+      "source_line": 179,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2507",
+      "capability_family": "DV active dropdown/input message",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-data-validation.ts",
+          "symbol": "withWorkbookDataValidations",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target imports showDropDown/message flags and TEXT render mode; source registers custom floating arrow and input-message components following active cell.",
+      "remaining": "Arrow/message position, populated/blank cells,focus/keyboard and sheet changes. Shared DV plugin alone insufficient."
+    },
+    {
+      "source_symbol": "installInvalidDataMarkerSuppression",
+      "source_import": "./data-validation-marker",
+      "source_path": "apps/sheets/src/renderer/data-validation-marker.ts",
+      "source_line": 34,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2509",
+      "capability_family": "DV invalid marker visibility",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-data-validation.ts",
+          "symbol": "withWorkbookDataValidations",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-data-validation-names.ts",
+          "symbol": "installDataValidationNames",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "unverified",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target validates rule sources/names; source separately intercepts INVALID red corner markers until Circle Invalid Data. Source-resolution improvements do not imply marker suppression.",
+      "remaining": "Invalid or unevaluable list/formula cells must not acquire unsolicited red marker; compare Circle Invalid Data."
+    },
+    {
+      "source_symbol": "installThreadedCommentAffordances",
+      "source_import": "./threaded-comment-marker",
+      "source_path": "apps/sheets/src/renderer/threaded-comment-marker.ts",
+      "source_line": 37,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2510",
+      "capability_family": "Thread corner/hover affordances",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-threaded-comment-marker.ts",
+          "symbol": "installThreadedCommentAffordances",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-threaded-comments-host.tsx",
+          "symbol": "mountWorkbookThreads",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Actual local thread interceptor/hover implementation is installed; local host theme callback returns light while source selects active light/dark.",
+      "remaining": "Dark theme contrast/marker colors and full source hover placement; thread persistence separately implemented."
+    },
+    {
+      "source_symbol": "installNotePopupCard",
+      "source_import": "./note-hover-card",
+      "source_path": "apps/sheets/src/renderer/note-hover-card.ts",
+      "source_line": 23,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2516",
+      "capability_family": "Legacy picture note popup/hover",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-note-pictures-host.ts",
+          "symbol": "installNotePictureHover",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-main.ts",
+          "symbol": "createWorkbookEditorView",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "done_bounded",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target subscribes SheetsNotePopupService.activePopup$ and resolves picture by sheet/row/column, clears on missing popup; explicit source-shaped hover counterpart.",
+      "remaining": "Hover-temp versus pinned popup and multi-picture placement/lifecycle not rerun; ShowAll source is separate."
+    },
+    {
+      "source_symbol": "installRuleDetail",
+      "source_import": "./univer-rule-detail",
+      "source_path": "apps/sheets/src/renderer/univer-rule-detail.ts",
+      "source_line": 156,
+      "source_call": "apps/sheets/src/renderer/App.tsx:2535",
+      "capability_family": "CF/DV rule-management readable labels",
+      "local_counterparts": [
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-conditional-formatting.ts",
+          "symbol": "withWorkbookConditionalFormatting",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        },
+        {
+          "path": "smart_reporting/report_editor/frontend/src/workbook-data-validation.ts",
+          "symbol": "withWorkbookDataValidations",
+          "reference_kind": "concrete related capability implementation; exact installer equality only where comparison explicitly says so"
+        }
+      ],
+      "status": "partial",
+      "evidence_level": "static implementation/initialization inspection; existing tests only where named; not executed",
+      "comparison": "Target installs complete native rule data; source additionally wraps validator.generateRuleName and mutates CF panel labels with formula/#REF detail. Field-level cf-dv.md documents actual distinction.",
+      "remaining": "Literal/list source labels,duplicate range queues,broken-ref badge and wrapping in dynamic UI; no verified equivalent decoration."
+    }
+  ]
+}

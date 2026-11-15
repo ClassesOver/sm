@@ -105,3 +105,10 @@ def test_latin_only_slot_change_and_clear_never_invent_an_asian_slot():
             assert fonts.get(qn('w:ascii')) == value and fonts.get(qn('w:hAnsi')) == value
             assert fonts.get(qn('w:eastAsia')) is None
             assert fonts.get(qn('w:cs')) == 'Arial' and fonts.get(qn('w:cstheme')) == 'minorBidi'
+
+
+def test_home_font_size_supports_source_range_without_font_dialog_marker():
+    before=source();op=operation(before,{'fontSize':210},kind='formatParagraph');op['style'].pop('fontDialog')
+    after=patch_docx(before,[op]);doc=Document(BytesIO(after))
+    assert all(run._r.rPr.find(qn('w:sz')).get(qn('w:val'))=='420' for run in doc.paragraphs[0].runs)
+    assert doc.paragraphs[1].text=='邻段不得改变'

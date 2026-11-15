@@ -4,6 +4,7 @@ import { bindNativeSession } from './native-session'
 import { createEditorShell } from './shell'
 import { toolbarMode } from './viewport'
 import { bindNativeAI } from './native-ai'
+import { mountReportChannelShare } from './report-channel-share'
 import { bindNativeWordAssistant } from './native-word-assistant'
 import {
   createElement, createIcons, Database, FileDown, FileText, Focus, History, Keyboard, MessageCircle, MoreHorizontal,
@@ -40,7 +41,7 @@ export async function startNativeEditor() {
   const original = document.createElement('a')
   original.href = `${window.location.pathname.replace(/\/$/, '')}/api/file`
   original.textContent = '下载原件'
-  original.download = `report.${context.format}`
+  original.download = context.displayName || `report.${context.format}`
   original.referrerPolicy = 'no-referrer'
   root.querySelector('.toolbar-group-output')?.append(original)
   if (context.format === 'xlsx' || context.format === 'pptx') {
@@ -60,7 +61,7 @@ export async function startNativeEditor() {
   let wordReader: ReturnType<typeof bindNativeWordAssistant> | undefined
   let session: ReturnType<typeof bindNativeSession> | undefined
   let wordDock: {dispose(): void} | undefined
-  const options = { api, context: response, draft, onAssistant: response.wordReadAIEnabled || response.aiEnabled && response.editingEnabled ? () => { if (wordReader) wordReader.open('ask'); else ai?.open() } : undefined, onNoteAI: (selection:NativeAINoteSelection,instruction?:string,beforeText?:string)=>ai?.openNotes(selection,instruction,beforeText), onReviewAI: (selection: NativeAIReviewSelection, instruction?: string) => ai?.openReview(selection,instruction), onDraftChange: () => session?.update(), onSelectionChange: (selection: NativeAISelection[]) => {
+  const options = { api, context: response, draft, onReviewSummary:response.wordReadAIEnabled?()=>wordReader?.openPrompt('总结文档中所有待处理的修订：先给出实际读取覆盖范围、插入/删除数量、作者和日期，再逐项说明修改与风险。只做总结，不修改正文，不接受或拒绝任何修订。'):undefined, onAIPreset:(instruction:string,selection:import('./docx-review-presets').DocxPresetSelection,scope:import('./docx-review-presets').DocxPresetScope)=>ai?.openPreset(instruction,selection,scope), onAssistant: response.wordReadAIEnabled || response.aiEnabled && response.editingEnabled ? () => { if (wordReader) wordReader.open('ask'); else ai?.open() } : undefined, onNoteAI: (selection:NativeAINoteSelection,instruction?:string,beforeText?:string)=>ai?.openNotes(selection,instruction,beforeText), onReviewAI: (selection: NativeAIReviewSelection, instruction?: string) => ai?.openReview(selection,instruction), onDraftChange: () => session?.update(), onSelectionChange: (selection: NativeAISelection[]) => {
     ai?.setSelection(selection)
   }, flushForFileOperation: async () => {
     if (!session) throw new Error('编辑会话尚未就绪')
@@ -84,13 +85,14 @@ export async function startNativeEditor() {
   shell.statusLabel.textContent = response.editingEnabled ? '文档已载入' : '在线编辑暂未开放，可下载原件'
   session = bindNativeSession(shell, { api, draft, format: context.format, view, editingEnabled: response.editingEnabled })
   if (response.aiEnabled && response.editingEnabled && (context.format === 'docx' || response.pdfTextEnabled)) {
-    ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, onDraftChange: () => session?.update() })
+    ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, onDraftChange: () => session?.update(), locked: () => ('mutationLocked' in view&&view.mutationLocked===true) || draft.operations.some(operation=>operation.kind==='setDocumentProtection') })
   }
   if (context.format === 'docx' && response.wordReadAIEnabled) {
     wordReader = bindNativeWordAssistant(shell.editor.parentElement ?? root, {
       api, draft, selection: () => 'getReadSelection' in view ? view.getReadSelection() : [], flushPendingEdits: () => { if ('flushPendingEdits' in view) view.flushPendingEdits?.() },
     })
   }
+  let disposeChannel: (() => void) | undefined
   if (context.format === 'docx' && (wordReader || ai)) {
     const { mountOfficeTaskDock } = await import('./office-task-dock')
     const entries = []
@@ -100,6 +102,9 @@ export async function startNativeEditor() {
     }
     if (ai) {
       const panel = root.querySelector<HTMLElement>('.native-ai:not(.native-word-assistant)')!
+      if (response.reportChannelEnabled) disposeChannel = mountReportChannelShare(panel, api, async taskId => {
+        await ai?.followWordTask(taskId)
+      })
       entries.push({id:'edit', label:'编辑建议', panel, open:()=>ai?.open(), close:()=>ai?.close()})
     }
     const main = shell.editor.querySelector<HTMLElement>('.docx-navigation-layout') ?? shell.editor
@@ -111,11 +116,16 @@ export async function startNativeEditor() {
       button.onclick = () => dock.open(entry.id)
       root.querySelector('.toolbar-group-edit-view')?.append(button)
     }
+    const channelTask = /^#word-task=([A-Za-z0-9_-]{1,128})$/.exec(window.location.hash)?.[1]
+    if (channelTask && ai) {
+      dock.open('edit')
+      void ai.followWordTask(channelTask)
+    }
   }
   if (!response.editingEnabled) {
     shell.save.disabled = true
     shell.exportWord.disabled = true
     shell.exportPdf.disabled = true
   }
-  window.addEventListener('pagehide', () => { wordDock?.dispose(); ai?.dispose(); wordReader?.dispose(); session?.dispose() }, { once: true })
+  window.addEventListener('pagehide', () => { disposeChannel?.(); wordDock?.dispose(); ai?.dispose(); wordReader?.dispose(); session?.dispose() }, { once: true })
 }

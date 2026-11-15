@@ -168,7 +168,7 @@ def test_report_editor_static_lives_outside_source_bind_mount() -> None:
     )
     service = compose["services"]["reporting-os"]
 
-    assert "COPY --from=report-editor-frontend /build/static /opt/report-editor-static" in (
+    assert "COPY --from=report-editor-frontend /build/smart_reporting/report_editor/static /opt/report-editor-static" in (
         dockerfile
     )
     assert "AGENT_REPORT_EDITOR_STATIC_DIR=/opt/report-editor-static" in dockerfile

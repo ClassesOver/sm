@@ -15,10 +15,12 @@ function validateStyle(style:PdfReplacementStyle){
  if(style.lineLeading!==undefined&&(!Number.isFinite(style.lineLeading)||style.lineLeading<=0))throw Error('替换文字行距须为正数')
 }
 export function validatePdfStyledReplacement(pages:PdfPageIdentity[],operations:NativeOperation[]){
- if(!operations.some(isStyledPdfReplacement))return
- if(operations.some(operation=>!['replaceText','addMarkup','highlight','addDrawing'].includes(operation.kind)))throw Error(PDF_STYLED_REPLACEMENT_ALONE_REASON)
+ const mixedInsert=operations.some(operation=>operation.kind==='insertText')&&operations.some(operation=>operation.kind==='replaceText')
+ if(!operations.some(isStyledPdfReplacement)&&!mixedInsert)return
+ if(operations.some(operation=>!(mixedInsert?['replaceText','insertText']:['replaceText','addMarkup','highlight','addDrawing']).includes(operation.kind)))throw Error(PDF_STYLED_REPLACEMENT_ALONE_REASON)
  const used=new Set<string>();let pngPixels=0,pngBytes=0
  for(const operation of operations){
+  if(operation.kind==='insertText')continue
   if(operation.kind!=='replaceText'){
    const page=pages.find(item=>item.pageId===operation.pageId),box=page?.cropBox
    if(!page||page.blank||!(operation.kind==='addDrawing'?page.drawingsReadSafe:page.markupReadSafe)||operation.sourceSha256!==undefined&&(typeof operation.sourceSha256!=='string'||!page.pageId.startsWith('sha256:'+operation.sourceSha256+':page:')))throw Error('文字标注或绘图来源及页面身份已变化')

@@ -482,3 +482,12 @@ it('编辑关闭时数字签名入口仍可只读加载，且不调用修改预�
  expect(readModel).toHaveBeenCalledOnce();expect(f.api.preview).not.toHaveBeenCalled();expect(f.draft.operations).toEqual([])
  await act(async()=>document.querySelector('dialog.pdf-digital-signatures-dialog')!.dispatchEvent(new Event('cancel',{cancelable:true})))
 })
+it('creation commands remain available for a pure creation draft and settings append another field',async()=>{
+ const first=operation('createFormField'),f=await fixture({restored:first});await f.create()
+ const create=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.formDesign.addTextField"]')!,settings=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.formDesign.fieldSettings"]')!
+ expect(create.disabled).toBe(false);expect(settings.disabled).toBe(false);settings.click()
+ await vi.waitFor(()=>expect(f.root.querySelector<HTMLElement>('.pdf-form-create-panel')?.hidden).toBe(false))
+ f.root.querySelector<HTMLInputElement>('[data-pdf-form-create-name]')!.value='second_field'
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-form-create-apply]')!.click()
+ await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(2));expect(f.draft.operations[0]).toEqual(first);expect(f.draft.operations[1]).toMatchObject({kind:'createFormField',fieldName:'second_field'})
+})

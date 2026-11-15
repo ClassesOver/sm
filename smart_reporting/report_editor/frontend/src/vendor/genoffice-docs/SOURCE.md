@@ -135,3 +135,9 @@ content/layout/font fidelity remains pending manual review.
 
 
 2026-11-13 多级列表源增量：原样迁移 `list-presets.ts`、`components/ListDialogs.tsx`、`LengthInput.tsx`、`modal-keys.ts`、`system-fonts.ts` 与共享 `dropdown.tsx/.css`，固定提交不变。仅启用八套九级预设及 DefineMultilevelDialog；普通项目符号/编号库和设置编号值未因此开放。宿主 `docx-list-gallery` 管理来源快照、保存锁与 IME，并为窄屏限定局部滚动布局；原始文件 SHA 与当前本地 SHA 分别登记。详见 `NATIVE_WORD_MULTILEVEL_ACCEPTANCE.md`。
+
+2026-11-14 审阅预设与比较：从固定 f8c17004 原样迁入 components/translate-langs.ts（22语言）及 editor/compare.ts（段落 LCS / 预览文本规则），原始和本地摘要均登记。适配位于 vendor 外的 docx-review-presets.ts / docx-compare.ts。预设沿用 Native AI 候选/显式采纳，整篇授权受可核验对象和100目标上限限制；比较为浏览器选本地 DOCX，复用源文本差异算法，不创建合并修订文档。复杂对象、story与保护范围不因入口接线放开。
+
+2026-11-14 audit remediation: renderer/font-sizes.ts copied byte-for-byte from fixed f8c17004; native Home uses its language-specific size ladder and valid 1–1638pt range.
+
+2026-11-14 table lifecycle: editor/table-ops.ts and components/toast-bus.ts copied byte-for-byte from fixed f8c17004. Native adapter uses the original splitTableAtSelection and PM deleteTable with source-bound, isolated save operations; unknown/complex tables remain unavailable.

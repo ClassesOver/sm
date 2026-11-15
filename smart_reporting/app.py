@@ -8,6 +8,7 @@ from loguru import logger as loguru_logger
 from starlette.concurrency import run_in_threadpool
 
 from .context_management import validate_configured_tiktoken_cache
+from .report_channel_api import ReportChannelRouter
 from .http.identity import (
     requires_workspace_capability,
     verified_report_request,
@@ -342,8 +343,17 @@ native_pdf_form_ai = NativePDFFormService(
 native_import = NativeImportService(native_workspace, native_document_repository, report_editor_grants)
 
 
-def create_base_app(context: ApplicationContext) -> FastAPI:
+def create_base_app(
+    context: ApplicationContext, *, report_channel_router: ReportChannelRouter | None = None,
+) -> FastAPI:
     application = FastAPI(title="开发智能体服务")
+    if report_channel_router is not None:
+        from .report_channel_host import mount_report_channel
+
+        origin = context.settings.report_public_base_url
+        if not origin:
+            raise ValueError("report_channel_requires_public_origin")
+        mount_report_channel(application, report_channel_router, origin=origin)
     application.state.agentos_context = context
     management_auth = AdminAuthService(AdminRepository(agent_database.async_engine))
     application.state.management_auth = management_auth
@@ -395,6 +405,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.include_router(create_native_editor_router(
         report_editor_grants, editor=native_editor, download_service=native_downloads,
         ai_enabled=settings.native_ai_enabled,
+        report_channel_enabled=report_channel_router is not None,
         static_dir=static_root, allowed_origin=settings.report_public_base_url,
         cookie_secure=bool(settings.report_public_base_url and settings.report_public_base_url.startswith("https://")),
     ))

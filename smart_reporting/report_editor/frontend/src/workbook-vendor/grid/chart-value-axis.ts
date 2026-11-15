@@ -19,14 +19,14 @@ export function valueTickText(value: number, format?: string): string {
 /** A numeric band inside the already reserved legend/title bands. Suppress
  * colliding labels without changing the domain or the positions of ticks.
  */
-export function paintValueAxis(ctx: UniverRenderingContext, spec: ChartReadSpec, scale: BarValueScale, outer: Plot): Plot {
+export function paintValueAxis(ctx: UniverRenderingContext, spec: ChartReadSpec, scale: BarValueScale, outer: Plot, numberFormat?: string): Plot {
   const axis = spec.axes?.value
   if (!axis || axis.hidden || outer.right - outer.left < 64 || outer.bottom - outer.top < 64) return outer
   const horizontal = spec.kind === 'bar'
   const side: keyof Plot = horizontal ? axis.position === 'top' ? 'top' : 'bottom' : axis.position === 'right' ? 'right' : 'left'
   ctx.save(); ctx.font = '9px system-ui'
   const labels = scale.ticks.map(value => {
-    const text = valueTickText(value, axis.numberFormat)
+    const text = valueTickText(value, numberFormat ?? axis.numberFormat)
     return {value, text, width:ctx.measureText(text).width}
   })
   const widest = Math.max(0,...labels.map(label => label.width))

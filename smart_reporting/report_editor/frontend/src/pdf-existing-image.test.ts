@@ -29,3 +29,13 @@ it('stages pinned replaceImage pixels on a replaceable target only',()=>{
   expect(()=>validatePdfExistingImage(pages,[{...staged,image:bad}],[replaceable])).toThrow('参数无效')
  expect(()=>existingImageTransform(sha,replaceable,{x:60,y:90,width:100,height:80},'R0lGODlh')).toThrow('PNG')
 })
+it('validates independent source image removal without permitting pixel edits or movement',()=>{
+ const removable={...target,removable:true},remove={...operation,rect:target.rect,remove:true};expect(()=>validatePdfExistingImage(pages,[remove],[removable])).not.toThrow()
+ for(const patch of [{remove:false},{image:png},{bake:{kind:'flip',axis:'h'}},{rect:[61,90,161,170]}])expect(()=>validatePdfExistingImage(pages,[{...remove,...patch}],[removable])).toThrow()
+ expect(()=>validatePdfExistingImage(pages,[remove],[{...removable,removable:false,removalReason:'模板内图像暂不能删除'}])).toThrow('模板')
+})
+it('validates independent image text-layer changes while rejecting same band and mixed edits',()=>{
+ const layered={...target,layerable:true},change={...operation,rect:target.rect,layer:'belowText'};expect(()=>validatePdfExistingImage(pages,[change],[layered])).not.toThrow()
+ for(const patch of [{layer:'aboveText'},{layer:'front'},{remove:true},{image:png},{bake:{kind:'flip',axis:'h'}},{rect:[61,90,161,170]}])expect(()=>validatePdfExistingImage(pages,[{...change,...patch}],[layered])).toThrow()
+ expect(()=>validatePdfExistingImage(pages,[change],[{...layered,layerable:false,layerReason:'页面没有直属文字'}])).toThrow('文字')
+})

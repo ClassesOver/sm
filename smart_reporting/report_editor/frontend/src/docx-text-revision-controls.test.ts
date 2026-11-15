@@ -15,6 +15,7 @@ afterEach(()=>{disposals.splice(0).forEach(dispose=>dispose());document.body.rep
 function fixture(multiple=false,onReviewAI?: (selection:{blockId:string;revisionId:string},instruction?:string)=>void){
  const root=document.body.appendChild(document.createElement('div')),errors:unknown[]=[],ignored:boolean[]=[]
  let baseline:DocxPmNode,ready=false,locked=false
+ let filter={insDel:true,format:true,hiddenAuthors:[] as string[]}
  const anchor:DocxTextRevisionAnchor={docxIndex:0,blockId:'body',expectedObjectSha256:'sha',reviewTargets:[['a',0,3,'😀同'],['b',3,4,'同']].map(([revisionId,from,to,text])=>({revisionId:String(revisionId),blockId:'body',expectedObjectSha256:'sha',originalRevisionId:'7',type:'insertion',author:'A <script>',date:null,sourceRange:{from:Number(from),to:Number(to),text:String(text)}}))}
  const anchors=[anchor,...(multiple?[{...structuredClone(anchor),docxIndex:1,blockId:'second',reviewTargets:anchor.reviewTargets!.map(t=>({...t,blockId:'second',revisionId:'second-'+t.revisionId,type:'deletion' as const}))}]:[])]
  const guardKey=new PluginKey('revisionGuard')
@@ -24,9 +25,9 @@ function fixture(multiple=false,onReviewAI?: (selection:{blockId:string;revision
  baseline=editor.getJSON();ready=true
  editor.on('transaction',({transaction})=>{if(transaction.docChanged)ignored.push(transaction.getMeta(TRACK_IGNORE)===true)})
  ;(editor.storage as any).trackChanges.enabled=true
- const controls=createDocxTextRevisionControls({editor,baseline,anchors,container:root,onReviewAI,readOnlyReason:()=>locked?'正在保存':null,onError:error=>errors.push(error)})
+ const controls=createDocxTextRevisionControls({editor,baseline,anchors,container:root,onReviewAI,revisionFilter:()=>filter,readOnlyReason:()=>locked?'正在保存':null,onError:error=>errors.push(error)})
  disposals.push(()=>{controls.dispose();editor.destroy()})
- return {editor,baseline,anchor,anchors,controls,errors,ignored,bypass:()=>{editor.unregisterPlugin(guardKey);(editor.storage as any).trackChanges.enabled=false},lock:()=>{locked=true;controls.refresh()}}
+ return {editor,baseline,anchor,anchors,controls,errors,ignored,setFilter:(next:typeof filter)=>{filter=next},bypass:()=>{editor.unregisterPlugin(guardKey);(editor.storage as any).trackChanges.enabled=false},lock:()=>{locked=true;controls.refresh()}}
 }
 const row=(id:string)=>document.querySelector<HTMLElement>(`[data-revision-id="${id}"]`)!
 const click=(id:string,action:string)=>row(id).querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.click()
@@ -110,4 +111,20 @@ it('每条AI修订入口绑定真实wrapper身份，不直接接受或拒绝',()
  expect(button.querySelector('svg')).not.toBeNull();button.click()
  expect(open).toHaveBeenCalledWith({blockId:'body',revisionId:'b'},'')
  expect(f.editor.getJSON()).toEqual(f.baseline);expect(f.ignored).toEqual([])
+})
+
+it('selection scope touches only the intersecting source revision and one undo restores the batch',()=>{
+ const f=fixture(true);f.editor.commands.setTextSelection({from:1,to:4});f.controls.applyScope('reject','selection')
+ const ops=normalizeDocxTextRevisions(f.baseline,f.editor.getJSON(),f.anchors,f.editor.schema).operations
+ expect(ops.map(op=>op.revisionId)).toEqual(['a']);expect(f.editor.state.doc.child(0).textContent).toBe('同');expect(f.editor.state.doc.child(1).textContent).toBe('😀同同');expect(f.editor.commands.undo()).toBe(true);expect(f.editor.getJSON()).toEqual(f.baseline)
+})
+it('shown and author scopes never fall back to all when filters match no targets',()=>{
+ const f=fixture(true);f.setFilter({insDel:false,format:true,hiddenAuthors:[]});expect(f.controls.scopeReason('shown')).not.toBeNull();f.controls.applyScope('accept','shown');expect(f.editor.getJSON()).toEqual(f.baseline)
+ f.controls.applyScope('reject',{author:'unknown'});expect(f.editor.getJSON()).toEqual(f.baseline)
+ f.controls.applyScope('accept',{author:'A <script>'});expect(normalizeDocxTextRevisions(f.baseline,f.editor.getJSON(),f.anchors,f.editor.schema).operations).toHaveLength(4)
+})
+it('next scope handles the visible revision containing the caret, then only the next pending target',()=>{
+ const f=fixture(true);f.editor.commands.setTextSelection(2);f.controls.applyScope('accept','next')
+ let ops=normalizeDocxTextRevisions(f.baseline,f.editor.getJSON(),f.anchors,f.editor.schema).operations;expect(ops.map(op=>op.revisionId)).toEqual(['a'])
+ f.controls.applyScope('reject','next');ops=normalizeDocxTextRevisions(f.baseline,f.editor.getJSON(),f.anchors,f.editor.schema).operations;expect(ops.map(op=>op.revisionId)).toEqual(['a','b']);expect(f.errors).toEqual([])
 })

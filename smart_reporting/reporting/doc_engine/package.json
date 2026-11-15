@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "bundle:bridges": "esbuild bridge/edit-docx.ts --bundle --platform=node --format=esm --outdir=dist --out-extension:.js=.mjs --log-level=warning --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\""
+    "bundle:bridges": "esbuild bridge/edit-docx.ts bridge/export-docx-mail-merge.ts bridge/new-docx.ts --bundle --platform=node --format=esm --outdir=dist --out-extension:.js=.mjs --log-level=warning --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\""
   },
   "dependencies": {
     "@genoffice/pptx-engine": "file:../slides_engine/packages/pptx-engine",

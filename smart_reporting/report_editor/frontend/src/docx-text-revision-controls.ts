@@ -5,13 +5,14 @@ import {TextSelection} from '@tiptap/pm/state'
 import type {DocxPmNode} from './docx-operations'
 import {createModal} from './modal'
 import {buttonClasses} from './button'
+import {revisionShown,revisionsInSelection,DEFAULT_REVISION_FILTER,type RevisionFilter,type RevisionScope} from './vendor/genoffice-docs/apps/docs/src/renderer/editor/revision-filters'
 import {TRACK_IGNORE} from './vendor/genoffice-docs/apps/docs/src/renderer/editor/revisions'
 import {getDocxTextRevisionTargets,normalizeDocxTextRevisions,projectDocxTextRevisions,type DocxTextRevisionAnchor,type DocxTextRevisionMappedTarget,type DocxTextRevisionOperation} from './docx-text-revisions'
 import {failDocxTextRevision,validatedDocxTextRevisionOperations} from './docx-text-revisions-core'
 interface Options {
  editor:Editor; baseline:DocxPmNode; anchors:readonly DocxTextRevisionAnchor[]; container:HTMLElement
  onReviewAI?:(selection:{blockId:string;revisionId:string},instruction?:string)=>void
- readOnlyReason?:()=>string|null; onError:(error:unknown)=>void
+ revisionFilter?:()=>RevisionFilter; readOnlyReason?:()=>string|null; onError:(error:unknown)=>void
 }
 interface Entry {anchor:DocxTextRevisionAnchor;source:DocxPmNode;target:DocxTextRevisionMappedTarget}
 /** 只列出服务器明确授权的源目标，不把 PM 合并后的 mark 范围当成一个 XML wrapper。 */
@@ -95,9 +96,21 @@ export function createDocxTextRevisionControls(options:Options){
   }catch(error){options.onError(error)}
  }
  // 先完成整批授权和投影校验，再构造一个事务；既有决策保持原样。
- const batchPlan=(action:'accept'|'reject')=>{
+ const scopedEntries=(scope:RevisionScope)=>{
+  const entries=navigableEntries(),filter=options.revisionFilter?.()??DEFAULT_REVISION_FILTER
+  const shown=entries.filter(({entry})=>revisionShown(filter,{kind:entry.target.type==='insertion'?'ins':'del',author:entry.target.author}))
+  if(scope==='all')return entries
+  if(scope==='shown')return shown
+  if(typeof scope==='object')return entries.filter(({entry})=>entry.target.author===scope.author)
+  const {from,to,head}=editor.state.selection
+  if(scope==='selection')return revisionsInSelection(entries.map(item=>({...item,from:item.position,to:item.position+item.entry.target.to-item.entry.target.from})),from,to)
+  const current=shown.find(item=>head>=item.position&&head<=item.position+item.entry.target.to-item.entry.target.from)??shown.find(item=>item.position>head)??shown[0]
+  return current?[current]:[]
+ }
+ const batchPlan=(action:'accept'|'reject',scope:RevisionScope='all')=>{
   const reason=locked();if(reason)throw new Error(reason)
   normalizeDocxTextRevisions(baseline,editor.getJSON(),anchors,editor.schema)
+  const selected=new Set(scopedEntries(scope).map(item=>item.entry.target.revisionId))
   const seen=new Set<number>(),plans=[]
   for(const anchor of anchors){
    if(!anchor.reviewTargets?.length)continue
@@ -107,7 +120,7 @@ export function createDocxTextRevisionControls(options:Options){
    if(!targets.length)continue
    const live=verified({source,anchor,target:targets[0]})
    const pendingIds=new Set(live.pending.map(op=>op.revisionId))
-   const additions:DocxTextRevisionOperation[]=targets.filter(target=>!pendingIds.has(target.revisionId)).map(target=>({kind:'resolveTextRevision',blockId:anchor.blockId,expectedObjectSha256:anchor.expectedObjectSha256,revisionId:target.revisionId,action}))
+   const additions:DocxTextRevisionOperation[]=targets.filter(target=>!pendingIds.has(target.revisionId)&&selected.has(target.revisionId)).map(target=>({kind:'resolveTextRevision',blockId:anchor.blockId,expectedObjectSha256:anchor.expectedObjectSha256,revisionId:target.revisionId,action}))
    if(!additions.length)continue
    const next=projectDocxTextRevisions(source,anchor,[...live.pending,...additions],editor.schema)
    plans.push({...live,anchor,next:editor.schema.nodeFromJSON(next)})
@@ -116,15 +129,20 @@ export function createDocxTextRevisionControls(options:Options){
   return plans
  }
  const batchReason=()=>{try{batchPlan('accept');return null}catch(error){return error instanceof Error?error.message:String(error)}}
- const applyAll=(action:'accept'|'reject')=>{
+ const scopeReason=(scope:RevisionScope)=>{try{batchPlan('accept',scope);return null}catch(error){return error instanceof Error?error.message:String(error)}}
+ const applyScope=(action:'accept'|'reject',scope:RevisionScope)=>{
   try{
-   const plans=batchPlan(action),tr=closeHistory(editor.state.tr).setMeta(TRACK_IGNORE,true)
+   const nextPosition=scope==='next'?scopedEntries(scope)[0]?.position:undefined
+   const plans=batchPlan(action,scope),tr=closeHistory(editor.state.tr).setMeta(TRACK_IGNORE,true)
    for(const plan of plans.sort((a,b)=>b.pos-a.pos))tr.replaceWith(plan.pos,plan.pos+plan.node.nodeSize,plan.next)
    normalizeDocxTextRevisions(baseline,tr.doc.toJSON(),anchors,editor.schema)
    editor.view.dispatch(tr)
    if(!editor.state.doc.eq(tr.doc))throw new Error('批量修订决策未被编辑器接受，请重新打开列表')
+   if(scope==='next'){const rest=navigableEntries().filter(({entry})=>revisionShown(options.revisionFilter?.()??DEFAULT_REVISION_FILTER,{kind:entry.target.type==='insertion'?'ins':'del',author:entry.target.author}));const next=rest.find(item=>item.position>=(nextPosition??editor.state.selection.from))??rest[0];if(next)navigate(next.entry)}
   }catch(error){options.onError(error)}
  }
+ const applyAll=(action:'accept'|'reject')=>applyScope(action,'all')
+ const authors=()=>[...new Set(navigableEntries().map(item=>item.entry.target.author))]
  const refresh=()=>{
   if(!modal||disposed||editor.isDestroyed)return
   const list=modal.card.querySelector<HTMLElement>('[data-revision-list]')!,status=modal.card.querySelector<HTMLElement>('[role="status"]')!
@@ -185,5 +203,5 @@ export function createDocxTextRevisionControls(options:Options){
   refresh();modal.open()
  }
  editor.on('transaction',refresh)
- return {open,refresh,applyAll,batchReason,navigateRevision,navigationReason,dispose(){disposed=true;editor.off('transaction',refresh);close()}}
+ return {open,refresh,applyAll,applyScope,scopeReason,authors,batchReason,navigateRevision,navigationReason,dispose(){disposed=true;editor.off('transaction',refresh);close()}}
 }

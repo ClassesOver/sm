@@ -18,15 +18,16 @@ from ..models import ReportingError
 
 _MAX_BYTES = 24 * 1024 * 1024
 _OPERATION_KINDS = frozenset({
+    'formatImage', 'insertChart', 'updateChart', 'insertField', 'editField', 'updateFields', 'resolveStoryRevision', 'setDocumentTheme', 'setDocumentProtection', 'setInk',
     'formatTableProperties', 'replaceImage', 'setParagraphDropCap',
     'setParagraphProperties',
     'setParagraphCustomList', 'setParagraphNumberingValue',
     'insertCrossReference', 'insertCaption', 'pasteRichContent', 'mailMergeSingle', 'insertMailMergeField', 'editEquations', 'setPageColor', 'setWatermark', 'setTableStyle',
     'createBookmark', 'deleteBookmark', 'insertToc', 'updateToc', 'deleteComment', 'resolveComment', 'replyComment', 'createComment', 'editCommentText', 'resolveTextRevision', 'recordTextRevision', 'setTrackRevisions', 'insertNote', 'updateNote', 'deleteNote', 'patchParagraphRuns',
     'clearParagraphFormatting', 'setParagraphRulerIndent', 'setParagraphTabStops', 'setTableCellBorders', 'setTableRepeatHeaders', 'reshapeTableCells', 'resizeTableColumns', 'setTableRowHeights', 'setTableAutoFit', 'setTableCellTextDirection', 'setTableCellAlignment', 'setTableCellMargins', 'setTableCellMarginOverrides', 'setTableRowBreaks', 'setTableAlignment', 'setTableCellWrap', 'setTableAltText',
-    'replaceParagraph', 'insertParagraph', 'insertParagraphImage', 'insertTable', 'insertCoverPage', 'deleteParagraph',
+    'insertDocxObject', 'replaceParagraph', 'insertParagraph', 'insertParagraphImage', 'insertTable', 'insertCoverPage', 'deleteParagraph',
     'insertTableRow', 'deleteTableRow', 'insertTableColumn', 'deleteTableColumn', 'restructureTable', 'insertSectionBreak',
-    'formatParagraph', 'formatRange', 'setParagraphVerticalAlign', 'setParagraphLink', 'replaceNestedCellText', 'replaceCellText', 'setCellShading', 'setTableCellParagraphProperties', 'setParagraphAlignment', 'setParagraphList', 'setParagraphListLevel', 'setParagraphIndent', 'setParagraphRightIndent', 'setParagraphSpecialIndent', 'setParagraphSpacing', 'setParagraphStyle', 'upsertStyle', 'applyDocumentStyle', 'setParagraphShading', 'setParagraphBorders', 'setParagraphPageBreakBefore', 'setSectionLayout', 'setHeaderFooter', 'setHeaderFooterLink',
+    'editTableCells', 'deleteTable', 'splitTable', 'insertRichParagraph', 'setMirrorMargins', 'setTableStyle', 'formatParagraph', 'formatRange', 'setParagraphVerticalAlign', 'setParagraphLink', 'replaceNestedCellText', 'replaceCellText', 'setCellShading', 'setTableCellParagraphProperties', 'setParagraphAlignment', 'setParagraphList', 'setParagraphListLevel', 'setParagraphIndent', 'setParagraphRightIndent', 'setParagraphSpecialIndent', 'setParagraphSpacing', 'setParagraphStyle', 'upsertStyle', 'applyDocumentStyle', 'setParagraphShading', 'setParagraphBorders', 'setParagraphPageBreakBefore', 'setSectionLayout', 'setHeaderFooter', 'setHeaderFooterLink',
 })
 
 
@@ -64,6 +65,32 @@ def _validate_paste_images(operations: list[dict[str, Any]]) -> None:
             children = node.get('content')
             if isinstance(children, list):
                 stack.extend(children)
+
+
+def _validate_gif_images(operations: list[dict[str, Any]]) -> None:
+    """Validate all GIF frames before preserving the original animated file bytes."""
+    for operation in operations:
+        image = operation.get('image')
+        if operation.get('kind') not in {'insertParagraphImage', 'replaceImage'} or not isinstance(image, dict) or image.get('mime') != 'image/gif':
+            continue
+        try:
+            encoded = image.get('base64')
+            if not isinstance(encoded, str) or len(encoded) > 11 * 1024 * 1024:
+                raise ValueError
+            content = base64.b64decode(encoded, validate=True)
+            if not content or len(content) > 8 * 1024 * 1024 or base64.b64encode(content).decode() != encoded:
+                raise ValueError
+            with Image.open(BytesIO(content)) as opened:
+                if opened.format != 'GIF' or not 1 <= opened.width <= 10000 or not 1 <= opened.height <= 10000:
+                    raise ValueError
+                count = opened.n_frames
+                if not 1 <= count <= 1000 or opened.width * opened.height > 40_000_000 or opened.width * opened.height * count > 100_000_000:
+                    raise ValueError
+                for frame in range(count):
+                    opened.seek(frame)
+                    opened.load()
+        except (ValueError, TypeError, EOFError, SyntaxError, binascii.Error, OSError, Image.DecompressionBombError):
+            raise ValueError('docx_gif_invalid') from None
 
 
 def _invoke(content: bytes, operations: list[dict[str, Any]] | None, revision_author: str | None = None) -> tuple[dict[str, Any], bytes | None]:
@@ -127,6 +154,9 @@ def patch_docx(content: bytes, operations: list[dict[str, Any]], *, revision_aut
             operations = normalize_mail_merge_operations(operations)
         except ReportingError as error:
             raise ValueError(error.code) from error
+    from .docx_ink_validation import validate_docx_ink_pngs
+    validate_docx_ink_pngs(operations)
+    _validate_gif_images(operations)
     _validate_paste_images(operations)
     _, output = _invoke(content, operations, revision_author)
     assert output is not None

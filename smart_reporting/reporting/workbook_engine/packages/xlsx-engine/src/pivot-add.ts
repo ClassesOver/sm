@@ -1,13 +1,16 @@
 /// Pivot table creation, ported (lean) from genoffice xlsx-pivot-add.ts:
-/// multi-level row/column axes, up to N value fields (sum/count/average/
-/// max/min), pre-populated cache records (so LibreOffice/WPS show values
+/// multi-level row/column axes, up to N value fields (11 source aggregation
+/// modes), pre-populated cache records (so LibreOffice/WPS show values
 /// without a refresh), full package wiring. Multi-level axes use tabular
 /// layout with OOXML r-repeat axis items, mirroring genoffice's
 /// buildAxisItemsXml carry rules. Calculated fields and report filters are
 /// persisted in OOXML; grouping metadata additionally uses a private extension.
 
 import { columnLabel, parseRange, parseAddress } from './cell-address'
+import { AGG_CAPTIONS, PIVOT_AGGREGATIONS, PIVOT_SHOW_DATA_AS, PIVOT_X14_SHOW_DATA_AS, showDataAsIsPercent, showDataAsNeedsBaseField, showDataAsNeedsBaseItem, type PivotAggregation, type PivotShowDataAs } from './pivot-value-modes'
+import { PIVOT_DATA_FIELD_EXT_URI, PIVOT_X14_NS } from './pivot-show-as'
 import { readSheetTables } from './table-read'
+import { projectPivotSourceGrid, readPivotSourcePatterns } from './pivot-source-format'
 import { z } from 'zod'
 import { decodeXmlText, readXmlAttribute } from './xml'
 import { standardPivotGrouping, type StandardPivotGrouping, type PivotGroupingPersistence } from './pivot-standard-grouping'
@@ -45,12 +48,15 @@ export interface PivotArea {
 export interface PivotValueSpec {
   /// Source field index; -1 for calculated fields (formula present).
   readonly fieldIndex: number
-  readonly agg: 'sum' | 'count' | 'average' | 'max' | 'min'
+  readonly agg: PivotAggregation
+  readonly name?: string | undefined
   /// Optional Excel number format string for this data field (e.g. "#,##0.00")
   readonly numFmt?: string | undefined
   /// "Show values as" mode (ECMA-376 dataField@showDataAs): percent of grand
   /// total / row / column; undefined = normal.
-  readonly showDataAs?: 'percentOfTotal' | 'percentOfRow' | 'percentOfCol' | undefined
+  readonly showDataAs?: PivotShowDataAs | undefined
+  readonly baseFieldIndex?: number | undefined
+  readonly baseItemIndex?: number | undefined
   /// Calculated field: formula (references source field names, basic arithmetic)
   /// and the new field name. Written as a <cacheField formula=… databaseField="0">
   /// appended at the end of cacheFields, taking no cache records; agg is fixed to
@@ -75,6 +81,7 @@ export interface PivotAddition {
   /// Name of the source sheet.
   readonly sourceSheetName: string
   readonly sourceTableName?: string | undefined
+  readonly dimensionFormatProjection?: boolean | undefined
   readonly sourceArea: PivotArea
   /// Baked output area, headers and grand totals included.
   readonly location: PivotArea
@@ -131,14 +138,6 @@ const PIVOT_RECORDS_CONTENT_TYPE =
 const PIVOT_TABLE_CONTENT_TYPE =
   'application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml'
 
-const AGG_CAPTIONS: Record<PivotValueSpec['agg'], string> = {
-  sum: 'Sum',
-  count: 'Count',
-  average: 'Average',
-  max: 'Max',
-  min: 'Min',
-}
-
 /// OOXML dataField@subtotal values; sum is the default and stays implicit.
 const AGG_SUBTOTALS: Record<PivotValueSpec['agg'], string | null> = {
   sum: null,
@@ -146,6 +145,12 @@ const AGG_SUBTOTALS: Record<PivotValueSpec['agg'], string | null> = {
   average: 'average',
   max: 'max',
   min: 'min',
+  product: 'product',
+  countNums: 'countNums',
+  stdDev: 'stdDev',
+  stdDevp: 'stdDevp',
+  var: 'var',
+  varp: 'varp',
 }
 
 const NUM_FMT_IDS: Record<string, number> = {
@@ -181,8 +186,14 @@ interface ComputedPivot {
   readonly sourceRows: readonly SourceValue[][]
 }
 
-function additionSpec(addition: PivotAddition): PivotLayoutSpec {
+export function pivotLayoutSpecOf(addition: PivotAddition): PivotLayoutSpec {
   const field = (index: number): string => addition.fieldNames[index] ?? ''
+  const baseItem = (value: PivotValueSpec): string | undefined => {
+    if (value.baseFieldIndex === undefined || value.baseItemIndex === undefined) return undefined
+    const row = addition.rowFieldIndices.indexOf(value.baseFieldIndex)
+    const items = row >= 0 ? addition.rowLevelItems[row] : addition.colLevelItems?.[(addition.columnFieldIndices ?? []).indexOf(value.baseFieldIndex)]
+    return items?.[value.baseItemIndex]
+  }
   return {
     rowFields: addition.rowFieldIndices.map(field),
     ...(addition.columnFieldIndices && addition.columnFieldIndices.length > 0
@@ -193,8 +204,11 @@ function additionSpec(addition: PivotAddition): PivotLayoutSpec {
       field:
         value.formula === undefined ? field(value.fieldIndex) : (value.calcName ?? ''),
       agg: value.agg,
+      ...(value.name !== undefined ? { name: value.name } : {}),
       ...(value.numFmt !== undefined ? { numFmt: value.numFmt } : {}),
       ...(value.showDataAs !== undefined ? { showDataAs: value.showDataAs } : {}),
+      ...(value.baseFieldIndex !== undefined ? { baseField: field(value.baseFieldIndex) } : {}),
+      ...(value.baseItemIndex !== undefined ? { baseItem: baseItem(value) } : {}),
       ...(value.formula !== undefined ? { formula: value.formula } : {}),
     })),
     ...(addition.groupings && addition.groupings.length > 0
@@ -315,7 +329,7 @@ async function computePivot(
     if(tables.tablesReadOnlyReason||!table||table.headerRowCount!==1)throw new PivotAddError('Named pivot source table is missing or unsupported.')
     addition={...addition,sourceTableName:table.name,sourceArea:{...table.range,endRow:table.range.endRow-table.totalsRowCount}}
   }
-  const grid = await readSourceAreaGrid(
+  const rawGrid = await readSourceAreaGrid(
     source,
     worksheetXml,
     addition.sourceArea.startRow,
@@ -323,7 +337,18 @@ async function computePivot(
     addition.sourceArea.startColumn,
     addition.sourceArea.endColumn,
   )
-  const layout = buildPivotLayout(grid, additionSpec(addition), undefined, {
+  const spec = pivotLayoutSpecOf(addition)
+  const grid = projectPivotSourceGrid(rawGrid, await readPivotSourcePatterns(source, worksheetXml, addition.sourceArea), {...spec,dimensionFormatProjection:addition.dimensionFormatProjection===true}, date1904)
+  // A refreshed source can remove some selected report members. Keep the
+  // surviving selection, rather than persisting labels absent from the cache.
+  // An empty intersection retains the existing explicit validation refusal.
+  const pageFilters = spec.pageFilters?.map(filter => {
+    if (!filter.selected) return filter
+    const index = addition.fieldNames.indexOf(filter.field)
+    const present = new Set(grid.slice(1).map(row => String(row[index] ?? '')))
+    return { ...filter, selected: filter.selected.filter(member => present.has(member)) }
+  })
+  const layout = buildPivotLayout(grid, { ...spec, pageFilters }, undefined, {
     memberOrder: {
       rowLevelItems: addition.rowLevelItems,
       ...(addition.colLevelItems ? { colLevelItems: addition.colLevelItems } : {}),
@@ -358,6 +383,7 @@ const pivotAreaSchema = z.object({
 const memberTablesSchema = z.array(z.array(z.string()).max(10000)).max(200)
 const pivotStateSchema = z.object({
   worksheetSheetName: z.string().min(1), sourceSheetName: z.string().min(1), sourceTableName: z.string().min(1).optional(),
+  dimensionFormatProjection: z.boolean().optional(),
   sourceArea: pivotAreaSchema, location: pivotAreaSchema, name: z.string().min(1),
   fieldNames: z.array(z.string().min(1)).min(1).max(200),
   rowFieldIndices: z.array(z.number().int().nonnegative()).min(1).max(200),
@@ -368,9 +394,12 @@ const pivotStateSchema = z.object({
   rowLines: z.array(z.object({ t: z.enum(['data', 'default']), members: z.array(z.number().int().nonnegative()) })).max(20000),
   colLines: z.array(z.object({ t: z.enum(['data', 'default']), members: z.array(z.number().int().nonnegative()) })).max(1000).optional(),
   values: z.array(z.object({
-    fieldIndex: z.number().int().min(-1), agg: z.enum(['sum', 'count', 'average', 'max', 'min']),
+    fieldIndex: z.number().int().min(-1), agg: z.enum(PIVOT_AGGREGATIONS),
+    name: z.string().optional(),
     numFmt: z.string().min(1).max(255).optional(),
-    showDataAs: z.enum(['percentOfTotal', 'percentOfRow', 'percentOfCol']).optional(),
+    showDataAs: z.enum(PIVOT_SHOW_DATA_AS).optional(),
+    baseFieldIndex: z.number().int().nonnegative().optional(),
+    baseItemIndex: z.number().int().nonnegative().optional(),
     formula: z.string().optional(), calcName: z.string().optional(),
   })).min(1).max(8),
   standardGroupings:z.array(z.object({fieldIndex:z.number().int().nonnegative(),groupItems:z.array(z.string()).max(10002),rawItems:z.array(z.object({type:z.enum(['n','d']),value:z.string(),source:z.number()})).max(10000),range:z.object({groupBy:z.enum(['range','months','quarters','years']),startNum:z.number().optional(),endNum:z.number().optional(),startDate:z.string().optional(),endDate:z.string().optional(),groupInterval:z.number().positive()})})).optional(),
@@ -459,6 +488,16 @@ function validateAddition(addition: PivotAddition, allowEmpty = false): void {
     // Calculated fields (formula present) carry fieldIndex -1 by convention.
     if (value.formula === undefined && !inBounds(value.fieldIndex)) {
       throw new PivotAddError(`Pivot "${addition.name}" references a value field outside its source.`)
+    }
+    if (showDataAsNeedsBaseField(value.showDataAs)) {
+      const index = value.baseFieldIndex
+      if (index === undefined || !inBounds(index) || ![...rowIndices, ...colIndices].includes(index)) {
+        throw new PivotAddError(`Pivot "${addition.name}" has a missing or non-axis base field.`)
+      }
+      if (showDataAsNeedsBaseItem(value.showDataAs)) {
+        const row = rowIndices.indexOf(index), items = row >= 0 ? addition.rowLevelItems[row] : addition.colLevelItems?.[colIndices.indexOf(index)]
+        if (value.baseItemIndex === undefined || value.baseItemIndex >= (items?.length ?? 0)) throw new PivotAddError(`Pivot "${addition.name}" has a missing base item.`)
+      }
     }
   }
   // Calculated fields: name is required and must not collide with source fields
@@ -555,6 +594,7 @@ function buildCacheRecordsXml(
         }
         if (value === null || value === '') return '<m/>'
         if (typeof value === 'number') return `<n v="${value}"/>`
+        if (typeof value === 'boolean') return `<b v="${value ? 1 : 0}"/>`
         return `<s v="${escapeAttribute(String(value))}"/>`
       })
       return `<r>${cells.join('')}</r>`
@@ -792,21 +832,25 @@ export function buildPivotTableXml(cacheId: number, addition: PivotAddition): st
       const isCalc = value.formula !== undefined
       const field = isCalc ? (value.calcName ?? '') : (addition.fieldNames[value.fieldIndex] ?? '')
       const fld = isCalc ? addition.fieldNames.length + calcSpecs.indexOf(value) : value.fieldIndex
-      const caption = `${AGG_CAPTIONS[value.agg]} of ${field}`
+      const caption = value.name?.trim() || `${AGG_CAPTIONS[value.agg]} of ${field}`
       const subtotal = isCalc ? null : AGG_SUBTOTALS[value.agg]
+      // MS-XLSX CT_DataField forbids ancestor showDataAs when pivotShowAs
+      // is specified in x14, including an otherwise harmless "normal" value.
+      const extendedMode = value.showDataAs !== undefined && PIVOT_X14_SHOW_DATA_AS.includes(value.showDataAs)
       // numFmtId: 0 = General; map common patterns to standard Excel IDs.
       // Percent display modes default to 0.00% (id 10) when no format is given.
       const numFmtId = value.numFmt
         ? (NUM_FMT_IDS[value.numFmt.trim()] ?? 0)
-        : value.showDataAs !== undefined
+        : showDataAsIsPercent(value.showDataAs)
           ? 10
           : 0
       return (
         `<dataField name="${escapeAttribute(caption)}" fld="${fld}"` +
         `${subtotal === null ? '' : ` subtotal="${subtotal}"`}` +
-        `${value.showDataAs === undefined ? '' : ` showDataAs="${value.showDataAs}"`}` +
-        ' baseField="0" baseItem="0"' +
-        `${numFmtId !== 0 ? ` numFmtId="${numFmtId}"` : ''}/>`
+        `${value.showDataAs === undefined || extendedMode ? '' : ` showDataAs="${value.showDataAs === 'percentOf' ? 'percent' : value.showDataAs}"`}` +
+        ` baseField="${showDataAsNeedsBaseField(value.showDataAs) ? value.baseFieldIndex! : 0}" baseItem="${showDataAsNeedsBaseItem(value.showDataAs) ? value.baseItemIndex! : 0}"` +
+        `${numFmtId !== 0 || value.numFmt !== undefined ? ` numFmtId="${numFmtId}"` : ''}` +
+        (extendedMode ? `><extLst><ext uri="${PIVOT_DATA_FIELD_EXT_URI}"><x14:dataField xmlns:x14="${PIVOT_X14_NS}" pivotShowAs="${value.showDataAs}"/></ext></extLst></dataField>` : '/>')
       )
     })
     .join('')

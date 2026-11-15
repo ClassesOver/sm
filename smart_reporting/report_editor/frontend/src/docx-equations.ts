@@ -11,7 +11,7 @@ const error=(s:string):never=>{throw new Error('公式：'+s)}
 const attrs=['nativeEquationTarget','nativeEquationId','nativeEquationOffset']
 export const NativeDocxEquations=Extension.create({name:'nativeDocxEquations',addGlobalAttributes:()=>[
  {types:['doc'],attributes:{nativeEquationOperation:{default:null,rendered:false}}},
- {types:['docParagraph','docHeading','docListItem','docInlineMath','docProtected'],attributes:Object.fromEntries(attrs.map(k=>[k,{default:null,rendered:false}]))},
+ {types:['docParagraph','docHeading','docListItem','docInlineMath','docProtected'],attributes:Object.fromEntries(attrs.map(k=>[k,{default:null,rendered:false,keepOnSplit:false}]))},
 ]})
 interface Token {node:DocxPmNode;size:number;formulaId?:string;display?:boolean}
 const size=(n:DocxPmNode)=>n.type==='text'?(n.text??'').length:1

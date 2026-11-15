@@ -1,0 +1,35 @@
+{
+  "feature": "Word Review > Protect Document",
+  "source": {
+    "repository": "https://github.com/genspark-ai/genoffice",
+    "revision": "f8c17004",
+    "path": "apps/docs/src/renderer/components/ProtectDialog.tsx",
+    "sha256": "c549573adab6294146a04c58b12819c5c43900a6f650ded3a50286b61381be7b"
+  },
+  "supported": [
+    "four restriction modes and optional vendor SHA512 password",
+    "verified password / passwordless removal",
+    "full settings and protection XML SHA256 binding",
+    "isolated save; source locked until save and reload",
+    "independent readback and non-settings ZIP preservation"
+  ],
+  "boundaries": [
+    "no open-password encryption, writeProtection modify-password lifecycle or privacy removal",
+    "all restricted sources stay read-only in editor including comments/trackedChanges/forms",
+    "disable/save/reload before mode/password change",
+    "unsupported/legacy/aliased/malformed settings fail closed"
+  ],
+  "verification": {
+    "bridge": "3 tests passed",
+    "frontend": "2 tests passed",
+    "python": "RED: documentProtection inspect key not wired yet; root owns final integration run"
+  },
+  "integration": {
+    "inspect": "inspectDocxProtection(settingsXml) => inspect.documentProtection",
+    "batch": "assertDocxProtectionBatch(allOperations,model) before any mutations",
+    "save": "spread await validateDocxProtectionOperations(protectionOperations,model) into SaveOptions",
+    "readback": "assertDocxProtectionWritten(savedSettingsXml,options.protection)",
+    "frontend": "DocxProtectionDialog; docxProtectionOperations; withDocxProtection; native history setDocumentProtection",
+    "credentials": "password is transient transport credential: omit from persisted draft storage"
+  }
+}

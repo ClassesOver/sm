@@ -1,0 +1,2951 @@
+{
+  "summary": {
+    "ref": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+    "treeTruncated": false,
+    "sourceFiles": 483,
+    "requiredSourceFiles": 479,
+    "rendererFiles": 363,
+    "rendererTextFiles": 358,
+    "excludedRendererAssets": [
+      {
+        "path": "apps/sheets/src/renderer/assets/app-icon.png",
+        "gitBlob": "69e0a67bb06199cfe27624d8078c7c47926a7929",
+        "size": 40849,
+        "reason": "non-code asset outside the textual capability inventory"
+      },
+      {
+        "path": "apps/sheets/src/renderer/assets/attach-icon.png",
+        "gitBlob": "cadd601f5943a7b00ea0f2d10ea22834668d007e",
+        "size": 1415,
+        "reason": "non-code asset outside the textual capability inventory"
+      },
+      {
+        "path": "apps/sheets/src/renderer/assets/send-enter-off.png",
+        "gitBlob": "8009f0b0e52e40501d5ad797a2e4a84624c14ca7",
+        "size": 4247,
+        "reason": "non-code asset outside the textual capability inventory"
+      },
+      {
+        "path": "apps/sheets/src/renderer/assets/send-enter-on.png",
+        "gitBlob": "83de4da09d01f8ab4194c98a90a5ef5ecb3dc2c5",
+        "size": 3742,
+        "reason": "non-code asset outside the textual capability inventory"
+      },
+      {
+        "path": "apps/sheets/src/renderer/assets/send-stop.png",
+        "gitBlob": "a2e625ddee04a59e0124783ced9a69362797784c",
+        "size": 2875,
+        "reason": "non-code asset outside the textual capability inventory"
+      }
+    ],
+    "localModules": 199,
+    "sourceSites": 2564,
+    "localSites": 1055,
+    "sourceCommandDeclarations": 260,
+    "localCommandDeclarations": 227,
+    "ipcChannels": 76,
+    "desktopMethods": 99,
+    "runtimeAdapters": 85,
+    "boundary": "Static declarations, not distinct features, passing tests, or runtime parity; dynamic expressions/imported package internals need separate verification."
+  },
+  "files": [
+    {
+      "path": "apps/sheets/README.md",
+      "gitBlob": "ce7cf70098d3ac914243293176653e7d52ba7963",
+      "sha256": "5c5ddc0934ce4e0edc8afdbf27064c44b531dbb13e684dd0cc36a5850812dc74",
+      "bytes": 4445
+    },
+    {
+      "path": "apps/sheets/docs/architecture.md",
+      "gitBlob": "e4427a00cc72a3ac03826c70193fb1b7fc6fa9f1",
+      "sha256": "7936ecc2cc62bf90bf0de02b13dbd71926fd930c9d7ce7745066fc32fe754151",
+      "bytes": 4402
+    },
+    {
+      "path": "apps/sheets/docs/compatibility.md",
+      "gitBlob": "dfd731fcb973a1df6228f64ea4d7dd346004b902",
+      "sha256": "023b68970d68998826170e048cec83c7649d0070ebc9370313cd163b6dbfc198",
+      "bytes": 19418
+    },
+    {
+      "path": "apps/sheets/docs/interface.md",
+      "gitBlob": "903f3edc4b69925fcb510c6fe6d004b1227ad28f",
+      "sha256": "b98bbf95eaf1fd8aba477332ef1c7d1497c1a880ae1b02a372aefb85577b0416",
+      "bytes": 3682
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/archive.rs",
+      "gitBlob": "06c7b28054dddfd5608b374938dff79ad6ebd5ff",
+      "sha256": "67db8578405389b8c83cf6dd1a6ac246b464ea446dce6cb7f897ccd19e418f2f",
+      "bytes": 28611
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/cell_images.rs",
+      "gitBlob": "2a9035f8a4e1e9faa4d0cb68b7858d2b46d6943f",
+      "sha256": "147993db7f09d03b8aedcfd32fca86c146271bbf02770b22d006d3c493bdd3a7",
+      "bytes": 6613
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/convert.rs",
+      "gitBlob": "c159a1553356db8f712e6eaa645c81d163eac661",
+      "sha256": "8fb4a72faa1b5fc2f6b5ba7499d0d2e1db4b5addf264552e5dc53d5ba377d88c",
+      "bytes": 42930
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/escher.rs",
+      "gitBlob": "d002d8e92b44e7238573566c3a62939958158a39",
+      "sha256": "ccb8173bbed2b3293c6d8505b70f61dd57922556f1e48475a9d2722452147946",
+      "bytes": 7023
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/external_links.rs",
+      "gitBlob": "c1af69d153cff535294f3e29fd518b6948ea34b7",
+      "sha256": "078e923f39f6c9eedfcb01b886469bb500262131cab2d770628b792661902fde",
+      "bytes": 89365
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/find.rs",
+      "gitBlob": "3c5db7e6da0ce760767fa2e06858cf9570f1f3dd",
+      "sha256": "3fde51e25e9813c88c4d7a2b52c30ee7b8a2cb5544d682850bde5cab6b53b17d",
+      "bytes": 25665
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/lib.rs",
+      "gitBlob": "97d7b30017b88f4b171441271b1c22cd89d6dc1f",
+      "sha256": "b20db4b8d16a296940304a61cb9f431ddea881f1db29bfd9542541364895261e",
+      "bytes": 37519
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/main.rs",
+      "gitBlob": "3da7e300d40c06a050f7e0afd2a770c8476241d5",
+      "sha256": "e230edc271449f55dd56836859710868342a7786083b27e43edf71a26bbeaa52",
+      "bytes": 4857
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/odf.rs",
+      "gitBlob": "95851bc9d7aeaf512b0be77958b63c357acc86d6",
+      "sha256": "64047d7712a5d0d1ca633fa3aaec6ed87a21de49f58eba66288f03becd4571eb",
+      "bytes": 14758
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/protocol.rs",
+      "gitBlob": "fb42fe08c804cc95dde4b129893e54247b9263ef",
+      "sha256": "ba0bfc2e780c64f99a29cde1f0a05c262014512af15eabbbd7dbccf2a1e91ebe",
+      "bytes": 34819
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/recalc.rs",
+      "gitBlob": "7c24854932df4c77a42ad8c69318870457dba9fd",
+      "sha256": "af156f0fa08a28e09cb27d91958971efd0f40bf48fe8fe563f8b15248bbefa7d",
+      "bytes": 103783
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/refs.rs",
+      "gitBlob": "3b074ec438f7574a594b1a179ddd4cf0fb23f8bb",
+      "sha256": "0862a7a76d9c6b8466861bcc89385dcf001ef3010b5e5b5f9dcc1bcfe0b2c239",
+      "bytes": 3226
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/rels_normalize.rs",
+      "gitBlob": "b43378339af59d84a7d039837f802af9cf1f0f3b",
+      "sha256": "39122a8a6b5850f5ff1a9205bb68eefb14fa3456f31271cd88d8bea1b5f768bc",
+      "bytes": 21403
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/richdata.rs",
+      "gitBlob": "07871b0ac004163fc8dbac07937f4062605600f0",
+      "sha256": "0dab6a69cfcfa41861f607773fc8a665d167d87897d8da89fe3ac599c63a2bbc",
+      "bytes": 6905
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/shared_formulas.rs",
+      "gitBlob": "b8bba376b791540287e6f786bb55c320d5d7ff95",
+      "sha256": "75ff038df1b373dfe0e2c42a81a21e9a9f9b3829336ee5185790d0298e276a4b",
+      "bytes": 14318
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/sparklines.rs",
+      "gitBlob": "92fdbd6ec507213f2dcfe88ecba075daf3218e63",
+      "sha256": "b98327f0a77604eadcb3cf723a7a7f6944b772a37e42ddcf692f14519f8e41e0",
+      "bytes": 6573
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/spreadsheetml.rs",
+      "gitBlob": "6c8d3b38ce6d87348c80568b67bcc661f63774e9",
+      "sha256": "7d6d4adb668a5c4110672774b2edf64107b00187b579232ddb17fc49dc313c6e",
+      "bytes": 41968
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/stream_patch.rs",
+      "gitBlob": "df01878069d62ff62f6c26cc6dae01060d76bee2",
+      "sha256": "8c2e5a710ae9cc699e42013f265c1e676d0d3356b100b4a636663d9dc1fc9b27",
+      "bytes": 27766
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/table_styles.rs",
+      "gitBlob": "9a01f697d2d67ba03ac7ad1529d0e4deffa53fc0",
+      "sha256": "715f0a0f4f23e6005b6ea4aaca63e2b6190910e7bb30a5c83e6f21ab5c83f0d2",
+      "bytes": 40530
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/tests.rs",
+      "gitBlob": "57efda0e3722d8fa83996e983f7f2f3d9a497919",
+      "sha256": "8f750643a29157e0184842f3c5c8bfd8e0d8b1ba378ac1f8d08461243b1a9e23",
+      "bytes": 263153
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/types.rs",
+      "gitBlob": "6cec456a32a088f73f95c6a2ab2dcc9ffc886f32",
+      "sha256": "fc2df2dfa0db13df215d9bfe3cb1fd8d8f5a687aba9aeb5f09e4eed343508a8a",
+      "bytes": 31891
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/visuals.rs",
+      "gitBlob": "7e8d177bdff5e703a8ba3d6f5b1858f9a2393172",
+      "sha256": "7304159ee8ae14a82d60fc7c3d3d144587b322944195609b8c0f915707a68219",
+      "bytes": 88123
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/visuals/charts.rs",
+      "gitBlob": "4d007e824340909e7324d2805006ded54f38a425",
+      "sha256": "189bf146f49f3129dd07c029f8008814bb790fcb20f009c9a4d391381f4faa1a",
+      "bytes": 43604
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/visuals/colors.rs",
+      "gitBlob": "7cde305abf9417cd2e3c5bcecdc90bbd77c11daa",
+      "sha256": "29a15291ff7b2dbfcf2ac8023406f2d778dda4b63f11e7fd3bb886fb610d0ea6",
+      "bytes": 18083
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/visuals/drawing.rs",
+      "gitBlob": "d8e90d25d3d55e470b2bca09998e406b67804bf3",
+      "sha256": "e563652e25c7407be5df1e5891165beb8b8fb62ea1bb7113b94344a96d7c3829",
+      "bytes": 44482
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/visuals/source_formats.rs",
+      "gitBlob": "02f5297494b7ef18ba60beeb6afc0b41a58afed6",
+      "sha256": "b1bc7b7788eb4194926dad7a77c36173f4a584c3e0e5a1c18e25546852fcb02e",
+      "bytes": 14074
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/visuals/styles.rs",
+      "gitBlob": "82f4908cc3e50da02388ffbbd50567bfd67f54d4",
+      "sha256": "5380341f35ef745aef899020c78406b2d00df5e9415902ee2f8fa27a7e27f816",
+      "bytes": 20045
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/visuals/tests.rs",
+      "gitBlob": "b7e2f1fd5848e5237fe4ac9c480dfa988fd8c2a0",
+      "sha256": "12649b2062e2508e8826e694069ca039c614bda14a4f09878101b4bd5773bab3",
+      "bytes": 99454
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/workbook.rs",
+      "gitBlob": "5a18711738c9694cd16dc529f93e9f372a5c57a1",
+      "sha256": "b4e940c55f0248fbcbd0d4a2bfb8e93c1c6941b0c98be464b7aeb92002c3025b",
+      "bytes": 33451
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/worksheet.rs",
+      "gitBlob": "c222c274cb2958c8dde993e52787853dbeae590f",
+      "sha256": "c7689b5e91c532419abbc0db9173fe1d2f090b63cad03169fca76a9c6d265ccc",
+      "bytes": 71841
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/xls_biff.rs",
+      "gitBlob": "ebea47150370390ea1387605ba823fa4783f3a2c",
+      "sha256": "47c7b2a924aeaef31fa4b4c7660710cf778c9f34eb2c2600505ee68f947bc820",
+      "bytes": 10210
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/xls_styles.rs",
+      "gitBlob": "a7b61bbeca5283ed37fdcd2994a91d05d1caaca9",
+      "sha256": "17097ea86bd96e941d4d8303e9b988cabb16b6bab85ad104b5bdf856efadfb65",
+      "bytes": 18994
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/xlsx_package.rs",
+      "gitBlob": "647fbcfa7bd21f31ae36427fa4146a9ff30702c7",
+      "sha256": "451ded193df45d6aa9beb901555dce829eb114d296f836af1510a1c2a3cbb28e",
+      "bytes": 14035
+    },
+    {
+      "path": "apps/sheets/native/xlsx-engine/src/xml_util.rs",
+      "gitBlob": "4a50c747b4535b03ef130f82aa8cd87365ff17bb",
+      "sha256": "7820b7a5b9801d04bcd3e9a54f9d438a9ef55061d74272561f05867436eaa81e",
+      "bytes": 9904
+    },
+    {
+      "path": "apps/sheets/package.json",
+      "gitBlob": "1ba3904d92b43e2b69499481f4eb75bfccdd9957",
+      "sha256": "64d0fd84553adbb8ce6778668487f381fd4eb523851c9562a926308db077e971",
+      "bytes": 2879
+    },
+    {
+      "path": "apps/sheets/src/ai/deterministic-planner.ts",
+      "gitBlob": "456bedd15d5b61af170f6f88278ac560ffbdbd66",
+      "sha256": "60615cb4948a38fbf3d27ea66bb99e12e0e75867bfbabd22e3ad9c50009382a2",
+      "bytes": 2544
+    },
+    {
+      "path": "apps/sheets/src/ai/privacy-policy.ts",
+      "gitBlob": "4d2098227ae6999591947fbdb06de83dcfabe0db",
+      "sha256": "c559fb49ab97377ab8a05e42406e01fd12cba193892ca12daff8e6f0801cc5ab",
+      "bytes": 1537
+    },
+    {
+      "path": "apps/sheets/src/main/atomic-write.ts",
+      "gitBlob": "a24bc2bf46932d075d75f9520e6d10d8b8a43e89",
+      "sha256": "78d7b7bfda17652d6a2060889e9c4514f16c4a7cf03929de00b5ef325118dbd7",
+      "bytes": 352
+    },
+    {
+      "path": "apps/sheets/src/main/close-guard.ts",
+      "gitBlob": "48760d0609718f878a66f13254bd4c59328339b0",
+      "sha256": "960d91bc303bda2e7a0e9c42d4cf6164ca0dd48b66f79ddf8c7496f159999144",
+      "bytes": 1731
+    },
+    {
+      "path": "apps/sheets/src/main/csv-digest.ts",
+      "gitBlob": "b920cb6cd8adc0df3e38bd73f61c850418d1227d",
+      "sha256": "07e52feaa76fd4e6b3a16808738125875e4e0392aeda74f6fa5eef16697ee990",
+      "bytes": 2143
+    },
+    {
+      "path": "apps/sheets/src/main/env.d.ts",
+      "gitBlob": "53044a16b41c60dd50b703a4902990cd6b79434c",
+      "sha256": "06e79d247e5d28ab87ffb37115eede2e8f02fbc55c811640f25348cd77c1b308",
+      "bytes": 180
+    },
+    {
+      "path": "apps/sheets/src/main/index.ts",
+      "gitBlob": "23a5d21430bd8ff0e6a518e8f0256d3be0943731",
+      "sha256": "0dc7499d133eda00e52ea70900533eca38aa80ac98dab3359609f64c17833987",
+      "bytes": 79
+    },
+    {
+      "path": "apps/sheets/src/main/pdf-export.ts",
+      "gitBlob": "4418bd3a41713d04933e42b9722952fb1a581ad4",
+      "sha256": "cacb548361823d8b5d8b40c0f4cdf1a8a9e0849b5efd39fa10ccfa8f2521b849",
+      "bytes": 8604
+    },
+    {
+      "path": "apps/sheets/src/main/pdf-page-variants.ts",
+      "gitBlob": "6ff6219ccbd5a889ea16114da315f19b185d9925",
+      "sha256": "4670b9b8845a602e8c0cb5d78155c72536112d525b63fcae5d543ed7445ef073",
+      "bytes": 1988
+    },
+    {
+      "path": "apps/sheets/src/main/print-options.ts",
+      "gitBlob": "e7c9de65a3d6766b33cd6c0f4a5b09283d12c40d",
+      "sha256": "86bd35399a6f73d19dee2e9eec67282b57a2d4b5e17181984b8634c912b64140",
+      "bytes": 1430
+    },
+    {
+      "path": "apps/sheets/src/main/recovery-policy.ts",
+      "gitBlob": "663f465624b48ae6cdc426da25c3ba42a45e8d6c",
+      "sha256": "99f19ac4cdba2daea50e5500406e2e4b86f67b8390869c63fbc72d65fe200b14",
+      "bytes": 688
+    },
+    {
+      "path": "apps/sheets/src/main/save-edits-transfer.ts",
+      "gitBlob": "51501a0b8046a9842f94728b2f7ef4b7aad12382",
+      "sha256": "277595d8ef4068cf6c84729f1f84948008dd0ec1bd805cc507a8a71e83c8091f",
+      "bytes": 5675
+    },
+    {
+      "path": "apps/sheets/src/main/session-rename.ts",
+      "gitBlob": "f3e909ac50d434d8a3e964c14fc9c39ddcb00c46",
+      "sha256": "40d47eb4c10eecccc5556eb7cc6a9ae433ea55aba08a98364e022cf81f49f4da",
+      "bytes": 2015
+    },
+    {
+      "path": "apps/sheets/src/main/sheets-main.ts",
+      "gitBlob": "01d0a5349ee49eecd4eb33821f1c3951373935c2",
+      "sha256": "e52ad2e6cbaf81f026c40b34dc4565d63bb6db065cfb39614ce1a1f5e67a91f3",
+      "bytes": 267434
+    },
+    {
+      "path": "apps/sheets/src/main/temp-files.ts",
+      "gitBlob": "8f14a7bf4721afe5abfef2cd5980f4cd97cc571b",
+      "sha256": "7af8463ddcd356b66dd8531b8197f0f26ba3866b4e7642de48d7653070543c59",
+      "bytes": 3083
+    },
+    {
+      "path": "apps/sheets/src/main/workbook-redactions.ts",
+      "gitBlob": "0771db574cd4885f12794c39ecff9d83cca6a8ec",
+      "sha256": "d16af18c62987285d73d3d51908db30eba889c7320b02968df06961169c30d39",
+      "bytes": 6383
+    },
+    {
+      "path": "apps/sheets/src/main/xlsx-sidecar-client.ts",
+      "gitBlob": "83d4d5dcc5d6898ac98a91c845ecf4343a442937",
+      "sha256": "b20ade339487f7836addc9250b482489c3a4a2844e6fec1a81a7bfce451c001a",
+      "bytes": 15204
+    },
+    {
+      "path": "apps/sheets/src/preload/index.ts",
+      "gitBlob": "aaf747fe5bb83788d106a4b99a6c9e432672853f",
+      "sha256": "77384f3996bb5ab6f65eb467233c28c5bc492ab2397762675501217209757bd5",
+      "bytes": 176540
+    },
+    {
+      "path": "apps/sheets/src/renderer/AdvancedFilterDialog.tsx",
+      "gitBlob": "4d522bcf1f2405463bf7801ce74e32dbcce7dc26",
+      "sha256": "2ca68fb9db7b3abfb176bf8faa9745f0f9e17fbe33ef48911656471277a9b55f",
+      "bytes": 7672
+    },
+    {
+      "path": "apps/sheets/src/renderer/AllowEditRangesDialog.tsx",
+      "gitBlob": "7b06e0a9ddfdd6a78c1c46c04eaaed3b62cc9ad0",
+      "sha256": "ecfda349f0b88b2565d3b33d59e9f28353bd9ee246f4747b81b5804db5fbbf4d",
+      "bytes": 6065
+    },
+    {
+      "path": "apps/sheets/src/renderer/App.tsx",
+      "gitBlob": "17a146dc986bd4e87801b05cb57dd4c018668d89",
+      "sha256": "d52ad546fef9d3856046c11311bf7570e35dc203d3f0db852eb1cfe5884b0b14",
+      "bytes": 283578
+    },
+    {
+      "path": "apps/sheets/src/renderer/ChangeWorkbookPasswordDialog.tsx",
+      "gitBlob": "5d821d38e8440811630f6d97fda6d3449c11a22b",
+      "sha256": "bff21d0a41ea23f9ccf067a8d6ec10b1e9093aba1f1bd8f6e8f6869db013fd34",
+      "bytes": 3419
+    },
+    {
+      "path": "apps/sheets/src/renderer/ChartPanels.tsx",
+      "gitBlob": "3c4e1569cfa9b87479b0d2cfb6e19a72aeb72f42",
+      "sha256": "126624502b9831c62f67d5450b794d3b1c7f5bf2d5b2373bb58f87a63e9f5167",
+      "bytes": 23242
+    },
+    {
+      "path": "apps/sheets/src/renderer/ColorDropdown.tsx",
+      "gitBlob": "b59c038ada4785bcd428409e451979c8400cce6f",
+      "sha256": "0b13d76ca13ef0d67014320c69708d2eacba80d83e8d8ed10642a79611704802",
+      "bytes": 6212
+    },
+    {
+      "path": "apps/sheets/src/renderer/ConsolidateDialog.tsx",
+      "gitBlob": "1146818c3cf234069f408496522ffeecc7acf33f",
+      "sha256": "7da59dcea1f3f967b85a37a42730bfd0a0c88dd3183f51a24cd4488006996ba9",
+      "bytes": 6012
+    },
+    {
+      "path": "apps/sheets/src/renderer/DataTableDialog.tsx",
+      "gitBlob": "6f2e60e7cab503107954d8dd3a5f9594df5608e4",
+      "sha256": "b5edfff81312d150a510a8810ecafd39d3c5dacbaa185ef7a8bb78842b5398b3",
+      "bytes": 5274
+    },
+    {
+      "path": "apps/sheets/src/renderer/EncryptedWorkbookPasswordDialog.tsx",
+      "gitBlob": "b3c052f40cdfdd5e9fbf4d82a0bbdd94af171e71",
+      "sha256": "5e91a84904d8096a9487da51ce9ab8f0afdd78bf03480a2a99bc4c4d4d9cba76",
+      "bytes": 2147
+    },
+    {
+      "path": "apps/sheets/src/renderer/EquationDialog.tsx",
+      "gitBlob": "67cdfb319168cff10dfbb680ea57a09ce3a24ebe",
+      "sha256": "19afbe20eaf4c8f84e2ba57522d6ae7b8ab250f280ef122dde1eee55e377dbe7",
+      "bytes": 6769
+    },
+    {
+      "path": "apps/sheets/src/renderer/ExcelShell.tsx",
+      "gitBlob": "0dc19a0becc2243dd268b760ee68ae7b4e4ef8cb",
+      "sha256": "f7ddc426f15e895a208a31ed27383c04af3de444a14b25636a5a623a8ed57f98",
+      "bytes": 174514
+    },
+    {
+      "path": "apps/sheets/src/renderer/ExternalLinksPanel.tsx",
+      "gitBlob": "b7215d72d29e83e6277836dcd63112480b5ddfe2",
+      "sha256": "eac077b6d74280577c87dbd2995f8f3886b9550fa83e3946f7a894f0ce180f8e",
+      "bytes": 4862
+    },
+    {
+      "path": "apps/sheets/src/renderer/FillSeriesDialog.tsx",
+      "gitBlob": "a08817a2b89b1a1a6b56012e1a7c1afce1b3e202",
+      "sha256": "fca686752c5651c1db0890eeee708251a43740a6def26d4d655d23ccdf096067",
+      "bytes": 5174
+    },
+    {
+      "path": "apps/sheets/src/renderer/FindReplacePanel.tsx",
+      "gitBlob": "d87026c46b24a19042706ecb2f3eaa239b9e3b16",
+      "sha256": "9cea0cd19cceeb747b76a501eaf06d4598e613578c80b1085add0ed933ace351",
+      "bytes": 17815
+    },
+    {
+      "path": "apps/sheets/src/renderer/FormatCellsDialog.tsx",
+      "gitBlob": "cc417ee960c2c4dad56873ed4c6beb9ed3a0dd51",
+      "sha256": "b230b62eaaeaeaa481097e791136f39142310405a2731dc9217fac657224bbc0",
+      "bytes": 22958
+    },
+    {
+      "path": "apps/sheets/src/renderer/FunctionArgumentsDialog.tsx",
+      "gitBlob": "9991f7b90a54a3d6dcc32c90f123e7f927a15d0c",
+      "sha256": "c5197ef49c43e977c3ce98f623cde14a5c0af8ff7b80ce88c4475619afc99564",
+      "bytes": 11211
+    },
+    {
+      "path": "apps/sheets/src/renderer/GoToDialog.tsx",
+      "gitBlob": "98e452e9f1068cf9709793133e100ffbfdd62ce8",
+      "sha256": "320e95b13d7b9ec9e93136138a1f45ba7d766d63ed93445a2ef284f7aeb3471d",
+      "bytes": 3097
+    },
+    {
+      "path": "apps/sheets/src/renderer/GoalSeekDialog.tsx",
+      "gitBlob": "5f22b577bbbc57362cddada368acadaabbab9d20",
+      "sha256": "77f5148448210971d2c9faa834112c44049c640457a68789b376dad6a2730d99",
+      "bytes": 4132
+    },
+    {
+      "path": "apps/sheets/src/renderer/HeaderFooterDialog.tsx",
+      "gitBlob": "3b7d4a85021b268b12dc158d55b4ea175440de79",
+      "sha256": "ad6c380ef9dc9ccf30201bb7035fe4f61fd8f841720c459d1d8a65701aa3f69d",
+      "bytes": 6171
+    },
+    {
+      "path": "apps/sheets/src/renderer/IconsDialog.tsx",
+      "gitBlob": "096e86354574cc3a1ecdfe7d17be24a3eae55a55",
+      "sha256": "ea2e8b0d07580c363af38fc838d8ce26d98cc09cf327e63a5221643507e7504b",
+      "bytes": 5025
+    },
+    {
+      "path": "apps/sheets/src/renderer/InsertDeleteCellsDialog.tsx",
+      "gitBlob": "689b69d5b8255b59132d5728ca01b5f630a47f3c",
+      "sha256": "a1fbf5f825fce6c7fd2147f93ac0a8e5820164146dabbe52bbcc0e8dc7be4d1c",
+      "bytes": 2651
+    },
+    {
+      "path": "apps/sheets/src/renderer/InsertFunctionDialog.tsx",
+      "gitBlob": "186627e027f1046f6c34d28f442a2160d866c97b",
+      "sha256": "45f816392ffd7f33dff11d5b79b4e6ca0dc3efcb34d9c768a412c90cc1a9e324",
+      "bytes": 13335
+    },
+    {
+      "path": "apps/sheets/src/renderer/InsertFunctionFlow.tsx",
+      "gitBlob": "e5da1d19f2710a98b69d9cb26e807ffa0aad5277",
+      "sha256": "059811e5009c33035662118a5cfdd9dbac2e3ed9946ec500bb74737da6ea33aa",
+      "bytes": 2614
+    },
+    {
+      "path": "apps/sheets/src/renderer/NameManagerDialog.tsx",
+      "gitBlob": "61e9aae7d179a9304ccac718937e93ee082f6f8c",
+      "sha256": "0923b014062d33518e794f62c3d7667d381921642c082d4188d23b72d777e980",
+      "bytes": 6066
+    },
+    {
+      "path": "apps/sheets/src/renderer/NotePicturesPane.tsx",
+      "gitBlob": "af5ff70f0c6517d38594328b94dac72a3e0b1944",
+      "sha256": "f1957edd6d264ceb59d737b3ecede8903a567f90220c942816109f2894fcd07f",
+      "bytes": 8379
+    },
+    {
+      "path": "apps/sheets/src/renderer/PasteSpecialDialog.tsx",
+      "gitBlob": "2261f7896005041756f2e938c6800663aadb1814",
+      "sha256": "ee880b4e0452fc798d885297d75f33577eb18649d62599f977da672bb2c3438d",
+      "bytes": 6459
+    },
+    {
+      "path": "apps/sheets/src/renderer/PivotDialog.tsx",
+      "gitBlob": "cb49998b7797c24b4a306ad5709f3a10a9de20a9",
+      "sha256": "9f301fcdc7986f483e46894cf44ae5ea17206e0f6ffa4eda7ea48b2ba8be2278",
+      "bytes": 3001
+    },
+    {
+      "path": "apps/sheets/src/renderer/PivotFieldPane.tsx",
+      "gitBlob": "02cf02b76fa05e13a59bd422548d1bda1dc6672f",
+      "sha256": "ff93e825f4b07cac0ded9e8593c41da045849371c2f98830b1f131725c91377b",
+      "bytes": 32318
+    },
+    {
+      "path": "apps/sheets/src/renderer/PrintDialog.tsx",
+      "gitBlob": "da9f66ef6afc63f369d4cb29dd120bcdafab5bfc",
+      "sha256": "f248aa1730b867caf8d87aaf1cd581b8e4e20ee4c3ad8614d0a6cfb9df89196d",
+      "bytes": 19887
+    },
+    {
+      "path": "apps/sheets/src/renderer/ProtectSheetDialog.tsx",
+      "gitBlob": "bf49c008db7c464df6b0d7d36ceba17b0bc59b75",
+      "sha256": "262ba670247e74dba9ebb0dba4913d651b93c7109c44fa8103c04f5dbcb4b7d2",
+      "bytes": 5227
+    },
+    {
+      "path": "apps/sheets/src/renderer/QueriesDialog.tsx",
+      "gitBlob": "a55a7e939d9d3ad5bc0bebce029ec1b7fdce3e39",
+      "sha256": "c2ed232bde3497ef606da083d5e672404130021b2d7cdc07ebd83098ce3d0a6c",
+      "bytes": 4263
+    },
+    {
+      "path": "apps/sheets/src/renderer/RecommendedChartsDialog.tsx",
+      "gitBlob": "cceb4e9e048705e98546dce19810145f835c2619",
+      "sha256": "819e9c6649db51f257f4a3d661c8ab80014ef3b8670cb69254574444411c32bb",
+      "bytes": 10319
+    },
+    {
+      "path": "apps/sheets/src/renderer/RecoveryDialog.tsx",
+      "gitBlob": "cde4ee858da8b7ceece5d602fdaa7eb272363d03",
+      "sha256": "7174bf243901917edbb8c152d1e9bf974bbca2c4eeb9b16fb7664895b2c93ba4",
+      "bytes": 2795
+    },
+    {
+      "path": "apps/sheets/src/renderer/ScreenshotDialog.tsx",
+      "gitBlob": "28e34aee6cbc8223d971587899d7b461aa1687da",
+      "sha256": "027afaaaee85f3e1ae384332dcab454499e1e7d7cbec06492979578d17926f4f",
+      "bytes": 4687
+    },
+    {
+      "path": "apps/sheets/src/renderer/SheetTabContextMenu.tsx",
+      "gitBlob": "65517560861aac4a49fa05b8a1e4a618b09be36e",
+      "sha256": "ec3ef1456aedaabdce20c50744a36870766d52ee879874769be447da2f2a7242",
+      "bytes": 16065
+    },
+    {
+      "path": "apps/sheets/src/renderer/SlicerPanel.tsx",
+      "gitBlob": "4898ecf51e80956549f13658c4b4e7dda04cf7d1",
+      "sha256": "e8476db89b7addfb7841cbcc3cae69516046f8955d037838b111f0cb7a0f5a24",
+      "bytes": 5136
+    },
+    {
+      "path": "apps/sheets/src/renderer/SpellingDialog.tsx",
+      "gitBlob": "6c6facb26d2542b4fdbcf00b53319b76d9a988f4",
+      "sha256": "1190b4cb90bd372870113aa4c0c6e2be5eba310ce5507ed0fc607db860d9af37",
+      "bytes": 12380
+    },
+    {
+      "path": "apps/sheets/src/renderer/SubtotalDialog.tsx",
+      "gitBlob": "f230aa86223d53a67a4891c77c1cc77e3ebdfab2",
+      "sha256": "e9e77e11ebf1c3b114cf3ff7eb2b825acb1c2d67d0b64f5d6e8b470383c4512f",
+      "bytes": 3748
+    },
+    {
+      "path": "apps/sheets/src/renderer/SymbolDialog.tsx",
+      "gitBlob": "c2fd608aa92054c92441cc9f32fa4de3f257661b",
+      "sha256": "2296cf609d2e4c3dc9a11dacc63f559e86fa84b7e46b0ec90cc9d72bd5cc5dad",
+      "bytes": 4558
+    },
+    {
+      "path": "apps/sheets/src/renderer/ThreadedCommentsPane.tsx",
+      "gitBlob": "e716435479ed8739f215e41d1a0be4c8ec12cfda",
+      "sha256": "159c8288362204fea96298ee4d3eeb920f02c0e541e1611557f936d5fd6244fd",
+      "bytes": 10954
+    },
+    {
+      "path": "apps/sheets/src/renderer/TimelinePanel.tsx",
+      "gitBlob": "690aa4b364ecc852668d003300df012c80c76b7f",
+      "sha256": "66cd68c1a41c7ca0b08fd54a58ecf346c62f8afbe028b48824d05e357ae5ccd5",
+      "bytes": 5788
+    },
+    {
+      "path": "apps/sheets/src/renderer/VisualDeleteButton.tsx",
+      "gitBlob": "7d3fdf9633e50eca2e2a5b900245d69139c72f28",
+      "sha256": "7ccdc1144782801a4a4e60e3a06722abd402d50f0cb4be123e87c2286f376cb3",
+      "bytes": 4356
+    },
+    {
+      "path": "apps/sheets/src/renderer/VisualDialogs.tsx",
+      "gitBlob": "1224157400145ad22159d46b655ecf9d7c2052fa",
+      "sha256": "a6ef188602bd8c213586396ad9e108196e1526745fda590e2188e5468386ec76",
+      "bytes": 9232
+    },
+    {
+      "path": "apps/sheets/src/renderer/WatchWindowPanel.tsx",
+      "gitBlob": "5dd89464f134f9aa46ec5a534755e989bb588bd9",
+      "sha256": "c05cf24faa4d7e3d14ba594bd370c6478597a77ca94c9b44e5322a681098cd52",
+      "bytes": 3199
+    },
+    {
+      "path": "apps/sheets/src/renderer/WorkbookVisuals.tsx",
+      "gitBlob": "82267c359aab51a2b7453319f15a91ea29155ca9",
+      "sha256": "9ce7368c9d70a47cc7157b07973f97087ef2152384d6174a2b33554c377cbb0b",
+      "bytes": 194658
+    },
+    {
+      "path": "apps/sheets/src/renderer/ZoomDialog.tsx",
+      "gitBlob": "36b51710db65a9e6bcb8ff115e1864890b6b346e",
+      "sha256": "e8c3bbc72ff9bc5734c9f81fdadfdfb718fa0df995e1d55faae9cd2a50f57954",
+      "bytes": 4004
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/AiChatPanel.tsx",
+      "gitBlob": "6011baf3228c2a4f9b9b3577bd0af1f3dd608369",
+      "sha256": "e74840db0264ea4867bb837ee4e8aa5e96a9e650213116c1a9c47dee11edfadb",
+      "bytes": 38845
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/AiSelectionAsk.tsx",
+      "gitBlob": "a00a444c7a3fccc979b4bd133ab6dc4b2efcb42c",
+      "sha256": "074e062a86ffb26032f30865dc1a4e1c4835e0a6e4b1c8cf8ee34fd72accf4b7",
+      "bytes": 5115
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/aggregate-range.ts",
+      "gitBlob": "5f15b8e2df2d92406a7c0ef2e8c9952a7f81c28b",
+      "sha256": "e217c4002a7d9a3ad79950419945893d9cf08926d89b3499e947847cf7043ce8",
+      "bytes": 18117
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/aggregate.ts",
+      "gitBlob": "2a4c0ea7757d0dce44feed0afe7d19879ca5c8ab",
+      "sha256": "6d314a476468b60fb0dcc6c29adde9b68de4fe8f9360c917a331fc26b4781696",
+      "bytes": 5854
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/create-document.ts",
+      "gitBlob": "1ee682cef55d7344ffb0d323d0bc04d54105bffd",
+      "sha256": "8eaaa6bccedb84af81e4974e69aa62d6e12926213fc3a84f225a92a0edc82269",
+      "bytes": 3227
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/files-skill.ts",
+      "gitBlob": "19b469a927ae5ebf15fffd8d9e2e35b4b1288977",
+      "sha256": "f688c81431795abaa53d0518923d96f4d35d6624d812fb826609c41ed9cf47b9",
+      "bytes": 4443
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/formula-audit.ts",
+      "gitBlob": "e54d4b8a5aca2eb869e2da4bf9d072d6720f8851",
+      "sha256": "789698030cd3d7fcba120ec913163a510752315312b69f9ed4b765d01a23ae2a",
+      "bytes": 19265
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/guides.ts",
+      "gitBlob": "79f9f3d2f0158cd0b00a7dc9b43e51255a954dff",
+      "sha256": "76779c80dea94fb72b45f512375bceb0fca39b9c47689428a50071698da7df79",
+      "bytes": 4163
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/image-skill.ts",
+      "gitBlob": "daafff95644b0aee57f41ace651a2b1098a103c9",
+      "sha256": "edae37c534f562ad9a1429d07c262b3f55f82065278c84ce5a822df49b6e74c1",
+      "bytes": 5310
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/merge-skill.ts",
+      "gitBlob": "0d89e727189515d502830d6e659fa94c0fabe400",
+      "sha256": "5af9840978479c88b2033c3c9c50bdc9f6e83249c49497d56e1199c14e9d6821",
+      "bytes": 4925
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/base.md",
+      "gitBlob": "44734f990ffa45ac84e86fb523334909f6312c20",
+      "sha256": "cfdac3bef92572153a14e1f3a6de4ee531b3172186ab940c42c5a4012a089c35",
+      "bytes": 11702
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/charts.md",
+      "gitBlob": "5e8f41b1218706f20a1544401a9a4fa81f11c6df",
+      "sha256": "cde7e3fa32c151d8b5fb284d99f97491985e6c111306f38e96dd87fd734ba08b",
+      "bytes": 8387
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/data-attribution.md",
+      "gitBlob": "3adeaf9b994e705cb0a9ff1f58cb13cd7992b5a8",
+      "sha256": "901b3cbb39e2a06fc93be77ea046d0ec71b1df7785d3d5a2d6ef031f7034ab05",
+      "bytes": 3132
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/data.md",
+      "gitBlob": "02bd00a5704aa04c2c084c73068cf8346c22e813",
+      "sha256": "84fe78a304e056c3c356e121732826356b32199cea7e15a9bcf3fb92ec097343",
+      "bytes": 6031
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/financial-formatting.md",
+      "gitBlob": "4917d53cc44f908e63b8a08db64b6bda227aff6a",
+      "sha256": "7d459a6218a47b47e72fb83996c8bd2b9bcebf6b56b7f255fdb448b75e905141",
+      "bytes": 4549
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/formatting.md",
+      "gitBlob": "8575c6b2a8eb9221607c7f681d8e5507007056ef",
+      "sha256": "1532292e673fdab37e69cd70d95678602f9a81da2b2fddbe30a82c18cf6e8b2c",
+      "bytes": 3768
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/layout.md",
+      "gitBlob": "ef46d219bd1a10bdabb4ac3021e3ceb20f890709",
+      "sha256": "8693b73586ccf3d8700148429dd95259201379962c94ee7aac5ef32875db5c05",
+      "bytes": 4123
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/pivot.md",
+      "gitBlob": "1511fe18d072ec8937be899f73f17d09ea8a8407",
+      "sha256": "4799a6ed0a5ee0b5017230c1c574c8d2ebeb1af9cbf185f795d3af792e5944b5",
+      "bytes": 6046
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/shape-image.md",
+      "gitBlob": "a2e582237d0417307a15b085fb7386c862243c33",
+      "sha256": "eec6e427128176677ee473c15ecab275ed218f97fae3cc149753179d505f3606",
+      "bytes": 2425
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/structure.md",
+      "gitBlob": "303171639abba8b01b463dba3b068a07a88b9e93",
+      "sha256": "f6d222639b2eb454f84e531da7713b1fb37667eab87c4f48d77eb116e85e2614",
+      "bytes": 3771
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/table.md",
+      "gitBlob": "4d26350306b23d3d5141b5b8ad058a250135a8a8",
+      "sha256": "a78b014698f957f322250a88e5efd6b66b4fd3d5d2982bda12fd8ca4b5a96ca2",
+      "bytes": 6173
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/prompts/guides/writing.md",
+      "gitBlob": "66f4028f661fdd141d44627c0689e3eca7151684",
+      "sha256": "2f6d88e38d4c012f0555fe84ce6d50183074700ed7afbd41dbff22632a3f5a62",
+      "bytes": 8978
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/redact-guard.ts",
+      "gitBlob": "ca76859470854b70ecc086c454fb3c7c3abc26d7",
+      "sha256": "58e108afb42c783fc593422fe87a798443937e1d4fbd0a7956b6b4d5fa341698",
+      "bytes": 13344
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/redact-load.ts",
+      "gitBlob": "3213f4d918f703cff523674520d8b64b1048a786",
+      "sha256": "73a6d09b64c64608caa28735a3770b850f5640938f69d024365ac46cf0e444cd",
+      "bytes": 3745
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/redact-view.ts",
+      "gitBlob": "24e113abdc076f1267d6c18508b97ab2cbbf2eb1",
+      "sha256": "b83c3d1c2ae4b8eef454a3070d59e172e2681f76000d1a9120d0e7b1f483567b",
+      "bytes": 8891
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/redact.ts",
+      "gitBlob": "059b70fece709af195ebdca0bc899c7c9bf6cbc9",
+      "sha256": "6481ccfd3c26b020ce3419620f0df0fd610a30ae4dd656fa6e715f5b0aab5320",
+      "bytes": 12115
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/response-verify.ts",
+      "gitBlob": "5935258bf4dd2d15ff36f5820c8a8797c2f680a6",
+      "sha256": "5f913f91bf06e1e054b5976fbcd45950159b068c0bcdc6d192261d453493523c",
+      "bytes": 2484
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/retry-prune.ts",
+      "gitBlob": "fa6e5db2b9429008577691f447e43ad43cd77c6e",
+      "sha256": "0993e3edebc4d352322ba60b63a7d7ba530d767404b0b2b82c3f937dc88684d1",
+      "bytes": 682
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/search-skill.ts",
+      "gitBlob": "008f61a94be85e15a568487173e31d5516359fb5",
+      "sha256": "9d4b5894f97b0331b3a36e44f872e03a77101da857e555bd4197bb0cd3b77fb8",
+      "bytes": 2461
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/selection-ask.ts",
+      "gitBlob": "25dfe0e582c39a2e936b0971dcf23d7e515b6d7b",
+      "sha256": "b4fddd821e83b98b7f5ce9faadf3ea607dea959d4616772e76389a09ec0c5d8e",
+      "bytes": 1585
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/selection-scope.ts",
+      "gitBlob": "f4ebcab9c87cf6569ef93ec3aa2bdc811d50f93a",
+      "sha256": "a29ac74ebda86bb9c2c228d37de3ba907cfbd0ddfd275270478408c8fd01b05a",
+      "bytes": 5352
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/sheet-nav.ts",
+      "gitBlob": "60b27e117db2a5722e4fb0f54eec4e5d8ebf13a8",
+      "sha256": "e788e7ae23d8c825ea610bd1b376a0e8a087ae8d79b54a16fde020c2d05ca271",
+      "bytes": 1482
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/tools.ts",
+      "gitBlob": "a587e085622e41083594f79b83562f12bef63096",
+      "sha256": "c794acbe7fc856308c5c5e97c246166137a3bd2bc35b575cb290d11bc6ec5e8f",
+      "bytes": 68749
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/transport.ts",
+      "gitBlob": "1c23f72c735693774a7e0b6f24f9040b854dbc73",
+      "sha256": "902763d62a687212401c45678fb9f851ab8e19bd286bcc6cf202652d6648df3c",
+      "bytes": 924
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/workbook-readers.ts",
+      "gitBlob": "5e8d9cbcacfac4038ba383e4e3480863feac4f0b",
+      "sha256": "51e24bdcf84493126c8f814e9f0f5cf796f4ea293c0b536c8d8ce9dfafbfc763",
+      "bytes": 21790
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/workbook-search.ts",
+      "gitBlob": "435b4d4da56378573deb2b5bee8c653cac807c66",
+      "sha256": "1cc15129da7e2c11fdf47e529d9f0c4f2bd996567742a304a12b5be3771d4416",
+      "bytes": 13696
+    },
+    {
+      "path": "apps/sheets/src/renderer/ai/workbook-skill.ts",
+      "gitBlob": "3557b59eb9aa71d328cce35347efe1fd27a98bee",
+      "sha256": "5f1f406d5656b0cb01cfa0096897f53c94defc962a6eb380157abbfc9e4ef655",
+      "bytes": 1732
+    },
+    {
+      "path": "apps/sheets/src/renderer/app-constants.ts",
+      "gitBlob": "c1f497311b1c0eaa40a3af34925faaae49cfd1f9",
+      "sha256": "9b8a20d6c71b4a44dceeaca1105b5e95def99973445bf4ce83589af64ffe2ff3",
+      "bytes": 14366
+    },
+    {
+      "path": "apps/sheets/src/renderer/arrow-collapse-fix.ts",
+      "gitBlob": "315f2f22ab8199642bf810d2879f76dfe5cb79b4",
+      "sha256": "1590be660cb999f5033296a17fb337a33ded650e03902554f6d4091f7b421bca",
+      "bytes": 4274
+    },
+    {
+      "path": "apps/sheets/src/renderer/autofit-line-pitch.ts",
+      "gitBlob": "e242ef18c1bce49758a57047ddd49b824b1d5700",
+      "sha256": "7f20c857bcb8a9938971477d7d81c9bfa7bbbb722e299c34962b72fa711e1b7f",
+      "bytes": 9957
+    },
+    {
+      "path": "apps/sheets/src/renderer/autofit-multi-row.ts",
+      "gitBlob": "41c7310fe14e3895fcecc901241e4751f55dcfde",
+      "sha256": "52f6eed1482513a8a6debf920d865f0833293a64655ce1bc7c50280ee87fb873",
+      "bytes": 3004
+    },
+    {
+      "path": "apps/sheets/src/renderer/autofit-selection.ts",
+      "gitBlob": "f7b6f0a0618d442d21d4d1e7ba560aeb3b424eb9",
+      "sha256": "a79990b4e824af00ca913ab5f1c51492031dc4506623e674519f2da3b0c31f77",
+      "bytes": 620
+    },
+    {
+      "path": "apps/sheets/src/renderer/autofit-wrap-budget.ts",
+      "gitBlob": "b79ff173ad84f13a61b828824c845b51b8b211ee",
+      "sha256": "e5f418cef4da8c08ad8d65a1dddecccbb3281f48bc7abe99e19b438ee33dd10f",
+      "bytes": 1821
+    },
+    {
+      "path": "apps/sheets/src/renderer/border-overflow-exclusion.ts",
+      "gitBlob": "53905cd600c2aedcc27ee11910979dbcf1103ad3",
+      "sha256": "5b27dd1d8dfb3c7c0354e66c522c9e85982f6af751e017715c51139fda6b35b4",
+      "bytes": 1757
+    },
+    {
+      "path": "apps/sheets/src/renderer/bulk-fill-undo.ts",
+      "gitBlob": "2463dbfaac1cae09cba88f37c4c85541b7eb4728",
+      "sha256": "d80925263f260b209c91fa835ff52e1044dc7553ee10d29cccb549f089681414",
+      "bytes": 2578
+    },
+    {
+      "path": "apps/sheets/src/renderer/calc-options.ts",
+      "gitBlob": "5c76c65093e1868412c00cb325fa512510ee8067",
+      "sha256": "9a93ebd4000495cd78903a7e5ce6afd6e58659574e3d5483f0f3e0c2ab8ea25d",
+      "bytes": 3609
+    },
+    {
+      "path": "apps/sheets/src/renderer/cell-clip-anchor-fix.ts",
+      "gitBlob": "163e4b2f7274b5e073b558776eebfb68239502fb",
+      "sha256": "0386476ed262bca01d596f1d0e9a8244484ae5896ba702f105c292ed744fb121",
+      "bytes": 5087
+    },
+    {
+      "path": "apps/sheets/src/renderer/cell-context-menu.ts",
+      "gitBlob": "06f31cfbd832a6de671d3cc0c65088960dbdea0f",
+      "sha256": "1f56ffd3914da09b7729193aaf6ea7bd557cf2ef79a7073d546041fd56c48e82",
+      "bytes": 15489
+    },
+    {
+      "path": "apps/sheets/src/renderer/cell-font-fallback.ts",
+      "gitBlob": "11303f437a5f9c55a539e4dc77a7ae7272799912",
+      "sha256": "e648037896c675f65d4368698cbb5e78921cd8e66b16198846a1baaafcf11374",
+      "bytes": 36711
+    },
+    {
+      "path": "apps/sheets/src/renderer/cell-function.ts",
+      "gitBlob": "44d695c4f16d85c02147fbe1dcd7b9d2698d5607",
+      "sha256": "26559acfacaaecf9dbf4667ef37d95663218ab1072307246be8a9f9b2d585b8a",
+      "bytes": 4694
+    },
+    {
+      "path": "apps/sheets/src/renderer/cell-image-preview.ts",
+      "gitBlob": "3c4cd10fb0134531f1ebb7af876e537015308e39",
+      "sha256": "7ea63f6902a106ca0371381a72a80d2e6dbc7429421ca3b080807dd92b7e102f",
+      "bytes": 1518
+    },
+    {
+      "path": "apps/sheets/src/renderer/cell-warning.ts",
+      "gitBlob": "b4dcaabd595edeb156d108e70637effbc3ecf449",
+      "sha256": "7e29b049ea4d1cc2aac93f1e572a411b05bc53b272aca1a550b78fee9287ca5f",
+      "bytes": 340
+    },
+    {
+      "path": "apps/sheets/src/renderer/center-continuous.ts",
+      "gitBlob": "bc1489bfdf6c20cea2c67401b95a6441a2d05d1a",
+      "sha256": "51838d7604adc7882c5f551f4af4dc4b38da79f752ade5430e3440531abbae30",
+      "bytes": 3523
+    },
+    {
+      "path": "apps/sheets/src/renderer/cf-duplicate-key.ts",
+      "gitBlob": "9e8eda61a1633d439c795cc2dde4fd160f4e838d",
+      "sha256": "f092baaaad87732da4bc0f043d4ea0193e2954a297aa9c668bbe88d7d0633f3e",
+      "bytes": 3819
+    },
+    {
+      "path": "apps/sheets/src/renderer/cf-empty-fast-path.ts",
+      "gitBlob": "49b0f93b429d0b209ca8ed7199da9f5b1521e644",
+      "sha256": "af51d14cf291b6a927c040f2af13bdd257c79302a597fedd7b558fdc4deea073",
+      "bytes": 1338
+    },
+    {
+      "path": "apps/sheets/src/renderer/cf-formula-fold.ts",
+      "gitBlob": "8247e145664710721b43d164707ba6ea592adb16",
+      "sha256": "e071a2fef721c07cedfca5b3d9468b1898ba458c2a88db353c44d8c20ab73fdc",
+      "bytes": 18944
+    },
+    {
+      "path": "apps/sheets/src/renderer/cf-thresholds.ts",
+      "gitBlob": "1dd9e56498df872f99a7d6c8a1e502d6e9208fd5",
+      "sha256": "756f150b89f7ee264c9b30b71c6e599c7842263bc85b2420746d234f345f23ef",
+      "bytes": 20455
+    },
+    {
+      "path": "apps/sheets/src/renderer/chart-category-vector.ts",
+      "gitBlob": "ea64a14f0e98d3870c850adf0a971528fb135897",
+      "sha256": "054f505e9efe5fb71b362285b3a1cd012e32bd1a260f2d1b9b4cdd116f668b33",
+      "bytes": 1636
+    },
+    {
+      "path": "apps/sheets/src/renderer/chart-sync-pending.ts",
+      "gitBlob": "cb0b38ee41579cb8047695b27316334fe38a3234",
+      "sha256": "e2886a055565ed5304af4ede6c622c97d289862cebee305de473f1f7f65bae56",
+      "bytes": 3912
+    },
+    {
+      "path": "apps/sheets/src/renderer/chart-text-scale.ts",
+      "gitBlob": "f469cbc146bc59effbf2e7ba0284fe41f79aea14",
+      "sha256": "972811eb86a287833aa902862f0b4077b315982d817b3efe11df31906ec19f96",
+      "bytes": 5772
+    },
+    {
+      "path": "apps/sheets/src/renderer/clear-selection-keyboard.ts",
+      "gitBlob": "818cbf1c8af2d82966d33b1107bb9e55eb1baba6",
+      "sha256": "f26605d837ad63f8786f0c150f382c4bbbcfa67f57e2f26e88204ebde730802a",
+      "bytes": 4979
+    },
+    {
+      "path": "apps/sheets/src/renderer/clipboard-anchor-tile.ts",
+      "gitBlob": "ada9260c211b717579953472581fd62296f21a60",
+      "sha256": "274594d7d565f761f24da0d5367fc6a24a4c9f36e0a51a80a9c54bc780b4418b",
+      "bytes": 5266
+    },
+    {
+      "path": "apps/sheets/src/renderer/clipboard-tsv.ts",
+      "gitBlob": "035bd083eb30d7ef128e9e1ab07d13ab1f391183",
+      "sha256": "917877908dad129067f48058b7a1c1ad7e6196b00839244ef9b35d9b6dbde004",
+      "bytes": 4127
+    },
+    {
+      "path": "apps/sheets/src/renderer/components/RedactDialog.tsx",
+      "gitBlob": "50ab099ceeba7e67910bfa503722289f4348ab4d",
+      "sha256": "f2980dbb44d5c3e6adbaf3d185d03c9e4180ea972a130287456df28751e192bb",
+      "bytes": 3142
+    },
+    {
+      "path": "apps/sheets/src/renderer/consolidate.ts",
+      "gitBlob": "f43ab230736b21d592b204569293deef4450a6dc",
+      "sha256": "fdd80177b8cc5d9a13e7be311f915f40640a22731834a152729405fac1e6b42e",
+      "bytes": 6252
+    },
+    {
+      "path": "apps/sheets/src/renderer/context-submenu-reopen-fix.ts",
+      "gitBlob": "2ba64c9dbf4d669ac2108d9580c89facc65bc3f7",
+      "sha256": "19d05f86bc6431638d0b2f273ab31b95074db07468b3bcb0433e05ba72869719",
+      "bytes": 1688
+    },
+    {
+      "path": "apps/sheets/src/renderer/control.ts",
+      "gitBlob": "3049f2ac885f3b07403956db1f09b119da0b4d18",
+      "sha256": "ec183726b7addc211571180eb9ef7077caf2f2b182fb47b7cf60ced5c4dbdd17",
+      "bytes": 3931
+    },
+    {
+      "path": "apps/sheets/src/renderer/copy-animation-idle.ts",
+      "gitBlob": "d865d499672fafef54924bf7355f7d9509c5c47c",
+      "sha256": "bebe6796d62a1feef1333645aa18d96eecc2239060e71870d373f3c7cb455393",
+      "bytes": 7640
+    },
+    {
+      "path": "apps/sheets/src/renderer/copy-materialize.ts",
+      "gitBlob": "dd3f61ac98059962f023d1b52251d449497f281a",
+      "sha256": "2cebcc943c2a3efd40057269208aef032d76e8af4d44529e0a492f6aa922a446",
+      "bytes": 6962
+    },
+    {
+      "path": "apps/sheets/src/renderer/create-univer.ts",
+      "gitBlob": "66ff7fda74e97fc6eb0c93cb7bcabd956f7d366e",
+      "sha256": "85e1c9a11b783daae2e6c640de4cf6a107e331f7e8aa133476d375c8add59946",
+      "bytes": 2739
+    },
+    {
+      "path": "apps/sheets/src/renderer/criteria-compare-cache.ts",
+      "gitBlob": "84ab42ea9dca9af2aa28ce4a6c7959fd9da4e1e1",
+      "sha256": "786a0b05bd1c67534bce675bd9b98f3b5e423e37bb151164814460433e65b99d",
+      "bytes": 4211
+    },
+    {
+      "path": "apps/sheets/src/renderer/cross-highlight.tsx",
+      "gitBlob": "8ed8d27f44c1d8930f0c62df86d1e0528b9f4510",
+      "sha256": "74390d8cfbda80486de266b1cca554139f61220de2bd58062b8aa8d1bf0cbe38",
+      "bytes": 9602
+    },
+    {
+      "path": "apps/sheets/src/renderer/csv-export.ts",
+      "gitBlob": "945652911f0a553a09fdc38b4a05515b4475c04a",
+      "sha256": "e58b491199370b1dd4fcb82a0983e9ff263d1fdb8f304d54e9b8e82877122b4d",
+      "bytes": 11345
+    },
+    {
+      "path": "apps/sheets/src/renderer/ctrl-drag-fill.ts",
+      "gitBlob": "c2c997055d1ac16ed8735dd6df442ccbd7945bd6",
+      "sha256": "8203f70392a6ca1c3960843ac3929e95415243550dc861267af201f6ccfc0acd",
+      "bytes": 2757
+    },
+    {
+      "path": "apps/sheets/src/renderer/data-table.ts",
+      "gitBlob": "a0c9b7ff8ba5753938f276ebf7b4584f2527ad91",
+      "sha256": "141dd4943465f9a5881cb270ea7407828d28bd82c7b561fdf69580bee5bffd8c",
+      "bytes": 13843
+    },
+    {
+      "path": "apps/sheets/src/renderer/data-tools-actions.ts",
+      "gitBlob": "e6ae4f90c0d9abafe214a5874223499d2aadf845",
+      "sha256": "afa7d06f2579afba8345a344fc1a6758f6dc9d3fb5335e5d36d6c6fd14054500",
+      "bytes": 27735
+    },
+    {
+      "path": "apps/sheets/src/renderer/data-validation-arrow.ts",
+      "gitBlob": "6d1b95ad59e7dccd43cb9e0c1b6978a3583bd609",
+      "sha256": "31a3acf71d1ddc69ed03dbb94edc2ba0b546435ec80a7080ee6f5afa607de88a",
+      "bytes": 129
+    },
+    {
+      "path": "apps/sheets/src/renderer/data-validation-dropdown.tsx",
+      "gitBlob": "a1260496ec7134af46a24a3d5023a8cc802e36e5",
+      "sha256": "0cc95ecc4f82dd7bef6443d6826660ca050763c4f0a172f0ef893b65994705c1",
+      "bytes": 9073
+    },
+    {
+      "path": "apps/sheets/src/renderer/data-validation-marker.ts",
+      "gitBlob": "130e7adeaf99c42b88486b9c379c7704affb8852",
+      "sha256": "b4ab5a585bb52bc8440616b3123ddb2db9323794578081b3de9a4cc3826673eb",
+      "bytes": 1838
+    },
+    {
+      "path": "apps/sheets/src/renderer/decimal-step.ts",
+      "gitBlob": "2cff577a881a69d629709fd62a598a75cdf27d0b",
+      "sha256": "56acfe24abe3a2698806526e79962a97d448846b67b164b9334e28e85a0fc4a1",
+      "bytes": 3997
+    },
+    {
+      "path": "apps/sheets/src/renderer/dedupe.ts",
+      "gitBlob": "cf051cd6643d28d196bd5a3f2c4813822b38fc5c",
+      "sha256": "1601316531a9ae9db34dfdbed58c60dd247931269b012c7eebb18b90af075f8e",
+      "bytes": 864
+    },
+    {
+      "path": "apps/sheets/src/renderer/edit-journal.ts",
+      "gitBlob": "d155ca3f3e83958a207f23e13e65378c7c72e57d",
+      "sha256": "7f42b2f8cb6ea433394049acd15a559e20b18512e2bdd21682438686172e0b5a",
+      "bytes": 101132
+    },
+    {
+      "path": "apps/sheets/src/renderer/editor-word-jump.ts",
+      "gitBlob": "3ad8a11d4c1460b1fb47982708d597060094504c",
+      "sha256": "b68bd961ed8386a3eb60b6dd564b17d8263b24db3b1544e5c4f805e7a01d2a77",
+      "bytes": 7884
+    },
+    {
+      "path": "apps/sheets/src/renderer/env.d.ts",
+      "gitBlob": "66727973a11d4e0e8d6e0897221634b05c391247",
+      "sha256": "daa23e5237bf061777cc4485f07555d19630efe7a341f08a1f06a9e0c39c85d8",
+      "bytes": 553
+    },
+    {
+      "path": "apps/sheets/src/renderer/error-checking.ts",
+      "gitBlob": "c43e447cf5f25bbbe3a94ffe6f1ae22bf8d0b5e1",
+      "sha256": "73b1e0fb40cc76de06e087146d882c1bca17f932aa574d11810928e10e9e6ddf",
+      "bytes": 9445
+    },
+    {
+      "path": "apps/sheets/src/renderer/error-value-align.ts",
+      "gitBlob": "2d45b824608a754cdfe576465889aa73637ddf68",
+      "sha256": "8c21fc3341c5750f1eadd91ed6d114f246f4cfcfa1561cfa224258e39d2d3cad",
+      "bytes": 1846
+    },
+    {
+      "path": "apps/sheets/src/renderer/excel-format-shortcuts.ts",
+      "gitBlob": "65ca544d5722f64f07c02e82735eeeaa9468b040",
+      "sha256": "eb511d2c35f54018553d7af6604ae3986498802291395122ec8abd5026b81310",
+      "bytes": 2206
+    },
+    {
+      "path": "apps/sheets/src/renderer/excel-jump-nav.ts",
+      "gitBlob": "913d4096b3aca37940885ee8b6bf27ae2399a947",
+      "sha256": "bf62e879f91c96fdaa9b53c91a4e6786901a5301d22c2a83fa145d47b5fbd5c8",
+      "bytes": 18783
+    },
+    {
+      "path": "apps/sheets/src/renderer/excel-shortcuts.ts",
+      "gitBlob": "8c9e903650ca5095e52e6f7b7b19ac160d66ddf2",
+      "sha256": "d9c67e40d39d29dc90b3aeaf52c0d36b5f3019c323b67726aba516053232bcd5",
+      "bytes": 27992
+    },
+    {
+      "path": "apps/sheets/src/renderer/external-link-target.ts",
+      "gitBlob": "4ebcb7fe6cbd9057c2c97d454049b89939bdeb02",
+      "sha256": "433940c3922db3daaec7bd76b8795ab4137b9d5b275b37acf3c8939f32e81e8e",
+      "bytes": 1060
+    },
+    {
+      "path": "apps/sheets/src/renderer/external-link-values.ts",
+      "gitBlob": "7714c51f6974c762a6ab53f369b563b2d35d0b90",
+      "sha256": "6a4d61913130f752bd69b2a5857ed22c2ff262ebbe57fd41964942c714f2cb2d",
+      "bytes": 1259
+    },
+    {
+      "path": "apps/sheets/src/renderer/external-links-flow.ts",
+      "gitBlob": "b669e532dc40f4000b9650132b3c5a4827c3ad67",
+      "sha256": "bbf8c766af1a5343c750b2df49e6370f2b17802f9d9e0036cc6a15464fceda39",
+      "bytes": 3429
+    },
+    {
+      "path": "apps/sheets/src/renderer/file-naming.ts",
+      "gitBlob": "7b51629d6609871e1fa9e0c2ba8f6994f6e5427d",
+      "sha256": "e0eaf2462d80e2f5f0305d9b41f09cfe94aba59341229ad25a8f9cb9b394c8a0",
+      "bytes": 5300
+    },
+    {
+      "path": "apps/sheets/src/renderer/file-tables.ts",
+      "gitBlob": "8809b8938f5337ee76994fb922772e7f5a7249be",
+      "sha256": "557b837ae4361302c5e18885c28ed1318ac2be9ecdf77aa6cf3489ad57d92226",
+      "bytes": 2868
+    },
+    {
+      "path": "apps/sheets/src/renderer/fill-series-apply.ts",
+      "gitBlob": "2c4d9a0b0e4c64e7cdbef132bb53b9c2addd5c88",
+      "sha256": "9be0583127bb0571eb685bdc22d4074bf8cc2f6cbcbcc56bbcd58e8ab4dab603",
+      "bytes": 3609
+    },
+    {
+      "path": "apps/sheets/src/renderer/fill-series.ts",
+      "gitBlob": "6f8bbe809d185e42d00d315fc98e3ff9b34be422",
+      "sha256": "3ef06235e183451b2e4a57ccefc371fe34f937aa1ce20deed7cdb64610ee73ac",
+      "bytes": 8620
+    },
+    {
+      "path": "apps/sheets/src/renderer/filter-button-excel-style.ts",
+      "gitBlob": "f55f3d3ed8f941cbd6e4302bf33a8ba3f0524510",
+      "sha256": "9fb9a9891165bd89e915ed55b1191220a92a58202c7432d9c9bde31beb410c35",
+      "bytes": 4589
+    },
+    {
+      "path": "apps/sheets/src/renderer/filter-range-outline.ts",
+      "gitBlob": "e9740dce82217bd9e1e2c7d9731259babcec0fe2",
+      "sha256": "a437bfaee7ab363dc56258663f23ddac178ca032d09e8b76eea3a2a706e0edef",
+      "bytes": 1399
+    },
+    {
+      "path": "apps/sheets/src/renderer/filtered-copy.ts",
+      "gitBlob": "2ecb41f4a3cd3e77f4917312331357e8849b8d54",
+      "sha256": "511541080e7d85eb0f08c09e634835bce5397ef55716f223e6618eb2509aa931",
+      "bytes": 2749
+    },
+    {
+      "path": "apps/sheets/src/renderer/find-replace-session.ts",
+      "gitBlob": "3a4ee084c79d92678da4361e0d2a13c12d0489d5",
+      "sha256": "4685f570d82d268c28b306e1f41eb747024e3fe33323d141ccb3fbdeebdedad5",
+      "bytes": 6064
+    },
+    {
+      "path": "apps/sheets/src/renderer/font-size-ladder.ts",
+      "gitBlob": "2c25c201204a761b0d0b04e79240ccb188740349",
+      "sha256": "3529215ac6b050d63c3f6760de5839a46ca5b45ccd3bb87e161a921fda8caf59",
+      "bytes": 475
+    },
+    {
+      "path": "apps/sheets/src/renderer/format-cells.ts",
+      "gitBlob": "9da81d5335b78f7a623dbbe7330cf6e212b2aab5",
+      "sha256": "e500a0cb593cea13d4e809ac603f02bc71fcfe634b658933a5010d0899e1820e",
+      "bytes": 4893
+    },
+    {
+      "path": "apps/sheets/src/renderer/format-painter.ts",
+      "gitBlob": "1d6542114f5a6013168aa08861532fd883934427",
+      "sha256": "40c268ead2425630cd9260857721cf4f349cd126e0e8bd45e0bc565fc337c5e3",
+      "bytes": 3809
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-bar-autosize.ts",
+      "gitBlob": "906c1a480d839b300967bd653323f1f347b69126",
+      "sha256": "c4fe66862f8add42f769b301c2a5afe8a21c6fcf0aeb20ee9b2b3abdb1509036",
+      "bytes": 5334
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-cached-fallback.ts",
+      "gitBlob": "3493b6c8e2e26988b3405761489b6a6d3b3ea83e",
+      "sha256": "2f5580b317dbbe149272355f95382a74b6d633de7ef48109368cb2a907488abb",
+      "bytes": 4768
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-closure.ts",
+      "gitBlob": "66be00769f52a6c58af6eb87a4fab067a5e8b15a",
+      "sha256": "56382524c6ce217900a0f231d8eb7422b0f2bf97b7788b2394bae99f87883c21",
+      "bytes": 12005
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-cost.ts",
+      "gitBlob": "75cae85d67c634987c0a20eb5f9ee34de37569b1",
+      "sha256": "7957b3a9d217cc4a9e69fdc094ce561cacbd370d3bfaeb41f0a214f6c193993a",
+      "bytes": 11488
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-functions.ts",
+      "gitBlob": "f267bb4f001828f3e76f1519ce6a23e3d21ddb4d",
+      "sha256": "d72fb02a0d2b635c4aeb9b63035d3ec64b9ceb2c57af4e3974f17ab9b2c2b57c",
+      "bytes": 3842
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-lexer-fix.ts",
+      "gitBlob": "988a85a89d9e26b94c2d2761a211578f73d098c5",
+      "sha256": "d5aa905b3694e2e40761e7e1339acf692a892b7e7ae6e8d4786ba86f494d7cdb",
+      "bytes": 8747
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-newline-display.ts",
+      "gitBlob": "4541e8aa3026e5fa35ee58ab7d35c5ce7dbbbe15",
+      "sha256": "9906dc392d198f1d7957c7e966704d588f1e7bab7f6fbbf98c798287b64dde09",
+      "bytes": 2446
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-null-result.ts",
+      "gitBlob": "0de9edc490af0c84bb6979c3482af46a13e3c2cc",
+      "sha256": "45b2f26c5e249adad6611d2491f99c370c64f65294bb9e8ebab292456b46afca",
+      "bytes": 2381
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-settle.ts",
+      "gitBlob": "a0ced1c73dea6a0ee90bef1dd48c77bdce8f6677",
+      "sha256": "eb3878a21e39a561132b99c1b90647ae18fd6d26907b1ffdd9a92c2929e10b4c",
+      "bytes": 1969
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-stream-hold.ts",
+      "gitBlob": "9fac09bfb7f43219e74ab647cc5136bc9c009f19",
+      "sha256": "18954cae9da18545c0063f6e39fe2562a9d3b64b8ebb27444b92bb437d0ff132",
+      "bytes": 5439
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-values.ts",
+      "gitBlob": "814be871407966f31926d26d2d72f765f9610b89",
+      "sha256": "f6eace9a2d6f2ae1cff15d26e78ae3e170314754b621447fd49b280fe075de6e",
+      "bytes": 9314
+    },
+    {
+      "path": "apps/sheets/src/renderer/formula-view.ts",
+      "gitBlob": "5b606743b1eb5a93a29ebaa1c5791e935368cf9b",
+      "sha256": "81feabf760a9f88e6ce99c57033f1611fffe442372ebc299b7c7b2f1f3d803e4",
+      "bytes": 7579
+    },
+    {
+      "path": "apps/sheets/src/renderer/full-load.ts",
+      "gitBlob": "2db8f6845edc42d9a539009be74d8ed8581432bf",
+      "sha256": "c389d6177e690f49b09fd8a1c07482689493e6ecc92c35044ba28041d1ccda47",
+      "bytes": 1372
+    },
+    {
+      "path": "apps/sheets/src/renderer/function-arguments-runtime.ts",
+      "gitBlob": "2a9ecc81dd62cec160c6ad8374d87d6564b3069c",
+      "sha256": "aa392a0b08f66bfff8c256955235be6d52c08f71442be4e238de80b434dfab87",
+      "bytes": 13380
+    },
+    {
+      "path": "apps/sheets/src/renderer/function-arguments.ts",
+      "gitBlob": "3d5de3874d31b8bc5c9e36127f5cab1c971225cb",
+      "sha256": "b5b80b89457ef88239a0cf522ebf3f109dbea939715aef98e88d15af7a4c2606",
+      "bytes": 10967
+    },
+    {
+      "path": "apps/sheets/src/renderer/function-catalog.ts",
+      "gitBlob": "3a7c66e2c402fc1d5641d0c164c41ce93e2626ea",
+      "sha256": "5a258c3a00c7ab513d08027624690b400218448a104e55b2e134e0a920980749",
+      "bytes": 3766
+    },
+    {
+      "path": "apps/sheets/src/renderer/function-registry-probe.ts",
+      "gitBlob": "f719a20e1f8cbbc223b5f835d2783f02ca2089cf",
+      "sha256": "e2c4d60edcab6ec6e51d49f2b65ccb8a195edfd159b61ff10522ead1e1771b53",
+      "bytes": 1471
+    },
+    {
+      "path": "apps/sheets/src/renderer/global-shortcuts.ts",
+      "gitBlob": "9acf5210cb5f43ee8d38a9e43eecea42cf5ae3d7",
+      "sha256": "d269ab965c4083bace2d6b1828b73c7d9ab9ba6494f1ee24e25e7b85ceb17f99",
+      "bytes": 9005
+    },
+    {
+      "path": "apps/sheets/src/renderer/goal-seek.ts",
+      "gitBlob": "49ff34017054f85f4c5febaa84f8a62fabd9d9cd",
+      "sha256": "248218c49047938b44e075bc9e2409758bfe97489dca5898c2981eecfdf41988",
+      "bytes": 4620
+    },
+    {
+      "path": "apps/sheets/src/renderer/goto.ts",
+      "gitBlob": "b36412289aaf66d5ff5d488e8306965b5497e1b0",
+      "sha256": "dfdaa0a7e5a59216fb779b4434975b4c90b69354b6e9004f29f3d2f5804a342d",
+      "bytes": 3709
+    },
+    {
+      "path": "apps/sheets/src/renderer/grid-growth.ts",
+      "gitBlob": "66c68bf60f7e69fe15297f787ba0d34b95f62858",
+      "sha256": "58fd616e7cd86f77c7a5c4728aa9f8224cf9e7560580f50bad6a0405f23c61ad",
+      "bytes": 9846
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/ar.ts",
+      "gitBlob": "655cb40b515bf89fc789a60323d9354efd5a9891",
+      "sha256": "933ca61d3785e29138bfbdd93f1481047cd82c079cf985f5d22cefd8e284edf6",
+      "bytes": 7495
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/cs.ts",
+      "gitBlob": "f3576df7bf0d0c920666e14d0110b11bf8a2febd",
+      "sha256": "4f11a9b61a7560d8fcb89a1f8152b9b7dbd12a125224d3b94d89ef395ab0515c",
+      "bytes": 5892
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/de.ts",
+      "gitBlob": "4e74caf6480cb2b04e9ba6da02b2c2f0aef07e15",
+      "sha256": "336ed32a8700cc6753aba6623ceb4bc4825618e7546d902d2950c53ba671d3dc",
+      "bytes": 5873
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/en.ts",
+      "gitBlob": "20290c4b9e75fec55edf04209c28ab1838bd25bc",
+      "sha256": "c8b63886ba11184f5e848badf596cb80db833f6eee9f4bc53735ab917de82ed9",
+      "bytes": 5287
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/es.ts",
+      "gitBlob": "8d9c49e59263915d0c8feb5a3ed84c1e20cf2395",
+      "sha256": "b3c68b9192a310c4c24a7b583bc3e1a7264dfb135571a78494a495806d1a7568",
+      "bytes": 5840
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/fr.ts",
+      "gitBlob": "ba8b0d9613a3ac441298d4e518bf3b4eeff12fd7",
+      "sha256": "b24c2cb4abca953a781c98863255986d279cb32d473c87bfd90cf390c0748513",
+      "bytes": 6020
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/he.ts",
+      "gitBlob": "abc5384a61ed105bfbedbed44288ba06b26f92e6",
+      "sha256": "f5b530e38317ab0c09ea7a510dc656657f311a0ee9a6682306a8aa5a8be09890",
+      "bytes": 6619
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/hi.ts",
+      "gitBlob": "90045a18b50037390151123acd4eb4fb68730b2d",
+      "sha256": "61e8681cca8ac7394a7be0789b8a7f66e485d104a986f330fda88ac7f9fd9bf7",
+      "bytes": 9496
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/id.ts",
+      "gitBlob": "7e7ca1ce2da9f6213e12dddb67ecca019649d6c8",
+      "sha256": "3a7ceb954bafd341c4f991ba04f4061c43f32d4fee069ea46b4c2b61409b7292",
+      "bytes": 5466
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/it.ts",
+      "gitBlob": "9287c41579bdbe180c21a029d9f964605bdbdbeb",
+      "sha256": "1412b2c42683187250de4f633d031d92e0b47a0e07422ac60d3cc091edba52a7",
+      "bytes": 5931
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/ja.ts",
+      "gitBlob": "dc0ad7157bdf540cb7c54574e19109b3c2d77c69",
+      "sha256": "5dfee731dce1009a7add409093417377aa5adade7e6a84fef68573cba1c85f1d",
+      "bytes": 6472
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/ko.ts",
+      "gitBlob": "54d342367ca99150faf7a3df250f2e026f6466ac",
+      "sha256": "25a49618833556faa46005d37f3b572f4914e97679fcce765d04a492920966d4",
+      "bytes": 5910
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/ms.ts",
+      "gitBlob": "079ce98456f7534343994f57cb21ca13bafd86e1",
+      "sha256": "ba135c25237e6886c4e8a468d71c5de27798aeebec9b8a3ed2c451c656150573",
+      "bytes": 5512
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/nl.ts",
+      "gitBlob": "8cb121ecebdcadd4071ec346979fd2db97182d5e",
+      "sha256": "2e954ee869017910d485ef76b4e6955c677fd79bf9c3d99d1c99f66707ab2428",
+      "bytes": 5744
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/pl.ts",
+      "gitBlob": "96401cd2d8308947dab99f2dfad7c24136689c27",
+      "sha256": "57db2ddeb6d8519ac4101eff87e9c6f4b89fb6d25708adf81cc07938b84dce2c",
+      "bytes": 5661
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/pt.ts",
+      "gitBlob": "6dd1cd6762c2a63bb3c7f40125995b38a52982f2",
+      "sha256": "cf2428082cf1ee77e109c3af7a0970754cf29499ff869977ea0a1b5fcb0d7ddc",
+      "bytes": 5792
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/ru.ts",
+      "gitBlob": "b0299fa43f711fdba5912a3bd384a531d146d788",
+      "sha256": "984917a751bd578c910763f340f14eafb5cf9a1279a4e7807c0d271fab5e582e",
+      "bytes": 8069
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/th.ts",
+      "gitBlob": "c2c7e60ff3ef38ce02883bd05820822ccd9c187b",
+      "sha256": "2b34a0888d84ccfcfa86c406984f8fdf7b5488a4ede937878d11714c47ec466a",
+      "bytes": 9783
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/tr.ts",
+      "gitBlob": "3e648a9b9dd0602988e715498e0bcf71a9d1ccb6",
+      "sha256": "f5ba4f1b977349a045bfe4e8d71082955356d3b026aa88cedccf3615d93aaed7",
+      "bytes": 5846
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/vi.ts",
+      "gitBlob": "48fc6ea53d01b443d6cd22377321b0280915361b",
+      "sha256": "20b67438a7d34643be7bcbe1af7a02901438ae99496df286c5cb4835191aab85",
+      "bytes": 6550
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/zh-TW.ts",
+      "gitBlob": "e129ae7c336299e968323e5723e6051acdb3797e",
+      "sha256": "896f5c6ac492d8a21c8ae4724765a33bd3c4d37a4b0984f2f0d977191acfd32c",
+      "bytes": 5090
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/ai/zh.ts",
+      "gitBlob": "203c4e699c4aef01651a87de530fc635c73bcf10",
+      "sha256": "c536d0343731c48e7769796218191fada8058e48aa1834823856d3ecc7110f87",
+      "bytes": 5068
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/ar.ts",
+      "gitBlob": "09af4c914dd6f79063abb18ab30d50720e215770",
+      "sha256": "c1bc22ff822fc0092b711347a835aface3b79ffdbb74cb7b154a7edb9a436ecd",
+      "bytes": 107720
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/cs.ts",
+      "gitBlob": "f7d3ac9420e735bf01c3129deadb14a06555245b",
+      "sha256": "a7115e55fed0ad997d63a283436f74daca6f3986e6b8a51a3e17ea2758759861",
+      "bytes": 88555
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/de.ts",
+      "gitBlob": "bdeaefd0dbe53c72b4f555063ba3be8d1c9ddbd4",
+      "sha256": "7dea2713ad587f7db38be65a234af233c3e4eae0b2a4d9d6288839c6ae150538",
+      "bytes": 92160
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/en.ts",
+      "gitBlob": "a69522b6b7ac80e88ffd0a8001369f55ec8f35dd",
+      "sha256": "4126b2bd0c74d814164c6afbeb87df1ad210ca87cef278a5aba4e35154084f9d",
+      "bytes": 79568
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/es.ts",
+      "gitBlob": "8e075f2c86c821d28e5e524aec7ae0435a9dff79",
+      "sha256": "7eb7d266fb6b5e1bd853125509e90b28a24a8a35c829b62190605223d640251e",
+      "bytes": 90276
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/fr.ts",
+      "gitBlob": "34a1a57b69bdb72f4ef2c8913b279fbd102aa24e",
+      "sha256": "fc820aff8d62207ceaf4be08f8598af2d00acbd9a224a5f8b120e1c878dc9b22",
+      "bytes": 94703
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/he.ts",
+      "gitBlob": "6c45c78d39664229eb07d91e86efb7643bbad959",
+      "sha256": "6c3355e82893220f1888619e24792f46560aa88383c74bad7e45195f733b7b19",
+      "bytes": 100194
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/hi.ts",
+      "gitBlob": "2ea540db4a9fbb5e278d6ec4be345f05335e5551",
+      "sha256": "62c91616c28e2a4708db0839ea2336ec810a907a57c277be0eec91ac5c870e98",
+      "bytes": 148697
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/id.ts",
+      "gitBlob": "3c639e8aa852a0e870a7acb7eed8027df91c3822",
+      "sha256": "54bfbe755fdae5446d01e382bb91f8fe8e1fd2b9b64448c2cdf2d1039c114d64",
+      "bytes": 83826
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/it.ts",
+      "gitBlob": "ad6b3d8f0ddc239ddf8c5a01ea1a3983c9dc514f",
+      "sha256": "cbd654d2bdd1fde2f0859fb3fc1c8cd9fdc0120c28dae29727ce5b36ecc369d4",
+      "bytes": 90958
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/ja.ts",
+      "gitBlob": "434846f6a3da9564617d0950cfca872f976b566f",
+      "sha256": "a882531a372b75c16b27fa19644cb017550329ae5f3e12842fa0c6477475583f",
+      "bytes": 103569
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/ko.ts",
+      "gitBlob": "02b4dbbb686fe76d82ece331facaa17806047a1f",
+      "sha256": "dfc4902fc3aeee488de0843a29ccdb1d775fdf1823a3eefdd69ac8910814ece6",
+      "bytes": 95239
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/ms.ts",
+      "gitBlob": "e064007262efa1dd89f8314c05b60801100149af",
+      "sha256": "21040a5cf99b59955e1b925efd5c851f01651d518286e64f453b20baacdf991d",
+      "bytes": 84292
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/nl.ts",
+      "gitBlob": "dc1d8b894de0b4f25546d66717dbb32db3ec0472",
+      "sha256": "e4dc5b0ef8c8603cb62e0b80ed188ea4ab7b767e33e19501130a8708adb5b15e",
+      "bytes": 88276
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/pl.ts",
+      "gitBlob": "ddba217e09942f66185fd47a03a681d201a59b47",
+      "sha256": "c111fca08caee37351c9a5798a3b7f6fa7afd018df0a8792699712ac9116a0f7",
+      "bytes": 90365
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/pt.ts",
+      "gitBlob": "898f4aed46c614f66b80b1eaa32c3c083f76613c",
+      "sha256": "0955f0a918dab823fcb48d309e4244d50f48c9d10149de136b1274ce6f6389ef",
+      "bytes": 90455
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/ru.ts",
+      "gitBlob": "e8e832d0af8eea518fcfcb8cb05a16226f032622",
+      "sha256": "c59b9731af338f3ca4a6c73ebb20122dc5bb13abe9f5fb9b54deb1695759f31e",
+      "bytes": 125065
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/th.ts",
+      "gitBlob": "e0e0909e0efa691f69331762f374ea7079197c83",
+      "sha256": "6598f0ba2806880d5ec6a8e7593bc0d8a068e8153a9a82698fbfcc8726eb56b8",
+      "bytes": 144914
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/tr.ts",
+      "gitBlob": "ab2631fa92d9d5f6cbfa362b1ea31d2eb6639148",
+      "sha256": "ca1cb09c978b8c0c7ef86b77b5fa158a955888b90638708291bba50c619cd974",
+      "bytes": 87687
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/vi.ts",
+      "gitBlob": "dae611318a2031500ac87279d06aff26fcc5df07",
+      "sha256": "d6af50e87b9c8ab75b83306d08055d2ab45d709a8a6f9899fb059a2d828ebc34",
+      "bytes": 96043
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/zh-TW.ts",
+      "gitBlob": "e9ffa8b589cae72c1a8bcf8798006bc3a462c42e",
+      "sha256": "3cab267231cf0b7760ac4520f5d83fb54da3dfd6a8fb75306f5c8f584fc8162b",
+      "bytes": 78762
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/app/zh.ts",
+      "gitBlob": "24b25e109a4eaf4d4633181d243662e56a9396b8",
+      "sha256": "45e1a9a556a9175dcf77d7add93d4cc3befb9db03556771f01d2ae41563b2243",
+      "bytes": 78561
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/ar.ts",
+      "gitBlob": "8754ad579828fc31e58c612df7cefac2a4e8b3e7",
+      "sha256": "cdeb13d2b4ef47bc986ff334d5d0402a5280f8b83b0dc8466f503c764b813a81",
+      "bytes": 40413
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/cs.ts",
+      "gitBlob": "73d25d85fffd7b79f444d53b9d5a2aa160a6327d",
+      "sha256": "ab2adf571e3465e2a3151239580ce9aebe5512d3bde88c219de8113db919b778",
+      "bytes": 33420
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/de.ts",
+      "gitBlob": "7030c3d621dc5cabe19c36c78c75509b16a4cc71",
+      "sha256": "12950c0c7e62a0a11281023039f9e495584c7fd81031820d4addbbf3c2364a21",
+      "bytes": 34296
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/en.ts",
+      "gitBlob": "166a1c464228522ffccf2def9a20fc213de088c6",
+      "sha256": "5ccb3c3453125e5c28e8f257eeffa4f9d39522261c5385b2d9be76d8e6c723ba",
+      "bytes": 30740
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/es.ts",
+      "gitBlob": "90071060d5b0f9230167061906b79f572a529bbc",
+      "sha256": "76fd9ea91126c3a3bed637b0e35108e97cdbff5afc4ac05dc51e259732d08b7d",
+      "bytes": 34096
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/fr.ts",
+      "gitBlob": "131f4f324a17533d561e65275f932262da9ccaf8",
+      "sha256": "12aa09c173106e3fd7ab663e906c835f4b957026e365de93c1a472f0dcdd6c8c",
+      "bytes": 35534
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/he.ts",
+      "gitBlob": "484c1d5692e101d6112c896b571e654acfbe4b75",
+      "sha256": "7535d9a35a058476ad7d2c70f8e7694eafc7312bdbb4d9e8c23bf01ddc8788e3",
+      "bytes": 38077
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/hi.ts",
+      "gitBlob": "b369775db8404cc8c9884a9db2fe2da215c39224",
+      "sha256": "4c3ca2faffe2e0b06db2f4e1bded3a561cc2acfa50bd0811ac1768116a2d72e7",
+      "bytes": 55483
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/id.ts",
+      "gitBlob": "2b1849984318d083517a6bec01233df955cfb86d",
+      "sha256": "e1947b394291357e776c3ba280c306e486ae60629ac2bf2c840545cafc4c0fd1",
+      "bytes": 32426
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/it.ts",
+      "gitBlob": "f5e76dc58f981bf7728a8330912d48c547ddb115",
+      "sha256": "18fb0160a22519da2143d2d8091fba1b5442c7072da5623c97d69ad511875b27",
+      "bytes": 33925
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/ja.ts",
+      "gitBlob": "123f5fe1cca15e17c5f99c3c112a6f1869a6e99a",
+      "sha256": "4f030391a6cb5199c9abc826d45d2333ee8aa5e101a276fcd1456dde497c6c31",
+      "bytes": 37429
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/ko.ts",
+      "gitBlob": "3b0273c81f5d68fac464d5d3ce8d265a886f6424",
+      "sha256": "75e819dfccb0bcde918af235f6316a8bd3ef8516e2fd8d279bf8fa9a3d6559f7",
+      "bytes": 35102
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/ms.ts",
+      "gitBlob": "6cf3d046c0ccb6f3c226e71dbe3126d394071216",
+      "sha256": "60af4a070eee50c93b867887019c49da9f8831e72b6f5827d7d332b80a88a062",
+      "bytes": 32336
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/nl.ts",
+      "gitBlob": "c28b9f3f261ffb3938ec984e8d78353ce7ec3bcf",
+      "sha256": "097e7235dae31df9e786eb679a05f5243f16b3f4aadb8b92b11926382e78166b",
+      "bytes": 33244
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/pl.ts",
+      "gitBlob": "6b9565bc949198ff8b911dba3f155dd1a56e63ac",
+      "sha256": "48daa8631f8f86103add25aec3f8204cd83e722866e08a40795ce7126aa83e39",
+      "bytes": 33855
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/pt.ts",
+      "gitBlob": "c36c73f17f3bd5e5f0d24e6612e8d87080d213ac",
+      "sha256": "ad7df6413da07869eea3fc32b9302a191a01c9b56bdba6b10c1b3177cde59a21",
+      "bytes": 33934
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/ru.ts",
+      "gitBlob": "856d0769ae4e44fb52d9c7ac4065e5e9dc236f57",
+      "sha256": "9e31ec4243dd6d0f265854c6bd51c719db415e2bbde1af7ada6a9f8bb26f0c53",
+      "bytes": 47054
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/th.ts",
+      "gitBlob": "f8c48f30dfcf1d4faaa5aa8183e8c357c15ee8f2",
+      "sha256": "ac60b78870350f96259fbb490e416459612cb7069e2c79967ca2e25521a3d90f",
+      "bytes": 54090
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/tr.ts",
+      "gitBlob": "83cb7d6ab602ad749bc6ba0f7820a3b0fe591164",
+      "sha256": "6c4801d4fc1c1cf18fe675103c3957dd1a1a6fbad37a3369702ec167dbd34058",
+      "bytes": 33548
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/vi.ts",
+      "gitBlob": "a492e728755c4a54736d2610049515b5cb1e5ef8",
+      "sha256": "a6dcaa38fce81cbce50d010c9f322efe080e3fa6810e5ce4f2e0cfc24e9299a2",
+      "bytes": 36683
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/zh-TW.ts",
+      "gitBlob": "0b1ab864e61ba0744f33c3c90507df454d525018",
+      "sha256": "4fbf052b69b90b43ec653e5fa4c680422d9d6059cf07b7d008037196cd32dcf4",
+      "bytes": 30794
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/dialogs/zh.ts",
+      "gitBlob": "ad7c78d2a9d934bc813658bb7786be542f92288e",
+      "sha256": "361eff317ca7db4263bbf4e46f8aee2e06afc059568fef83fec7bc3925b41961",
+      "bytes": 30549
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/locale.tsx",
+      "gitBlob": "6d38142f31c1e005a3e3d0f3cb88b19be3958d4a",
+      "sha256": "73915582381bf1b8454e0df42f36615cd25b3816a4b6ce918f0d692ddabd65dd",
+      "bytes": 6075
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/strings-ai.ts",
+      "gitBlob": "2aff46d418355d1f2aa39a9a0ade67520c679ec9",
+      "sha256": "1172eeabe0a44accdf96a2f37b4ee1428afc5e6fcc2d1a868ae16933734e241a",
+      "bytes": 963
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/strings-app.ts",
+      "gitBlob": "56683675ef425d06e4668b16155871411e50ed24",
+      "sha256": "a46beca82a8d12567a3e67f311a163014f65da0ecea3dd144fa7f3e5b8ac2b24",
+      "bytes": 978
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/strings-dialogs.ts",
+      "gitBlob": "4c89234dd690742a22f668c2035f5a3d18d8b58e",
+      "sha256": "f3174e1f4e28166f9c673fd4056ffb021c023ed4cb731083c44805f25995a7ed",
+      "bytes": 1100
+    },
+    {
+      "path": "apps/sheets/src/renderer/i18n/strings.ts",
+      "gitBlob": "eb84af424825178e4fa1330289216127f47c76a2",
+      "sha256": "a3bc70fd6fc52de412c18681b2a29bc5707d43583fa6e9dc8c6a1de2c4fa4718",
+      "bytes": 1638
+    },
+    {
+      "path": "apps/sheets/src/renderer/icon-catalog.ts",
+      "gitBlob": "d78575e44ab539311d531b091bf82e5e6030e070",
+      "sha256": "f21775f21284b2416947a16deabbb5bdf8f7e8e1d4f91995160b6f4b1625c773",
+      "bytes": 18255
+    },
+    {
+      "path": "apps/sheets/src/renderer/ifs-empty-set.ts",
+      "gitBlob": "7be485c922ed6c7c14979993a1d6c08bce84f8f2",
+      "sha256": "2cfcc098baca3f4ed4dc19d87fd01b59cd950b8d6d8b7c3c259b019420aa8f03",
+      "bytes": 3668
+    },
+    {
+      "path": "apps/sheets/src/renderer/index.html",
+      "gitBlob": "65bec678c067934dc48303d3c037b1289acae8f1",
+      "sha256": "54f9abd19df35af289df7d9dc89e4882163644c4d7afc3dffd021b75d15cb4a1",
+      "bytes": 537
+    },
+    {
+      "path": "apps/sheets/src/renderer/insert-delete-cells.ts",
+      "gitBlob": "69428b86603d93c2c718b6afaa0bd3f0f99885f6",
+      "sha256": "dc071fda910bcd97847774846650b88d50e426ceb66c625942015b3f86310ac4",
+      "bytes": 4968
+    },
+    {
+      "path": "apps/sheets/src/renderer/large-filter-state.ts",
+      "gitBlob": "a2e146c970994ddce4237fdc76d9cccc541a3630",
+      "sha256": "b2b5cf16173ef344faf6edcae4611db43736b3335f56be7b12bc363b746373c0",
+      "bytes": 3074
+    },
+    {
+      "path": "apps/sheets/src/renderer/large-filter.ts",
+      "gitBlob": "aaa7501194300a16311eae8504424c23449f360e",
+      "sha256": "e4ea68845922a56d68c9fb7d8e51efd6e691d337c0b1e5970651031157382778",
+      "bytes": 27824
+    },
+    {
+      "path": "apps/sheets/src/renderer/lazy-find.ts",
+      "gitBlob": "8ee1bf5c4d2223e45947e1d15f1830332c81af99",
+      "sha256": "b9913d329297917ade800c8bee63739effaacbe04c04394200b80b6fbb0d2f4c",
+      "bytes": 38411
+    },
+    {
+      "path": "apps/sheets/src/renderer/lazy-plan.ts",
+      "gitBlob": "90faa2130ddc26882c4b7735f9d623e5d29cd6de",
+      "sha256": "4e6d79f204d42ac5db4f81d74bd1bbe3a31cf02139f473aac8b5e159c82c91ba",
+      "bytes": 4809
+    },
+    {
+      "path": "apps/sheets/src/renderer/load-budget.ts",
+      "gitBlob": "df6968fb76479081ff67f9dbff73e1e1ed6cf7a9",
+      "sha256": "05107045bdc74ed8f3ed0491344ee0a33b87fde569affbf21d6b5ab8ac87b9b5",
+      "bytes": 2204
+    },
+    {
+      "path": "apps/sheets/src/renderer/load-perf-patches.ts",
+      "gitBlob": "3cdb5cef87d147b1beff12ce3c3e23010b5346b1",
+      "sha256": "37c4d7c51280151d7327f0082d0a785a47126d8125b16777ae6fc671c15e0fad",
+      "bytes": 1108
+    },
+    {
+      "path": "apps/sheets/src/renderer/long-text-render.ts",
+      "gitBlob": "d0b2067fd6db9798c75f40b41c216714b2dce1b2",
+      "sha256": "1f657e66d5e545e00058cfb9221d5cc06b978e6fc08734a340527955e955dc3b",
+      "bytes": 15102
+    },
+    {
+      "path": "apps/sheets/src/renderer/main.tsx",
+      "gitBlob": "aae8bccfc64844c5d484d604c65d711ccfab3836",
+      "sha256": "2ba851b89c1e00d9eb58d7ecf66958ff23ce6891e4764db7f73d8577becc486a",
+      "bytes": 4185
+    },
+    {
+      "path": "apps/sheets/src/renderer/mcp-bridge.ts",
+      "gitBlob": "e69062796a42ee31c43ef7838563411c58e3fe42",
+      "sha256": "0d15fd312b64c6ec7ab0d848f8c1abde9803264ddd913562d0f766a70541964f",
+      "bytes": 8708
+    },
+    {
+      "path": "apps/sheets/src/renderer/mcp-sheet-refs.ts",
+      "gitBlob": "02d78caad011c1b13be0ce800b7169e81d287780",
+      "sha256": "45032f0e53acd3cfe0de4e83c147c8a4375ee28ab4d2a448bb94655d6e211771",
+      "bytes": 9358
+    },
+    {
+      "path": "apps/sheets/src/renderer/menu-input-enter.ts",
+      "gitBlob": "1d0319ae825a9058a619011a212bd4a14739ff80",
+      "sha256": "aafd3db34ae5c2524351ba5b8a119ae86088ebfadc3665184d0d81ba48973bb6",
+      "bytes": 2734
+    },
+    {
+      "path": "apps/sheets/src/renderer/merge-border-fix.ts",
+      "gitBlob": "2524ae524da84d8d13c50602684d9622030f250c",
+      "sha256": "2a39de8a10c84ad6eff198b15b579726370e03a358e97f936e6c7cb0ab1adeb1",
+      "bytes": 2300
+    },
+    {
+      "path": "apps/sheets/src/renderer/merge-workbooks.ts",
+      "gitBlob": "5becf7bdba7bd416493e377a3458fe2f895de322",
+      "sha256": "0e7cb6eed848c8a323e7a834bd2bc8a6cf939782f1382c31b5398d198f16b6ba",
+      "bytes": 12805
+    },
+    {
+      "path": "apps/sheets/src/renderer/modal-dialog.ts",
+      "gitBlob": "cdf8dcc76ff8845f451ce8bb00e444ac93d15fcd",
+      "sha256": "3bcf16b012a2ff760cfc622f3a4e40897516ae6193bb4ddcc9119df0eb53d37c",
+      "bytes": 2935
+    },
+    {
+      "path": "apps/sheets/src/renderer/note-hover-card.ts",
+      "gitBlob": "9db5b12ee13efea83ec95f9428f8b1df9bc61c71",
+      "sha256": "2dbdd70484aab565a9a3f0efb57db2c0bb98c3a6150869eef76f69ffbe9dcb33",
+      "bytes": 1719
+    },
+    {
+      "path": "apps/sheets/src/renderer/note-picture-actions.ts",
+      "gitBlob": "36cade8ec846b0d1eeb85c424571465b019dffa6",
+      "sha256": "331887c837de5eb51756400b0ef3637a79a07a0a6aae6c3c0516da363bcac7b8",
+      "bytes": 5458
+    },
+    {
+      "path": "apps/sheets/src/renderer/note-pictures.ts",
+      "gitBlob": "91dcbf233210af76f39d40b670aa9c71f25763d5",
+      "sha256": "7dc3a4874e66388e2f3cb16f0dd19645239eeca2f71a6c51c1cf4cc169445823",
+      "bytes": 4588
+    },
+    {
+      "path": "apps/sheets/src/renderer/number-as-text-alert.ts",
+      "gitBlob": "93b045f90e9c86d7f0fa255e5ae3708a1dbf867f",
+      "sha256": "6af40552007eb45975eb59566a25a3f21221c960ac3a1395a036d125d7708c1e",
+      "bytes": 1079
+    },
+    {
+      "path": "apps/sheets/src/renderer/number-format.ts",
+      "gitBlob": "df37a01c1122df7b74cd6351c732b959b07e70ff",
+      "sha256": "25f8db9d56c1db94ee215fd6804f37de07bf964ef16a41880597db540b3ac683",
+      "bytes": 2534
+    },
+    {
+      "path": "apps/sheets/src/renderer/numfmt-dialog.ts",
+      "gitBlob": "029474f4a2f593b8ba8d1ff072d2a79b40ab3ce0",
+      "sha256": "2e7f66860e10e169296b6b77d0145e479dfcc335afc9f3704d93a1dee25d93d1",
+      "bytes": 7915
+    },
+    {
+      "path": "apps/sheets/src/renderer/numfmt-fix.ts",
+      "gitBlob": "38d433e9429e4482887beed5216dc113d4794927",
+      "sha256": "32a1277671dbe94b4ecaa3d18f7c83d7f2cfede1797410a791f828da722e620c",
+      "bytes": 40999
+    },
+    {
+      "path": "apps/sheets/src/renderer/ole-visual.ts",
+      "gitBlob": "196a55526c5ef52e73a609ad7e0d00d7d2375d7a",
+      "sha256": "1d5e68071be4873ed5f5036c53fcd9531a97302130d310ae9adaf5040f250d9b",
+      "bytes": 3382
+    },
+    {
+      "path": "apps/sheets/src/renderer/op-executor.ts",
+      "gitBlob": "aaf6b61b7893958237a88786bc40afb6b8c6efe4",
+      "sha256": "2d82c88141fb8ad8cd2e5dae08c78e1106b1921017d69221a317f1e2860f5d10",
+      "bytes": 65167
+    },
+    {
+      "path": "apps/sheets/src/renderer/other-formula-anchor.ts",
+      "gitBlob": "43a98e828d226ba0512c358fa5278314db80f12e",
+      "sha256": "4da6d387e10cb1e485e9d0d543f7d49877c18eafae95271683d50dfbc46f3f37",
+      "bytes": 2274
+    },
+    {
+      "path": "apps/sheets/src/renderer/outline-actions.ts",
+      "gitBlob": "0096682d0b00104180498bf9bb2abdcddd36455c",
+      "sha256": "a93072c36fc3373efc9e0cc60f1556de8074553f5507487e9cdf28d405f2e20e",
+      "bytes": 11235
+    },
+    {
+      "path": "apps/sheets/src/renderer/outline-gutter.ts",
+      "gitBlob": "d1f7c7fc96f54bc921db7932ff62fcb8fc30e77a",
+      "sha256": "a2092bb2d882f052673c628b9a49cb38ec9bd05f0e689e85cf4a74cb7c7f23dc",
+      "bytes": 23052
+    },
+    {
+      "path": "apps/sheets/src/renderer/outline-model.ts",
+      "gitBlob": "18186bf0c77818f236eeb1ca6aad6919f192973c",
+      "sha256": "7537e0d8121aa30995f4021bd91958d07681939b55911961f1ecfc82b228732a",
+      "bytes": 9779
+    },
+    {
+      "path": "apps/sheets/src/renderer/page-break-preview.tsx",
+      "gitBlob": "9210aa2b91c91ce8a390545d66524dc3447b908f",
+      "sha256": "9f386d78691b4fda8b8b163d99273fc21095452f37a4432c937f638a31bf73f5",
+      "bytes": 8487
+    },
+    {
+      "path": "apps/sheets/src/renderer/page-layout-actions.ts",
+      "gitBlob": "e84c19c3a37d5f568af1028e285649a31554f179",
+      "sha256": "777ded405e77dad44bc3fdaae353aea113c65fccc254b70ab3f0747c615f1803",
+      "bytes": 31255
+    },
+    {
+      "path": "apps/sheets/src/renderer/paste-special.ts",
+      "gitBlob": "01a2061bdb48aaff0a9045698c919d3ed589ef57",
+      "sha256": "ff0fe2133019cc1025353d8da16dc2f7bde62ce208dec56f0d92f6abbb88a3a6",
+      "bytes": 22370
+    },
+    {
+      "path": "apps/sheets/src/renderer/pick-from-list.ts",
+      "gitBlob": "a33b92c786d9941a8e4ae546f422a32686e5ce38",
+      "sha256": "9024b8b4f3b39c45ff62c24092ddd4c5cd2e1f615edfece87ecd3cfe0c40fa9d",
+      "bytes": 1770
+    },
+    {
+      "path": "apps/sheets/src/renderer/picture-paste.ts",
+      "gitBlob": "131d83a6013e75c69e72ca6db55d8e1cfc3d744c",
+      "sha256": "74c8b38cffd64d38e1fb1df748d89c0bb8d2ab8b173ceb9fec95bae72052498b",
+      "bytes": 4613
+    },
+    {
+      "path": "apps/sheets/src/renderer/pivot-actions.ts",
+      "gitBlob": "26d4264bb93f793fcdbdcf8675154e98e6f52bc7",
+      "sha256": "d3261d8b46c0b68a53404fac3a85cffa265d6d101088eb394cfc8c54424ea497",
+      "bytes": 43911
+    },
+    {
+      "path": "apps/sheets/src/renderer/pivot-field-model.ts",
+      "gitBlob": "608abeb05f288987e7c34fb4c613e44ed923cf6d",
+      "sha256": "b41b3da99b74f86a36f50ed7e7107a31a8002c64e0c31b08a0861de5b3b420dc",
+      "bytes": 17016
+    },
+    {
+      "path": "apps/sheets/src/renderer/pivot-source.ts",
+      "gitBlob": "ab7bfda4d6c6086b616232afa49a23632d67e408",
+      "sha256": "33c672f6f8f33ad567da7a13cdffa253330c46b979ff7080700912422e12e470",
+      "bytes": 2140
+    },
+    {
+      "path": "apps/sheets/src/renderer/plan-operations.ts",
+      "gitBlob": "540b6aa8c3e0319617ba7bbf45110a9a269bb053",
+      "sha256": "bb16a7fa392955e2994f44ece63cb4adcece8d4c3efcbc707244d8bbcfec19e5",
+      "bytes": 67005
+    },
+    {
+      "path": "apps/sheets/src/renderer/print-hf-codes.ts",
+      "gitBlob": "d55e27d538ed7488d4c4181fdcd93d388064d2bf",
+      "sha256": "1f184d9a783db829be1084c3dcb0cdd2e2c96b0e32c8b1dbaee62323606a541b",
+      "bytes": 2616
+    },
+    {
+      "path": "apps/sheets/src/renderer/print-html.ts",
+      "gitBlob": "dd76f42d46c103c095d1075402628d062ba21380",
+      "sha256": "eab9a0a784157e83ec4452710cb596e609478e5606356606d181adec72aee987",
+      "bytes": 39202
+    },
+    {
+      "path": "apps/sheets/src/renderer/print-paginate.ts",
+      "gitBlob": "30b237565c4d357a3a47ff58c9321f44a17acc95",
+      "sha256": "b5910844cca1fe51e9bab7e06eee98d7d8f911fb10dcab600f9dc0be1fe2c8d9",
+      "bytes": 5197
+    },
+    {
+      "path": "apps/sheets/src/renderer/print-scale.ts",
+      "gitBlob": "84aa4dab96a628807faa43cd2df2f15314e3af39",
+      "sha256": "6d37a1c1b7d836e754caa4680aa3db9f409d0aa80c9de175be817abc7742297b",
+      "bytes": 3461
+    },
+    {
+      "path": "apps/sheets/src/renderer/print-settings.ts",
+      "gitBlob": "8a71cbd2e6873e85a209c3263699a6d72fe8e898",
+      "sha256": "c53b1d45df0eaef10f765649ba1c7443fa036041373a4300d8ad80f4d570e3ca",
+      "bytes": 15611
+    },
+    {
+      "path": "apps/sheets/src/renderer/print-visuals.ts",
+      "gitBlob": "78d34957ecfefcb871c81959715c7169d8622b2f",
+      "sha256": "873000a4a4af5366e7ff8854db58ad01d89ab907d05b86c2a2e28582eed57c2c",
+      "bytes": 6124
+    },
+    {
+      "path": "apps/sheets/src/renderer/protected-ranges.ts",
+      "gitBlob": "b87058f129c348a0c57f8c77614af5196f9de055",
+      "sha256": "66c4eadac12c4dceb26283dc1dfd28fd022968457dcbbdf8c7fdb06e95ceacf0",
+      "bytes": 3755
+    },
+    {
+      "path": "apps/sheets/src/renderer/rate-function.ts",
+      "gitBlob": "4cf9b7ab84c0fc54fb18b7d3984364ee5a5e1f34",
+      "sha256": "54c2913024019669633255dc057db9d05d0dd229fe3a0daa6c118430cf8f877b",
+      "bytes": 4517
+    },
+    {
+      "path": "apps/sheets/src/renderer/redact-actions.ts",
+      "gitBlob": "4233d1f328143897c44cb46cb7f8cc3fb6e90da7",
+      "sha256": "3bb157291b8807ccc48b2e0e5c81a540f7b261236184ed4f5fad3d9c74be841a",
+      "bytes": 6625
+    },
+    {
+      "path": "apps/sheets/src/renderer/redact-marks-shift.ts",
+      "gitBlob": "9216edd6cf4180d120900d1f03678fd299a6ced3",
+      "sha256": "c5a6f8fd06b3723fd9cdf7b5d5edada4a59d61787343951d13c89180eb039cdb",
+      "bytes": 3165
+    },
+    {
+      "path": "apps/sheets/src/renderer/redact-menu.ts",
+      "gitBlob": "d403a7743f07a72d413c4546eff46c7ad52a75c7",
+      "sha256": "2db97dc24fcec1ae4a31296bcb57a0315781f0fae1958c25fab5ead55bb633d0",
+      "bytes": 3471
+    },
+    {
+      "path": "apps/sheets/src/renderer/redact-tint.ts",
+      "gitBlob": "ae43bcc26c54a0f237f19ac53d07578f9451ff60",
+      "sha256": "53efc78d75101c30f5313768e30ac923906af0d53aec4e7b45ebd45085ad0561",
+      "bytes": 4742
+    },
+    {
+      "path": "apps/sheets/src/renderer/reorder-gate.ts",
+      "gitBlob": "4c9f0f330886d7b1f352ab8fad73c4e5f48b0610",
+      "sha256": "8207b5d31779b71bf0bb3b605c57afb91dcd4f1dc00e4d8156bf9405947fbe9a",
+      "bytes": 5518
+    },
+    {
+      "path": "apps/sheets/src/renderer/replace-autosearch.ts",
+      "gitBlob": "eef5e0ba53dff45ec43020591ff3f00cfae10c81",
+      "sha256": "92d57e10c1189a06c1dd3a6681b8a78dbf347cbc3cb2b747f2f80d1340207b34",
+      "bytes": 4002
+    },
+    {
+      "path": "apps/sheets/src/renderer/ribbon-actions.ts",
+      "gitBlob": "c38df65e12b3f2f22edd1d43583277516c34ae45",
+      "sha256": "e4effd7feda2b4e9c6f8feb1b7f976b0b6325a80a2e690cb4fd17e46888efa11",
+      "bytes": 90734
+    },
+    {
+      "path": "apps/sheets/src/renderer/ribbon-icons.tsx",
+      "gitBlob": "d363b32ca8ec6e2f9cb64c2c21012ca50b166431",
+      "sha256": "a1e97bd2b06ab56d9dd5f1febed1ab67a8a663321b5294684fed6aacbf8d154a",
+      "bytes": 26618
+    },
+    {
+      "path": "apps/sheets/src/renderer/ribbon-wheel.ts",
+      "gitBlob": "da07d58115c99d70a1bab2327337d4ad847df815",
+      "sha256": "499623693a6958d8ac69bcac6b3a7634e8f13fe7ac811e0b824403aee8aeb510",
+      "bytes": 1157
+    },
+    {
+      "path": "apps/sheets/src/renderer/rich-text-bidi-fix.ts",
+      "gitBlob": "8b33f7d50c45b996470faa6d68dfd667753810ca",
+      "sha256": "b51bce7940884a4169735523f0085114cc17ddcce79da773b8da13e3f3b03e26",
+      "bytes": 21536
+    },
+    {
+      "path": "apps/sheets/src/renderer/rtl-grid-mirror.ts",
+      "gitBlob": "72d2f3b85b20f0fd980ae7c13839ebe12e5d7a96",
+      "sha256": "0e8379603475372ac0f32e00c8d389992d39c8c9bb8d8d135da743e5bb6e1147",
+      "bytes": 49755
+    },
+    {
+      "path": "apps/sheets/src/renderer/rtl-text-fix.ts",
+      "gitBlob": "b373fafb57a8316040e5e82cf482d3e8676a2643",
+      "sha256": "1467964ae4524d92358b4a85aa3b727dea503586b99e1aeec5814eeb68abfd76",
+      "bytes": 8133
+    },
+    {
+      "path": "apps/sheets/src/renderer/save-actions.ts",
+      "gitBlob": "aed8220e7240d93436751796f18927fd681d2c19",
+      "sha256": "aecb8ae993f99b94889ddfd11ab3f2ea2d95526275fc12d611fcfbbbc463ca2e",
+      "bytes": 43352
+    },
+    {
+      "path": "apps/sheets/src/renderer/save-edits-staging.ts",
+      "gitBlob": "3479d9a214586c3a4fee869e6c9caf4dd83cb491",
+      "sha256": "61e0c7809baaeb92b9c0d21575a9dfcf0f2454815fa2bc72c83017fd4708ce94",
+      "bytes": 2654
+    },
+    {
+      "path": "apps/sheets/src/renderer/save-scheduler.ts",
+      "gitBlob": "fc4138664a6603d40bc19d1675c3845484fb37cd",
+      "sha256": "1134d428260f11b6297a1d5d4f2a2eaaf7076cf02217c05bef9e91514b44600f",
+      "bytes": 2574
+    },
+    {
+      "path": "apps/sheets/src/renderer/selection-format.ts",
+      "gitBlob": "a4067ec43efcc9c4db09af0c6779f169401879ed",
+      "sha256": "d1d3c6bfc79c425b2bb1d8a4b838005f2d5cbb8670cd95ba45034edf87bf0a92",
+      "bytes": 6149
+    },
+    {
+      "path": "apps/sheets/src/renderer/selection-wrap-fix.ts",
+      "gitBlob": "341677fe6599c9031a3c1932f760316ff9af1e7b",
+      "sha256": "9cc253f3ed5a8834128b6cac658aa546cb6bf0815094867d08119ed807e24ed9",
+      "bytes": 2447
+    },
+    {
+      "path": "apps/sheets/src/renderer/shape-draw.ts",
+      "gitBlob": "fdf86758f4614ad9178ffa3c64821ad03d920b1b",
+      "sha256": "459f63c2a1e95e350fc9b7d0090df8a996aedaa3a743ae414bf68e8cd6eadcfd",
+      "bytes": 10210
+    },
+    {
+      "path": "apps/sheets/src/renderer/shape-text-bullets.ts",
+      "gitBlob": "bc56d0ec66281f865b28f98e17ca7d81e20377ab",
+      "sha256": "c70e19a7ea7aedb77a5e96e7326cda9444eeb30aaf85ab0704b9bb130ba6821c",
+      "bytes": 2234
+    },
+    {
+      "path": "apps/sheets/src/renderer/shape-text-scale.ts",
+      "gitBlob": "3e22d6662b739c5c5c1062d2daa32550d462a8f6",
+      "sha256": "2d5014edfb2fce0a910db7b1d7c362e8b9a493efc45ecb255805d09c3c77c5fe",
+      "bytes": 1294
+    },
+    {
+      "path": "apps/sheets/src/renderer/shared-formula-index.ts",
+      "gitBlob": "1560f7a053f3863896cf381a1988c2bc6dc86201",
+      "sha256": "2ba835d3a7afdd68c2599d289cafc7e5f48368b28ac28e8a1f999e8951be64db",
+      "bytes": 4143
+    },
+    {
+      "path": "apps/sheets/src/renderer/shared-formula-journal.ts",
+      "gitBlob": "249f6c65307e219a9935b5203acc9d55bdef2f8a",
+      "sha256": "1b0626c1e365ce0e954d777fddcca0f1dac181f22119648915b3cbb5412baae7",
+      "bytes": 2603
+    },
+    {
+      "path": "apps/sheets/src/renderer/sheet-context-menu.ts",
+      "gitBlob": "bf78c77a2bcebb123245c7fa3b7c49d13eeee500",
+      "sha256": "b544887f191b410127fb10c103bcdebaab52013533d05a1cfc1120b4c8bf1283",
+      "bytes": 2309
+    },
+    {
+      "path": "apps/sheets/src/renderer/sheet-focus.ts",
+      "gitBlob": "7c849dbadb477b1937b6512139c3b0b71bb05448",
+      "sha256": "d3a2fc8bef1a4d90ec67ec50b6d78427a529b433431953ae284cfefc47d91c09",
+      "bytes": 2589
+    },
+    {
+      "path": "apps/sheets/src/renderer/sheet-protection.ts",
+      "gitBlob": "1ba3015543eff0b628359c037520e06539d0cc0a",
+      "sha256": "752e02603fcc3c099c5ede79d0b22ff654502e08e522e6740224186ad95a60ac",
+      "bytes": 18448
+    },
+    {
+      "path": "apps/sheets/src/renderer/sheet-rename-fix.ts",
+      "gitBlob": "359ea5814bf4ef71a9255bae5d5a9d2c8b8fa7db",
+      "sha256": "c3e19c7005b61e0ac76490fb644b79149e196aad8788e7301019ca383189390e",
+      "bytes": 2630
+    },
+    {
+      "path": "apps/sheets/src/renderer/sheet-rtl-view.ts",
+      "gitBlob": "ccfe90a748e47cfef3ffac067265dba85bc82656",
+      "sha256": "0df87726084d3ec9ae3f9c1037147366dce816ec6b8be0df85d7101028aa2879",
+      "bytes": 4050
+    },
+    {
+      "path": "apps/sheets/src/renderer/sheet-tab-actions.ts",
+      "gitBlob": "6118c075f174cca2668d508f9ce20c608bb3c67f",
+      "sha256": "b1ea4cc4a54e7bc66db8d57ada5a228d7520a67e3ad93e0e0242b660650ae91f",
+      "bytes": 5761
+    },
+    {
+      "path": "apps/sheets/src/renderer/sheet-tab-menu.ts",
+      "gitBlob": "7b243a6bcd833a2abc92b2c0580d21fd5a1c4073",
+      "sha256": "014616495026b974784654bd77602e3447c2f1edd4fc467594a237d4c8c7a9ef",
+      "bytes": 4572
+    },
+    {
+      "path": "apps/sheets/src/renderer/sidecar-find.ts",
+      "gitBlob": "879dba75d8f82fc12933616266846b5413721133",
+      "sha256": "0752de6a302ec04614ea758ef2e9266f559a93e2852685c7e1376e7b799ac918",
+      "bytes": 4865
+    },
+    {
+      "path": "apps/sheets/src/renderer/sort-formula-refs.ts",
+      "gitBlob": "7210ca754938da0f8534d66be5ac3ff418bbe7df",
+      "sha256": "1362d6d81ba303eb436d5732098d0f69d1479f6fd90adb9c6526ed3cce246f0d",
+      "bytes": 5450
+    },
+    {
+      "path": "apps/sheets/src/renderer/sparse-find.ts",
+      "gitBlob": "b6ef6c6817c7db74a3780abe0eadfb00803c48b5",
+      "sha256": "e42d1126e9fada6fcd057dc86545594a0676bc514255a58a4384dcb095536fa1",
+      "bytes": 6661
+    },
+    {
+      "path": "apps/sheets/src/renderer/spell-check.ts",
+      "gitBlob": "a93a6ccc837b3ad0c837ae44a6d099acf3f33031",
+      "sha256": "481b367ab1375c16091c20370c7c548f9717f7782a0895284c595639d8174c43",
+      "bytes": 10949
+    },
+    {
+      "path": "apps/sheets/src/renderer/spellcheck-pref.ts",
+      "gitBlob": "d4d2f7dc8188f2614db562175665d0ad720858f7",
+      "sha256": "ce54bd2c3650892456bf91e153f4a2ae2d359aa475640306e3086761eb462415",
+      "bytes": 2244
+    },
+    {
+      "path": "apps/sheets/src/renderer/status-bar-stats.ts",
+      "gitBlob": "2ddcedab45911119c3b8648b2e25193259901190",
+      "sha256": "764097df3312e3ffab33e1479a5c956952072049d4048845772e10f2852ed267",
+      "bytes": 4963
+    },
+    {
+      "path": "apps/sheets/src/renderer/statusbar-file-stats.ts",
+      "gitBlob": "950ff42d3f9e5c03a1aa72dda41dceb56c210f56",
+      "sha256": "e47cc110eb904f60fda6ea7c0dd50beaa1bcac4d5a519ff877a739be086756c5",
+      "bytes": 9546
+    },
+    {
+      "path": "apps/sheets/src/renderer/styles.css",
+      "gitBlob": "cfb52d59603fc7c1739b8eb1fc9c52b77a4fd3ce",
+      "sha256": "e0faabcde838f5ad9bd2af5deb51b48cda35142f9854068cba339a6e86bfb88f",
+      "bytes": 163269
+    },
+    {
+      "path": "apps/sheets/src/renderer/system-fonts.ts",
+      "gitBlob": "a505c7ad99723fd5c1a3594e2ebc6bf531940df6",
+      "sha256": "95dd76678cdaa8aadcecf108010cbec11b92e00097994cd1ce6794c021a43fa2",
+      "bytes": 2300
+    },
+    {
+      "path": "apps/sheets/src/renderer/table-actions.ts",
+      "gitBlob": "cd7f374d5a57aeed12016fff1bf33417e037a455",
+      "sha256": "dca77c764cccfa4e1d83835daa6db0c302ccc90960239df3cce9fee770634638",
+      "bytes": 3178
+    },
+    {
+      "path": "apps/sheets/src/renderer/table-design-actions.ts",
+      "gitBlob": "bc1db334ecc5fe49e9fee67fea868d2cc2e083c3",
+      "sha256": "68109cfafeb7835837415042c05aa28cd159b75e790474d52edcc127fba65e0e",
+      "bytes": 33254
+    },
+    {
+      "path": "apps/sheets/src/renderer/table-design.ts",
+      "gitBlob": "b987a2cd779f538febb3c1641035ac314e9e9722",
+      "sha256": "dfcac1f421ce051d334148c86a8f79e203a4c59a87eba74b00274bb4f45f250f",
+      "bytes": 6961
+    },
+    {
+      "path": "apps/sheets/src/renderer/table-styles.ts",
+      "gitBlob": "46699583a3ebac002772f7b8e4c3d576b51bf500",
+      "sha256": "db00f593f8c5fc618cf01e4b3c2a22ec66d59cf4e193c8a6bb242f9501f8508a",
+      "bytes": 11758
+    },
+    {
+      "path": "apps/sheets/src/renderer/themes.ts",
+      "gitBlob": "c076fb98b8e49f74b047ecd27827aee31f8b131f",
+      "sha256": "42f527e0319a2d35c33d574256c683dfe74a9138db4aa2be54cdd735afc04f23",
+      "bytes": 7085
+    },
+    {
+      "path": "apps/sheets/src/renderer/thick-border-fix.ts",
+      "gitBlob": "bd0bad32454c30a9ed41f6097ae078a7a88c7817",
+      "sha256": "7a88ad3248c415b87cedbd9e4fa902f65d46416b936731ab4bd34844abd69a4b",
+      "bytes": 6682
+    },
+    {
+      "path": "apps/sheets/src/renderer/threaded-comment-actions.ts",
+      "gitBlob": "0715c0f7c9b39c51a7685f4553c12f9c788238d1",
+      "sha256": "9aacc7c37ccd0877810041d326740f9680c0bfb68f8bfac40c4d4dca78aa3dc9",
+      "bytes": 4841
+    },
+    {
+      "path": "apps/sheets/src/renderer/threaded-comment-marker.ts",
+      "gitBlob": "44bef486cc0ee838ffd0fe38cea936ca5af35227",
+      "sha256": "d1e1e83c5f20bab00b643d654f17ece7401a202f1dddcb3a10dc1ae369a1948e",
+      "bytes": 3539
+    },
+    {
+      "path": "apps/sheets/src/renderer/threaded-comments.ts",
+      "gitBlob": "458583d4b9da08ee971ef28f71e5b8300c3fa6a4",
+      "sha256": "306ebb5dae7210857df14446c75670bc2b73d8004cb8123c7d57da1a5bb9a108",
+      "bytes": 15404
+    },
+    {
+      "path": "apps/sheets/src/renderer/toast-bus.ts",
+      "gitBlob": "8106d1bf56f889809b122503fb1624c714e7f867",
+      "sha256": "fe7dda2dee6bbff5ca5678889e8af6bcb547aeb2c4ee778a4c2127c94ff2ac53",
+      "bytes": 641
+    },
+    {
+      "path": "apps/sheets/src/renderer/toast.tsx",
+      "gitBlob": "ee02f59ce7f0aefa1f21bc376aa8ad837c38c221",
+      "sha256": "1f1d4de118cad1aa463e252ddabdfcb3d478123e63e4b1c4efb9744fb14ffa2b",
+      "bytes": 2276
+    },
+    {
+      "path": "apps/sheets/src/renderer/trace-arrows.tsx",
+      "gitBlob": "4b3b46b2b7d0512d0bbe31e01132f8b6a6cda978",
+      "sha256": "eadb96ce844dd76c43b3c1c175d649a25c84ba08f4cd7ae738965dee19e7c673",
+      "bytes": 8877
+    },
+    {
+      "path": "apps/sheets/src/renderer/undo-carry.ts",
+      "gitBlob": "20f27d4d2e3a066e8ef4b5c26aef0ecc004a8abc",
+      "sha256": "7c270790702e85efb86f0a2407bbd5dd3148a0a18c6d649a8bb99625e81e0846",
+      "bytes": 10831
+    },
+    {
+      "path": "apps/sheets/src/renderer/univer-locales.ts",
+      "gitBlob": "146139c94629f4577afeca6cd2196ba0f3e13d37",
+      "sha256": "f97853c52b722ac70b897e7a965ce63c6a756c17ed3ca4ea4c1d9e243f31ee37",
+      "bytes": 14426
+    },
+    {
+      "path": "apps/sheets/src/renderer/univer-rule-detail.ts",
+      "gitBlob": "38e4f84fcfd57f486b29baee8b77ee09f769bb5c",
+      "sha256": "711f819a4217767293c7c706252f8c3a3e6950f898417da2bcd2ed6c35454146",
+      "bytes": 6189
+    },
+    {
+      "path": "apps/sheets/src/renderer/univer-state.ts",
+      "gitBlob": "00182c43f564f4afdc73b37cb0a365b9fd27130f",
+      "sha256": "d0a417f4aedaf93dd3509ca1050f6cbf151ee48fa400a2b4824ebf9fed27b7a4",
+      "bytes": 18905
+    },
+    {
+      "path": "apps/sheets/src/renderer/univer-sync.ts",
+      "gitBlob": "08bc53e9167ea4b53c3b3d2f3e8265cdf01c9e1b",
+      "sha256": "677f67710889e5d17e5e643177090757cd89534997589930976e78dd4e8cbf4e",
+      "bytes": 343775
+    },
+    {
+      "path": "apps/sheets/src/renderer/vert-align-render.ts",
+      "gitBlob": "72c2d496f6fbdabf76c165ae4d9213f4970aa9fd",
+      "sha256": "b29f5290ad0a277609690466d76d743bb6fe9ac2f922e419d4fb84456fcc00a3",
+      "bytes": 4610
+    },
+    {
+      "path": "apps/sheets/src/renderer/very-hidden-sheets.ts",
+      "gitBlob": "42144031c367faa973403012fef1df600a722eef",
+      "sha256": "7bd88924c5cb13540811b83b24d94c87cefcbf44dea0dbb787aa7e0eca8afa46",
+      "bytes": 2067
+    },
+    {
+      "path": "apps/sheets/src/renderer/view-transform.ts",
+      "gitBlob": "17df2d23b8606639545fe4139ba140eed3ad3b90",
+      "sha256": "0093162315d054a2e441e19aa38022c4b9f516327db83718f8863ee87c31e262",
+      "bytes": 13629
+    },
+    {
+      "path": "apps/sheets/src/renderer/visual-actions.ts",
+      "gitBlob": "3451b7531d5486d619f28128f24b82f0330cd123",
+      "sha256": "32c411ecc4dd9dce033649be52d919a1ea8e74f18f8a383e2bdc0a1b99e5e047",
+      "bytes": 30706
+    },
+    {
+      "path": "apps/sheets/src/renderer/visual-arrange-actions.ts",
+      "gitBlob": "dac8606398cc0b1664ba007f45ff90e35324885b",
+      "sha256": "073e486dd81ed0d788d0f280d654954e60fb7158b39b3728c7453a8ca5ef2363",
+      "bytes": 23304
+    },
+    {
+      "path": "apps/sheets/src/renderer/visual-arrange.ts",
+      "gitBlob": "72706c7f6d3a8ade403d9f7632685c9ae4e111ba",
+      "sha256": "1e7775c7fa1c60a31a26bbfe632cf8ebe1bb018d5dad679a825be75aec88b470",
+      "bytes": 4397
+    },
+    {
+      "path": "apps/sheets/src/renderer/visual-delete-button.ts",
+      "gitBlob": "ec47b52e43680b3c9171422b5270f5180b2703da",
+      "sha256": "0774fd74fae4e9538d8457048479e670eef3180d803b8a92d468233fb740ee02",
+      "bytes": 3945
+    },
+    {
+      "path": "apps/sheets/src/renderer/visual-edit-sync.ts",
+      "gitBlob": "58c8633b5125e8d3842737442f7b6e8b03b1d70f",
+      "sha256": "dd9c587dc9db00f4ab2f12f4a67f94dbb32bc2bfe39b4c4ca81a41ad041dc689",
+      "bytes": 19978
+    },
+    {
+      "path": "apps/sheets/src/renderer/visual-geometry.ts",
+      "gitBlob": "11a75123f8b6709c2ae89af66fadb2f97ca63e9f",
+      "sha256": "65a8849be2ebe1d5f3ee21f36e4c965387f0338a803e4be6f43685fda20719aa",
+      "bytes": 3355
+    },
+    {
+      "path": "apps/sheets/src/renderer/wheel-zoom.ts",
+      "gitBlob": "6b66b948c11b3e1befd1860286c0f9ba3b24928f",
+      "sha256": "4597e2231891d26c109b8adcd49d6d24bed3b41979d16eb76c94d7d49e9e154b",
+      "bytes": 2004
+    },
+    {
+      "path": "apps/sheets/src/renderer/workbook-media.ts",
+      "gitBlob": "740b4aaa949a1cf1e01778161715ae4bfa984208",
+      "sha256": "57611a1b79cc1566ee2c6366f0a6f37fb60a9cc387cb05f3cdeb994acf1f20eb",
+      "bytes": 2152
+    },
+    {
+      "path": "apps/sheets/src/renderer/workbook-ops.ts",
+      "gitBlob": "0f0f407958509ea4b1f531f61dfeb6c545b7f23e",
+      "sha256": "1b3d1993091259d45738bd52ce4ee909d84f896b80bf99d89ee584ea822bbdbb",
+      "bytes": 35220
+    },
+    {
+      "path": "apps/sheets/src/renderer/wrap-row-height-batch.ts",
+      "gitBlob": "cbb6a326e734ff41ac280317f463c39333c55010",
+      "sha256": "7ffd070adbe52a4e4dfb6030960aaf8f79f047e0e83d45b698dbbc732e2f411b",
+      "bytes": 5269
+    },
+    {
+      "path": "apps/sheets/src/renderer/zoom-range.ts",
+      "gitBlob": "641e12121aed97dcf031da4ae71baeaab2d8f07a",
+      "sha256": "bc7442d0c8115e92e310860d054afb6f976c6db808215c3b72dd8b699bf88719",
+      "bytes": 602
+    },
+    {
+      "path": "apps/sheets/src/shared/desktop-api.ts",
+      "gitBlob": "14848be769f19466705bd5590c3b7a7a31a4ae7d",
+      "sha256": "eb648a42cc5bb7f4d3f114ef07f3abda0f63810d2f70cf05f10720d5d4aa6c6b",
+      "bytes": 144093
+    },
+    {
+      "path": "apps/sheets/src/shared/ipc-channels.ts",
+      "gitBlob": "b1ddb436abc818c30bb920a8c9f81a7dd6474b9f",
+      "sha256": "4c49172ca40adc633072e539cc4bde8808a7ae352e73bc63b59bca086c6d8b88",
+      "bytes": 7931
+    },
+    {
+      "path": "apps/sheets/src/types/docx-engine-math.d.ts",
+      "gitBlob": "9d1c3a269c5ebae56b8bb4adecc2cf0f08210684",
+      "sha256": "d4b6afd866a1680b2941584ceb37320c3505aafbe860c3a7e0281e827999bd12",
+      "bytes": 554
+    },
+    {
+      "path": "apps/sheets/src/types/file-parse.d.ts",
+      "gitBlob": "807bd5a5b8129ec4c0d6eb5a1ebb424f787822e1",
+      "sha256": "6f0d31aae86c9c42b8021ba392b1c7b4e6044a41f8ba6a07adb54e6e6f7cf000",
+      "bytes": 729
+    },
+    {
+      "path": "packages/agent-core/src/electron-transport.ts",
+      "gitBlob": "07eda703720c8a9c1b00b1b1c774b9a5290e6529",
+      "sha256": "daa7d241b325993f63ec1c918c3eeeef57559bab424cbe1388284b32823c627e",
+      "bytes": 6581
+    },
+    {
+      "path": "packages/agent-core/src/loop.ts",
+      "gitBlob": "d32711ee36abd03aa28cba4929c177307a1657dc",
+      "sha256": "1b454d62567af531a928bb7fbaa9544b29390d868ff43ba334dc9231c6653354",
+      "bytes": 59673
+    },
+    {
+      "path": "packages/agent-core/src/types.ts",
+      "gitBlob": "35450b5891cb35e9f58ca27e8a674174cc2dad90",
+      "sha256": "0f9ac1bcd83526ff367da810f51868c9e8dbcd578c61237603b476c6b3d1696e",
+      "bytes": 5139
+    },
+    {
+      "path": "packages/electron-utils/src/atomic-write.ts",
+      "gitBlob": "f8994b8f9627b40c2631fd1ec4c7e3f574c7c141",
+      "sha256": "41ddefdd1a402ba10359c60b7604d734eb404a95669f22df4f8fe33a2ac0c319",
+      "bytes": 6399
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/cell-address.ts",
+      "gitBlob": "ed471aa97b1f90a4605e5d3881816bc96d86ee8d",
+      "sha256": "5814c556eb9e86d8450436955ff7718e95580db12ecb6caff5e7be2c45655f3c",
+      "bytes": 3459
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/chart-recommend.ts",
+      "gitBlob": "6474ec8ff8f6c85e7afff7313fc8482aee186685",
+      "sha256": "c5f8e543b685a1b48123d367ae185ed4085566c3b5b55eff0b2ae325909d67eb",
+      "bytes": 4601
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/chart-visual.ts",
+      "gitBlob": "d861509e71367ae6bc6344659d0acc5e2d28eafe",
+      "sha256": "9ce3f68bb304a3b6db90937b624f67f12b28f152f8e41625541131bf6127516e",
+      "bytes": 37174
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/flash-fill.ts",
+      "gitBlob": "61a2bc12901b9e0f632d045fb58d06189d3d6c93",
+      "sha256": "cd21d6dd61918ae7e6f91ed8bb72a3a94f4fb0b3a814b38364f701ee6e27873f",
+      "bytes": 2336
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/formula-shift.ts",
+      "gitBlob": "d8fcae0baf10c43a809b31fec998933df8babe26",
+      "sha256": "cf1df9b29f0ab58607b4ba38b7ce6851232bdb649c9a69c24bde603e320d5360",
+      "bytes": 16773
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/in-memory-workbook.ts",
+      "gitBlob": "dcb21a04d66e8e910a5d819141936c4ca272fe19",
+      "sha256": "65e9aaade5bedc69ee3ebc88e27fa1429b4eed0bd7c89b74dd0b6a723fff7fbf",
+      "bytes": 33518
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/pivot-chart.ts",
+      "gitBlob": "a0c0a4e0bc2ddf332ea26a09d6fec9bb68ed5e8d",
+      "sha256": "a19e8ae404827551b90b4507f5da2d33611ae4a75709a20601eac2d9091fd9dd",
+      "bytes": 7182
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/pivot-engine.ts",
+      "gitBlob": "4fb133e4c833f9f274d4260869549247b756931f",
+      "sha256": "e60e858e98330976bffa6a49c50e18446ac49fe944163a27578d4eae3fbd1cbc",
+      "bytes": 41274
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/pivot-filters.ts",
+      "gitBlob": "7333619d25f5643fa7e0b728c41348d7326714e1",
+      "sha256": "00d895e911d74990b6d31447ad54803d5ee97dc5d0c034fc4d58dcd6eed06a69",
+      "bytes": 4175
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/pivot-formula.ts",
+      "gitBlob": "3b7321a332aa12be3752f29a24a238ef2efb7ef7",
+      "sha256": "76133dfb81a671e5b7435110c84239034d76653dc05cf2a22f42fdf89e9d63a3",
+      "bytes": 7439
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/pivot-grouping.ts",
+      "gitBlob": "7d715ef8341543f3665d43f04818a5b10c20ce6f",
+      "sha256": "bc20dee93014a89fa548dae70f96731726760e928919bb244d7e6dfe2602448d",
+      "bytes": 6660
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/pivot-layout.ts",
+      "gitBlob": "00fd287ee50a8a69a312e9e2a2befa93bc64e94e",
+      "sha256": "982b5380d931a77eacc2ac4d6e99f5194af90368847a0351d8c62e72105502e0",
+      "bytes": 33148
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/pivot-timeline.ts",
+      "gitBlob": "1d07ad6630ea71842e43a965b75638c4a374cab6",
+      "sha256": "62d64ea6074b396b27e1fc418849ba29eeb4144f50c8f09ac59b89a984b3c631",
+      "bytes": 2636
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/pivot-value-modes.ts",
+      "gitBlob": "4a8ae00e0e9a322712e054c861f9a95397d25e6e",
+      "sha256": "926d64df04e5220e4e216c8268f4e6b75338164e8f0b0ff065c06d2b8cd647ef",
+      "bytes": 4357
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/sort-range.ts",
+      "gitBlob": "afba6626f7716a6f258f56d8cd8a0ca50fb43e1c",
+      "sha256": "8b008d27f2b7ad7bc688294ac8b16b38325c19cbd8cfc16b7f5bb527ef9526ca",
+      "bytes": 5218
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/style-color.ts",
+      "gitBlob": "762cb03afa4f9ba3dcf283be2a177b316c8f504d",
+      "sha256": "fd53f97c96225a27de44b4ed77b9ed865763eeaa37d18bc6d8707b5f5c88af30",
+      "bytes": 8360
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/workbook-dsl.ts",
+      "gitBlob": "ff3970a7e41d84e297e680f943ceec7afcc3bd97",
+      "sha256": "936ead6b28d8d55bf075ed87ac0dea625e41283c5d59ff8263a384998911d856",
+      "bytes": 91427
+    },
+    {
+      "path": "packages/xlsx-gateway/src/domain/workbook.types.ts",
+      "gitBlob": "108decf7eaba7314bef40ad9bffe8d0951127aed",
+      "sha256": "07e62df6b3774bb01fe81b871be2fe901429e14194e01a1bbdfdc6854b43b5ec",
+      "bytes": 4723
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/csv-import.ts",
+      "gitBlob": "02128b904cf987db7bd875bea5e94faec10ed2bd",
+      "sha256": "b079c025774d89410ca8b861365c67c5b4525df0cfb7a2a4be87c3e0bae3f552",
+      "bytes": 16407
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/future-functions.ts",
+      "gitBlob": "8cc6b8607ca35cbeb7f615466fe2a822609d5fe8",
+      "sha256": "e20d15a15a949bba348297d741e7887c75b6369f2a0748fe25dfa8b51d08cfc6",
+      "bytes": 6160
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-cell-image-add.ts",
+      "gitBlob": "f45684b7d769a056a82e19135a825053886bdddf",
+      "sha256": "cc99bff697cded4acc347dc16f987905f00ba6b43179f0ec4f803cb51e7208a2",
+      "bytes": 20488
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-cf.ts",
+      "gitBlob": "26d39ba58f453568e00479007bf6b7238c0baef0",
+      "sha256": "db38a4ca48933595db8019acce5f45b27f1fdff2f01d43bd6ae7abd84b16e18e",
+      "bytes": 21842
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-chart.ts",
+      "gitBlob": "2a5ffe951a56643201bfa560cee613d62695133b",
+      "sha256": "4fd859314036529fa01dc9da909bd9f848e00743e916feb3a60b3936493fe46b",
+      "bytes": 57274
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-connection-refresh.ts",
+      "gitBlob": "68687f890aeab67ea16a96602773ebff1e899556",
+      "sha256": "883fd49039d2f7920ebc5f7f49bf686d74075800f21a9d2e1f7aba335526f328",
+      "bytes": 10843
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-connections.ts",
+      "gitBlob": "9b264b97f252603eeea56e7600f8cb96b5f34639",
+      "sha256": "14a4f198482a1731d994749d07069dd7c5dca7855f3f7b9604ef0e010f72ee16",
+      "bytes": 10645
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-default-styles.ts",
+      "gitBlob": "fed75ae3374cc0847942206406a316161a00e78e",
+      "sha256": "c88952f226e705e7e4f4d48b3a7ec6d0019f5efecf7dc3d84a0c53e4c427ae99",
+      "bytes": 1428
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-default-theme.ts",
+      "gitBlob": "120db7a67de82811699ebd033374781060f66004",
+      "sha256": "63765c3226b67c9b70918e430b7f3bc684ee81083eeb6cbe50aacd6cf88d1d82",
+      "bytes": 7420
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-defined-names.ts",
+      "gitBlob": "3517f69178a3da157ec4cb2bc1ffd685844b0da3",
+      "sha256": "793485ffe3e313e06fdc2c04e2afbde79719c0b97aed9a05e1f6f99a19e3dc45",
+      "bytes": 6275
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-drawing-add.ts",
+      "gitBlob": "0b1af1bc57a6a1382d7932bbc866727e4d64625c",
+      "sha256": "afd5da76e6767c21a900abe91627cb02c487cf2901f616b95e890a4d50688016",
+      "bytes": 43936
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-drawing-edit.ts",
+      "gitBlob": "2a7bc7f63f4ced292a595d017be6977084c220be",
+      "sha256": "ed650f264188ab421be1bfe60dad57b842b2d9886c6c1d7e14a90cccf6d8ce56",
+      "bytes": 24992
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-dv.ts",
+      "gitBlob": "4c85c822f05e68397090cc8e9a31ac28fb0d1bd0",
+      "sha256": "eff6a0f38c78b9477b9187fa4d20c3c895efca25e969c57355e2b78747a076e2",
+      "bytes": 25152
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-escapes.ts",
+      "gitBlob": "533e7d2ef3ceba892454be73aa7f6af69e433427",
+      "sha256": "1ff3ab6c4c32f2e224cbb818bb35d97717853ea6e4970e670daae252539478e3",
+      "bytes": 963
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-external-links.ts",
+      "gitBlob": "26882cf7582cc0f1ee65e3d34f69290b2789168c",
+      "sha256": "01251ad722540ed3ca26609f497ce82b47274f711bded8260b11b0ef21f5934b",
+      "bytes": 17927
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-filter.ts",
+      "gitBlob": "f0a83faafeb385a48b7347076501596341583555",
+      "sha256": "740afd1d4e206a0963e317158dcff907e54fe5fb6e1a18534f2ef4a6385ca4c9",
+      "bytes": 10113
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-gateway.ts",
+      "gitBlob": "ef9e09a9047a6b59a1a1a23c40478b4a36592c5c",
+      "sha256": "748591515b74f2f5e8b25c40283b90b567640706eb97d2be015954717b390f6a",
+      "bytes": 146009
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-hyperlinks.ts",
+      "gitBlob": "0645eaf6258b83fd07a8618c86fc680308a91892",
+      "sha256": "8dc34f1614d3002d996266ec40d153c6ff29ac850c13f3a24a70f8c5980ae452",
+      "bytes": 5198
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-namespace.ts",
+      "gitBlob": "9f437d9c69a59a9f58ac3dd37b1321d16c9f58cb",
+      "sha256": "0f792f355f1135d3b873c791e9ae57d258a49b31c364ce287549da8bc070c557",
+      "bytes": 3859
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-notes.ts",
+      "gitBlob": "fdb9b26f99e2773b5790ad036d862e2a4fcef019",
+      "sha256": "976d9452c8a3531cce87205378fa00959daf6d12f14add4e904d8a8c7fab646f",
+      "bytes": 21698
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-package-io.ts",
+      "gitBlob": "277fede9e146db78d541dd9312c66fd385080210",
+      "sha256": "25f10c47bdad93fb1d72882093bdd9782e90b98972dd5bc10572f09768180240",
+      "bytes": 20358
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-page-setup.ts",
+      "gitBlob": "c82e5b9f03f5e0540c5dd0d9034af8f88a26fe2e",
+      "sha256": "10da528114e67f8a801bc823c327cfdd4527517a23e356daffadbb860fb41a79",
+      "bytes": 26872
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-pivot-add.ts",
+      "gitBlob": "3b681248c2bacc035b589a94b11812eee5de3195",
+      "sha256": "30d1db1f38b83ee7707196b791c08fcc80c0ad9a29031b1369dcbc71efe12997",
+      "bytes": 48011
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-pivot-expand.ts",
+      "gitBlob": "b8f73a1af4ab501290d1f5b474c9d7591cb5aa89",
+      "sha256": "433718894d8fc24d711a1ec0a1adcdcba79f16ab7eeca1a7315a55450770a79a",
+      "bytes": 22537
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-pivot.ts",
+      "gitBlob": "9231bd917c240c9b70e9006d3ab20409f83c63ac",
+      "sha256": "c6ecb80ace8f14b6686801a7f7aed6801e9b93ce2ba23c8e4e7f6e8cafe87d73",
+      "bytes": 20537
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-protection-hash.ts",
+      "gitBlob": "594a342186fb6f3bde6ea4e5dd865188ce7e5fd5",
+      "sha256": "148cddb5648c39ca27fad305fd8dc0dea869a8d23bdf2dce7cf00b1213480762",
+      "bytes": 4205
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-protection.ts",
+      "gitBlob": "7736f36698e34e531c1a449833c7935cc6de47be",
+      "sha256": "51965020feb9f1f94518694e36cecb5e9dd62e8e61af31bc169f509db8f6a060",
+      "bytes": 11997
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-redaction.ts",
+      "gitBlob": "b8294c26753fbedade48dbf6e071f8209e59b70d",
+      "sha256": "dd47d9f9a06bdb198c6d4ba6d5c125b81a9259e25c053e94d3f8089396ef7840",
+      "bytes": 24734
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-sheets.ts",
+      "gitBlob": "e154a4309f81b83f7125c468f65f14651290c1c0",
+      "sha256": "f1b20c4fd4868b39f4fe0e0c2c3d5a462343d87c84d9f091037f778249467679",
+      "bytes": 26175
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-sparkline.ts",
+      "gitBlob": "d3df956c501ff037e7ef10e704b8452d7e55005b",
+      "sha256": "802b7cb4dc111c5146c2f54dc985c171efb2f5e8b7575519de6585e86208e17b",
+      "bytes": 4819
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-structure.ts",
+      "gitBlob": "c516efc767e335418c597b840bdce5aa62b2fc0f",
+      "sha256": "550d5f6bfa6e5a02ee6900ef601f62ebfee9e651e773bff183f6955bb3583561",
+      "bytes": 75099
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-style-read.ts",
+      "gitBlob": "e0bb8ae507ec01006bf96e7e751f48f35e8839d8",
+      "sha256": "5d0d8e2a9e505c818d17f4fbfba2c8e1058fa7ce8f69a5e250f9823c002d34f6",
+      "bytes": 4657
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-styles.ts",
+      "gitBlob": "b1fec5822e76d04f30314bf30712002aa8513b9c",
+      "sha256": "c3a2376d6b561ca0bf7ea1eb9d59a2488cbf9a8f1e2834170ea971db18e6280e",
+      "bytes": 21089
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-tab-color.ts",
+      "gitBlob": "c3c57ce5947261eaa5681ce0c06dbd814ee0c199",
+      "sha256": "789cbcb116ae5cd31e26ef1b5745166db124efded9cf84c8f187983e3fb5743c",
+      "bytes": 1747
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-table-add.ts",
+      "gitBlob": "b9637d212aa88fbbafb487e715ac7ef762cb17fc",
+      "sha256": "61c1cd3d3536b82ca970b9c1afea68662af1c76092f3efe969d1a592587b6df4",
+      "bytes": 13305
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-table-edit.ts",
+      "gitBlob": "e5d19daa4428138327f453aa199fb6f5005b526c",
+      "sha256": "3d537c8661ae28fc6e9fea2a131fac1ec4907dfe727e442b261603a9a4aa43ea",
+      "bytes": 13796
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-theme.ts",
+      "gitBlob": "f4530b6c0f2d8c7af5dc685d2997815cefaa3d1f",
+      "sha256": "52bcd595f706edb273f943a518e6fcd5d4dd6b3bffba51769fbe0fa0864c1926",
+      "bytes": 2733
+    },
+    {
+      "path": "packages/xlsx-gateway/src/gateway/xlsx-threaded-comments.ts",
+      "gitBlob": "cdae529187b448cde02ca8551aec740c082d6c6a",
+      "sha256": "67a651f0893eac1aab8b81d8fb12178a2560645a706ceee2357ffd2614f053dd",
+      "bytes": 17792
+    },
+    {
+      "path": "packages/xlsx-gateway/src/shared/edit-schemas.ts",
+      "gitBlob": "15a295272b8230e39fd976e11582216782c7bd65",
+      "sha256": "fddcbb41f292b7160c39ea0cdde05815207eed222abf2415584f99bea2bdbb0e",
+      "bytes": 14497
+    },
+    {
+      "path": "packages/xlsx-gateway/src/shared/grid-bounds.ts",
+      "gitBlob": "0e077de105a7ecaeb386a0ea6b4b65938552d9cd",
+      "sha256": "375f8f8d948f243bf0dc64fad0ff42d49652b7f4163cffc35799f84835b04920",
+      "bytes": 166
+    },
+    {
+      "path": "packages/xlsx-gateway/src/shared/shape-types.ts",
+      "gitBlob": "a4216b5de561585e6d9549ced642707e9710a2f5",
+      "sha256": "7c3ed0303f97ada7f6a900c9053c634449d8aaf228988f31cac78cd369855469",
+      "bytes": 2242
+    },
+    {
+      "path": "packages/xlsx-gateway/src/shared/short-date.ts",
+      "gitBlob": "2f406a4a1b42fdcebe2ed5702efc9b09c6c985c7",
+      "sha256": "dc121a308fa582dd7c86ff7dfd6f516ce937f0341ec7a29c62ad0d1299c54efe",
+      "bytes": 2250
+    }
+  ]
+}

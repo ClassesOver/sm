@@ -124,3 +124,9 @@ it('文字预览确认摘要参与保存幂等身份，确认改变不得复用�
   expect(changed.requestId).not.toBe(first.requestId)
   expect(changed.confirmedPreviewDigest).toBe('c'.repeat(64))
 })
+it('keeps document-protection passwords only in memory including failed-save retries',()=>{
+ const store=storage(),draft=new NativeDraft(identity,store,()=> 'secret-request'),secret={kind:'setDocumentProtection',action:'enable',password:'private-password'}
+ draft.setOperations([secret]);expect(draft.operations).toEqual([secret]);expect(store.getItem(nativeDraftKey(identity))).toBeNull()
+ const request=draft.beginSave();expect(request.operations).toEqual([secret]);expect(store.getItem(nativeDraftKey(identity))).toBeNull();draft.saveFailed();expect(store.getItem(nativeDraftKey(identity))).toBeNull();expect(draft.beginSave().requestId).toBe('secret-request');draft.saveFailed()
+ expect(new NativeDraft(identity,store).operations).toEqual([])
+})

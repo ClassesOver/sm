@@ -61,3 +61,23 @@ it('preserves unsupported scatter label detail settings and disables its plot se
   expect(root.querySelector('[aria-label="数据标签"]')).toBeNull()
  }finally{pane.dispose()}
 })
+
+it('explains the conditional scatter off restriction, guards synthetic changes and resets on another chart',async()=>{
+ document.body.innerHTML='<main></main>'
+ const root=document.querySelector('main')!,apply=vi.fn(async()=>chart),pane=createWorkbookChartFormatPane(root,{apply,editable:()=>true})
+ try{
+  pane.open({...chart,kind:'scatter',design:{dataLabels:'value',dataLabelsOffUnavailable:true}})
+  const labels=root.querySelector<HTMLSelectElement>('[aria-label="数据标签"]')!
+  expect(labels.querySelector<HTMLOptionElement>('option[value="none"]')!.disabled).toBe(true)
+  expect(root.textContent).toContain('首个系列')
+  labels.value='none';labels.dispatchEvent(new Event('change',{bubbles:true}))
+  await Promise.resolve()
+  expect(apply).not.toHaveBeenCalled()
+  expect(root.querySelector('[role="alert"]')!.textContent).toContain('首个系列')
+  pane.open({...chart,kind:'scatter',design:{dataLabels:'value'}})
+  const next=root.querySelector<HTMLSelectElement>('[aria-label="数据标签"]')!
+  expect(next.querySelector<HTMLOptionElement>('option[value="none"]')!.disabled).toBe(false)
+  next.value='none';next.dispatchEvent(new Event('change',{bubbles:true}))
+  await vi.waitFor(()=>expect(apply).toHaveBeenCalledWith({dataLabels:'none'}))
+ }finally{pane.dispose()}
+})

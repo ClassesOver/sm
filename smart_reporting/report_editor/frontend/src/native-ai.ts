@@ -1,3 +1,4 @@
+import { OfficeAssistantController } from './office-assistant-controller'
 import type { createNativeApi, NativeAIJob, NativeAISelection, NativeAIReviewSelection, NativeAINoteSelection } from './native-api'
 import type { NativeDraft } from './native-draft'
 import { mountNativeAIProgress, type NativeAIProgressListener } from './native-ai-progress'
@@ -46,15 +47,17 @@ export function bindNativeAI(container: HTMLElement, options: {
   const progress = mountNativeAIProgress(panel)
   let selection: NativeAISelection[] = [], documentSelection: NativeAISelection[] = [], reviewMode=false
   let job: NativeAIJob | undefined, busy = false, accepting = false, disposed = false, generation = 0
-  let controller: AbortController | undefined
+  const tasks = new OfficeAssistantController({start:options.api.aiStart,status:options.api.aiStatus,cancel:options.api.aiCancel,cancelRequest:options.api.aiCancelRequest,id:(value: NativeAIJob)=>value.editId,running:(value: NativeAIJob)=>value.status==='running'})
   let noteBeforeText: string | undefined
   let wordTarget: string | undefined
+  // Report-channel handoffs must preserve the trusted draft scope.
+  let presetScope: 'selection' | 'document' | undefined, presetStale=false
   let activeRequestId: string | undefined
-  const currentWordTarget = () => JSON.stringify({instruction:input.value.trim(),selection})
+  const currentWordTarget = () => JSON.stringify({instruction:input.value.trim(),selection,operations:options.draft.operations})
   const editable = () => !disposed && !options.draft.closed && !options.draft.saving && !options.locked?.()
   function update() {
-    start.disabled = !editable() || busy || accepting || !selection.length
-    accept.disabled = !editable() || busy || accepting || job?.status !== 'succeeded'
+    start.disabled = !editable() || busy || accepting || !selection.length || presetStale
+    accept.disabled = !editable() || busy || accepting || job?.status !== 'succeeded' || job.accepted === true
     cancel.disabled = disposed || !job && !busy
     options.onStateChange?.()
   }
@@ -84,51 +87,49 @@ export function bindNativeAI(container: HTMLElement, options: {
     update()
   }
   start.onclick = async () => {
-    if (!editable() || busy || accepting || !selection.length || !input.value.trim()) return
+    if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) return
     try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
+    if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) {update();return}
     const turn = ++generation
     const instruction=input.value.trim(), selected=structuredClone(selection)
-    if(options.format==='docx')wordTarget=JSON.stringify({instruction,selection:selected})
+    if(options.format==='docx')wordTarget=JSON.stringify({instruction,selection:selected,operations:options.draft.operations})
     const target=wordTarget
     const requestId = crypto.randomUUID()
     activeRequestId = requestId
-    controller = new AbortController(); busy = true; job = undefined; update()
+    busy = true; job = undefined; update()
     details.hidden = true
     status.textContent = '正在生成并核验建议'
     try {
-      let result = await options.api.aiStart({clientRequestId:requestId, instruction, selection:selected, expectedSha256:options.draft.identity.sourceSha256, operations:options.draft.operations}, controller.signal)
-      if(disposed || turn!==generation || options.format==='docx' && target!==currentWordTarget()) {
-        void options.api.aiCancel(result.editId).catch(()=>{})
-        if(!disposed && turn===generation) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update()}
-        return
-      }
-      progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, result.editId, controller.signal, () => editable() && turn === generation)
-      while (!disposed && turn === generation) {
-        if(options.format==='docx' && target!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();break}
-        show(result)
-        if (result.status !== 'running') break
-        result = await options.api.aiStatus(result.editId, controller.signal)
-      }
+      const result = await tasks.run({clientRequestId:requestId, instruction, selection:selected, expectedSha256:options.draft.identity.sourceSha256, operations:options.draft.operations},requestId,(started,signal)=>{
+        progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, started.editId, signal, () => editable() && turn === generation)
+        if(!disposed && turn===generation)show(started)
+      })
+      if(!result || disposed || turn!==generation)return
+      if(options.format==='docx' && target!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
+      show(result)
     } catch (error) {
       if (!disposed && turn === generation) {
         status.textContent = error instanceof Error ? error.message : '建议生成失败'
-        if (!job && activeRequestId === requestId && options.api.aiCancelRequest) {
+        if (!job && activeRequestId === requestId) {
           activeRequestId = undefined
-          void options.api.aiCancelRequest(requestId).catch(() => {})
         }
       }
     }
     finally { if (turn === generation) { busy = false; update() } }
   }
   accept.onclick = async () => {
-    if (!editable() || busy || accepting || job?.status !== 'succeeded') return
-    if(options.format==='docx' && wordTarget!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
+    if (!editable() || busy || accepting || job?.status !== 'succeeded' || job.accepted === true) return
+    try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
+    if(!editable() || busy || accepting || presetStale) {update();return}
+    if(options.format==='docx' && wordTarget!==currentWordTarget()) {clearCandidate();status.textContent='修改要求、选区或草稿已变化，请重新生成建议。';update();return}
     const turn = generation
     const target=wordTarget
     accepting = true; busy = true; update()
     try {
       const operations = options.draft.operations
-      const result = await options.api.aiAccept(job.editId, {expectedSha256:options.draft.identity.sourceSha256, operations, snapshotSha256:job.snapshotSha256})
+      const candidate = job
+      const result = await tasks.accept(signal => options.api.aiAccept(candidate.editId, {expectedSha256:options.draft.identity.sourceSha256, operations, snapshotSha256:candidate.snapshotSha256}, signal))
+      if (!result) return
       // 网络等待期间可能发生保存或刷新；写稿前再次核验会话锁。
       if (turn !== generation || disposed) return
       if(options.format==='docx' && target!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
@@ -137,7 +138,7 @@ export function bindNativeAI(container: HTMLElement, options: {
       options.draft.setOperations(result.operations)
       options.onDraftChange()
       await options.view.refresh()
-      job = undefined; activeRequestId = undefined
+      tasks.release(); job = undefined; activeRequestId = undefined
       status.textContent = options.format === 'pdf' ? '建议已进入草稿。保存前请核对实际 PDF 预览并确认。' : '建议已进入草稿，内容待重新核验；保存后生成新修订'
       details.hidden = true
     } catch (error) { if (turn === generation && !disposed) status.textContent = error instanceof Error ? error.message : '采纳失败' }
@@ -149,45 +150,73 @@ export function bindNativeAI(container: HTMLElement, options: {
     }
   }
   cancel.onclick = async () => {
-    ++generation; progress.stop(); controller?.abort(); busy = false
-    const id = job?.editId, requestId = activeRequestId; activeRequestId = undefined
-    job = undefined; status.textContent = '建议已取消'; update()
+    const turn=++generation; progress.stop(); busy = false
+    activeRequestId = undefined; job = undefined; status.textContent = '建议已取消'; update()
     details.hidden = true
-    if (id) try { await options.api.aiCancel(id) } catch (error) { if (!disposed) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
-    else if (requestId && options.api.aiCancelRequest) try { await options.api.aiCancelRequest(requestId) } catch (error) { if (!disposed) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
+    try { await tasks.cancel() } catch (error) { if (!disposed && turn===generation) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
   }
   function clearCandidate() {
-    const id=job?.editId, requestId=activeRequestId
     activeRequestId=undefined
-    ++generation;controller?.abort();progress.reset();busy=false;job=undefined;wordTarget=undefined;details.hidden=true
-    if(id)void options.api.aiCancel(id).catch(()=>{})
-    else if(requestId && options.api.aiCancelRequest)void options.api.aiCancelRequest(requestId).catch(()=>{})
+    ++generation;progress.reset();busy=false;job=undefined;wordTarget=undefined;details.hidden=true
+    void tasks.cancel().catch(()=>{})
   }
   function close() {
     if (disposed) return
     clearCandidate(); panel.hidden = true; status.textContent = '建议已取消'; update()
   }
-  body.onclick=()=>{clearCandidate();reviewMode=false;noteBeforeText=undefined;body.hidden=true;selection=structuredClone(documentSelection);input.value='';status.textContent='已切换到正文选区，请输入修改要求';update()}
+  body.onclick=()=>{clearCandidate();presetScope=undefined;presetStale=false;reviewMode=false;noteBeforeText=undefined;body.hidden=true;selection=structuredClone(documentSelection);input.value='';status.textContent='已切换到正文选区，请输入修改要求';update()}
   if(options.format==='docx')input.oninput=()=>{if(job || busy){clearCandidate();status.textContent='修改要求已变化，请重新生成建议。';update()}}
   update()
   return {
     update,
     get accepting() { return accepting },
     open() { if(disposed)return;panelView?.beforeOpen();panel.hidden=false;panel.scrollIntoView?.({block:'nearest'}); input.focus({preventScroll:true}) },
+    async followWordTask(taskId: string) {
+      if (options.format !== 'docx' || !editable() || busy || accepting || job) return
+      const turn = ++generation
+      wordTarget = currentWordTarget()
+      busy = true
+      status.textContent = '正在读取频道编辑任务'
+      update()
+      try {
+        const result = await tasks.follow(taskId, (started, signal) => {
+          if (turn !== generation || disposed) return
+          progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, started.editId, signal,
+            () => editable() && turn === generation)
+          show(started)
+        })
+        if (result && turn === generation && !disposed) {
+          show(result)
+          details.open = !!result.proposal
+        }
+      } catch (error) {
+        if (turn === generation && !disposed) status.textContent = error instanceof Error ? error.message : '频道任务读取失败'
+      } finally {
+        if (turn === generation) { busy = false; update() }
+      }
+    },
     close,
+    openPreset(instruction:string, targets:{blockId:string;cellId?:string}[], scope:'selection'|'document') {
+      if(!editable() || options.format!=='docx' || !targets.length || targets.length>100)return
+      panelView?.beforeOpen();clearCandidate();presetScope=scope;presetStale=false;reviewMode=true;noteBeforeText=undefined;body.hidden=false
+      selection=structuredClone(targets);input.value=instruction;panel.hidden=false
+      status.textContent=`已授权${scope==='document'?'整篇正文':'选区'}的 ${targets.length} 个段落／单元格或整表；部分文字按整段／整格处理。请生成并核对候选，显式采纳后保存。`
+      update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true})
+    },
     openNotes(value: NativeAINoteSelection, instruction='', beforeText?:string) {
       if(!editable() || options.format==='pdf')return
-      panelView?.beforeOpen();clearCandidate();panel.hidden=false;reviewMode=true;noteBeforeText=beforeText;body.hidden=false;selection=[structuredClone(value)];input.value=instruction
+      panelView?.beforeOpen();clearCandidate();presetScope=undefined;presetStale=false;panel.hidden=false;reviewMode=true;noteBeforeText=beforeText;body.hidden=false;selection=[structuredClone(value)];input.value=instruction
       status.textContent=value.selectionKind==='note'?'仅授权当前脚注或尾注；编辑或删除需先核对候选，再显式采纳。':'仅授权当前段落插入脚注或尾注，不授权改写正文。与该段落相交的修改请先保存或撤销。'
       update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true})
     },
     openReview(value: NativeAIReviewSelection, instruction='') {
       if(!editable() || options.format==='pdf')return
-      panelView?.beforeOpen();clearCandidate();panel.hidden=false;reviewMode=true;noteBeforeText=undefined;body.hidden=false;selection=[structuredClone(value)];input.value=instruction
+      panelView?.beforeOpen();clearCandidate();presetScope=undefined;presetStale=false;panel.hidden=false;reviewMode=true;noteBeforeText=undefined;body.hidden=false;selection=[structuredClone(value)];input.value=instruction
       status.textContent='仅授权当前审阅目标；请输入要求并生成建议，核对后采纳到草稿。已有不兼容修改请先保存或撤销。'
       update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true})
     },
     setSelection(value: NativeAISelection[]) {
+      if(presetScope==='selection' && JSON.stringify(documentSelection)!==JSON.stringify(value)){clearCandidate();presetStale=true;status.textContent='Word 选区已变化，请重新点击审阅预设授权。';update()}
       documentSelection=structuredClone(value)
       if(reviewMode)return
       if(options.format==='docx' && JSON.stringify(selection)!==JSON.stringify(value) && (job || busy)) {clearCandidate();status.textContent='Word 选区已变化，请重新生成建议。'}

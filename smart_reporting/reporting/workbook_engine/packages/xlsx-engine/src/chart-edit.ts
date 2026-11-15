@@ -7,6 +7,7 @@
 /// envelope throws — fail closed, never corrupt a chart part.
 
 import { SaxesParser } from 'saxes'
+import { scatterLabelModes } from './scatter-label-mode'
 
 export class ChartEditError extends Error {}
 
@@ -1094,6 +1095,11 @@ function setDataLabels(
     }
     const openEnd = scatterMatch[0].indexOf('>') + 1
     const inner = scatterMatch[0].slice(openEnd, -'</c:scatterChart>'.length)
+    if (mode === 'none') {
+      const modes = scatterLabelModes(inner)
+      if (modes.unsupported) throw new ChartEditError('Scatter data labels cannot be safely read.')
+      if (modes.firstSeriesMode === 'value') throw new ChartEditError('Scatter first-series value labels would remain visible; preserve source series labels.')
+    }
     const existing = plotLabelBlock(inner)
     let next = existing ? spliceAt(inner,existing.start,existing.length,'') : inner
     if (mode === 'value') {

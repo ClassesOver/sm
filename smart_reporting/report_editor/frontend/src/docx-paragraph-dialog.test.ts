@@ -188,3 +188,72 @@ it.each(['composition', 'legacy', 'consumed'])('preserves paragraph tabs during 
   tabs[0]!.dispatchEvent(event)
   expect(document.activeElement).toBe(tabs[0]); expect(tabs[0]!.getAttribute('aria-selected')).toBe('true')
 })
+
+it('shows mixed special-indent units without inventing a common point value', () => {
+  const { editor, open, field } = setup(true)
+  const json = editor.getJSON()
+  Object.assign(json.content![0]!.attrs!, { indentFirstLine: 480, indentFirstLineChars: 200 })
+  Object.assign(json.content![1]!.attrs!, { indentFirstLine: 480, indentFirstLineChars: null })
+  editor.commands.setContent(json); editor.commands.setTextSelection({ from: 2, to: editor.state.doc.content.size - 1 })
+  open()
+  expect(field('特殊缩进单位').value).toBe('')
+  expect(field('特殊缩进值').value).toBe('')
+})
+
+it('refuses changed source identities while a multi-paragraph dialog is open', () => {
+  const { editor, anchors, root, open, field, submit } = setup(true), before = editor.getJSON()
+  open(); field('段后间距（pt）').value = '9'
+  anchors[1]!.expectedObjectSha256 = 'replacement-source'
+  submit()
+  expect(editor.getJSON()).toEqual(before)
+  expect(root.querySelector('[role="alert"]')!.textContent).toContain('重新打开')
+})
+
+it('undoes and redoes the entire mixed paragraph range as one history entry', () => {
+  const { editor, root, open, field, submit } = setup(true), before = editor.getJSON()
+  open(); field('段后间距（pt）').value = '9'; submit()
+  expect(root.querySelector('[aria-label="段落设置"]')).toBeNull()
+  const after = editor.getJSON()
+  editor.commands.undo(); expect(editor.getJSON()).toEqual(before)
+  editor.commands.redo(); expect(editor.getJSON()).toEqual(after)
+})
+
+it('cancels edited mixed fields across the entire paragraph range', () => {
+  const { editor, root, open, field } = setup(true), before = editor.getJSON()
+  open(); field('段后间距（pt）').value = '9'; field('段落对齐').value = 'center'
+  root.querySelector<HTMLButtonElement>('[data-paragraph-cancel]')!.click()
+  expect(root.querySelector('[aria-label="段落设置"]')).toBeNull()
+  expect(editor.getJSON()).toEqual(before)
+})
+
+it('applies one transaction to consecutive signed paragraphs in a simple cell', async () => {
+  const editor = new Editor({ extensions: [...editorExtensions, NativeTableStructure, NativeDocxParagraphProperties], editorProps: { handleScrollToSelection: () => true }, content: { type: 'doc', content: [
+    { type: 'docTable', attrs: { docxIndex: 0 }, content: [{ type: 'docTableRow', content: [{ type: 'docTableCell', content: [{ type: 'docParagraph', attrs: { align: 'left', spaceAfter: 120 }, content: [{ type: 'text', text: '表格段落' }] }, { type: 'docParagraph', attrs: { align: 'right', spaceAfter: 240 }, content: [{ type: 'text', text: '第二段' }] }] }] }] },
+  ] } })
+  editors.push(editor)
+  expect(editor.schema.nodes.docTable.spec.attrs).toHaveProperty('nativeTableCellParagraphProperties')
+  const anchors = [{ docxIndex: 0, blockId: 'table', expectedObjectSha256: 'table-hash', editable: true, cells: [[{ cellId: 'cell', expectedObjectSha256: 'cell-hash', editable: true, paragraphs: [{ index: 0, expectedObjectSha256: 'paragraph-hash', editable: true }, { index: 1, expectedObjectSha256: 'second-hash', editable: true }] }]] }]
+  let textPosition = 0; const positions: number[] = []
+  editor.state.doc.descendants((node, pos) => { if (node.isText) { textPosition = pos; positions.push(pos) } })
+  editor.commands.setTextSelection({ from: positions[0]! + 1, to: textPosition + 1 })
+  const root = document.body.appendChild(document.createElement('div'))
+  root.append(createDocxRibbon(editor, true, undefined, undefined, undefined, anchors))
+  flushSync(() => root.querySelector<HTMLButtonElement>('[data-action="paragraph-options"]')!.click())
+  root.querySelector<HTMLSelectElement>('[aria-label="段落对齐"]')!.value = 'center'
+  flushSync(() => root.querySelector<HTMLFormElement>('[aria-label="段落设置"] form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
+  expect(editor.getJSON().content![0]!.attrs!.nativeTableCellParagraphProperties, root.querySelector('[role="alert"]')?.textContent).toBeTruthy()
+  const operations = docxOperations({ type: 'doc', content: [{ type: 'docTable', attrs: { docxIndex: 0 }, content: [{ type: 'docTableRow', content: [{ type: 'docTableCell', content: [{ type: 'docParagraph', attrs: { align: 'left', spaceAfter: 120 }, content: [{ type: 'text', text: '表格段落' }] }, { type: 'docParagraph', attrs: { align: 'right', spaceAfter: 240 }, content: [{ type: 'text', text: '第二段' }] }] }] }] }] }, editor.getJSON(), anchors, undefined, editor.schema)
+  expect(operations).toHaveLength(2)
+  expect(operations.map(op => op.paragraphIndex)).toEqual([0, 1])
+  expect(operations.map(op => op.expectedParagraphSha256)).toEqual(['paragraph-hash', 'second-hash'])
+  const { replayDocxOperations } = await import('./docx-operations')
+  const restored = structuredClone(editor.getJSON())
+  const source = structuredClone(editor.getJSON()) as import('./docx-operations').DocxPmNode; source.content![0]!.attrs!.nativeTableCellParagraphProperties = null
+  for (const paragraph of source.content![0]!.content![0]!.content![0]!.content!) { paragraph.attrs!.nativeParagraphProperties = null }
+  expect(() => replayDocxOperations(source, [operations[0]!, operations[0]!], anchors, undefined, editor.schema)).toThrow()
+  expect(() => replayDocxOperations(source, [operations[0]!, { ...operations[1]!, expectedParagraphSha256: 'forged' }], anchors, undefined, editor.schema)).toThrow('来源身份')
+  expect(replayDocxOperations({ type: 'doc', content: [{ type: 'docTable', attrs: { docxIndex: 0 }, content: [{ type: 'docTableRow', content: [{ type: 'docTableCell', content: [{ type: 'docParagraph', attrs: { align: 'left', spaceAfter: 120 }, content: [{ type: 'text', text: '表格段落' }] }, { type: 'docParagraph', attrs: { align: 'right', spaceAfter: 240 }, content: [{ type: 'text', text: '第二段' }] }] }] }] }] }, operations, anchors, undefined, editor.schema)).toEqual(editor.getJSON())
+  editor.commands.undo(); expect(editor.state.doc.firstChild!.firstChild!.firstChild!.firstChild!.attrs.align).toBe('left')
+  expect(editor.state.doc.firstChild!.firstChild!.firstChild!.lastChild!.attrs.align).toBe('right')
+  editor.commands.redo(); expect(editor.getJSON()).toEqual(restored)
+})
