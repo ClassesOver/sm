@@ -288,3 +288,40 @@ async def test_document_adapter_permission_denied_returns_403():
         response = await http.get(path + "/task-one")
         assert response.status_code == 403
         assert "private" not in response.text
+
+
+@pytest.mark.anyio
+async def test_document_selection_mismatch_returns_422():
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from unittest.mock import AsyncMock
+    from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+
+    identity = ConnectorIdentity("dsh", "member", "session")
+
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def prepare(self, request):
+            raise ValueError("document_selection_mismatch")
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+
+    async def resolve(channel, caller):
+        return scope()
+
+    async def authenticate(request):
+        return identity
+
+    repository = type("Repository", (), {"has_member": AsyncMock(return_value=True)})()
+    app = FastAPI()
+    app.include_router(create_report_channel_router(
+        repository, authenticate, document_gateway=DocumentCandidateGateway(registry, resolve),
+    ))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        response = await http.post("/reports/v1/channels/channel-a/document-tasks", json={
+            "request_id": "one", "instruction": "Edit", "selection": [{"paragraph": "1"}],
+        })
+    assert response.status_code == 422
+    assert response.json()["detail"] == "document_task_invalid"
