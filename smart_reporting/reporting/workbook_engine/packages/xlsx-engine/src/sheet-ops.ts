@@ -41,6 +41,7 @@ import { shiftSheetNotes } from './notes'
 import { parseRange, parseAddress, formatAddress, columnIndex, rangeCellCount } from './cell-address'
 import { computeSortedRowOrder } from './sort-range'
 import { inheritedCellStyleIndex, isCellUnlocked, parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
+import { readSheetNotes } from './note-read'
 import { assemblePackage, createBufferEntrySource, type MutationPlan } from './zip'
 import { assertRemovedTableDependencies, planSheetRemovalParts, removePartOverrides } from './sheet-removal-parts'
 
@@ -506,7 +507,11 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     const { row, column } = parseAddress(address)
     if (inRange(row, column)) throw new Error(`The sort range contains a formula at ${address} — sorting would silently re-target its references.`)
   }
-  if (sheet.notes) for (const note of sheet.notes.notes) {
+  const source = await createBufferEntrySource(sourceBytes)
+  const notes = sheet.protection?.protected
+    ? await readSheetNotes(source, sheet.path, { allowProtected: true }) : sheet.notes
+  if (sheet.protection?.protected && notes?.readOnlyReason) throw new Error(notes.readOnlyReason)
+  if (notes) for (const note of notes.notes) {
     if (inRange(note.row, note.column)) throw new Error('排序范围包含批注；请改用网格排序以保留批注作者。')
   }
   const firstDataRow = bounds.startRow + (spec.hasHeader ? 1 : 0)
@@ -519,7 +524,6 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
   }
   const order = computeSortedRowOrder(rows, keyColumn - bounds.startColumn, spec.ascending)
 
-  const source = await createBufferEntrySource(sourceBytes)
   const workbookXml = await source.readText('xl/workbook.xml')
   const parts = await sheetPartsOf(source, workbookXml)
   const target = parts.find(part => part.name === sheetName)

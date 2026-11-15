@@ -736,7 +736,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet?.() ?? undefined
     return {
       sheet: { protected: sheetProtected(sheetId), allowFilter: protectedFilterAllowed(originalSheet(sheetId), sheet,
-        'sheet.command.clear-filter-criteria', undefined), reason: password ? '此工作表受密码保护，暂不支持撤销或修改其保护' : undefined },
+        'sheet.command.clear-filter-criteria', undefined), allowSort: originalSheet(sheetId)?.protection?.allow?.sort === true,
+        reason: password ? '此工作表受密码保护，暂不支持撤销或修改其保护' : undefined },
       workbook: { locked: structureLocked(), reason: currentModel?.workbookProtection?.hasPassword ? '工作簿结构受密码保护，暂不支持撤销或修改其保护' : undefined },
     }
   }
@@ -2644,8 +2645,25 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           return
         }
         if (command === 'sort:asc' || command === 'sort:desc') {
-          // The official sort migrates notes in-grid; readOnlyReason notes stay
-          // blocked through the same structural reason.
+          const sheet = workbook.getActiveSheet()
+          if (sheet && sheetProtected(sheet.getSheetId())) {
+            const range = sheet.getSelection()?.getActiveRange()?.getRange()
+            if (!range || range.startRow >= range.endRow) throw new Error('请至少选择两行以排序')
+            const { startRow, endRow, startColumn, endColumn } = range
+            const sheetName = sheet.getSheetName(), source = original, core = sheet.getSheet()
+            const operation = { kind: 'sortRange', sheetName, spec: {
+              range: formatAddress(startRow, startColumn) + ':' + formatAddress(endRow, endColumn),
+              byColumn: formatAddress(0, startColumn).slice(0, -1), ascending: command === 'sort:asc', hasHeader: false,
+            } }
+            const validate = () => {
+              if (!editable() || original !== source || runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet() !== core
+                || sheet.getSheetName() !== sheetName) throw new Error('工作表已变化，请重新选择排序区域')
+            }
+            void applyWorkbookDraftOperation(validate, operation, '已排序，修改尚未保存。').catch(error => {
+              feedback.textContent = (error as Error).message
+            })
+            return
+          }
           const reason = noteStructureReason(currentModel, noteWorkbook(), { id: 'sheet.command.sort-range' })
           if (reason) throw new Error(reason)
         }

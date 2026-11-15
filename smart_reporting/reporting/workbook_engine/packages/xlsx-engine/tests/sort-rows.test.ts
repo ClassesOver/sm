@@ -19,6 +19,9 @@ it('requires both sort permission and unlocked cells throughout a protected sort
   expect(saved.cells.A2?.value).toBe(20)
   expect(saved.cells.B2?.value).toBe('locked')
   expect(saved.protection).toMatchObject({ protected: true, allow: { sort: true } })
+  const noted = await applySheetNotes(bytes, 'Sheet1', [{ row: 0, column: 0, author: 'Alice', text: 'anchored' }])
+  await expect(sortRangeRows(await protectSheet(noted, 'Sheet1', true, { sort: true }), 'Sheet1', spec))
+    .rejects.toThrow('排序范围包含批注')
 })
 
 it('sortRangeRows permutes full cell records so styles move with values', async () => {

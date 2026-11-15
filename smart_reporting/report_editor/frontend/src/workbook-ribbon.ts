@@ -984,7 +984,7 @@ export function mountWorkbookRibbon(
     theme?(): { colorName?: string; fontName?: string; reason?: string; fontsReason?: string } | undefined
     definedNames?(): readonly string[]
     /// 审阅▸保护：当前工作表与工作簿结构的有效保护状态；reason 为不可切换原因（密码保护）。
-    protection?(): { sheet: { protected: boolean; allowFilter?: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
+    protection?(): { sheet: { protected: boolean; allowFilter?: boolean; allowSort?: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
     /// 公式▸计算：当前工作表公式视图与计算模式（编辑器状态）。
     outlineSummary?(): { below: boolean; right: boolean }
     calculation?(): { formulaView: boolean; manual: boolean }
@@ -1135,8 +1135,14 @@ export function mountWorkbookRibbon(
       const orientation = menu.id === 'text-orientation'
       const selectionReason = (orientation ? reason : undefined)
         ?? (!selected || (orientation && rotation === undefined) ? '请先选择单元格或区域' : undefined)
+      const protection = view.protection?.().sheet
+      const sortMenu = menu.id === 'sort' || menu.id === 'sort-filter'
+      const allowsProtectedChoice = (command: string | undefined) =>
+        (protection?.allowSort === true && (command === 'sort:asc' || command === 'sort:desc')) ||
+        (protection?.allowFilter === true && (command === 'filter-clear' || command === 'filter-reapply'))
+      const blockedByProtection = protection?.protected && (!sortMenu || !menu.choices.some(choice => allowsProtectedChoice(choice.command)))
       const disabledReason = !editable ? '当前工作簿不可编辑或正在保存'
-        : selectionReason ?? (view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : undefined)
+        : selectionReason ?? (blockedByProtection ? PROTECTED_SHEET_REASON : undefined)
           ?? (menu.id === 'table-style-presets' ? view.table?.()?.reason : undefined)
       select.disabled = !!disabledReason
       select.title = disabledReason ?? menu.detail
@@ -1148,9 +1154,14 @@ export function mountWorkbookRibbon(
       else select.removeAttribute('aria-description')
       const summary = view.outlineSummary?.()
       for (const choice of menu.choices) {
-        if (!choice.summary && !orientation) continue
+        if (!choice.summary && !orientation && !sortMenu) continue
         const option = select.querySelector<HTMLOptionElement>('[value="' + choice.command + '"]')
         if (!option) continue
+        if (sortMenu) {
+          option.disabled = !!protection?.protected && !allowsProtectedChoice(choice.command)
+          option.title = option.disabled ? PROTECTED_SHEET_REASON : ''
+          continue
+        }
         const value = ROTATION_VALUES[choice.command as keyof typeof ROTATION_VALUES]
         const expectedRotation = value === 'v' ? 255 : value === undefined ? undefined : univerRotationToOoxml({ a: value })
         const checked = choice.summary ? summary?.[choice.summary] ?? true : rotation !== undefined && rotation === expectedRotation
@@ -1924,8 +1935,9 @@ export function mountWorkbookRibbon(
         }))
         select.addEventListener('change', () => {
           const choice = menu.choices.find(({ command }) => command === select.value)
+          const selectedOption = select.selectedOptions[0]
           select.value = ''
-          if (choice?.command && !select.disabled) onCommand(choice.command)
+          if (choice?.command && !select.disabled && !selectedOption?.disabled) onCommand(choice.command)
         })
         wrapper.append(icon, select)
         const after = menu.after && section.querySelector('[data-ribbon-command="' + menu.after + '"]')

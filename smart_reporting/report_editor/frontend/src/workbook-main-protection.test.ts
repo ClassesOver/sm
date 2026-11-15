@@ -315,6 +315,43 @@ it('saves changed AutoFilter criteria on a protected sheet and reopens the origi
   } finally { current.view?.dispose() }
 })
 
+it('sorts an unlocked protected selection from the ribbon with undo and XLSX save', async () => {
+  const source = await applyWorkbookOperations(await createBlankWorkbook(), [
+    { kind: 'applyCellEdits', edits: [
+      { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 20 }, style: { protectionLocked: false, bold: true } },
+      { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 10 }, style: { protectionLocked: false } },
+      { sheetName: 'Sheet1', row: 0, column: 1, writeValue: true, cell: { value: 'locked' } },
+    ] },
+    { kind: 'protectSheet', sheetName: 'Sheet1', protect: true, allow: { sort: true } },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/sorted.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    expect(grid.view.protection().sheet).toMatchObject({ protected: true, allowSort: true })
+    sheet().getRange('A1:B2').activate()
+    grid.ribbon('sort:asc')
+    await vi.waitFor(() => expect(current.shell.editor.textContent).toContain('排序范围包含锁定单元格'))
+    expect(draft.operations).toEqual([])
+    sheet().getRange('A1:A2').activate()
+    grid.ribbon('sort:asc')
+    await vi.waitFor(() => expect(kinds(draft)).toEqual(['sortRange']))
+    expect(sheet().getRange('A1').getValue()).toBe(10)
+    grid.ribbon('undo')
+    await vi.waitFor(() => expect(sheet().getRange('A1').getValue()).toBe(20))
+    grid.ribbon('redo')
+    await vi.waitFor(() => expect(sheet().getRange('A1').getValue()).toBe(10))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = await readWorkbook(downloaded!)
+    expect(saved.sheets[0]?.cells).toMatchObject({ A1: { value: 10 }, A2: { value: 20 }, B1: { value: 'locked' } })
+    expect(saved.sheets[0]?.protection).toMatchObject({ protected: true, allow: { sort: true } })
+  } finally { current.view?.dispose() }
+})
+
 it('edits unlocked cells including axis styles without unprotecting the worksheet', async () => {
   const bytes = await applyWorkbookOperations(await fixture(), [
     { kind: 'protectSheet', sheetName: 'Sheet1', protect: false },

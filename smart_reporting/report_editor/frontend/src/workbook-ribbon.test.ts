@@ -792,6 +792,27 @@ it('dispatches the GenOffice Home Sort and Filter menu beside AutoSum', () => {
   ribbon.dispose()
 })
 
+it('offers only authorized actions in the protected Sort and Filter menu', () => {
+  document.body.innerHTML = '<main></main>'
+  const command = vi.fn()
+  let allowSort = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    rotation: () => 0, editable: () => true, hasSelection: () => true,
+    protection: () => ({ sheet: { protected: true, allowSort }, workbook: { locked: false } }),
+  })
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="sort-filter"]')!
+  expect(select.disabled).toBe(false)
+  expect(Array.from(select.options).filter(option => !option.disabled).map(option => option.value))
+    .toEqual(['', 'sort:asc', 'sort:desc'])
+  select.value = 'sort-custom-open'; select.dispatchEvent(new Event('change'))
+  expect(command).not.toHaveBeenCalled()
+  select.value = 'sort:desc'; select.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledWith('sort:desc')
+  allowSort = false; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('dispatches the GenOffice Home Fill menu with Flash Fill and protects the workbook', () => {
   document.body.innerHTML = '<main></main>'
   const command = vi.fn()
