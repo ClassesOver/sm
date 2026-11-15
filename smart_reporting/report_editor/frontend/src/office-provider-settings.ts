@@ -45,8 +45,9 @@ export async function mountOfficeProviderSettings(host: HTMLElement, options: {
       card.replaceChildren(); card.append(element('h3', titles[capability]))
       const form = element('form'), status = element('p'); status.setAttribute('role', 'status'); status.textContent = message
       const field = (label: string, input: HTMLElement) => { const row = element('label'); row.className = 'office-provider-field'; row.append(element('span', label), input); input.setAttribute('aria-label', label); form.append(row) }
+      let modelInput: HTMLInputElement | undefined
       const enabled = element('input'); enabled.type = 'checkbox'; enabled.checked = draft.enabled
-      enabled.onchange = () => { draft.enabled = enabled.checked; status.textContent = '有未保存的修改'; changed() }
+      enabled.onchange = () => { draft.enabled = enabled.checked; if (modelInput) modelInput.required = draft.enabled; status.textContent = '有未保存的修改'; changed() }
       field(`启用${titles[capability]}`, enabled)
       const select = element('select')
       for (const provider of catalog.catalog[capability]) select.add(new Option(provider.label, provider.id))
@@ -58,7 +59,7 @@ export async function mountOfficeProviderSettings(host: HTMLElement, options: {
       }
       field('提供商', select)
       if (capability !== 'webSearch') {
-        const model = element('input'); model.value = draft.model; model.maxLength = 200; model.required = true
+        const model = element('input'); model.value = draft.model; model.maxLength = 200; model.required = draft.enabled; modelInput = model
         model.oninput = () => { draft.model = model.value.trim(); status.textContent = '有未保存的修改'; changed() }
         field('模型', model)
       }

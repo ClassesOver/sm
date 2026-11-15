@@ -892,3 +892,42 @@ async def test_company_model_runs_without_deployment_fallback(providers, monkeyp
     assert len(used) == (1 if mode == "configured" else 0)
     if used:
         assert used[0].http_client.is_closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['configured', 'disabled', 'unconfigured'])
+async def test_native_pptx_filename_obeys_company_model_selection(providers, monkeypatch, mode):
+    from types import SimpleNamespace
+    from agno.models.openai import OpenAIChat
+    from smart_reporting.office import settings as settings_module
+    from smart_reporting.report_editor.native_slides_read_ai import AgnoNativeSlidesReadPlanner
+    from smart_reporting.reporting import agent_events
+
+    service, actor, _, _ = providers
+    service.office.providers = service
+    if mode != 'unconfigured':
+        data = config()
+        data['enabled'] = mode != 'disabled'
+        await service.save(actor, 'chatModel', data)
+    async def context():
+        return settings_module.OfficeSettings(service.office), actor
+    monkeypatch.setattr(settings_module, 'native_settings', context)
+    calls = []
+    async def run(agent, prompt, **kwargs):
+        calls.append(agent.model)
+        assert agent.model.id == ('vision-model' if mode == 'configured' else 'deployment-model')
+        assert agent.tools == []
+        assert prompt == 'Quarterly revenue'
+        assert any('Simplified Chinese' in instruction for instruction in agent.instructions)
+        agent.model.get_async_client()
+        return SimpleNamespace(content='季度收入\nignored second line')
+    monkeypatch.setattr(agent_events, 'run_agent_with_events', run)
+    planner = AgnoNativeSlidesReadPlanner(OpenAIChat(id='deployment-model', api_key='test'))
+    if mode == 'disabled':
+        with pytest.raises(OfficeError) as error:
+            await planner.suggest_filename('Quarterly revenue', name_locale='zh-CN', session_id='name', user_id=actor.user)
+        assert error.value.code == 'office_provider_disabled'
+        assert calls == []
+    else:
+        assert await planner.suggest_filename('Quarterly revenue', name_locale='zh-CN', session_id='name', user_id=actor.user) == {'answer': '季度收入'}
+        assert calls[0] is not planner.model and calls[0].async_client.is_closed()
