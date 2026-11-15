@@ -231,6 +231,10 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
     async def management_index():
         return RedirectResponse("/management/sources", status_code=303)
 
+    @router.get("/management/preferences", include_in_schema=False)
+    async def personal_preferences():
+        return RedirectResponse("/office?settings=preferences", status_code=303)
+
     @router.get("/management/sources", include_in_schema=False)
     @router.get("/management/sources/new", include_in_schema=False)
     @router.get("/management/sources/{source_id}", include_in_schema=False)
@@ -240,7 +244,6 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
     @router.get("/management/statistical-policies", include_in_schema=False)
     @router.get("/management/knowledge", include_in_schema=False)
     @router.get("/management/system-configuration", include_in_schema=False)
-    @router.get("/management/preferences", include_in_schema=False)
     @router.get("/management/account/password", include_in_schema=False)
     async def management_page(request: Request):
         try:

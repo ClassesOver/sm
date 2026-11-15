@@ -14,7 +14,6 @@ import DatabaseOutlined from '@ant-design/icons/DatabaseOutlined'
 import AuditOutlined from '@ant-design/icons/AuditOutlined'
 import BarChartOutlined from '@ant-design/icons/BarChartOutlined'
 import SettingOutlined from '@ant-design/icons/SettingOutlined'
-import FormatPainterOutlined from '@ant-design/icons/FormatPainterOutlined'
 import BookOutlined from '@ant-design/icons/BookOutlined'
 import MenuFoldOutlined from '@ant-design/icons/MenuFoldOutlined'
 import MenuUnfoldOutlined from '@ant-design/icons/MenuUnfoldOutlined'
@@ -80,7 +79,7 @@ function Shell() {
         { key: 'metrics', icon: <BarChartOutlined />, label: <Link to="/metrics">业务指标</Link> },
         { key: 'statistical-policies', icon: <AuditOutlined />, label: <Link to="/statistical-policies">统计口径</Link> },
         { key: 'system-configuration', icon: <SettingOutlined />, label: <Link to="/system-configuration">系统配置</Link> },
-        { key: 'preferences', icon: <FormatPainterOutlined />, label: <Link to="/preferences">偏好管理</Link> },
+        { key: 'personal-settings', icon: <UserOutlined />, label: <a href="/office?settings=preferences">个人设置</a> },
       ]}
       onClick={() => setMobile(false)}
     />

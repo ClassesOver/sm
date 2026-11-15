@@ -1,0 +1,10 @@
+.office-document-preferences-host{width:min(820px,94vw);max-height:90vh;padding:0;border:1px solid #ddd;border-radius:12px;background:#fff;color:#222}
+.office-document-preferences-host::backdrop{background:#0005}
+.office-document-preferences{padding:24px;font:14px/1.6 system-ui,sans-serif}
+.office-document-preferences header{display:flex;justify-content:space-between;align-items:center}
+.office-document-preferences h2{margin:0}.office-document-preferences nav{display:flex;gap:8px;margin:20px 0;flex-wrap:wrap}
+.office-document-preferences button,.office-document-preferences select{padding:7px 12px;border:1px solid #ccc;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
+.office-document-preferences button[aria-current=true]{background:#eee}.office-document-preferences button:disabled{opacity:.5;cursor:default}
+.office-document-fields{min-height:230px}.office-document-preferences footer{text-align:right}
+html[data-office-theme=dark] .office-document-preferences-host{background:#242424;color:#eee;border-color:#444}
+html[data-office-theme=dark] .office-document-preferences button[aria-current=true]{background:#444}

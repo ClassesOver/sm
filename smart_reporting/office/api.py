@@ -21,6 +21,7 @@ from ..http.request_limits import install_streaming_body_limit, RequestBodyLimit
 from ..reporting.models import ReportingError
 from .repository import Identity, OfficeError, OfficeRepository
 from .provider_catalog import Capability, ProviderInput, ProviderTestInput
+from .document_preferences import DocumentPreferencesInput, OfficeDocumentPreferences
 
 COOKIE = "genoffice_session"
 
@@ -218,6 +219,14 @@ def create_office_router(
     async def test_provider(capability: Capability, body: ProviderTestInput, identity: Identity = Depends(actor)):
         return await office.providers.test(identity, capability, body.model_dump(exclude={'media'}), body.media)
 
+
+    @router.get('/settings/document-preferences')
+    async def document_preferences(identity: Identity = Depends(actor)):
+        return await OfficeDocumentPreferences(office).read(identity)
+
+    @router.put('/settings/document-preferences')
+    async def save_document_preferences(body: DocumentPreferencesInput, identity: Identity = Depends(actor)):
+        return await OfficeDocumentPreferences(office).save(identity, body)
 
     @router.get('/settings')
     async def personal_settings(identity: Identity = Depends(actor)):

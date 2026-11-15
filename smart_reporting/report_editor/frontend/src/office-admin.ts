@@ -44,8 +44,9 @@ function render() {
     }))
   }
   if (section === '用户管理' || section === '数据源管理') {
-    const open = element('button', section === '用户管理' ? '管理用户' : '管理公司数据源')
-    open.onclick = async () => { try { if (section === '用户管理') await showOfficeAdministration(host, { user, onChanged: async () => {} }); else await showOfficeSources(host, { admin: true }) } catch (e) { status.textContent = (e as Error).message } }
+    const open = element('button', section === '用户管理' ? '管理用户' : '工作区数据源授权')
+    open.onclick = async () => { try { if (section === '用户管理') await showOfficeAdministration(host, { user, onChanged: async () => {} }); else await showOfficeSources(host, { admin: true, grantsOnly: true }) } catch (e) { status.textContent = (e as Error).message } }
+    if (section === '数据源管理') { const original = element('a', '打开数据源管理'); original.href = '/management/sources'; content.append(original, element('p', '沿用原数据源管理页面及其管理员登录。')) }
     content.append(open)
   }
   const save = element('button', busy ? '保存中…' : '保存全局设置'); save.type = 'submit'; save.disabled = busy

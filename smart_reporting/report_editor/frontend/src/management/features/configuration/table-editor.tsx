@@ -7,28 +7,6 @@ export const borderOptions = [{ value: 'light', label: '浅边框' }, { value: '
 
 /** 只开放已有实际产物验证的设置，共用页面草稿与保存流程。 */
 export function TablePreferenceFields({ document, format, onChange, disabled = false, errors = [] }: { document: Doc; format: string; onChange: (path: string[], value: unknown) => void; disabled?: boolean; errors?: { path: string; message: string }[] }) {
-  if (format === 'md') return <Form layout="vertical" disabled={disabled}>
-    <Form.Item label="章节起始级别" extra="报告总标题保持一级，小节按相同层级差顺延；只调整登记标题，不改正文或代码示例。" validateStatus={errors.some(error => error.path === 'md.sectionHeadingLevel') ? 'error' : undefined} help={errors.find(error => error.path === 'md.sectionHeadingLevel')?.message}>
-      <Select id="preference-md.sectionHeadingLevel" aria-label="章节起始级别" value={Number(getPreferenceValue(document, ['md', 'sectionHeadingLevel']) ?? 2)}
-        options={[{ value: 2, label: '二级（默认）' }, { value: 3, label: '三级' }, { value: 4, label: '四级' }]}
-        onChange={value => onChange(['md', 'sectionHeadingLevel'], value)} />
-    </Form.Item>
-    <Form.Item label="引用编号" extra="隐藏编号仍保留来源绑定；显示时可悬停查看来源名称。"><Switch aria-label="引用编号" checked={Boolean(getPreferenceValue(document, ['md', 'references']))}
-      onChange={value => onChange(['md', 'references'], value)} /></Form.Item>
-    <Form.Item label="图片说明"><Switch aria-label="图片说明" checked={Boolean(getPreferenceValue(document, ['md', 'imageCaptions']))}
-      onChange={value => onChange(['md', 'imageCaptions'], value)} /></Form.Item>
-    <Form.Item label="生成目录"><Switch aria-label="生成目录" checked={Boolean(getPreferenceValue(document, ['md', 'toc']))}
-      onChange={value => onChange(['md', 'toc'], value)} /></Form.Item>
-    {['listMarker', 'codeFence'].map(key => <Form.Item key={key} label={tableFieldLabels[key]}>
-      <Select aria-label={tableFieldLabels[key]} value={String(getPreferenceValue(document, ['md', key]))}
-        options={key === 'listMarker' ? [{ value: '-', label: '短横线（-）' }, { value: '*', label: '星号（*）' }] :
-          [{ value: 'backticks', label: '反引号' }, { value: 'tildes', label: '波浪号' }]}
-        onChange={value => onChange(['md', key], value)} />
-    </Form.Item>)}
-    <Form.Item label="表格写法"><Select aria-label="表格写法" value={String(getPreferenceValue(document, ['md', 'tableStyle']))}
-      options={[{ value: 'pipe', label: '标准 Markdown 表格' }, { value: 'html', label: 'HTML 表格' }]}
-      onChange={value => onChange(['md', 'tableStyle'], value)} /></Form.Item>
-  </Form>
   const paged = format === 'word' || format === 'pdf'
   const slides = format === 'pptx'
   if (!paged && !slides && format !== 'xlsx') return null

@@ -86,6 +86,12 @@ export default defineConfig({
         onlyExplicitManualChunks: true,
         chunkFileNames: 'assets/lazy-[name]-[hash].js',
         manualChunks(id) {
+          // Shared preference widgets load only when personal document settings open.
+          const antComponent = id.match(/\/node_modules\/antd\/es\/([^/]+)\//)
+          if (antComponent) return 'preferences-ant-' + antComponent[1]
+          const rcComponent = id.match(/\/node_modules\/@rc-component\/([^/]+)\//)
+          if (rcComponent) return 'preferences-rc-' + rcComponent[1]
+
           // 主宿主与复用的渲染组件分别打包，避免自动合并后超过既定预算。
           if (id.endsWith('/src/slides-main.ts')) return 'slides-main'
           if (id.endsWith('/src/workbook-main.ts')) return 'workbook-main'
