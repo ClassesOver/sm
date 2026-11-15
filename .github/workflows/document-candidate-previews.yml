@@ -36,13 +36,13 @@ jobs:
           python -m ruff check smart_reporting/document_candidate_contract.py smart_reporting/document_candidate_xlsx_targets.py smart_reporting/document_candidate_xlsx_operations.py smart_reporting/document_candidate_xlsx_preview.py smart_reporting/document_candidate_pptx_targets.py smart_reporting/document_candidate_pptx_preview.py smart_reporting/document_candidate_pdf_targets.py smart_reporting/document_candidate_pdf_preview.py
       - name: Run isolated real-file preview tests
         run: |
-          python -m pytest -q -k "not trio" -o addopts="" \\
-            smart_reporting/tests/test_document_candidate_contract.py \\
-            smart_reporting/tests/test_document_candidate_xlsx_targets.py \\
-            smart_reporting/tests/test_document_candidate_xlsx_operations.py \\
-            smart_reporting/tests/test_document_candidate_xlsx_preview.py \\
-            smart_reporting/tests/test_document_candidate_pptx_targets.py \\
-            smart_reporting/tests/test_document_candidate_pptx_preview.py \\
+          python -m pytest -q -k "not trio" -o addopts="" \
+            smart_reporting/tests/test_document_candidate_contract.py \
+            smart_reporting/tests/test_document_candidate_xlsx_targets.py \
+            smart_reporting/tests/test_document_candidate_xlsx_operations.py \
+            smart_reporting/tests/test_document_candidate_xlsx_preview.py \
+            smart_reporting/tests/test_document_candidate_pptx_targets.py \
+            smart_reporting/tests/test_document_candidate_pptx_preview.py \
             smart_reporting/tests/test_document_candidate_pdf_preview.py
       - name: Whitespace check
         run: git diff --check HEAD~1 HEAD
