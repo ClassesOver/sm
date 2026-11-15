@@ -51,6 +51,37 @@ it('dispatches the three GenOffice Number shortcuts in their source order', () =
   ribbon.dispose()
 })
 
+it('offers the source Chart Elements operations and checks the current legend and label modes', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const selection = { isPie: true, canLabel: true, hasAxes: false, categoryCount: 2, seriesCount: 1, design: { legend: 'left' as const, dataLabels: 'percent' as const } }
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0, chart: () => selection,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Chart Design"]')!.click()
+  const menu = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="chart-elements"]')!
+  expect(menu).not.toBeNull()
+  expect(Array.from(menu.options, option => [option.value, option.text])).toEqual([
+    ['', '添加图表元素'], ['chart-title', '图表标题…'],
+    ['chart-labels:category-percent', '数据标签：名称 + %'], ['chart-labels:percent', '数据标签：% ✓'],
+    ['chart-labels:none', '数据标签：无'], ['chart-legend:right', '图例：右'], ['chart-legend:top', '图例：上'],
+    ['chart-legend:bottom', '图例：下'], ['chart-legend:left', '图例：左 ✓'], ['chart-legend:none', '图例：无'],
+  ])
+  for (const id of ['chart-title', 'chart-labels:category-percent', 'chart-legend:left']) {
+    menu.value = id
+    menu.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(id)
+    expect(menu.value).toBe('')
+  }
+  selection.isPie = false; selection.hasAxes = true; ribbon.refreshState()
+  expect(Array.from(menu.options, option => option.value).slice(1, 4)).toEqual(['chart-title', 'chart-axis-cat', 'chart-axis-val'])
+  expect(Array.from(menu.options, option => option.value)).toContain('chart-labels:value')
+  protectedSheet = true; ribbon.refreshState()
+  expect(menu.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()
   const open = (editable: boolean) => {

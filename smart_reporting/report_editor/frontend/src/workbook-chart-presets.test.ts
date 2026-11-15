@@ -7,6 +7,15 @@ import { chartPresetEdit, chartPresetMenuOptions, type ChartPresetSource } from 
 
 const axis: ChartPresetSource = { isPie: false, canLabel: true, seriesCount: 2, categoryCount: 3 }
 
+it('maps Chart Elements legend and label choices to the existing native edit patch', () => {
+  expect(chartPresetEdit('chart-legend:left', axis)).toEqual({ legend: 'left' })
+  expect(chartPresetEdit('chart-labels:value', axis)).toEqual({ dataLabels: 'value' })
+  expect(chartPresetEdit('chart-labels:percent', { ...axis, isPie: true })).toEqual({ dataLabels: 'percent' })
+  expect(chartPresetEdit('chart-labels:percent', axis)).toBeNull()
+  expect(chartPresetEdit('chart-labels:none', { ...axis, canLabel: false })).toBeNull()
+  expect(chartPresetEdit('chart-labels:none', { ...axis, design: { dataLabelsOffUnavailable: true } })).toBeNull()
+})
+
 it.each([
   ['1', 'right', 'value'], ['2', 'top', 'value'], ['3', 'bottom', 'none'], ['4', 'none', 'value'],
 ])('applies quick layout %s to axis charts', (id, legend, dataLabels) => {
@@ -73,6 +82,24 @@ it('disables menus without an editable target and disables only colors for empty
   expect(chartPresetMenuOptions('colors', axis, false).every(option => option.disabled)).toBe(true)
   expect(chartPresetMenuOptions('colors', { ...axis, seriesCount: 0 }).every(option => option.disabled)).toBe(true)
   expect(chartPresetMenuOptions('layout', { ...axis, seriesCount: 0 }).every(option => !option.disabled)).toBe(true)
+})
+
+it('saves and reopens the direct left legend and percent-only label edits', async () => {
+  const addition = chartAdditionFromGrid({
+    sheetName: 'Sheet1', chartType: 'pie', title: '季度收入',
+    range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    values: [['季度', '收入'], ['Q1', 10], ['Q2', 20]],
+  })
+  const bytes = await applyWorkbookOperations(await createBlankWorkbook(), [{ kind: 'applyChartAdditions', additions: [addition] }])
+  const source = { ...axis, isPie: true }, before = (await readWorkbook(bytes)).sheets[0]!.charts![0]!
+  const output = await applyWorkbookOperations(bytes, [{
+    kind: 'applyChartEdits', edits: [{ chartPath: before.chartPath,
+      ...chartPresetEdit('chart-legend:left', source), ...chartPresetEdit('chart-labels:percent', source),
+    }],
+  }])
+  const chart = (await readWorkbook(output)).sheets[0]!.charts![0]!
+  expect(chart).toMatchObject({ title: '季度收入', design: { legend: 'left', dataLabels: 'percent' } })
+  expect(chart.series[0]!.valuesRef).toBe(before.series[0]!.valuesRef)
 })
 
 it.each(['column', 'pie', 'doughnut'] as const)('saves and independently reopens %s layout and palette edits', async chartType => {

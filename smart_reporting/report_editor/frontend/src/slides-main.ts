@@ -37,6 +37,7 @@ import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
 import type { mountSlidesCanvas } from './slides-canvas'
+import type { DrawRect } from './vendor/genoffice-slides/draw-shape'
 import { nextPreset, notchStep, prevPreset } from './slides-view-zoom'
 import { createWheelPager, createZoomWheelClassifier } from './docx-view-wheel'
 import type { createSlidesSorter } from './slides-view-modes'
@@ -102,7 +103,7 @@ type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 /** 固定源 Shape Format 填充/轮廓（setFill / setStroke） */
 type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; stroke?: { color: string; widthPt: number } | null }
-type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }
+type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number }; flipH?: boolean; flipV?: boolean }
 type SmartArtEdit = { slideIndex: number; layout: SmartArtGalleryLayout; items: string[] }
 type ChartEdit = { slideIndex: number; kind: ChartGalleryKind; categories: string[]; series: { name: string; values: number[] }[] }
 type NewSlide = { layoutFrom: number } | { duplicateOf: number } | { withLayout: string }
@@ -269,6 +270,7 @@ const deletedSlides = new Set<number>()
 const resetLayouts = new Set<number>()
 /** 固定源 Insert ▸ Shapes：待插入的预设形状（96dpi 像素几何），保存后由引擎写入。 */
 const shapeEdits: ShapeEdit[] = []
+let shapeDrawing: { kind: string; commit: (rect: DrawRect) => void } | undefined
 const shapeStyleEdits = new Map<string, ShapeStyleEdit>()
 /** 固定源 Change Shape：对象 → 新预设（仅形状，非线条） */
 const shapeKindEdits = new Map<string, { slideIndex: number; elementId: string; kind: string }>()
@@ -856,6 +858,7 @@ async function setSlidesViewMode(mode: typeof slidesViewMode) {
   if (disposed || locked() || !deck || (notesPane && !notesPane.flush()) || !commentPane.flush()) { syncSlidesViewMode(); return }
   stopBrush(); selectObjects('')
   slidesViewMode = mode
+  shapeDrawing = undefined
   root.querySelector<HTMLElement>('.slides-workspace')!.dataset.viewMode = mode
   sorterHost.hidden = mode !== 'sorter'
   outlineHost.hidden = mode !== 'outline'; readingHost.hidden = mode !== 'reading'
@@ -987,7 +990,7 @@ function sendCanvasPreview() {
   const sequence = previewSequence
   void request<{ slides: (RenderSlide & { slideIndex: number;mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] }>('render-tree', {
     method: 'POST', body: JSON.stringify(native
-      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', ...(masterElementEdits.length ? { masterElementEdits: structuredClone(masterElementEdits) } : {}), ...(masterTextEdits.length ? { masterTextEdits: structuredClone(masterTextEdits) } : {}), edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()], tableCells: [...tableCellEdits.values()], tableStyles: [...tableStyleEdits.values()], shapeKinds: [...shapeKindEdits.values()], ...(modelInsertions.length?{modelInsertions:structuredClone(modelInsertions)}:{}),...(modelViews.length?{modelViews:structuredClone(modelViews)}:{}),...(mediaInsertions.length?{mediaInsertions:structuredClone(mediaInsertions)}:{}),...(zoomInsertions.length?{zoomInsertions:structuredClone(zoomInsertions)}:{}), backgrounds:slideChanges().backgrounds,backgroundImages:slideChanges().backgroundImages,backgroundImageReuses:slideChanges().backgroundImageReuses,backgroundGradients:slideChanges().backgroundGradients,backgroundResets:slideChanges().backgroundResets,backgroundGraphics:slideChanges().backgroundGraphics,customShows:slideChanges().customShows }] }
+      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', ...(masterElementEdits.length ? { masterElementEdits: structuredClone(masterElementEdits) } : {}), ...(masterTextEdits.length ? { masterTextEdits: structuredClone(masterTextEdits) } : {}), edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()], tableCells: [...tableCellEdits.values()], tableStyles: [...tableStyleEdits.values()], shapeKinds: [...shapeKindEdits.values()], shapes: shapeEdits, ...(modelInsertions.length?{modelInsertions:structuredClone(modelInsertions)}:{}),...(modelViews.length?{modelViews:structuredClone(modelViews)}:{}),...(mediaInsertions.length?{mediaInsertions:structuredClone(mediaInsertions)}:{}),...(zoomInsertions.length?{zoomInsertions:structuredClone(zoomInsertions)}:{}), backgrounds:slideChanges().backgrounds,backgroundImages:slideChanges().backgroundImages,backgroundImageReuses:slideChanges().backgroundImageReuses,backgroundGradients:slideChanges().backgroundGradients,backgroundResets:slideChanges().backgroundResets,backgroundGraphics:slideChanges().backgroundGraphics,customShows:slideChanges().customShows }] }
       : { expectedSha256: deck.sha256, edits: [...edits.values()] }),
   }).then(tree => {
     if (sequence !== previewSequence || locked()) return
@@ -1103,6 +1106,7 @@ function renderCanvas() {
     selectableIds: new Set(locked()?[]:slideAt(selectedSlide).elements.filter(item=>!deletions.has(editKey(selectedSlide,item.id))).map(item=>item.id)),
     editableIds: new Set(locked() || pendingGroup(selectedSlide) ? [] : slideAt(selectedSlide).elements.filter(item => (item.editable || item.arrangeEditable) && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
     edits: [...edits.values()].filter(item => item.slideIndex === selectedSlide),
+    shapeDrawing: !locked() && slidesViewMode === 'normal' ? shapeDrawing : undefined,
     onMediaPlayback: id => playMedia(id),
     onSelect: (id, additive) => {
       if(disposed||locked()||selectionGeneration!==canvasSelectionGeneration||canvasSlide!==selectedSlide||canvasSource!==deck.sha256)return
@@ -1354,6 +1358,13 @@ function openLinkDialog() {
 function onClipboardKey(event: KeyboardEvent) {
   if(event.key==='Escape'&&screenRecordingController&&!disposed){event.preventDefault();event.stopPropagation();screenRecordingController.abort();return}
   if(!native||!nativeDraft||disposed||event.defaultPrevented||event.isComposing||event.keyCode===229||!root.contains(document.activeElement))return
+  if (event.key === 'Escape' && shapeDrawing) {
+    event.preventDefault()
+    shapeDrawing = undefined
+    canvasStatus.textContent = '已取消放置形状'
+    renderCanvas()
+    return
+  }
   const target=event.target
   if (openFileDialog && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'o') {
     if (target instanceof Element && target.closest('dialog,[role="dialog"]')) return
@@ -2129,7 +2140,16 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   const restoredTables = changes.tables ?? []
   if (!Array.isArray(restoredTables) || restoredTables.length > 100 || restoredTables.some(item => !item || Object.keys(item).sort().join() !== 'cols,rows,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex) || ![item.rows, item.cols].every(value => Number.isInteger(value) && value >= 1 && value <= 75))) throw new Error('草稿中的新增表格无效；原草稿已保留')
   const restoredShapes = changes.shapes ?? []
-  if (!Array.isArray(restoredShapes) || restoredShapes.length > 500 || restoredShapes.some(item => !item || Object.keys(item).sort().join() !== 'geometry,kind,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex) || !SHAPE_PRESETS.includes(item.kind) || !item.geometry || !(item.geometry.width >= 1) || !(item.geometry.height >= 1))) throw new Error('草稿中的新增形状无效；原草稿已保留')
+  if (!Array.isArray(restoredShapes) || restoredShapes.length > 500 || restoredShapes.some(item =>
+    !item || Object.keys(item).some(key => !['geometry', 'kind', 'slideIndex', 'flipH', 'flipV'].includes(key)) ||
+    !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length ||
+    restoredDeleted.includes(item.slideIndex) || !SHAPE_PRESETS.includes(item.kind) ||
+    !item.geometry || (LINE_SHAPE_KINDS.includes(item.kind)
+      ? !(item.geometry.width >= 0 && item.geometry.height >= 0 && (item.geometry.width > 0 || item.geometry.height > 0))
+      : !(item.geometry.width >= 1 && item.geometry.height >= 1)) ||
+    (['flipH', 'flipV'] as const).some(key => key in item && (typeof item[key] !== 'boolean' || !LINE_SHAPE_KINDS.includes(item.kind))))) {
+    throw new Error('草稿中的新增形状无效；原草稿已保留')
+  }
   const slideTotal = deck.slides.length + restoredNew.length
   if (changes.order !== undefined && (!Array.isArray(changes.order) || changes.order.length !== slideTotal - restoredDeleted.length || changes.order.length > 500 || new Set(changes.order).size !== changes.order.length || changes.order.some(index => !Number.isInteger(index) || index < 0 || index >= slideTotal || restoredDeleted.includes(index)))) throw new Error('草稿页面顺序无效；原草稿已保留')
   // Validate every step before mutating the recovered view or the persisted history.
@@ -2213,7 +2233,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   shapeKindEdits.clear(); for (const item of restoredKinds) shapeKindEdits.set(editKey(item.slideIndex, item.elementId), { ...item })
   shapeStyleEdits.clear(); for (const item of restoredStyles) shapeStyleEdits.set(editKey(item.slideIndex, item.elementId), structuredClone(item))
   tableEdits.splice(0, tableEdits.length, ...restoredTables.map(item => ({ slideIndex: item.slideIndex, rows: item.rows, cols: item.cols })))
-  shapeEdits.splice(0, shapeEdits.length, ...restoredShapes.map(item => ({ slideIndex: item.slideIndex, kind: item.kind, geometry: { ...item.geometry } })))
+  shapeEdits.splice(0, shapeEdits.length, ...restoredShapes.map(item => ({ ...item, geometry: { ...item.geometry } })))
   order.splice(0, order.length, ...(changes.order ?? deck.slides.map(slide => slide.slideIndex)))
   if (!order.includes(selectedSlide)) selectedSlide = order[0] ?? 0
   selectedTheme = changes.theme
@@ -2396,7 +2416,7 @@ function renderInspector() {
   if(cutoutCurrent&&!cutoutCurrent()){++cutoutGeneration;cutoutDialog?.dispose();cutoutDialog=undefined;cutoutCurrent=undefined}
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   renderNotes()
-  if(selectionSlide!==selectedSlide){selectedObjects.clear();selectionSlide=selectedSlide;explicitEmptySelection=false;cropOverlay?.dispose();finishPictureCrop()}
+  if(selectionSlide!==selectedSlide){selectedObjects.clear();selectionSlide=selectedSlide;explicitEmptySelection=false;cropOverlay?.dispose();finishPictureCrop();shapeDrawing=undefined}
   renderComments()
   // 表格虽不能整体编辑/删除，但单元格可改字，因此也列入可选对象。
   const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable || !!item.tableCells || item.type === 'chart' || item.type === 'group' || item.model3d) && !deletions.has(editKey(selectedSlide, item.id)))
@@ -2569,6 +2589,7 @@ function renderInspector() {
     ['chartPointColors',selectedObjects.size===1&&element?.chartEditSafe===true&&(nativeChartEdits.find(item=>item.slideIndex===selectedSlide&&item.elementId===element.id)?.kind??element.chartKind)!=='scatter','此来源或散点图不能安全修改单点配色'],
     ['chartSwitchRowCol',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全交换行列'],
     ['insertPicture',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
+    ['insertShape',!isNewSlide(selectedSlide) && !pendingGroup(selectedSlide) && slidesViewMode === 'normal', '请在普通视图的来源页插入形状'],
     ['insertAudio',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
     ['insertVideo',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
     ['screenRecording',!isNewSlide(selectedSlide),NEW_SLIDE_REASON],
@@ -2994,14 +3015,29 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         openTableDialog(); break
       case 'insertShape': {
         const kind = String(value ?? '')
-        if (!kind) break
-        if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
-        if (!SHAPE_PRESETS.includes(kind) || shapeEdits.length >= 500) { statusMessage.textContent = '形状不可用或已达 500 个待插入形状'; break }
-        const width = deck.size.cx / 9525, height = deck.size.cy / 9525
-        const line = LINE_SHAPE_KINDS.includes(kind)
-        shapeEdits.push({ slideIndex: selectedSlide, kind, geometry: { x: Math.round(width * 0.35), y: Math.round(height * (line ? 0.5 : 0.35)), width: Math.round(width * 0.3), height: line ? 1 : Math.round(height * 0.3) } })
-        canvasStatus.textContent = '新增形状将在保存并打开新修订后显示在画布中。'
-        renderStructurePending(); markDirty(); break
+        if (!SHAPE_PRESETS.includes(kind) || shapeEdits.length >= 500) { statusMessage.textContent = '形状不可用或已达 500 个待插入形状'; return }
+        if (isNewSlide(selectedSlide) || slidesViewMode !== 'normal' || !canvas || !slideForView(selectedSlide) || pendingGroup(selectedSlide) || cropOverlay) return
+        const slideIndex = selectedSlide, source = deck.sha256
+        const drawing = { kind, commit(rect: DrawRect) {
+          if (shapeDrawing !== drawing) return
+          shapeDrawing = undefined
+          if (disposed || locked() || selectedSlide !== slideIndex || deck.sha256 !== source || pendingGroup(slideIndex)) return
+          const minimum = LINE_SHAPE_KINDS.includes(kind) ? 0 : 1
+          const geometry = { x: Math.max(0, Math.round(rect.x)), y: Math.max(0, Math.round(rect.y)),
+            width: Math.max(minimum, Math.round(rect.w)), height: Math.max(minimum, Math.round(rect.h)) }
+          if (!geometry.width && !geometry.height) { renderCanvas(); return }
+          const shape = { slideIndex, kind, geometry, ...(rect.flipH ? { flipH: true } : {}), ...(rect.flipV ? { flipV: true } : {}) }
+          try { commitNativeChanges({ ...slideChanges(), shapes: [...shapeEdits, shape] }) }
+          catch (error) { statusMessage.textContent = error instanceof Error ? error.message : '形状未插入'; renderCanvas() }
+        } }
+        shapeDrawing = drawing
+        explicitEmptySelection = true
+        selectedObjects.clear()
+        selectedElement = ''
+        renderInspector()
+        renderCanvas()
+        canvasStatus.textContent = '点击放置，或拖动指定大小。按 Esc 取消'
+        return
       }
       case 'resetLayout':
         if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
@@ -3447,7 +3483,7 @@ function renderStructurePending() {
   for (const [index, table] of tableEdits.entries()) row(`第 ${order.indexOf(table.slideIndex) + 1} 页 · 表格 ${table.rows}×${table.cols}`, () => tableEdits.splice(index, 1))
   for (const [index, edit] of masterTextEdits.entries()) row(`母版/版式 ${deck.masterTextParts?.find(part => part.partPath === edit.partPath)?.name ?? edit.partPath} · 文字 ${edit.spid}`, () => masterTextEdits.splice(index, 1))
   for (const [index, edit] of masterElementEdits.entries()) row(`母版/版式 ${deck.masterTextParts?.find(part => part.partPath === edit.partPath)?.name ?? edit.partPath} · ${edit.kind === 'delete' ? `删除文字 ${edit.spid}` : edit.kind === 'setFill' ? `对象 ${edit.spid} · 填充 ${edit.fill === 'none' ? '无填充' : edit.fill}` : edit.kind === 'setStroke' ? `对象 ${edit.spid} · 轮廓 ${edit.stroke?.color ?? '无'}` : edit.kind === 'setTransform' ? `对象 ${edit.spid} · 位置/旋转` : `新增文字框 ${(edit.kind === "addTextBox" ? edit.text : "").slice(0, 20)}`}`, () => masterElementEdits.splice(index, 1))
-  for (const [index, shape] of shapeEdits.entries()) row(`第 ${order.indexOf(shape.slideIndex) + 1} 页 · 形状 ${SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes).find(item => item.prst === shape.kind)?.label ?? shape.kind}`, () => shapeEdits.splice(index, 1))
+  for (const [index, shape] of shapeEdits.entries()) row(`第 ${order.indexOf(shape.slideIndex) + 1} 页 · 形状 ${SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes).find(item => item.prst === shape.kind)?.label ?? shape.kind}`, () => { shapeEdits.splice(index, 1); refreshCanvasPreview() })
   for (const slideIndex of resetLayouts) row(`第 ${order.indexOf(slideIndex) + 1} 页 · 重置版式`, () => resetLayouts.delete(slideIndex))
   for (const [slideIndex, color] of backgroundEdits) {
     row(`第 ${order.indexOf(slideIndex) + 1} 页 · 背景 ${color}`, () => backgroundEdits.delete(slideIndex))

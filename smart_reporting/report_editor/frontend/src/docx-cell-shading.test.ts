@@ -39,6 +39,8 @@ it('keeps all tcPr whitespace/comments bytes outside the direct shading',()=>{
  expect(patchDocxCellShading(original,null)).toBe(original.replace('<w:shd w:fill="FFC000"/>',''))
 })
 import { afterEach } from 'vitest'
+import { flushSync } from 'react-dom'
+import { createDocxRibbon } from './docx-ribbon'
 import { Editor, Node, Extension } from '@tiptap/core'
 import { UndoRedo } from '@tiptap/extensions'
 import { NodeSelection, TextSelection } from '@tiptap/pm/state'
@@ -86,4 +88,23 @@ it('derives ribbon capability from every selected cell, without changing source 
  expect(f.editor.state.selection).toBe(selection)
  f.editor.view.dispatch(f.editor.state.tr.setSelection(TextSelection.create(f.editor.state.doc,f.positions[0]!+2)))
  expect(docxCellShadingUnavailable(f.editor,restricted)).toBe(null)
+})
+
+it('uses GenOffice table shading color picker with the current color and replayable clear',()=>{
+ const f=setup()
+ f.editor.view.dispatch(f.editor.state.tr.setSelection(TextSelection.create(f.editor.state.doc,f.positions[0]!+2)))
+ const ribbon=createDocxRibbon(f.editor,true,undefined,undefined,undefined,f.anchors.map(anchor=>({...anchor,expectedObjectSha256:'table-hash',editable:false,cells:anchor.cells.map(row=>row.map(cell=>({...cell,editable:false})))})))
+ document.body.append(ribbon)
+ ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableDesign"]')!.click()
+ const trigger=ribbon.querySelector<HTMLButtonElement>('[data-action="table-cell-shading"]')!
+ expect(trigger.disabled).toBe(false)
+ flushSync(()=>trigger.click())
+ const palette=ribbon.querySelector('.docs-color-pop.gcp-palette')!
+ expect(palette.querySelectorAll('.gcp-theme-shades [role="gridcell"]').length).toBeGreaterThan(10)
+ expect(palette.querySelector('.gcp-standard-row [aria-selected="true"]')).not.toBeNull()
+ flushSync(()=>palette.querySelector<HTMLButtonElement>('.gcp-auto')!.click())
+ expect(f.fills()).toEqual([null,'00B050'])
+ expect(trigger.getAttribute('aria-expanded')).toBe('false')
+ f.editor.commands.undo()
+ expect(f.fills()).toEqual(['FF0000','00B050'])
 })

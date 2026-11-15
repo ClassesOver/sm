@@ -34,6 +34,7 @@ _XLSX_FIELDS = {
     'applyHyperlinkSource': {'sheetName', 'ref', 'target'},
     'applyTableSource': {'sheetName', 'range', 'name', 'style', 'bandedRows'},
     'clearCellRange': {'sheetName', 'range'},
+    'replaceRangeText': {'sheetName', 'range', 'find', 'replace', 'matchCase', 'wholeCell'},
     'insertPicture': {'sheetName', 'sourceIdentity', 'imageId', 'row', 'column', 'widthPx', 'heightPx', 'picture'},
     'editPicture': {'sheetName', 'sourceIdentity', 'drawingPart', 'pictureId', 'mediaSha256', 'before', 'geometry'},
     'retargetExternalLink': {'index', 'expectedTarget', 'target'},
@@ -557,12 +558,15 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
                or (not _slide_index(next(iter(item.values()))) if 'withLayout' not in item else not _layout_path(item['withLayout'])) for item in new_slides)
         or (new_slides and order is None)):
         raise ValueError('native_office_operations_invalid')
-    shapes = _records(operation, 'shapes', {'slideIndex', 'kind', 'geometry'})
+    shapes = _records(operation, 'shapes', {'slideIndex', 'kind', 'geometry'}, {'flipH', 'flipV'})
     for item in shapes:
         geometry = item['geometry']
         if (not isinstance(item['kind'], str) or item['kind'] not in _SHAPE_PRESETS or not isinstance(geometry, dict)
             or set(geometry) != {'x', 'y', 'width', 'height'} or any(not _number(geometry[key], -100_000, 100_000) for key in ('x', 'y'))
-            or any(not _number(geometry[key], 1, 100_000) for key in ('width', 'height'))):
+            or any(not _number(geometry[key], 0 if item['kind'] in _LINE_PRESETS else 1, 100_000) for key in ('width', 'height'))
+            or not (geometry['width'] or geometry['height'])
+            or any(key in item and (item['kind'] not in _LINE_PRESETS or not isinstance(item[key], bool))
+                   for key in ('flipH', 'flipV'))):
             raise ValueError('native_office_operations_invalid')
     tables = _records(operation, 'tables', {'slideIndex', 'rows', 'cols'})
     if len(tables) > 100 or any(not isinstance(item[key], int) or isinstance(item[key], bool) or not 1 <= item[key] <= 75 for item in tables for key in ('rows', 'cols')):

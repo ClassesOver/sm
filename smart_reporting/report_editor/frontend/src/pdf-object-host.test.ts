@@ -26,7 +26,7 @@ function operation(kind:string):NativeOperation{
 }
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
-async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
+async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;signatureTargets?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
  pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??'';pdfMock.printed=[]
  const notes=options.savedThread?[
   { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
@@ -39,7 +39,11 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
  const root=document.createElement('div');document.body.append(root)
  const identity={documentId:'pdf-object-host',revision:1,sourceSha256,scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}
  const seed=new NativeDraft(identity,localStorage);if(options.restored)seed.setOperations([options.restored]);const draft=new NativeDraft(identity,localStorage)
- const model={sourceSha256,pages:Array.from({length:options.exportPages??1},(_,index)=>({pageId:'sha256:'+sourceSha256+':page:'+index,index,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes})),formFields:[{name:'existing',kind:'text',value:options.requiredField?'':'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)},...(options.navigationFields?[{name:'locked',kind:'text',value:'Locked',editable:false,fieldId:'2'.repeat(64),expectedFieldSha256:'3'.repeat(64)},{name:'secondary',kind:'text',value:'Second',editable:true,fieldId:'4'.repeat(64),expectedFieldSha256:'5'.repeat(64)}]:[])],formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
+ const signatureFields=options.signatureTargets?['First signature','Second signature'].map((name,pageIndex)=>({
+  fieldId:(pageIndex?'7':'6').repeat(64),expectedFieldSha256:(pageIndex?'9':'8').repeat(64),name,signed:false,visuallySigned:false,bindable:true,reason:null,
+  widgets:[{pageIndex,rect:[30,200,150,230]}],
+ })): []
+ const model={sourceSha256,pages:Array.from({length:options.exportPages??1},(_,index)=>({pageId:'sha256:'+sourceSha256+':page:'+index,index,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes})),formFields:[{name:'existing',kind:'text',value:options.requiredField?'':'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)},...(options.navigationFields?[{name:'locked',kind:'text',value:'Locked',editable:false,fieldId:'2'.repeat(64),expectedFieldSha256:'3'.repeat(64)},{name:'secondary',kind:'text',value:'Second',editable:true,fieldId:'4'.repeat(64),expectedFieldSha256:'5'.repeat(64)}]:[]),...signatureFields.map(field=>({...field,kind:'signature',value:null,editable:false}))],signatureFields,formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
  const staticModel=options.staticFills?{staticFormFills:[{id:'saved-fill',kind:'text',pageIndex:0,rect:[30,100,150,124],text:'已保存填写',fontSize:14,color:'#111111',align:'left',editable:true,expectedImageSha256:'9'.repeat(64)}]}:{}
  const attachmentModel=options.attachments?{attachmentsEditable:true,attachments:[{key:'stored',name:'keep.txt',description:'保留附件',size:3,contentSha256:'b'.repeat(64),attachmentId:'c'.repeat(64),expectedAttachmentSha256:'d'.repeat(64)}]}:{}
  const api={exportImages:vi.fn(async()=>{throw new Error('test request observed')}),file:async()=>new Uint8Array(options.sourceSize??2).buffer,preview:vi.fn(async()=>({sourceSha256,model:{...model,...attachmentModel,...staticModel,...(options.digitalSignatures?{digitalSignatures:[],signatureVerification:{scope:"basic-integrity-only",trustPolicy:"none",readable:true,issues:[],revocationChecked:false,timestampsVerified:false}}:{})}})),previewFile:vi.fn(async()=>new Uint8Array([3,4]).buffer)} as unknown as ReturnType<typeof createNativeApi>
@@ -522,6 +526,32 @@ it('extracts the thumbnail page without a second click and retains the result li
  expect(extractPages).toHaveBeenCalledOnce()
  expect(extractPages).toHaveBeenCalledWith(expect.objectContaining({expectedSha256:sourceSha256,pages:[2]}))
  expect(dialog.textContent).toContain('待复核')
+})
+it('signs the active visible form signature field without asking for a placement again', async () => {
+ const f=await fixture({exportPages:2,signatureTargets:true});await f.create()
+ const targetPage=pageId.replace(/:0$/,':1')
+ f.root.querySelector<HTMLElement>('.pdf-page[data-page-id="'+targetPage+'"]')!.scrollIntoView=vi.fn()
+ vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({clearRect:vi.fn(),measureText:()=>({actualBoundingBoxLeft:0,actualBoundingBoxRight:100,actualBoundingBoxAscent:80,actualBoundingBoxDescent:20}),fillText:vi.fn()} as unknown as CanvasRenderingContext2D)
+ vi.spyOn(HTMLCanvasElement.prototype,'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgoAAA==')
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
+ const field=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-signature-target="'+('7'.repeat(64))+'"]')!
+ expect(field).toBeTruthy();field.focus()
+ const sign=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.fillForm.sign"]')!
+ expect(sign.disabled).toBe(false);sign.click()
+ const dialog=()=>document.querySelector<HTMLDialogElement>('.pdf-signature-source-dialog')!
+ await vi.waitFor(()=>expect(dialog()?.querySelector('.pdf-sign-tab')).toBeTruthy())
+ await act(async()=>[...dialog().querySelectorAll<HTMLButtonElement>('.pdf-sign-tab')].find(button=>button.textContent==='输入')!.click())
+ const input=dialog().querySelector<HTMLInputElement>('.pdf-modal-input')!
+ await act(async()=>{
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,'Sample')
+  input.dispatchEvent(new Event('input',{bubbles:true}))
+ })
+ await act(async()=>dialog().querySelector<HTMLButtonElement>('.pdf-modal-btn.primary')!.click())
+ await vi.waitFor(()=>expect(f.draft.operations).toContainEqual(expect.objectContaining({
+  kind:'addDrawing',pageId:targetPage,shape:'image',signatureField:{fieldId:'7'.repeat(64),expectedFieldSha256:'9'.repeat(64)},
+ })))
+ expect(document.querySelector('.pdf-sign-target-dialog')).toBeNull()
+ expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('Second signature')
 })
 it('signature dialog imports a normalized image and starts image placement',async()=>{
  const close=vi.fn(),drawImage=vi.fn(),f=await fixture();await f.create()

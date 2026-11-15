@@ -17,6 +17,15 @@ export function safeDocxCellFill(value: unknown): string | null {
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 const tableOf = (doc: DocxPmNode, index: number) => doc.content?.find(node => node.type === 'docTable' && node.attrs?.docxIndex === index)
 const fillOf = (node: DocxPmNode) => node.attrs?.fill ?? null
+export function selectedDocxCellFill(editor: Editor): string | null {
+  const { state } = editor
+  const selection = state.selection
+  const cell = selection instanceof NodeSelection && selection.node.type.name === 'docTable'
+    ? selection.node.firstChild?.firstChild
+    : isInTable(state) ? selectionCell(state).nodeAfter : null
+  const fill = cell?.attrs.fill
+  return typeof fill === 'string' && /^[0-9a-fA-F]{6}$/.test(fill) ? fill.toUpperCase() : null
+}
 /** 先归一底纹，再交回普通正文diff；rich cell不能因text editable=false被误拦。 */
 export function normalizeDocxCellShading(baseline: DocxPmNode, live: DocxPmNode, anchors: readonly DocxCellShadingAnchor[]) {
   const current = structuredClone(live), operations: DocxCellShadingOperation[] = []

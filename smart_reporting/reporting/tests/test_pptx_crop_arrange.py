@@ -86,6 +86,26 @@ def test_change_shape_gallery_preset_preserves_text_and_frame():
     assert next(item for item in reopened.slides[0].shapes if item.name == '右形状').auto_shape_type == MSO_SHAPE.RECTANGLE
 
 
+def test_drawn_connector_preserves_reverse_direction_at_the_placed_geometry():
+    content, _ = _presentation()
+    shape = {'slideIndex': 0, 'kind': 'lineArrow', 'geometry': {'x': 96, 'y': 192, 'width': 144, 'height': 48},
+             'flipH': True, 'flipV': True}
+    horizontal = {'slideIndex': 0, 'kind': 'line', 'geometry': {'x': 96, 'y': 48, 'width': 96, 'height': 0}}
+    modified = patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [shape, horizontal]}])
+    shapes = Presentation(BytesIO(modified)).slides[0].shapes
+    connector = shapes[-2]
+    transform = connector._element.xpath('./p:spPr/a:xfrm')[0]
+    assert (transform.get('flipH'), transform.get('flipV')) == ('1', '1')
+    assert (connector.left, connector.top, connector.width, connector.height) == (
+        Inches(1), Inches(2), Inches(1.5), Inches(.5),
+    )
+    assert connector._element.xpath('./p:spPr/a:ln/a:tailEnd[@type="triangle"]')
+    assert (shapes[-1].width, shapes[-1].height) == (Inches(1), 0)
+    for malformed in ({**shape, 'flipH': 'true'}, {**shape, 'kind': 'rect'}):
+        with pytest.raises(ValueError):
+            patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [malformed]}])
+
+
 def _patch(content, **operation):
     return patch_office('pptx', content, [{'kind': 'editSlides', **operation}])
 

@@ -5,6 +5,7 @@ import {NativeDraft} from './native-draft'
 import {openSlidesPictureCrop,type SlidesPictureCropOptions} from './slides-native-crop'
 import {pickSlideImage} from './slides-native-images'
 import type {SlidesCanvasState} from './slides-canvas'
+import {defaultDrawSize,resolveDrawRect} from './vendor/genoffice-slides/draw-shape'
 const canvasStates=vi.hoisted(()=>[] as SlidesCanvasState[])
 vi.mock('./slides-canvas',()=>({mountSlidesCanvas:()=>({update:(state:SlidesCanvasState)=>canvasStates.push(state),destroy(){}})}))
 vi.mock('./slides-native-crop',()=>({openSlidesPictureCrop:vi.fn(()=>({dispose:vi.fn()}))}))
@@ -34,6 +35,37 @@ async function open(draft:NativeDraft){
  const crop=()=>{expect(command('cropPicture').title).not.toContain('请选择');expect(command('cropPicture').disabled).toBe(false);command('cropPicture').click();return vi.mocked(openSlidesPictureCrop).mock.calls.at(-1)![1] as SlidesPictureCropOptions}
  return {shell,request,view,select,command,crop}
 }
+it('arms shape placement from the gallery and stages the drawn connector direction',async()=>{
+ const draft=newDraft(),app=await open(draft)
+ try{
+  app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-insert')!.click()
+  const pick=(kind:string)=>{
+   app.command('insertShape').click()
+   app.shell.editor.querySelector<HTMLButtonElement>(`.slides-shape-gallery:not([hidden]) [data-prst="${kind}"]`)!.click()
+   return canvasStates.at(-1)!.shapeDrawing!
+  }
+  const line=pick('lineArrow')
+  expect(draft.operations).toEqual([])
+  expect(line.kind).toBe('lineArrow')
+  line.commit(resolveDrawRect(line.kind,240,140,100,100,false))
+  expect(draft.operations[0]?.shapes).toEqual([
+   {slideIndex:0,kind:'lineArrow',geometry:{x:100,y:100,width:140,height:40},flipH:true,flipV:true},
+  ])
+  const rectangle=pick('rect')
+  rectangle.commit({x:16,y:32,...defaultDrawSize(rectangle.kind)})
+  expect(draft.operations[0]?.shapes).toContainEqual({slideIndex:0,kind:'rect',geometry:{x:16,y:32,width:96,height:96}})
+  const horizontal=pick('line')
+  horizontal.commit({x:16,y:48,...defaultDrawSize(horizontal.kind)})
+  expect(draft.operations[0]?.shapes).toContainEqual({slideIndex:0,kind:'line',geometry:{x:16,y:48,width:96,height:0}})
+  await vi.waitFor(()=>expect(app.request.mock.calls.some(([path,init])=>path==='render-tree' && init?.method==='POST' &&
+    JSON.parse(init.body as string).operations[0].shapes?.length===3)).toBe(true),{timeout:5000})
+  const cancelled=pick('ellipse')
+  app.command('insertShape').focus()
+  window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))
+  cancelled.commit({x:0,y:0,w:96,h:96})
+  expect(draft.operations[0]?.shapes).toHaveLength(3)
+ }finally{app.view.dispose()}
+})
 it('shows crop in Picture Format Size and preserves pending picture orientation',async()=>{
  const draft=newDraft(),app=await open(draft)
  try{

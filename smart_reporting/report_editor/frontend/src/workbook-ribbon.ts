@@ -12,7 +12,7 @@ import { indentToUniverPadding, univerPaddingToIndent, type UniverStyleData } fr
 import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboard'
 import { CELL_STYLE_PRESETS } from './workbook-cell-style-presets'
 import { THEME_MENU_OPTIONS } from './workbook-theme'
-import { chartPresetMenuOptions, type ChartPresetSource } from './workbook-chart-presets'
+import { chartPresetMenuOptions, type ChartElementCommand, type ChartPresetSource } from './workbook-chart-presets'
 import { supportsWorkbookScreenshot } from './workbook-screenshot'
 import { workbookTranslationLanguages, type WorkbookTranslationLanguage } from './workbook-ai-translation'
 
@@ -50,6 +50,7 @@ type RibbonCommand =
   | `insert-chart:${'column' | 'bar' | 'line' | 'area' | 'pie' | 'scatter' | 'radar' | 'doughnut' | 'combo'}`
   | 'chart-title' | 'chart-axis-cat' | 'chart-axis-val' | 'chart-legend' | 'chart-labels' | 'chart-format-pane' | 'chart-select-data' | 'chart-switch-row-col' | 'chart-delete' | 'chart-descriptions'
   | `chart-type-${'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut'}`
+  | ChartElementCommand
   | `chart-layout:${'1' | '2' | '3' | '4'}`
   | `chart-colors:${'office' | 'blue' | 'green' | 'warm' | 'gray'}`
   | 'format-as-table'
@@ -560,7 +561,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     ] },
   ],
   'Chart Design': [
-    { title: '图表布局', actions: ['chart-title', 'chart-axis-cat', 'chart-axis-val', 'chart-legend', 'chart-labels'].map(id => action(id, id, id as RibbonCommand)) },
+    { title: '图表布局', actions: [] },
     { title: '更改图表类型', actions: ['chart-type-column', 'chart-type-bar', 'chart-type-line', 'chart-type-area', 'chart-type-pie', 'chart-type-doughnut'].map(id => action(id, id, id as RibbonCommand)) },
     { title: '数据', actions: ['chart-select-data', 'chart-switch-row-col', 'chart-format-pane'].map(id => action(id, id, id as RibbonCommand)) },
     { title: '图表操作', actions: [action('图表说明', 'chart-descriptions', 'chart-descriptions'), action('删除图表', 'chart-delete', 'chart-delete')] },
@@ -1197,7 +1198,7 @@ export function mountWorkbookRibbon(
       pasteSpecial.title = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : '选择性粘贴'
     }
     const themeState = view.theme?.()
-    for (const kind of ['layout', 'colors'] as const) {
+    for (const kind of ['elements', 'layout', 'colors'] as const) {
       const select = body.querySelector<HTMLSelectElement>(`[data-ribbon-menu="chart-${kind}"]`)
       if (!select) continue
       const source = view.chart?.() ?? null
@@ -1211,7 +1212,7 @@ export function mountWorkbookRibbon(
         return option
       }))
       select.value = ''; select.disabled = options.every(item => item.disabled)
-      select.title = !editable ? '当前工作簿不可编辑或正在保存' : protectedSheet ? PROTECTED_SHEET_REASON : !source ? '请先选择要操作的图表' : label
+      select.title = !editable ? '当前工作簿不可编辑或正在保存' : protectedSheet ? PROTECTED_SHEET_REASON : !source ? '请先选择要操作的图表' : kind === 'elements' ? '标题、数据标签、图例' : label
       select.setAttribute('aria-description', select.title)
     }
     for (const menu of ['theme', 'theme-colors', 'theme-fonts'] as const) {
@@ -1409,7 +1410,7 @@ export function mountWorkbookRibbon(
         section.append(createOfficeAIEntry(view?.onAssistant))
       }
       if (active === 'Chart Design' && group.title === '图表布局') {
-        for (const [kind, label, glyph] of [['layout', '快速布局', '▦'], ['colors', '更改颜色', '🎨']] as const) {
+        for (const [kind, label, glyph] of [['elements', '添加图表元素', '📊'], ['layout', '快速布局', '▦'], ['colors', '更改颜色', '🎨']] as const) {
           const wrapper = document.createElement('label')
           wrapper.className = 'workbook-ribbon-chart-menu'
           const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
@@ -1417,6 +1418,7 @@ export function mountWorkbookRibbon(
           const select = document.createElement('select')
           select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', label)
           select.dataset.ribbonMenu = `chart-${kind}`
+          select.disabled = true
           select.addEventListener('change', () => {
             const value = select.value, enabled = !select.disabled && !select.selectedOptions[0]?.disabled
             select.value = ''

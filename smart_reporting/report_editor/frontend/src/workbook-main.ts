@@ -591,6 +591,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       // 组合图的首个 bar/line plot 可写标签；scatter/radar 没有可标注 plot。
       canLabel: !['scatter', 'radar'].includes(target.chart.kind),
       seriesCount: target.chart.series.length, categoryCount,
+      hasAxes: ['column', 'bar', 'line', 'area', 'scatter'].includes(target.chart.kind),
+      design: target.chart.design,
     }
   }
   const validateChartTarget = (target: ReturnType<typeof chartTarget>) => {
@@ -2244,7 +2246,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           })().catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
           return
         }
-        if (command.startsWith('chart-layout:') || command.startsWith('chart-colors:')) {
+        if (/^chart-(layout|colors|legend|labels):/.test(command)) {
           const target = chartTarget(), patch = chartPresetEdit(command, chartPresetSource(target))
           if (!patch) throw new Error('当前图表无法应用此预设')
           void applyChartOperation(target, { kind: 'applyChartEdits', edits: [{ chartPath: target.chart.chartPath, ...patch }] }, '图表预设已应用，修改尚未保存。')
