@@ -2,18 +2,36 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {createEditorShell} from './shell'
 import {createSlidesEditorView} from './slides-main'
 import {NativeDraft} from './native-draft'
+import type { NativePreviewRequest } from './native-api'
 vi.mock('./slides-canvas',()=>({mountSlidesCanvas:()=>({update(){},destroy(){}})}))
 const render=vi.hoisted(()=>vi.fn(async()=>['data:image/png;base64,QQ==','data:image/png;base64,Qg==']))
+const downloadPdf = vi.hoisted(() => vi.fn())
 vi.mock('./slides-print-render',()=>({renderSlidesPrintImages:render}))
+vi.mock(import('./slides-export-download'), async original => ({
+  ...await original(), downloadSlidesBlob: downloadPdf,
+}))
 const views:Array<ReturnType<typeof createSlidesEditorView>>=[]
 beforeEach(()=>{vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}unobserve(){}});HTMLDialogElement.prototype.showModal=function(){this.open=true};HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new Event('close'))};render.mockClear()})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals()})
-async function fixture(){
+async function fixture(previewPdf?: (payload: NativePreviewRequest, signal: AbortSignal) => Promise<ArrayBuffer>){
  const shell=createEditorShell(document.body.appendChild(document.createElement('main')),'full','pptx'),sha='a'.repeat(64),draft=new NativeDraft({documentId:'print',revision:1,sourceSha256:sha,scope:{database:'f',companyId:'f',userId:'u',threadId:'t'}},{getItem:()=>null,setItem(){},removeItem(){}})
  const slides=[{slideIndex:0,elements:[],notesText:'visible notes'},{slideIndex:1,elements:[],hidden:true,notesText:'hidden notes'}],tree={slides:slides.map(slide=>({...slide,widthPx:960,heightPx:540,nodes:[],background:{type:'solid',color:'#ffffff'}}))}
  const request=vi.fn(async(path:string,_init?:RequestInit)=>path==='deck'?{revision:1,sha256:sha,size:{cx:9144000,cy:5143500},slides}:path==='render-tree'?tree:path==='preview'?{sourceSha256:sha,model:{slides}}:Promise.reject(Error('unexpected '+path)))
- const view=createSlidesEditorView(shell.editor,{native:true,draft,request:request as never,save:shell.save,download:shell.exportPptx});views.push(view);await view.ready;request.mockClear();return {shell,sha,draft,request,view}
+ const view=createSlidesEditorView(shell.editor,{native:true,draft,request:request as never,save:shell.save,download:shell.exportPptx,previewPdf,filename:'季度.pptx'});views.push(view);await view.ready;request.mockClear();return {shell,sha,draft,request,view}
 }
+it('exports current PPTX draft through the PDF host without creating a revision', async () => {
+ const previewPdf = vi.fn(async () => new TextEncoder().encode('%PDF-1.7\n').buffer)
+ const f = await fixture(previewPdf)
+ const input = f.shell.editor.appendChild(document.createElement('textarea'))
+ const operations = [{ kind: 'editSlides', edits: [], order: [1, 0] }]
+ input.addEventListener('blur', () => f.draft.setOperations(operations))
+ input.focus()
+ f.shell.editor.querySelector<HTMLButtonElement>('[data-command="exportPdf"]')!.click()
+ await vi.waitFor(() => expect(downloadPdf).toHaveBeenCalledWith(expect.objectContaining({ type: 'application/pdf' }), '季度.pdf'))
+ expect(previewPdf).toHaveBeenCalledWith({ expectedSha256: f.sha, operations }, expect.any(AbortSignal))
+ expect(f.request).not.toHaveBeenCalled()
+ expect(f.draft.operations).toEqual(operations)
+})
 it('loads the identity-bound current draft for printing without save/export or draft mutation',async()=>{
  const f=await fixture(),button=f.shell.editor.querySelector<HTMLButtonElement>('[data-command=print]')!;expect(button.disabled).toBe(false);button.click()
  await vi.waitFor(()=>expect(f.shell.editor.querySelector('.slides-print-dialog iframe')?.getAttribute('srcdoc')).toContain('QQ=='))

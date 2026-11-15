@@ -3,6 +3,23 @@ import { createSlidesNativeRibbon, stepNativeFontSize } from './slides-native-ri
 
 afterEach(() => document.body.replaceChildren())
 
+it('routes File Export PDF to the authorized preview host and respects its lock', () => {
+  const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
+  const unavailable = createSlidesNativeRibbon(host, { onAction })
+  expect(host.querySelector<HTMLButtonElement>('[data-command="exportPdf"]')!.disabled).toBe(true)
+  unavailable.dispose()
+  const ribbon = createSlidesNativeRibbon(host, { onAction, pdfExportAvailable: true })
+  const control = host.querySelector<HTMLButtonElement>('[data-command="exportPdf"]')!
+  expect(control.dataset.sourceAction).toBe('onExportPdf')
+  ribbon.setLocked(true)
+  control.click()
+  expect(onAction).not.toHaveBeenCalled()
+  ribbon.setLocked(false)
+  control.click()
+  expect(onAction).toHaveBeenCalledWith('exportPdf')
+  ribbon.dispose()
+})
+
 it('大纲和阅读视图接入源onViewMode并保持四个入口互斥', () => {
   const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
   const ribbon = createSlidesNativeRibbon(host, { onAction })

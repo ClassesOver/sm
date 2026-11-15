@@ -1,4 +1,6 @@
 import { mountSlidesRailNavigation } from './slides-rail-navigation'
+import { createSlidesPdfExport } from './slides-export-pdf'
+import type { NativePreviewRequest } from './native-api'
 import {validateZoomDraft} from './slides-zoom-model'
 import {mountModel3d} from './slides-model3d-ui'
 import {validateModelDraft,type ModelInsertion,type ModelViewEdit,type ModelSource} from './slides-model3d'
@@ -146,6 +148,8 @@ export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
   draft?: NativeDraft
   onAssistant?: () => void
   nativeAI?: SlidesNativeAIClient
+  previewPdf?: (payload: NativePreviewRequest, signal: AbortSignal) => Promise<ArrayBuffer>
+  filename?: string
 }) {
 const root = host
 const basePath = location.pathname.replace(/\/$/, '')
@@ -1365,17 +1369,28 @@ async function openZoom(mode:'slide'|'section') {
  }catch(error){if(!controller.signal.aborted)statusMessage.textContent=error instanceof Error?error.message:'缩放定位未打开';controller.abort();zoomDialog?.remove();zoomDialog=undefined}
  finally{if(!zoomDialog&&zoomController===controller)zoomController=undefined}
 }
-async function openPrint() {
-  if (!nativeDraft || disposed || loading || locked() || mutationPending || printOpening) return
-  if (!commentPane.flush() || (notesPane && !notesPane.flush())) return
-  if(chartFormatPane&&!chartFormatPane.flush()||geometryPane&&!geometryPane.flush()||backgroundPane&&!backgroundPane.flush()||shapeFormatPane&&!shapeFormatPane.flush())return
+function flushSlideOutputInputs(blockedMessage: string) {
+  if (!commentPane.flush() || (notesPane && !notesPane.flush())) return false
+  if(chartFormatPane&&!chartFormatPane.flush()||geometryPane&&!geometryPane.flush()||backgroundPane&&!backgroundPane.flush()||shapeFormatPane&&!shapeFormatPane.flush())return false
   const active=document.activeElement
   if(active instanceof HTMLElement&&root.contains(active)){
     active.blur()
     if(active.isConnected)active.focus({preventScroll:true})
   }
-  if(disposed||locked()||mutationPending)return
-  if (cropOverlay || structureDialog) { statusMessage.textContent='请先确认或取消当前编辑，再打开打印预览'; return }
+  if(disposed||locked()||mutationPending)return false
+  if (cropOverlay || structureDialog) { statusMessage.textContent=blockedMessage; return false }
+  return true
+}
+const pdfExport = sharedShell?.previewPdf && createSlidesPdfExport({
+  preview: sharedShell.previewPdf,
+  filename: sharedShell.filename,
+  snapshot: () => !nativeDraft || loading || locked() || mutationPending ? undefined
+    : { expectedSha256: deck.sha256, operations: nativeDraft.operations },
+  status: message => { statusMessage.textContent = message },
+})
+async function openPrint() {
+  if (!nativeDraft || disposed || loading || locked() || mutationPending || printOpening ||
+      !flushSlideOutputInputs('请先确认或取消当前编辑，再打开打印预览')) return
   const sourceSha=deck.sha256,slideIndex=selectedSlide,snapshot=JSON.stringify(nativeDraft.operations)
   const isCurrent=()=>!disposed&&!saving&&!mutationPending&&!nativeDraft?.closed&&deck.sha256===sourceSha&&selectedSlide===slideIndex&&JSON.stringify(nativeDraft?.operations)===snapshot
   printOpening=true
@@ -2415,8 +2430,14 @@ function mountInkControls(){
 }
 
 if (native) nativeRibbon = createSlidesNativeRibbon(root, {
+  pdfExportAvailable: !!pdfExport,
   onAssistant: sharedShell?.onAssistant ?? (sharedShell?.nativeAI ? () => nativeAIHost?.open() : undefined),
   onAction(command, value) {
+    if (command === 'exportPdf') {
+      if (pdfExport && !loading && !locked() && !mutationPending &&
+          flushSlideOutputInputs('请先确认或取消当前编辑，再导出 PDF')) void pdfExport.run()
+      return
+    }
     if (command === 'slideMaster') { void openMasterText(); return }
     if (['normalView', 'outlineView', 'slideSorter', 'readingView'].includes(command)) { void setSlidesViewMode(command === 'normalView' ? 'normal' : command === 'outlineView' ? 'outline' : command === 'readingView' ? 'reading' : 'sorter'); return }
     if(notesPane&&!notesPane.flush())return
@@ -3527,7 +3548,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; pdfExport?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)
