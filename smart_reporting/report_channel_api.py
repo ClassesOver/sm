@@ -169,7 +169,12 @@ def create_report_channel_router(
             except ValueError as error:
                 if str(error) == "document_adapter_unavailable":
                     raise HTTPException(409, str(error)) from None
-                raise HTTPException(422, "document_task_invalid") from None
+                if str(error) in {
+                    "document_request_id_invalid", "document_instruction_invalid",
+                    "document_selection_invalid", "document_task_id_invalid",
+                }:
+                    raise HTTPException(422, "document_task_invalid") from None
+                raise
             return {"taskId": task_id}
 
         @router.get("/reports/v1/channels/{channel}/document-tasks/{task_id}")
@@ -182,7 +187,12 @@ def create_report_channel_router(
             except ValueError as error:
                 if str(error) == "document_adapter_unavailable":
                     raise HTTPException(409, str(error)) from None
-                raise HTTPException(422, "document_task_invalid") from None
+                if str(error) in {
+                    "document_request_id_invalid", "document_instruction_invalid",
+                    "document_selection_invalid", "document_task_id_invalid",
+                }:
+                    raise HTTPException(422, "document_task_invalid") from None
+                raise
 
     if delegate_word is not None:
         @router.post("/reports/v1/channels/{channel}/word-tasks", status_code=202)
