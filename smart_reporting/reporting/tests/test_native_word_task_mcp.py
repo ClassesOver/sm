@@ -138,3 +138,48 @@ async def test_actual_http_mcp_authentication_uses_request_bearer_not_server_ass
         with pytest.raises(Exception):
             async with server.client(auth=ticket + 'tampered') as client:
                 await client.list_tools()
+
+@pytest.mark.anyio
+async def test_agno_word_transport_registers_candidate_through_authenticated_mcp():
+    import json
+
+    from agno.models.response import ModelResponse
+
+    from smart_reporting.report_editor.native_word_agno_transport import AgnoWordTaskTransport
+    from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
+
+    module = adapter()
+    codec = module.WordTaskTicketCodec('s' * 32, clock=lambda: 100)
+    principal = {'taskId': 'task', 'scope': {'database': 'db', 'companyId': 'co',
+        'userId': 'u', 'threadId': 't'}, 'inputSha256': 'a' * 64, 'owner': 'owner',
+        'epoch': 1, 'runId': 'run', 'attempt': 0, 'stateVersion': 2}
+    token = codec.issue(principal, expires_at=120)
+
+    async def authorize():
+        return principal
+
+    selected = [{'blockId': 'p1', 'type': 'paragraph', 'text': 'Source paragraph',
+        'expectedObjectSha256': 'b' * 64, 'allowedOperations': ['replaceParagraph'],
+        'before': [], 'after': [], 'styleChanges': [], 'draftOperations': []}]
+    bridge = module.WordTaskMcpBridge(selected=selected, principal=principal,
+        authorize=authorize, codec=codec, enabled=True)
+    operation = {'kind': 'replaceParagraph', 'blockId': 'p1', 'text': 'Updated'}
+    final = {'summary': 'Update', 'operations': [{'kind': 'replaceParagraph', 'arguments': {
+        'blockId': 'p1', 'text': 'Updated', 'expectedObjectSha256': 'b' * 64}}]}
+
+    def tool_call(name, arguments):
+        return ModelResponse(tool_calls=[{'id': name, 'type': 'function', 'function': {
+            'name': name, 'arguments': json.dumps({'task_id': 'task', **arguments}),
+        }}])
+
+    model = ScriptedModel(id='scripted', expected_tool_text='Source paragraph', responses=[
+        tool_call('get_document_context', {}),
+        tool_call('read_blocks', {'block_ids': ['p1']}),
+        tool_call('propose_operations', {'summary': 'Update', 'operations': [operation]}),
+        ModelResponse(content=json.dumps(final)),
+    ])
+    result = await AgnoWordTaskTransport(model).run(
+        server=bridge.server, ticket=token, task_id='task', instruction='Rewrite the paragraph',
+    )
+    candidate = await bridge.reconcile(result, ticket=token)
+    assert candidate.engine_operations() == [{**operation, 'expectedObjectSha256': 'b' * 64}]
