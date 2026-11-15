@@ -115,6 +115,32 @@ it('shows crop in Picture Format Size and preserves pending picture orientation'
   expect(button.getAttribute('aria-pressed')).toBe('false')
  }finally{app.view.dispose()}
 })
+
+it('changes and deletes an unsaved drawn shape using its insertion identity',async()=>{
+ const draft=newDraft(),app=await open(draft)
+ try{
+  app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-insert')!.click()
+  app.command('insertShape').click()
+  app.shell.editor.querySelector<HTMLButtonElement>('.slides-shape-gallery:not([hidden]) [data-prst="rect"]')!.click()
+  canvasStates.at(-1)!.shapeDrawing!.commit({x:12,y:24,w:80,h:40})
+  const [inserted]=draft.operations[0]?.shapes as {draftKey:string;kind:string}[]
+  await vi.waitFor(()=>expect(canvasStates.at(-1)!.selectedId).toBe(`draft-shape:${inserted!.draftKey}`),{timeout:5000})
+  app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-shapeFormat')!.click()
+  app.command('changeShape').click()
+  app.shell.editor.querySelector<HTMLButtonElement>('.slides-shape-gallery:not([hidden]) [data-prst="hexagon"]')!.click()
+  expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon'}])
+  expect(draft.operations[0]?.shapeKinds).toBeUndefined()
+  app.shell.editor.querySelector<HTMLButtonElement>('.object-delete')!.click()
+  expect(draft.operations[0]?.shapes ?? []).toEqual([])
+  expect(draft.operations[0]?.deletions ?? []).toEqual([])
+  app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon'}])
+  app.shell.save.click()
+  await vi.waitFor(()=>expect(app.request.mock.calls.some(([path])=>path==='save')).toBe(true))
+  expect(JSON.parse(app.request.mock.calls.find(([path])=>path==='save')![1]!.body as string).operations[0].shapes)
+   .toEqual([{...inserted,kind:'hexagon'}])
+ }finally{app.view.dispose()}
+})
 it('裁切与frame一次撤销重做，刷新恢复并保持源SHA进入保存payload',async()=>{
  const draft=newDraft();let app=await open(draft)
  try{

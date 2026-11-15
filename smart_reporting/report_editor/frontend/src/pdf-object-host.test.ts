@@ -527,6 +527,65 @@ it('extracts the thumbnail page without a second click and retains the result li
  expect(extractPages).toHaveBeenCalledWith(expect.objectContaining({expectedSha256:sourceSha256,pages:[2]}))
  expect(dialog.textContent).toContain('待复核')
 })
+it('picks, cancels, and places an image from the Fill Form ribbon using the shared image tool', async () => {
+ const observers:Array<{targets:Element[];callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void}>=[]
+ vi.stubGlobal('IntersectionObserver',class{
+  targets:Element[]=[]
+  constructor(readonly callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void){observers.push(this)}
+  observe(target:Element){this.targets.push(target)}disconnect(){}unobserve(){}
+ })
+ const f=await fixture();await f.create()
+ vi.stubGlobal('createImageBitmap',vi.fn(async()=>({width:200,height:100,close:vi.fn()})))
+ vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({drawImage:vi.fn()} as unknown as CanvasRenderingContext2D)
+ vi.spyOn(HTMLCanvasElement.prototype,'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgoAAA==')
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
+ const insert=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.fillForm.insertImage"]')!
+ const edit=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.edit.objects.insertImage"]')!
+ expect(insert).toBeTruthy()
+ const fileInput=f.root.querySelector<HTMLInputElement>('[aria-label="选择要插入的图像"]')!
+ const pick=vi.spyOn(fileInput,'click').mockImplementation(()=>{})
+ const selectImage=async()=>{
+  const count=pick.mock.calls.length
+  insert.click()
+  await vi.waitFor(()=>expect(pick).toHaveBeenCalledTimes(count+1))
+  Object.defineProperty(fileInput,'files',{configurable:true,value:[new File(['data'],'form.png',{type:'image/png'})]})
+  fileInput.dispatchEvent(new Event('change'))
+  await vi.waitFor(()=>expect(insert.getAttribute('aria-pressed')).toBe('true'))
+ }
+ await selectImage();expect(edit.getAttribute('aria-pressed')).toBe('true')
+ insert.click()
+ await vi.waitFor(()=>expect(insert.getAttribute('aria-pressed')).toBe('false'))
+ expect(edit.getAttribute('aria-pressed')).toBe('false');expect(pick).toHaveBeenCalledOnce();expect(f.draft.operations).toEqual([])
+ await selectImage()
+ const card=f.root.querySelector<HTMLElement>('.pdf-page')!,page=card.querySelector<HTMLElement>('.pdf-page-content')!
+ page.getBoundingClientRect=()=>new DOMRect(0,0,300,400)
+ observers.find(observer=>observer.targets.includes(card))!.callback([{target:card,isIntersecting:true}])
+ await vi.waitFor(()=>expect(typeof page.onpointerdown).toBe('function'))
+ page.onpointerdown!(new MouseEvent('pointerdown',{clientX:150,clientY:200}) as PointerEvent)
+ page.onpointerup!(new MouseEvent('pointerup',{clientX:150,clientY:200}) as PointerEvent)
+ await vi.waitFor(()=>expect(f.draft.operations).toEqual([expect.objectContaining({kind:'addDrawing',shape:'image',pageId,rect:[75,162.5,225,237.5]})]))
+ expect(insert.getAttribute('aria-pressed')).toBe('false')
+})
+it('ignores an older image decode after a newer selection has armed placement',async()=>{
+ const f=await fixture();await f.create()
+ const closeOlder=vi.fn(),closeNewer=vi.fn()
+ let resolveOlder!: (value:{width:number;height:number;close:()=>void})=>void
+ vi.stubGlobal('createImageBitmap',vi.fn((file:File)=>file.name==='older.png'
+  ?new Promise(resolve=>{resolveOlder=resolve})
+  :Promise.resolve({width:180,height:90,close:closeNewer})))
+ vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({drawImage:vi.fn()} as unknown as CanvasRenderingContext2D)
+ vi.spyOn(HTMLCanvasElement.prototype,'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgoAAA==')
+ const input=f.root.querySelector<HTMLInputElement>('[aria-label="选择要插入的图像"]')!
+ for(const name of ['older.png','newer.png']){
+  Object.defineProperty(input,'files',{configurable:true,value:[new File(['png'],name,{type:'image/png'})]})
+  input.dispatchEvent(new Event('change'))
+ }
+ await vi.waitFor(()=>expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('newer.png（180×90）'))
+ resolveOlder({width:100,height:100,close:closeOlder})
+ await vi.waitFor(()=>expect(closeOlder).toHaveBeenCalledOnce())
+ expect(closeNewer).toHaveBeenCalledOnce()
+ expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('newer.png（180×90）')
+})
 it('signs the active visible form signature field without asking for a placement again', async () => {
  const f=await fixture({exportPages:2,signatureTargets:true});await f.create()
  const targetPage=pageId.replace(/:0$/,':1')

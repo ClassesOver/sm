@@ -278,6 +278,15 @@ let shapeDrawing: { kind: string; commit: (rect: DrawRect) => void } | undefined
 let pendingDrawnShape: string | undefined
 const draftShapeId = (key: string) => `draft-shape:${key}`
 const currentDraftShapes = (slideIndex: number) => shapeEdits.filter(shape => shape.slideIndex === slideIndex && shape.draftKey)
+const draftShapeFor = (id: string, slideIndex: number) => currentDraftShapes(slideIndex).find(shape => draftShapeId(shape.draftKey!) === id)
+const draftShapeCanChange = (element: DeckElement | undefined, slideIndex: number) => {
+  if (element?.type !== 'draftShape') return false
+  const shape = draftShapeFor(element.id, slideIndex)
+  return !!shape && !LINE_SHAPE_KINDS.includes(shape.kind)
+}
+function updateDraftShape(target: ShapeEdit, patch: Partial<Pick<ShapeEdit, 'geometry' | 'kind'>>) {
+  commitNativeChanges({ ...slideChanges(), shapes: shapeEdits.map(shape => shape === target ? { ...shape, ...patch } : shape) })
+}
 const shapeLabels = new Map(SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes.map(shape => [shape.prst, shape.label] as const)))
 const shapeStyleEdits = new Map<string, ShapeStyleEdit>()
 /** 固定源 Change Shape：对象 → 新预设（仅形状，非线条） */
@@ -332,7 +341,12 @@ const chartFormatPane = native ? createSlidesChartFormatPane(applyNativeChartPoi
 if (chartFormatPane) arrangeSelection.after(chartFormatPane.element)
 const geometryPane = native ? createSlidesGeometryPane((geometry, target) => {
   const element=currentElement()
-  if(locked()||pendingGroup(selectedSlide)||selectedObjects.size!==1||!element?.arrangeEditable||target!==editKey(selectedSlide,element.id))throw new Error('选择已变化，请重新编辑大小与位置')
+  if(locked()||pendingGroup(selectedSlide)||selectedObjects.size!==1||!element||target!==editKey(selectedSlide,element.id))throw new Error('选择已变化，请重新编辑大小与位置')
+  if (draftShapeCanChange(element, selectedSlide)) {
+    updateDraftShape(draftShapeFor(element.id, selectedSlide)!, { geometry })
+    return
+  }
+  if (!element.arrangeEditable) throw new Error('该来源对象暂不支持修改大小与位置')
   const changes=slideChanges(),crop=changes.pictureCrops?.find(item=>item.slideIndex===selectedSlide&&item.elementId===element.id)
   const others=(changes.edits??[]).filter(item=>item.slideIndex!==selectedSlide||item.elementId!==element.id)
   if(crop){crop.geometry=geometry;if(others.length)changes.edits=others;else delete changes.edits}
@@ -676,7 +690,7 @@ function slideAt(slideIndex: number): DeckSlide {
     const drawn: DeckElement[] = currentDraftShapes(slideIndex)
       .filter(shape => rendered?.draftShapeSources?.some(entry => entry.draftKey === shape.draftKey))
       .map(shape => ({ id: draftShapeId(shape.draftKey!), type: 'draftShape', name: shapeLabels.get(shape.kind) ?? shape.kind,
-        text: '', editable: false, geometry: shape.geometry }))
+        text: '', editable: false, deletable: true, geometry: shape.geometry }))
     return {...source,elements:[...source.elements.map(element=>{const model=sources.find(item=>item.sourceId===element.id);return model?{...element,model3d:model}:element}),...sources.filter(item=>!known.has(item.sourceId)).map(item=>({id:item.sourceId,type:'picture',name:'3D 模型',text:'',editable:false,deletable:false,model3d:item})),...drawn]}
   }
   const item = newSlides[slideIndex - deck.slides.length]
@@ -1159,7 +1173,7 @@ function renderCanvas() {
         const box = { ...geometry }
         if (target.geometry.width === 0 && box.width === 1) box.width = 0
         if (target.geometry.height === 0 && box.height === 1) box.height = 0
-        try { commitNativeChanges({ ...slideChanges(), shapes: shapeEdits.map(shape => shape === target ? { ...shape, geometry: box } : shape) }) }
+        try { updateDraftShape(target, { geometry: box }) }
         catch (error) { statusMessage.textContent = error instanceof Error ? error.message : '形状位置未更改'; renderCanvas() }
         return
       }
@@ -2460,7 +2474,7 @@ function renderInspector() {
   if(selectionSlide!==selectedSlide){selectedObjects.clear();selectionSlide=selectedSlide;explicitEmptySelection=false;cropOverlay?.dispose();finishPictureCrop();shapeDrawing=undefined;pendingDrawnShape=undefined}
   renderComments()
   // 表格虽不能整体编辑/删除，但单元格可改字，因此也列入可选对象。
-  const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable || !!item.tableCells || item.type === 'chart' || item.type === 'group' || item.type === 'draftShape' || item.model3d) && !deletions.has(editKey(selectedSlide, item.id)))
+  const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable || !!item.tableCells || item.type === 'chart' || item.type === 'group' || item.model3d) && !deletions.has(editKey(selectedSlide, item.id)))
   select.replaceChildren(...elements.map(item => {
     const option = document.createElement('option')
     option.value = item.id
@@ -2480,7 +2494,8 @@ function renderInspector() {
   textArea.value = element ? edits.get(editKey(selectedSlide, element.id))?.text ?? element.text : ''
   const box = element && (edits.get(editKey(selectedSlide, element.id))?.geometry ?? pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===element.id)?.geometry ?? element.geometry)
   const geometry = box ?? { x: 0, y: 0, width: 0, height: 0 }
-  geometryPane?.update(selectedObjects.size===1&&element&&box?{target:editKey(selectedSlide,element.id),picture:element.type==='picture',geometry:box,slideSize:{width:deck.size.cx/9525,height:deck.size.cy/9525},reason:!element.arrangeEditable?'该来源对象暂不支持安全修改大小与位置':slideSizeEdit?'请先保存页面尺寸修改，再编辑对象大小与位置':undefined}:null,locked()||pendingGroup(selectedSlide))
+  const geometryEditable = element?.arrangeEditable || draftShapeCanChange(element, selectedSlide)
+  geometryPane?.update(selectedObjects.size===1&&element&&box?{target:editKey(selectedSlide,element.id),picture:element.type==='picture',geometry:box,slideSize:{width:deck.size.cx/9525,height:deck.size.cy/9525},reason:!geometryEditable?'该来源对象暂不支持安全修改大小与位置':slideSizeEdit?'请先保存页面尺寸修改，再编辑对象大小与位置':undefined}:null,locked()||pendingGroup(selectedSlide))
   renderCanvas()
   for (const input of currentGeometryInputs()) {
     input.value = String(geometry[input.name as keyof typeof geometry] ?? 0)
@@ -2599,7 +2614,7 @@ function renderInspector() {
       : element.type === 'chart' ? 'chart'
         : element.type === 'picture' ? 'picture'
           : element.type === 'model3d' ? 'model3d'
-            : ['shape', 'text'].includes(element.type) ? 'shape' : null
+            : ['shape', 'text'].includes(element.type) || draftShapeCanChange(element, selectedSlide) ? 'shape' : null
   nativeRibbon?.setContext(selectedObjects.size>1?null:contextualType)
   const chartPatch=nativeChartEdits.find(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id)
   chartFormatPane?.update(selectedObjects.size===1&&element?.type==='chart'&&element.chartKind&&element.chartCategories&&element.chartSeries?{
@@ -2616,7 +2631,7 @@ function renderInspector() {
   for(const [command,enabled,reason] of [
     ['removeBackground',!cutoutReason(),cutoutReason()??''],
     ['cropPicture',!cropReason(),cropReason()??''],
-    ['changeShape',selectedObjects.size===1 && element?.type==='shape' && element.orderEditable!==false && !pendingGroup(selectedSlide), '请选择可更改类型的来源形状'],
+    ['changeShape',selectedObjects.size===1 && ((element?.type==='shape' && element.orderEditable!==false) || draftShapeCanChange(element, selectedSlide)) && !pendingGroup(selectedSlide), '请选择可更改类型的形状'],
     ['pictureOpacity', !opacityReason(), opacityReason() ?? '图片透明度（0–100%）：0 为不透明'],
     ...(['pictureOutlineMenu', 'pictureOutlineColor', 'pictureOutlineWidth', 'pictureNoOutline'].map(command =>
       [command, selectedObjects.size === 1 && pictureOutlineEnabled(element) && !pendingGroup(selectedSlide), '请选择支持轮廓编辑的来源图片'] as const)),
@@ -2924,8 +2939,15 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'changeShape': {
         const kind = String(value ?? ''), element = currentElement()
         if (!SHAPE_PRESETS.includes(kind) || LINE_SHAPE_KINDS.includes(kind)) return
-        if (!element || selectedObjects.size !== 1 || element.type !== 'shape' || element.orderEditable === false ||
-            isNewSlide(selectedSlide) || pendingGroup(selectedSlide) || deletions.has(editKey(selectedSlide, element.id))) return
+        if (!element || selectedObjects.size !== 1 || isNewSlide(selectedSlide) || pendingGroup(selectedSlide)) return
+        if (draftShapeCanChange(element, selectedSlide)) {
+          const draft = draftShapeFor(element.id, selectedSlide)!
+          if (draft.kind === kind) return
+          try { updateDraftShape(draft, { kind }) }
+          catch (error) { statusMessage.textContent = error instanceof Error ? error.message : '形状类型未更改' }
+          return
+        }
+        if (element.type !== 'shape' || element.orderEditable === false || deletions.has(editKey(selectedSlide, element.id))) return
         const key = editKey(selectedSlide, element.id)
         if (shapeKindEdits.get(key)?.kind === kind) return
         const changes = slideChanges()
@@ -3594,6 +3616,14 @@ backgroundReset.addEventListener('click', () => {
 objectDelete.addEventListener('click', () => {
   const element = currentElement()
   if (locked() || !element?.deletable || chartTools.hasPending(selectedSlide, element.id)) return
+  if (element.type === 'draftShape') {
+    if (selectedObjects.size !== 1 || pendingGroup(selectedSlide)) return
+    const draft = draftShapeFor(element.id, selectedSlide)
+    if (!draft) return
+    try { commitNativeChanges({ ...slideChanges(), shapes: shapeEdits.filter(shape => shape !== draft) }) }
+    catch (error) { statusMessage.textContent = error instanceof Error ? error.message : '形状未删除' }
+    return
+  }
   const key = editKey(selectedSlide, element.id)
   // 删除优先：同一对象的文字、位置、格式和动画修改一并撤回，避免保存时引用已删除对象。
   for(let index=pictureCrops.length-1;index>=0;index--)if(editKey(pictureCrops[index]!.slideIndex,pictureCrops[index]!.elementId)===key)pictureCrops.splice(index,1)

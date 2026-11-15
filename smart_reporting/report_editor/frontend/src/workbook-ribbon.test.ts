@@ -107,6 +107,40 @@ it('offers the source Chart Elements operations and checks the current legend an
   ribbon.dispose()
 })
 
+it('uses the GenOffice border presets and the chosen color without writing on color pick', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const border = document.querySelector<HTMLSelectElement>('[data-ribbon-control="borders"]')!
+  const color = document.querySelector<HTMLInputElement>('[data-ribbon-control="border-color"]')!
+  expect(border).not.toBeNull()
+  expect(Array.from(border.options, option => option.text)).toEqual([
+    '边框', '所有框线', '外侧框线', '粗外侧框线', '上框线', '下框线', '左框线', '右框线', '无框线',
+  ])
+  expect(color.value).toBe('#000000')
+  color.value = '#123abc'; color.dispatchEvent(new Event('input'))
+  expect(command).not.toHaveBeenCalled()
+  const setBorder = vi.fn()
+  const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => ({ setBorder }) }) }) } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
+  for (const option of Array.from(border.options).slice(1)) {
+    border.value = option.value
+    border.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith('border:' + option.value + ':#123abc')
+    expect(applyWorkbookRibbonCommand(command.mock.lastCall![0], workbook)).toBe(true)
+    expect(border.value).toBe('')
+  }
+  expect(setBorder.mock.calls.map(([type, style, hex]) => [type, style, hex])).toEqual([
+    ['all', 1, '#123abc'], ['outside', 1, '#123abc'], ['outside', 8, '#123abc'], ['top', 1, '#123abc'],
+    ['bottom', 1, '#123abc'], ['left', 1, '#123abc'], ['right', 1, '#123abc'], ['none', 1, '#123abc'],
+  ])
+  protectedSheet = true; ribbon.refreshState()
+  expect(border.disabled).toBe(true); expect(color.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()
   const open = (editable: boolean) => {

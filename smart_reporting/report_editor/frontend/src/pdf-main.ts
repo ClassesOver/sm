@@ -759,6 +759,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup = formGroup
   const signInForm = button('签名', openFillFormSignature)
   sourceCommand(signInForm, 'fillForm.sign')
+  const imageInsertTitle = '选择图片后单击页面等比放置，或拖出自定义区域。再次点击取消放置。'
+  const fillFormImage = button('插入图像', openOrCancelImagePicker)
+  sourceCommand(fillFormImage, 'fillForm.insertImage')
+  fillFormImage.title = imageInsertTitle
+  fillFormImage.setAttribute('aria-pressed', 'false')
   const finishForm = button('完成填写', completeFormFill, false)
   sourceCommand(finishForm, 'fillForm.complete')
   const fillFormAI=documentElement('button','pdf-tool');fillFormAI.type='button';fillFormAI.dataset.pdfFormAiEntry='true'
@@ -1361,25 +1366,52 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   // 固定源 ImageDialogs ▸ 插入图像：选择 PNG/JPEG/WebP/GIF/BMP，浏览器转为 PNG 后在页面上拖出位置，保存为 Stamp 批注。
   let pendingImage = ''
   let pendingImageSize: { width: number; height: number } | undefined
-  let pendingImageIsSignature = false
+  let pendingImageIsSignature = false, imagePickGeneration = 0
   const imageFile = documentElement('input'); imageFile.type = 'file'; imageFile.accept = 'image/png,image/jpeg,image/webp,image/gif,image/bmp'; imageFile.hidden = true; imageFile.setAttribute('aria-label', '选择要插入的图像')
   root.append(imageFile)
-  const insertImage = button('插入图像', () => { if (!document || locked || previewing || previewDocument || !response.editingEnabled || draft.closed) return; imageFile.value = ''; imageFile.click() }, true)
+  const insertImage = button('插入图像', openOrCancelImagePicker)
   sourceCommand(insertImage, 'edit.objects.insertImage'); insertImage.dataset.pdfDrawShape = 'image'
-  insertImage.title = '插入图像：选择图片后单击页面按原始比例放置，或拖出自定义区域；保存后写入 PDF'
+  insertImage.title = imageInsertTitle
   drawButtons.set('image', insertImage)
+  function canPickImage() {
+    return !!document && !disposed && !locked && !previewing && !printing && !previewDocument
+      && response.editingEnabled && !draft.closed && !draft.saving && !mutationBlocked?.()
+  }
+  function ordinaryImagePlacement() {
+    return mode === 'draw' && drawShape === 'image' && !!pendingImage && !pendingImageIsSignature
+  }
+  function openOrCancelImagePicker() {
+    if (!canPickImage()) return
+    imagePickGeneration++
+    if (ordinaryImagePlacement()) {
+      pendingImage = ''; pendingImageSize = undefined
+      setMode('select'); status.textContent = '已取消放置图像'
+      return
+    }
+    imageFile.value = ''
+    imageFile.click()
+  }
   imageFile.addEventListener('change', () => { void (async () => {
-    const file = imageFile.files?.[0]
-    if (!file) return
+    const file = imageFile.files?.[0], source = document
+    if (!file || !canPickImage()) return
+    const version = ++imagePickGeneration
+    const snapshot = JSON.stringify(draft.operations), pickedMode = mode, pickedShape = drawShape
+    const current = () => version === imagePickGeneration && source === document && canPickImage()
+      && snapshot === JSON.stringify(draft.operations) && pickedMode === mode && pickedShape === drawShape
     if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp'].includes(file.type) || file.size > 10 * 1024 * 1024) throw new Error('请选择不超过 10MB 的 PNG、JPEG、WebP、GIF 或 BMP 图像')
-    const bitmap = await createImageBitmap(file)
-    const ratio = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height))
-    const canvas = documentElement('canvas'); canvas.width = Math.max(1, Math.round(bitmap.width * ratio)); canvas.height = Math.max(1, Math.round(bitmap.height * ratio))
-    canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close()
-    const encoded = canvas.toDataURL('image/png').split(',')[1] ?? ''
-    if (!encoded.startsWith('iVBORw0KGgo') || encoded.length > 6_000_000) throw new Error('图像转换后过大，请换一张较小的图像')
-    pendingImage = encoded; pendingImageSize = { width: canvas.width, height: canvas.height }; pendingImageIsSignature = false; drawShape = 'image'; setMode('draw')
-    status.textContent = `已选择图像 ${file.name}（${canvas.width}×${canvas.height}）；单击页面按原始比例放置，或拖出自定义区域`
+    const bitmap = await createImageBitmap(file).catch(error => { if (current()) throw error; return null })
+    if (!bitmap) return
+    try {
+      if (!current()) return
+      const ratio = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height))
+      const canvas = documentElement('canvas'); canvas.width = Math.max(1, Math.round(bitmap.width * ratio)); canvas.height = Math.max(1, Math.round(bitmap.height * ratio))
+      canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      const encoded = canvas.toDataURL('image/png').split(',')[1] ?? ''
+      if (!encoded.startsWith('iVBORw0KGgo') || encoded.length > 6_000_000) throw new Error('图像转换后过大，请换一张较小的图像')
+      pendingImage = encoded; pendingImageSize = { width: canvas.width, height: canvas.height }
+      pendingImageIsSignature = false; drawShape = 'image'; setMode('draw')
+      status.textContent = '已选择图像 ' + file.name + '（' + canvas.width + '×' + canvas.height + '）。单击页面等比放置，或拖出自定义区域。'
+    } finally { bitmap.close() }
   })().catch(showError) })
   const editExistingImage=button('编辑图像',()=>existingImagePanel?.open());sourceCommand(editExistingImage,'edit.objects.editImage')
   // 固定源 editLink：在页面上拖出链接区域，再选择外部地址或文档内页码。
@@ -1873,7 +1905,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); syncDrawingCanvases(); syncLinkLayers() }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); fillFormImage.setAttribute('aria-pressed', String(ordinaryImagePlacement())); syncDrawingCanvases(); syncLinkLayers() }
   function canChangePendingDrawings() {
     return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
   }

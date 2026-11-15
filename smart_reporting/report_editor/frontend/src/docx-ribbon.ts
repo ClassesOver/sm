@@ -617,9 +617,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if (id === 'layout' && label === '段后') { items.append(spacingField('space-after-value', label)); continue }
         if (actionId.startsWith('table-border-')) {
           if (actionId === 'table-border-apply-last') {
-            cellBorderControls = createDocxCellBordersControls(editor, anchors, cellBorderState, reportError)
+            cellBorderControls = createDocxCellBordersControls(editor, anchors, cellBorderState, reportError, editable)
             items.append(cellBorderControls.element)
-            if (!editable) for (const control of cellBorderControls.element.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button,input,select')) control.disabled = true
           }
           continue
         }
@@ -1036,7 +1035,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
-    cellBorderControls?.close()
+    cellBorderControls?.dispose()
+    cellBorderControls = undefined
     if (id !== 'tableDesign' && tableShadingRoot) {
       tableShadingRoot.unmount()
       tableShadingRoot = undefined
@@ -1467,7 +1467,6 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (active === 'tableDesign') {
       tools?.tableStyles?.refresh()
       cellBorderControls?.sync()
-      if (!editable && cellBorderControls) for (const control of cellBorderControls.element.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button,input,select')) control.disabled = true
       refreshTableShading()
       if (tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action^="table-style-"],[data-action^="table-look-"]')) {
         const action = button.dataset.action!
@@ -1517,7 +1516,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
-    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); cellBorderControls?.close(); numberingValueControl.destroy()
+    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); cellBorderControls?.dispose(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)

@@ -1,8 +1,11 @@
 import type { Editor } from '@tiptap/core'
 import { createElement } from 'react'
+import { createRoot } from 'react-dom/client'
+import { flushSync } from 'react-dom'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { DOCX_CELL_BORDER_MODES, DOCX_CELL_BORDER_STYLES, DOCX_CELL_BORDER_WIDTHS, type DocxCellBorderMode, type DocxCellBorderPen } from '../../../reporting/doc_engine/bridge/docx-cell-borders-spec'
+import { DOCX_CELL_BORDER_MODES, type DocxCellBorderMode, type DocxCellBorderPen } from '../../../reporting/doc_engine/bridge/docx-cell-borders-spec'
 import { applyDocxCellBorders, docxCellBordersUnavailable, type DocxCellBordersAnchor } from './docx-cell-borders'
+import { DocxCellBorderPenSource } from './docx-cell-border-pen-source'
 import { IconBorderAll, IconBorderBottom, IconBorderDiagonalDown, IconBorderDiagonalUp, IconBorderInner, IconBorderInsideH, IconBorderInsideV, IconBorderLeft, IconBorderNone, IconBorderOuter, IconBorderRight, IconBorderTop, IconCaret } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 export function createDocxCellBorderUiState() { return { lastMode: 'bottom' as DocxCellBorderMode, pen: { style: 'single', szEighths: 4, color: '000000' } as DocxCellBorderPen } }
@@ -14,7 +17,7 @@ const icons = {
   insideH: IconBorderInsideH, insideV: IconBorderInsideV, tl2br: IconBorderDiagonalDown, tr2bl: IconBorderDiagonalUp,
 } satisfies Record<DocxCellBorderMode, typeof IconCaret>
 /** pen/最近命令保存在ribbon生命周期state中；改pen不产生文档事务。 */
-export function createDocxCellBordersControls(editor: Editor, anchors: readonly DocxCellBordersAnchor[], state: ReturnType<typeof createDocxCellBorderUiState>, onError?: (error: unknown) => void) {
+export function createDocxCellBordersControls(editor: Editor, anchors: readonly DocxCellBordersAnchor[], state: ReturnType<typeof createDocxCellBorderUiState>, onError?: (error: unknown) => void, editable = true) {
   const element = document.createElement('div'), split = document.createElement('div'), panel = document.createElement('div')
   element.className = 'table-tool-group table-tool-borders'
   split.className = 'rb-split-wrap table-split'
@@ -35,9 +38,10 @@ export function createDocxCellBordersControls(editor: Editor, anchors: readonly 
     target.innerHTML = renderToStaticMarkup(createElement(icon, { size }))
     if (caption) { const text = document.createElement('span'); text.textContent = caption; target.append(text) }
   }
+  const unavailable = () => editable ? docxCellBordersUnavailable(editor, anchors) : '当前文档只读'
   const apply = (mode: DocxCellBorderMode) => {
     close()
-    if (docxCellBordersUnavailable(editor, anchors)) return
+    if (unavailable()) return
     state.lastMode = mode
     try { applyDocxCellBorders(editor, mode, state.pen, anchors) } catch (error) { onError?.(error) }
     sync()
@@ -76,26 +80,27 @@ export function createDocxCellBordersControls(editor: Editor, anchors: readonly 
     const next = event.key === 'ArrowDown' ? index + 1 : event.key === 'ArrowUp' ? index - 1 : null
     if (next !== null) { event.preventDefault(); entries[(next + entries.length) % entries.length]?.item.focus() }
   })
-  const style = document.createElement('select'); style.dataset.action = 'table-border-style'; style.setAttribute('aria-label', '边框样式')
-  const glyphs = ['─────', '━━━━━', '═════', '≡≡≡≡≡', '┄┄┄┄┄', '╌╌╌╌╌', '─·─·─', '─··─··']
-  DOCX_CELL_BORDER_STYLES.forEach((value, index) => { const option = document.createElement('option'); option.value = value; option.textContent = glyphs[index]!; style.append(option) }); style.value = state.pen.style
-  style.addEventListener('change', () => { state.pen.style = style.value })
-  const width = document.createElement('select'); width.dataset.action = 'table-border-width'; width.setAttribute('aria-label', '边框粗细')
-  for (const value of DOCX_CELL_BORDER_WIDTHS) { const option = document.createElement('option'); option.value = String(value); option.textContent = `${value / 8} pt`; width.append(option) }; width.value = String(state.pen.szEighths)
-  width.addEventListener('change', () => { state.pen.szEighths = Number(width.value) })
-  const color = document.createElement('input'); color.type = 'color'; color.dataset.action = 'table-border-color'; color.setAttribute('aria-label', '边框颜色'); color.value = `#${state.pen.color}`
-  color.addEventListener('input', () => { state.pen.color = color.value.slice(1).toUpperCase() })
-  const automatic = button('table-border-color-auto', '自动', () => { state.pen.color = '000000'; color.value = '#000000' })
   const pen = document.createElement('div'); pen.className = 'table-border-opts'
-  pen.append(style, width, color, automatic)
+  const penRoot = createRoot(pen)
   split.append(last, menu, panel); element.append(split, pen)
+  const refreshPen = (reason: string | null) => flushSync(() => penRoot.render(createElement(DocxCellBorderPenSource, {
+    key: reason ? 'locked' : 'editable',
+    pen: state.pen,
+    reason,
+    onChange: next => {
+      if (unavailable()) return
+      state.pen = next
+      refreshPen(null)
+    },
+  })))
   const sync = () => {
-    const reason = docxCellBordersUnavailable(editor, anchors)
-    for (const control of element.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLInputElement>('button,select,input')) { const label = control.dataset.borderLabel ?? control.getAttribute('aria-label') ?? ''; control.dataset.borderLabel = label; control.disabled = reason !== null; control.title = reason ?? label; control.setAttribute('aria-label', reason ? `${label}，${reason}` : label) }
+    const reason = unavailable()
+    for (const control of split.querySelectorAll('button')) { const label = control.dataset.borderLabel ?? control.getAttribute('aria-label') ?? ''; control.dataset.borderLabel = label; control.disabled = reason !== null; control.title = reason ?? label; control.setAttribute('aria-label', reason ? `${label}，${reason}` : label) }
     last.title = reason ?? `应用最近边框：${labels[state.lastMode]}`
     paint(last, icons[state.lastMode], 18, '边框')
     for (const {mode,item} of entries) item.classList.toggle('active', mode === state.lastMode)
     if (reason) close()
+    refreshPen(reason)
   }
-  sync(); return { element, sync, close }
+  sync(); return { element, sync, dispose(){close();penRoot.unmount()} }
 }

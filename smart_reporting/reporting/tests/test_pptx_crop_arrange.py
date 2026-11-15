@@ -126,6 +126,22 @@ def test_drawn_shape_preview_identity_uses_the_written_shape_without_storing_dra
         patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [shape, shape]}])
 
 
+def test_unsaved_shape_kind_change_writes_only_the_final_inserted_geometry():
+    content, _ = _presentation()
+    key = '12345678-1234-4321-8765-123456789abc'
+    geometry = {'x': 12, 'y': 24, 'width': 80, 'height': 40}
+    updated = patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [
+        {'slideIndex': 0, 'kind': 'hexagon', 'geometry': geometry, 'draftKey': key},
+    ]}])
+    source = Presentation(BytesIO(content)).slides[0].shapes
+    reopened = Presentation(BytesIO(updated)).slides[0].shapes
+    assert len(reopened) == len(source) + 1
+    assert reopened[-1].auto_shape_type == MSO_SHAPE.HEXAGON
+    assert (reopened[-1].left, reopened[-1].top, reopened[-1].width, reopened[-1].height) == tuple(
+        dimensions * 9525 for dimensions in geometry.values()
+    )
+
+
 def _patch(content, **operation):
     return patch_office('pptx', content, [{'kind': 'editSlides', **operation}])
 
