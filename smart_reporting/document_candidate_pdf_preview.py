@@ -91,6 +91,10 @@ class PdfAnnotationPreviewEngine:
                     "note": item["note"],
                     "context": " ".join(str(word[4]) for word in words)[:2000],
                 })
+        # PDF parsing and text extraction may take time; verify the exact
+        # source again before publishing a candidate receipt.
+        if hashlib.sha256(await self._load_source(request.scope)).hexdigest() != request.scope.source_sha256:
+            raise PermissionError("document_source_changed")
         self._tasks[task_id] = (request.scope, fingerprint, {
             "taskId": task_id, "status": "preview_ready",
             "accepted": False, "changes": changes,
