@@ -582,7 +582,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       addAction('向左旋转', () => append({ kind: 'rotatePage', pageId: sourcePage.pageId, delta: 270 }))
       addAction('向右旋转', () => append({ kind: 'rotatePage', pageId: sourcePage.pageId, delta: 90 }))
       addAction('删除页面', async () => { draft.setOperations(deletePdfPage(model.pages, draft.operations, sourcePage.pageId)); await refresh() }, state().length <= 1)
-      addAction('提取页面', () => { activeId = sourcePage.pageId; updateControls(); extraction.open(extractionPageIds().indexOf(activeId) + 1) }, pageExtractionUnavailable() !== null)
+      addAction('提取页面', () => { activeId = sourcePage.pageId; updateControls(); extraction.open(pdfFileCurrentPage()) }, pageExtractionUnavailable() !== null)
     }
     addAction('插入 PDF', () => {
       if (afterPageId !== null) activeId = afterPageId
@@ -1136,32 +1136,40 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (draft.operations.length || hasUnstagedText()) return '请先保存或撤销当前修改，再从已保存版本提取页面'
     return null
   }
-  let extractionSource: Awaited<ReturnType<typeof authorizeSavedPdfSource>> | undefined
-  let savedExtractionPageIds: string[] | undefined
-  function extractionPageIds() { return savedExtractionPageIds ?? state().map(page => page.pageId) }
-  function pageExtractionUnavailable() {
+  let savedPdfFileSource: Awaited<ReturnType<typeof authorizeSavedPdfSource>> | undefined
+  let savedPdfFilePageIds: string[] | undefined
+  type PdfFileOperation = '提取' | '导出图片'
+  function pdfFilePageIds() { return savedPdfFilePageIds ?? state().map(page => page.pageId) }
+  function pdfFileCurrentPage() { return Math.max(1, pdfFilePageIds().indexOf(activeId) + 1) }
+  function pdfFileOperationUnavailable(operation: PdfFileOperation) {
     if (!flushForFileOperation) return extractionUnavailable()
-    if (disposed || !document || locked || previewing || printing || previewDocument || pendingMutations > 0 || draft.saving || mutationBlocked?.() || !response.editingEnabled || (draft.closed && !savedExtractionPageIds)) return '当前 PDF 只读或正在变更，请稍后提取'
-    if (draft.operations.some(op => op.kind === 'redact')) return '请先应用或清除涂黑标记，再提取页面'
-    if (draft.operations.some(op => op.kind === 'mergePages' || op.kind === 'splitPages')) return '页面合并或拆分会改变页数，请保存并打开新修订后提取'
+    if (disposed || !document || locked || previewing || printing || previewDocument || pendingMutations > 0 || draft.saving || mutationBlocked?.() || !response.editingEnabled || (draft.closed && !savedPdfFilePageIds)) return '当前 PDF 只读或正在变更，请稍后' + operation
+    if (draft.operations.some(op => op.kind === 'redact')) return '请先应用或清除涂黑标记，再' + operation
+    if (draft.operations.some(op => op.kind === 'mergePages' || op.kind === 'splitPages')) return '页面合并或拆分会改变页数，请保存并打开新修订后' + operation
     return staticText?.incompleteReason() ?? existingImagePanel?.incompleteReason() ?? null
   }
+  async function preparePdfFileSource(operation: PdfFileOperation) {
+    const visible = pdfFilePageIds()
+    const saved = await flushForFileOperation?.()
+    if (saved) {
+      savedPdfFilePageIds = visible
+      if (!savedPdfFileSource || savedPdfFileSource.revision !== saved.revision || savedPdfFileSource.sha256 !== saved.artifacts.pdf?.sha256) savedPdfFileSource = await authorizeSavedPdfSource(context, saved, operation)
+    }
+    const source = savedPdfFileSource ?? { api, sha256: context.sourceFile.sha256 }
+    return { sha256: source.sha256, async request<T>(run: (target: typeof api) => Promise<T>) {
+      if (disposed) throw new Error('编辑器已关闭，未' + operation)
+      const release = beginMutation()
+      try { return await run(source.api) } finally { release() }
+    }}
+  }
+  const pageExtractionUnavailable = () => pdfFileOperationUnavailable('提取')
+  const imageExportUnavailable = () => pdfFileOperationUnavailable('导出图片')
   const extraction = bindPdfExtractDialog({ root, sourceSha256: context.sourceFile.sha256,
-    pageCount: () => extractionPageIds().length, currentPage: () => Math.max(1, extractionPageIds().indexOf(activeId) + 1),
+    pageCount: () => pdfFilePageIds().length, currentPage: pdfFileCurrentPage,
     unavailable: pageExtractionUnavailable, extract: payload => api.extractPages(payload),
     prepareSource: flushForFileOperation ? async () => {
-      const visible = extractionPageIds()
-      const saved = await flushForFileOperation()
-      if (saved) {
-        savedExtractionPageIds = visible
-        if (!extractionSource || extractionSource.revision !== saved.revision || extractionSource.sha256 !== saved.artifacts.pdf?.sha256) extractionSource = await authorizeSavedPdfSource(context, saved, '提取')
-      }
-      const source = extractionSource ?? { api, sha256:context.sourceFile.sha256 }
-      return { sha256:source.sha256, extract:async payload => {
-        if (disposed) throw new Error('编辑器已关闭，未提取页面')
-        const release = beginMutation()
-        try { return await source.api.extractPages(payload) } finally { release() }
-      }}
+      const source = await preparePdfFileSource('提取')
+      return { sha256: source.sha256, extract: payload => source.request(target => target.extractPages(payload)) }
     } : undefined,
   })
   const splitPdf=bindPdfSplitHost({root,api,context,flushForFileOperation,beginMutation,
@@ -1185,8 +1193,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const [{bindPdfImageExportDialog},{bindPdfConvertOfficeDialog},{bindPdfExportTextDialog}]=await Promise.all([
     import('./pdf-image-export'),import('./pdf-convert-office'),import('./pdf-export-text'),
   ])
-  const imageExport=bindPdfImageExportDialog({root,sourceSha256:context.sourceFile.sha256,pageCount:()=>model.pages.length,
-    currentPage:()=>(model.pages.find(page=>page.pageId===activeId)?.index??0)+1,unavailable:extractionUnavailable,exportImages:payload=>api.exportImages(payload)})
+  const imageExport=bindPdfImageExportDialog({root,sourceSha256:context.sourceFile.sha256,pageCount:()=>pdfFilePageIds().length,
+    currentPage:pdfFileCurrentPage,unavailable:imageExportUnavailable,exportImages:payload=>api.exportImages(payload),
+    prepareSource: flushForFileOperation ? async () => {
+      const source = await preparePdfFileSource('导出图片')
+      return { sha256: source.sha256, exportImages: payload => source.request(target => target.exportImages(payload)) }
+    } : undefined,
+  })
   const officeConversion=bindPdfConvertOfficeDialog({root,sourceSha256:context.sourceFile.sha256,unavailable:extractionUnavailable,submit:payload=>api.convertOffice(payload)})
   const textExport=bindPdfExportTextDialog({root,sourceSha256:context.sourceFile.sha256,unavailable:extractionUnavailable,convertOffice:payload=>api.convertOffice(payload)})
   commandGroup=homeConvertGroup
@@ -2043,7 +2056,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     splitControl.title=splitPdf.unavailable()??'先保存当前修改，再每 N 页生成一份独立 PDF；逐份保留下载和告警'
     const mergeControl=pageButtons.get('genoffice.pdf.page.mergePdf')!
     mergeControl.disabled=mergeUnavailable()!==null;mergeControl.title=mergeUnavailable()??'先保存当前修改，再按选定文件顺序追加为独立 PDF'
-    for(const control of [convertPptx,...officeConvertButtons,...exportTextButtons,exportPng,exportJpg]){control.disabled ||= extractionUnavailable()!==null;control.title=extractionUnavailable()??'从已保存来源生成独立下载'}
+    for(const control of [convertPptx,...officeConvertButtons,...exportTextButtons]){control.disabled ||= extractionUnavailable()!==null;control.title=extractionUnavailable()??'从已保存来源生成独立下载'}
+    for (const control of [exportPng, exportJpg]) { control.disabled = imageExportUnavailable() !== null; control.title = imageExportUnavailable() ?? '保存当前修改后导出所选页图片' }
     protectButton.disabled ||= protectionUnavailable() !== null
     protectButton.title = protectionUnavailable() ?? '生成独立密码保护下载；密码不保存在草稿中'
     for(const id of ['genoffice.pdf.page.insertPdf','genoffice.pdf.page.replace']){const control=pageButtons.get(id)!;control.disabled ||= extractionUnavailable()!==null;control.title=extractionUnavailable()??'上传来源身份绑定的外部 PDF，保存为新修订'}

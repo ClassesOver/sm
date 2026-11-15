@@ -11,9 +11,9 @@ beforeEach(()=>{
 afterEach(()=>{document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals()})
 const bytes=new Uint8Array([80,75,3,4,1,2,3,4])
 const result=():PdfImageExportResult=>({content:bytes.buffer,sha256:createHash('sha256').update(bytes).digest('hex'),size:bytes.length,sourceSha256:'a'.repeat(64),filename:'pdf-pages-png.zip'})
-function fixture(count=4){const root=document.createElement('div');document.body.append(root);let blocked:string|null=null
+function fixture(count=4, prepareSource?:()=>Promise<{sha256:string;exportImages:(payload:PdfImageExportRequest)=>Promise<PdfImageExportResult>}>){const root=document.createElement('div');document.body.append(root);let blocked:string|null=null
   const exportImages=vi.fn(async(_payload:PdfImageExportRequest)=>result())
-  const view=bindPdfImageExportDialog({root,sourceSha256:'a'.repeat(64),pageCount:()=>count,currentPage:()=>2,unavailable:()=>blocked,exportImages})
+  const view=bindPdfImageExportDialog({root,sourceSha256:'a'.repeat(64),pageCount:()=>count,currentPage:()=>2,unavailable:()=>blocked,exportImages,prepareSource})
   const dialog=root.querySelector('dialog')!,apply=root.querySelector<HTMLButtonElement>('[data-pdf-image-export-apply]')!
   return{root,view,dialog,apply,exportImages,block:()=>{blocked='先保存草稿'}}}
 it('exports requested saved pages and exposes only an identity-verified session ZIP',async()=>{
@@ -64,4 +64,26 @@ it('shows the page limit when all pages exceed the export budget and allows a sm
   f.root.querySelector<HTMLInputElement>('[aria-label="导出图片页码"]')!.value = '3-4'
   f.apply.click()
   await vi.waitFor(() => expect(f.exportImages.mock.calls[0]?.[0].pages).toEqual([3,4]))
+})
+
+it('exports and verifies using the newly saved source instead of the original transport', async () => {
+  const expectedSha256='c'.repeat(64)
+  const exportSaved=vi.fn(async()=>({...result(),sourceSha256:expectedSha256}))
+  const prepareSource=vi.fn(async()=>({sha256:expectedSha256,exportImages:exportSaved}))
+  const f=fixture(3,prepareSource)
+  f.view.open('jpeg','all');f.apply.click()
+  await vi.waitFor(()=>expect(f.root.querySelector('a')).not.toBeNull())
+  expect(prepareSource).toHaveBeenCalledOnce()
+  expect(exportSaved).toHaveBeenCalledWith({expectedSha256,pages:[1,2,3],format:'jpeg',dpi:150})
+  expect(f.exportImages).not.toHaveBeenCalled()
+})
+
+it('does not start rendering after the dialog closes during source save', async () => {
+  const exportSaved=vi.fn(async()=>result())
+  let finish!: () => void
+  const f=fixture(3,()=>new Promise(resolve=>{finish=()=>resolve({sha256:'c'.repeat(64),exportImages:exportSaved})}))
+  f.view.open('png','all');f.apply.click();f.dialog.close();finish()
+  await new Promise(resolve=>setTimeout(resolve,0))
+  expect(exportSaved).not.toHaveBeenCalled()
+  expect(f.exportImages).not.toHaveBeenCalled()
 })

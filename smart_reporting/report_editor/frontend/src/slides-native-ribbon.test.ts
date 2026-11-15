@@ -878,3 +878,17 @@ it('dispatches browser printing and prevents it while the host is locked',()=>{
  const print=host.querySelector<HTMLButtonElement>('[data-command="print"]')!;expect(print.disabled).toBe(false);print.click();expect(onAction).toHaveBeenCalledWith('print')
  ribbon.setLocked(true);print.click();expect(onAction).toHaveBeenCalledTimes(1);ribbon.dispose()
 })
+
+it('keeps the supported File commands in the GenOffice source order', () => {
+  const host = document.createElement('div')
+  const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn(), openFileAvailable: true,
+    saveAsAvailable: true, nameWithAiAvailable: true, pdfExportAvailable: true, imageExportAvailable: true })
+  try {
+    const buttons = host.querySelectorAll<HTMLButtonElement>('[data-ribbon-panel="file"] [data-source-action]')
+    expect(Array.from(buttons, button => button.dataset.sourceAction)).toEqual([
+      'onOpen', 'onSave', 'onSaveAs', 'onNameWithAi', 'onExportPdf', 'onPrint', 'onExportImages', 'onExportImagesJpg',
+    ])
+  } finally {
+    ribbon.dispose()
+  }
+})

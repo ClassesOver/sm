@@ -25,6 +25,7 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
   const picture=selected()
   return picture?picture.node.attrs.imageAlign??'left':null
  }
+ const flipped=(action:'flipH'|'flipV')=>Boolean(selected()?.node.attrs[action==='flipH'?'imageFlipH':'imageFlipV'])
  const closeArrangeMenu=()=>{
   const menu=arrangeMenu
   if(!menu)return
@@ -160,5 +161,5 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    }
   }catch(error){reportError(error)}
  }
- return {reason,alignment,size,open,closeArrangeMenu,dispose(){active=false;close()}}
+ return {reason,alignment,flipped,size,open,closeArrangeMenu,dispose(){active=false;close()}}
 }

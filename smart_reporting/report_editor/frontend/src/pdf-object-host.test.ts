@@ -117,6 +117,36 @@ it('extracts the visible range from the authorized saved revision after a draft 
  expect(dialog.textContent).toContain('仍需验收')
  expect(events).toEqual(['save','/reports/v1/native/open/extract-save','/reports/v1/native/pdf-object-host/2/api/context','/reports/v1/native/pdf-object-host/2/api/extract-pages'])
 })
+it('exports all remaining pages via the newly saved revision from the PNG ribbon', async () => {
+ const events:string[]=[]
+ const nextSha='b'.repeat(64)
+ const flush=vi.fn(async ():Promise<NativeSaveResponse> => {
+  events.push('save')
+  return {documentId:'pdf-object-host',revision:2,parentRevision:1,revisionRegistered:true,artifacts:{pdf:{sha256:nextSha}},editor:{openUrl:'/reports/v1/native/open/image-save'},validation:{ok:false,issues:[]}}
+ })
+ const f=await fixture({exportPages:3,restored:{kind:'deletePage',pageId:'sha256:'+sourceSha256+':page:1'},flushForFileOperation:flush});await f.create()
+ const rendered=vi.fn()
+ vi.stubGlobal('fetch',async (input:string|URL,init?:RequestInit) => {
+  const path=new URL(String(input),window.location.href).pathname
+  events.push(path)
+  if(path==='/reports/v1/native/open/image-save')return new Response('authorized')
+  if(path.endsWith('/2/api/context'))return Response.json({csrfToken:'new-csrf',context:{documentId:'pdf-object-host',revision:2,format:'pdf',sourceFile:{sha256:nextSha},scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}})
+  if(path.endsWith('/2/api/export-images')){
+   expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('new-csrf')
+   rendered(JSON.parse(String(init?.body)));return new Response(null,{status:503})
+  }
+  throw Error('Unexpected path '+path)
+ })
+ const button=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.convert.exportImagesPng"]')!
+ expect(button.disabled).toBe(false);button.click()
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="导出 PDF 页面图片"]')!
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ expect(dialog.querySelector<HTMLInputElement>('[aria-label="导出图片页码"]')?.value).toBe('1-2')
+ dialog.querySelector<HTMLButtonElement>('[data-pdf-image-export-apply]')!.click()
+ await vi.waitFor(()=>expect(rendered).toHaveBeenCalledWith({expectedSha256:nextSha,pages:[1,2],format:'png',dpi:150}))
+ expect(f.api.exportImages).not.toHaveBeenCalled()
+ expect(events).toEqual(['save','/reports/v1/native/open/image-save','/reports/v1/native/pdf-object-host/2/api/context','/reports/v1/native/pdf-object-host/2/api/export-images'])
+})
 it('watermark settings expose both source tabs and current slider values without changing the draft',async()=>{
  const f=await fixture();await f.create()
  f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="edit"]')!.click()

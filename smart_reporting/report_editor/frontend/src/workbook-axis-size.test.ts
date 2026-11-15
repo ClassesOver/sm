@@ -70,14 +70,26 @@ it('applies row heights and column widths to the selection on real Univer and pe
 it('opens the dialog from enabled ribbon commands and applies only a valid value to the captured target', () => {
   const host = document.createElement('div'); document.body.append(host)
   const command = vi.fn()
-  const ribbon = mountWorkbookRibbon(host, command, { rotation: () => 0, editable: () => true, hasSelection: () => true })
+  let editable = true
+  const ribbon = mountWorkbookRibbon(host, command, { rotation: () => 0, editable: () => editable, hasSelection: () => true })
   host.querySelector<HTMLButtonElement>('[role="tab"][data-ribbon-tab="Home"]')!.click()
-  for (const id of ['row-height-open', 'col-width-open']) {
-    const button = host.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
-    expect(button.disabled, id).toBe(false); expect(button.dataset.unavailableReason, id).toBeUndefined()
-    button.click()
+  const format = host.querySelector<HTMLSelectElement>('[data-ribbon-control="format-size"]')!
+  expect(format).not.toBeNull()
+  expect(format.disabled).toBe(false)
+  expect(format.getAttribute('aria-label')).toBe('格式')
+  expect(format.closest('label')?.previousElementSibling?.getAttribute('data-ribbon-command')).toBe('delete-cells')
+  expect(Array.from(format.options, option => [option.value, option.text])).toEqual([
+    ['', '格式'], ['row-height-open', '行高…'], ['autofit-row-height', '自动调整行高'],
+    ['col-width-open', '列宽…'], ['autofit-col-width', '自动调整列宽'],
+  ])
+  for (const option of Array.from(format.options).slice(1)) {
+    format.value = option.value
+    format.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(format.value).toBe('')
   }
-  expect(command.mock.calls.map(call => call[0])).toEqual(['row-height-open', 'col-width-open'])
+  editable = false; ribbon.refreshState()
+  expect(format.disabled).toBe(true)
   ribbon.dispose()
   const apply = vi.fn()
   const dialog = createAxisSizeDialog(document.body, apply)
@@ -153,14 +165,4 @@ it('AutoFit Row Height resets only rows the file sized and saves them as automat
 it('AutoFit Column Width targets whole columns of the selection with the official command', () => {
   expect(AUTOFIT_COMMANDS.col).toBe('sheet.command.set-col-auto-width')
   expect(autofitSpans('col', { startRow: 3, endRow: 5, startColumn: 1, endColumn: 2 }, 1000, 26)).toEqual([{ startRow: 0, endRow: 999, startColumn: 1, endColumn: 2 }])
-  const host = document.createElement('div'); document.body.append(host)
-  const command = vi.fn()
-  const ribbon = mountWorkbookRibbon(host, command, { rotation: () => 0, editable: () => true, hasSelection: () => true })
-  host.querySelector<HTMLButtonElement>('[role="tab"][data-ribbon-tab="Home"]')!.click()
-  for (const id of ['autofit-row-height', 'autofit-col-width']) {
-    const button = host.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
-    expect(button.disabled, id).toBe(false); button.click()
-  }
-  expect(command.mock.calls.map(call => call[0])).toEqual(['autofit-row-height', 'autofit-col-width'])
-  ribbon.dispose()
 })

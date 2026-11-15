@@ -1263,6 +1263,12 @@ function onClipboardKey(event: KeyboardEvent) {
     if (!event.repeat && !loading && !locked() && !mutationPending) openFileDialog.open()
     return
   }
+  if (saveAsActions && (event.ctrlKey || event.metaKey) && !event.altKey && event.shiftKey && event.key.toLowerCase() === 's') {
+    if (target instanceof Element && target.closest('dialog,[role="dialog"]')) return
+    event.preventDefault(); event.stopPropagation()
+    if (!event.repeat) openSlideSaveAs()
+    return
+  }
   // 固定源文件菜单 CmdOrCtrl+S：先提交失焦输入，再复用保存修订动作。
   if((event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='s'){
     if(target instanceof Element&&target.closest('dialog'))return
@@ -1458,6 +1464,14 @@ const saveAsActions = nativeDraft && saveAs ? createNativeFileActions({
   create: (_action, payload) => saveAs({ ...payload, operations: nativeDraft.operations }),
   onError: error => { statusMessage.textContent = error instanceof Error ? error.message : '另存为失败。' },
 }) : undefined
+function openSlideSaveAs() {
+  if (!saveAsActions || loading || locked() || mutationPending) return
+  if (naming) {
+    void namingController?.cancel().catch(() => {})
+    statusMessage.textContent = ''
+  }
+  saveAsActions.open('save-as')
+}
 async function openPrint() {
   if (!nativeDraft || disposed || loading || locked() || mutationPending || printOpening ||
       !flushSlideOutputInputs('请先确认或取消当前编辑，再打开打印预览')) return
@@ -2558,14 +2572,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       return
     }
     if (command === 'nameWithAi') { void nameWithAi(); return }
-    if (command === 'saveAs') {
-      if (naming) {
-        void namingController?.cancel().catch(() => {})
-        statusMessage.textContent = ''
-      }
-      saveAsActions?.open('save-as')
-      return
-    }
+    if (command === 'saveAs') { openSlideSaveAs(); return }
     if (command === 'exportPdf') {
       if (pdfExport && !loading && !locked() && !mutationPending &&
           flushSlideOutputInputs('请先确认或取消当前编辑，再导出 PDF')) void pdfExport.run()

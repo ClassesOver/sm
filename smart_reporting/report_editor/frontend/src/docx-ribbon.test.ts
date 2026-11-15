@@ -39,7 +39,7 @@ it.each([false,true])('routes Layout Arrange through existing picture controls w
   const open = vi.fn()
   let unavailable: string | null = '请选择图片'
   const section = withSection ? { settings: {} as NonNullable<Parameters<typeof createDocxRibbon>[4]>['settings'], onChange: vi.fn() } : undefined
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => null, size: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => null, flipped: () => false, size: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
   try {
     f.tab('layout').click()
     const arrange = () => f.ribbon.querySelector('section[aria-label="排列"]')!
@@ -59,7 +59,7 @@ it('renders source Picture Format alignment as three immediate pressed buttons',
   const open = vi.fn()
   let alignment: 'left' | 'center' | 'right' = 'left'
   let unavailable: string | null = null
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => alignment, size: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } })
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => alignment, flipped: () => false, size: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } })
   try {
     f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
     f.tab('pictureFormat').click()
@@ -80,7 +80,7 @@ it('renders source Picture Format alignment as three immediate pressed buttons',
 it('mounts the source Picture Format size fields with units, aspect lock and reset', () => {
   const open = vi.fn(), resize = vi.fn()
   const f = setupTabNavigation({ pictureFormat: {
-    open, reason: () => null, alignment: () => null,
+    open, reason: () => null, alignment: () => null, flipped: () => false,
     size: () => ({ key: 'image', width: 192, height: 144, resize }),
     closeArrangeMenu: vi.fn(), dispose: vi.fn(),
   } })
@@ -101,6 +101,36 @@ it('mounts the source Picture Format size fields with units, aspect lock and res
     expect(resize.mock.calls).toEqual([['w',1440,true],['h',720,false]])
     size.querySelector<HTMLButtonElement>('[data-action="picture-format-resetSize"]')!.click()
     expect(open).toHaveBeenCalledWith('resetSize')
+  } finally { f.editor.destroy() }
+})
+
+it('renders picture rotation and flip in GenOffice Adjust and refreshes their pressed state', () => {
+  const open = vi.fn()
+  let horizontal = false
+  let vertical = true
+  const f = setupTabNavigation({ pictureFormat: {
+    open, reason: () => null, alignment: () => null, size: () => null,
+    flipped: action => action === 'flipH' ? horizontal : vertical,
+    closeArrangeMenu: vi.fn(), dispose: vi.fn(),
+  } })
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    f.tab('pictureFormat').click()
+    const columns = Array.from(f.ribbon.querySelectorAll('section[aria-label="调整"] .rb-col'))
+    expect(columns.map(column => Array.from(column.querySelectorAll('button'), button => button.textContent))).toEqual([
+      ['向右旋转 90°', '向左旋转 90°'], ['水平翻转', '垂直翻转'],
+    ])
+    const [flipH, flipV] = Array.from(columns[1].querySelectorAll('button'))
+    expect(flipH.getAttribute('aria-pressed')).toBe('false')
+    expect(flipV.getAttribute('aria-pressed')).toBe('true')
+    flipH.click()
+    columns[0].querySelectorAll('button')[1].click()
+    expect(open.mock.calls).toEqual([['flipH'], ['rotateLeft']])
+    horizontal = true
+    vertical = false
+    f.editor.view.dispatch(f.editor.state.tr.setMeta('picture-flip-refresh',true))
+    expect(flipH.classList).toContain('active')
+    expect(flipV.getAttribute('aria-pressed')).toBe('false')
   } finally { f.editor.destroy() }
 })
 

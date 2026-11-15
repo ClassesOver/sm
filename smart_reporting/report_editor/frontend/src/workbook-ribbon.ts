@@ -463,8 +463,6 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('插入列', 'insert-col-here', 'insert-col-here'),
       action('删除列', 'delete-col-here', 'delete-col-here'),
       action('插入单元格', 'insert-cells', 'insert-cells'), action('删除单元格', 'delete-cells', 'delete-cells'),
-      action('行高', 'row-height-open', 'row-height-open'), action('自动调整行高', 'autofit-row-height', 'autofit-row-height'),
-      action('列宽', 'col-width-open', 'col-width-open'), action('自动调整列宽', 'autofit-col-width', 'autofit-col-width'),
       action('全部清除', 'clear-all', 'clear-all'), action('清除格式', 'clear-formats', 'clear-formats'),
       action('清除内容', 'clear-contents', 'clear-contents'),
     ] },
@@ -622,6 +620,15 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
 }> = [
   { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
+  {
+    tab: 'Home', id: 'format-size', label: '格式', group: '单元格', after: 'delete-cells', icon: '⇳', detail: '格式',
+    choices: [
+      { command: 'row-height-open', label: '行高…' },
+      { command: 'autofit-row-height', label: '自动调整行高' },
+      { command: 'col-width-open', label: '列宽…' },
+      { command: 'autofit-col-width', label: '自动调整列宽' },
+    ],
+  },
   { ...AUTOSUM_MENU, tab: 'Formulas', group: '函数库', after: 'insert-function-open' },
   {
     tab: 'Home', id: 'sort-filter', label: '排序和筛选', group: '编辑', icon: '⇅', detail: '排序和筛选',
@@ -1583,7 +1590,9 @@ export function mountWorkbookRibbon(
         const icon = document.createElement('span')
         icon.className = 'workbook-ribbon-icon'
         icon.setAttribute('aria-hidden', 'true')
-        icon.innerHTML = workbookCommandIcon('', menu.icon) ?? ''
+        const iconMarkup = workbookCommandIcon('', menu.icon)
+        if (iconMarkup) icon.innerHTML = iconMarkup
+        else icon.textContent = menu.icon
         const select = document.createElement('select')
         select.className = 'workbook-ribbon-select'
         select.dataset.ribbonControl = menu.id

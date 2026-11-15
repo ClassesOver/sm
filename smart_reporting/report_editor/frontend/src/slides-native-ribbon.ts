@@ -66,16 +66,16 @@ export function stepNativeFontSize(current: number | null | undefined, direction
 const tabs: Tab[] = [
   { id: 'file', label: 'File', groups: [
     { label: 'File', controls: [{ id: 'openFile', label: 'Open', icon: FolderOpen, sourceActionId: 'onOpen' }] },
-    { label: 'Export', controls: [
-      { id: 'print', label: 'Print' },
-      { id: 'exportPdf', label: 'Export PDF', icon: Download, sourceActionId: 'onExportPdf' },
-      { id: 'exportImages', label: 'Export as PNG', sourceActionId: 'onExportImages' },
-      { id: 'exportImagesJpg', label: 'Export as JPG', sourceActionId: 'onExportImagesJpg' },
-    ] },
     { label: 'Save', controls: [
-      { id: 'saveRevision', label: 'Save Revision', sourceIcon: IconSave },
+      { id: 'saveRevision', label: 'Save Revision', sourceIcon: IconSave, sourceActionId: 'onSave' },
       { id: 'saveAs', label: 'Save As', sourceIcon: IconSave, sourceActionId: 'onSaveAs' },
       { id: 'nameWithAi', label: 'Name with AI…', sourceIcon: IconSave, sourceActionId: 'onNameWithAi' },
+    ] },
+    { label: 'Export', controls: [
+      { id: 'exportPdf', label: 'Export PDF', icon: Download, sourceActionId: 'onExportPdf' },
+      { id: 'print', label: 'Print', sourceActionId: 'onPrint' },
+      { id: 'exportImages', label: 'Export as PNG', sourceActionId: 'onExportImages' },
+      { id: 'exportImagesJpg', label: 'Export as JPG', sourceActionId: 'onExportImagesJpg' },
     ] },
   ] },
   { id: 'home', label: 'Home', groups: [
@@ -477,6 +477,9 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (control.sourceActionId) element.dataset.sourceAction = control.sourceActionId
         if (!element.title) element.title = localizedLabel
         if (control.id === 'openFile' && !unavailable) element.setAttribute('aria-keyshortcuts', 'Control+O Meta+O')
+        if (control.id === 'saveAs' && !unavailable) element.setAttribute('aria-keyshortcuts', 'Control+Shift+S Meta+Shift+S')
+        if (control.id === 'saveRevision') element.setAttribute('aria-keyshortcuts', 'Control+S Meta+S')
+        if (control.id === 'print') element.setAttribute('aria-keyshortcuts', 'Control+P Meta+P')
         if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = localizedLabel + '：作用于当前对象的全部段落；自定义输入 Enter 提交'
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
         if (control.caption || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {

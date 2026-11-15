@@ -1,5 +1,6 @@
 import {stepFontSize as sourceStepFontSize} from './vendor/genoffice-docs/apps/docs/src/renderer/font-sizes'
 import {getLang} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/locale'
+import { zh as ribbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/zh'
 import {createDocxRevisionScopeMenu} from './docx-revision-scope-menu'
 import {showDocxPasteDialog} from './docx-paste-ui'
 import type { createDocxPictureControls } from './docx-picture-controls'
@@ -34,7 +35,7 @@ import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconComments, IconComment, IconTrash, IconToc, IconRefresh } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { closeHistory } from '@tiptap/pm/history'
@@ -83,7 +84,7 @@ const pendingGroups: Record<string, [string, string[]][]> = {
   view: [['视图', ['页面视图', 'Web 版式', '大纲', '阅读视图', '分页预览']], ['缩放', ['缩放', '缩小', '放大', '100%', '页宽', '整页']], ['显示', ['标尺', '网格线', '导航窗格']], ['外观', ['AI 面板', '深色模式']], ['窗口', ['新建标签', '拆分', '切换标签']]],
   tableDesign: [['表格样式', ['无样式', '表格样式']], ['底纹', ['单元格底纹']], ['边框', ['所有框线', '外侧框线', '内侧框线', '边框颜色', '边框粗细']]],
   tableLayout: [['删除', ['删除表格']], ['行和列', ['上方插入', '下方插入', '左侧插入', '右侧插入']], ['合并', ['合并单元格', '拆分单元格']], ['行列操作', ['删除行', '删除列']], ['对齐方式', ['顶端对齐', '垂直居中', '底端对齐']], ['单元格大小', ['行高', '列宽']], ['表格数据', ['表格属性']]],
-  pictureFormat: [['调整', ['替换图片', '删除背景']], ['排列', ['位置', '环绕文字', '对齐', '上移一层', '下移一层', '旋转', '向左旋转', '水平翻转', '垂直翻转', '裁剪']], ['大小', ['高度', '宽度', '重置大小']]],
+  pictureFormat: [['调整', ['删除背景', '裁剪', '替换图片']], ['排列', ['位置', '环绕文字', '对齐', '上移一层', '下移一层']], ['大小', ['高度', '宽度', '重置大小']]],
   shapeFormat: [['形状样式', ['形状样式', '形状填充', '形状轮廓', '形状效果']], ['文本', ['编辑文字']], ['排列', ['位置', '环绕文字', '上移一层', '下移一层', '旋转']], ['大小', ['高度', '宽度']]],
   headerFooter: [['页眉和页脚', ['页眉', '页脚', '页码', '日期和时间', '文档信息']], ['导航', ['转到页眉', '转到页脚', '上一节', '下一节']], ['选项', ['首页不同', '奇偶页不同', '显示文档文字']], ['位置', ['页眉距顶端', '页脚距底端']], ['关闭', ['关闭页眉和页脚']]],
 }
@@ -484,6 +485,12 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         button.classList.toggle('active', pressed)
         button.setAttribute('aria-pressed', String(pressed))
       }
+      const action = button.dataset.pictureFormatAction
+      if (action === 'flipH' || action === 'flipV') {
+        const pressed = controls.flipped(action)
+        button.classList.toggle('active', pressed)
+        button.setAttribute('aria-pressed', String(pressed))
+      }
     }
   }
   const renderPending = (id: string) => {
@@ -783,10 +790,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           continue
         }
         const arrangeAction = label === '位置' ? 'position' : label === '环绕文字' ? 'wrap' : undefined
-        const pictureActions = { '旋转': 'rotateRight', '向左旋转': 'rotateLeft', '水平翻转': 'flipH', '垂直翻转': 'flipV' } as const
-        const pictureAction = id === 'pictureFormat'
-          ? arrangeAction ?? pictureActions[label as keyof typeof pictureActions]
-          : id === 'layout' && groupLabel === '排列' ? arrangeAction : undefined
+        const pictureAction = id === 'pictureFormat' || (id === 'layout' && groupLabel === '排列') ? arrangeAction : undefined
         if (pictureFormat && pictureAction) {
           items.append(pictureFormatButton(label, pictureAction, command))
           continue
@@ -824,6 +828,27 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           command.addEventListener('click', () => { if (label === '导航窗格' || label === '拆分') command.focus({ preventScroll: true }); view.run(label); refreshView() })
         } else if (available) command.addEventListener('click', onPaginationPreview!)
         items.append(command)
+      }
+      if (id === 'pictureFormat' && groupLabel === '调整' && tools?.pictureFormat) {
+        // GenOffice Picture Format Adjust lays out rotation and flips in two columns.
+        for (const commands of [
+          [[ribbonZh.ribbonRotateRight, 'rotateRight', IconRotateRight], [ribbonZh.ribbonRotateLeft, 'rotateLeft', IconRotateLeft]],
+          [[ribbonZh.ribbonFlipH, 'flipH', IconFlipH], [ribbonZh.ribbonFlipV, 'flipV', IconFlipV]],
+        ] as const) {
+          const column = document.createElement('div')
+          column.className = 'rb-col'
+          for (const [label, action, icon] of commands) {
+            const button = document.createElement('button')
+            pictureFormatButton(label, action, button)
+            button.className = 'rb-small'
+            const caption = document.createElement('span')
+            caption.textContent = label
+            button.innerHTML = renderToStaticMarkup(createElement(icon, { size: 18 }))
+            button.append(caption)
+            column.append(button)
+          }
+          items.append(column)
+        }
       }
       group.append(items)
       const caption = document.createElement('div')

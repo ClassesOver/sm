@@ -13,6 +13,17 @@ afterEach(()=>{cleanup.splice(0).forEach(fn=>fn());vi.unstubAllGlobals()})
 function setup(){const host=document.createElement('div');document.body.append(host);const editor=new Editor({element:host.appendChild(document.createElement('div')),extensions:[Doc,Text,Picture,UndoRedo],content:{type:'doc',content:[{type:'docProtected'}]},editorProps:{handleScrollToSelection:()=>true}});editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc,0)));const errors:unknown[]=[];const controls=createDocxPictureFormatControls(editor,[anchor],()=>null,e=>errors.push(e),()=>624);cleanup.push(()=>{controls.dispose();editor.destroy();host.remove()});return{host,editor,controls,errors}}
 describe('图片格式控制器',()=>{
  it('旋转保持图片选择并支持撤销',()=>{const {editor,controls,errors}=setup();controls.open('rotateRight');expect(editor.state.selection).toBeInstanceOf(NodeSelection);expect(editor.state.doc.firstChild!.attrs).toMatchObject({imageRotDeg:90,imageFormat:{rotDeg:90}});editor.commands.undo();expect(editor.state.doc.firstChild!.attrs.imageRotDeg).toBeNull();expect(errors).toEqual([])})
+ it('独立写回水平和垂直翻转，撤销后恢复按钮状态',()=>{
+  const {editor,controls,errors}=setup()
+  expect(controls.flipped('flipH')).toBe(false)
+  controls.open('flipH')
+  controls.open('flipV')
+  expect(editor.state.doc.firstChild!.attrs.imageFormat).toMatchObject({flipH:true,flipV:true})
+  editor.commands.undo()
+  expect(controls.flipped('flipH')).toBe(true)
+  expect(controls.flipped('flipV')).toBe(false)
+  expect(errors).toEqual([])
+ })
  it('图片对齐立即生效，选择左对齐使用源文档的默认值',()=>{
   const {editor,controls,host,errors}=setup()
   const baseline=editor.getJSON()
