@@ -75,6 +75,7 @@ const tabs: Tab[] = [
     { label: 'Save', controls: [
       { id: 'saveRevision', label: 'Save Revision', sourceIcon: IconSave },
       { id: 'saveAs', label: 'Save As', sourceIcon: IconSave, sourceActionId: 'onSaveAs' },
+      { id: 'nameWithAi', label: 'Name with AI…', sourceIcon: IconSave, sourceActionId: 'onNameWithAi' },
     ] },
   ] },
   { id: 'home', label: 'Home', groups: [
@@ -255,6 +256,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   saveAsAvailable?: boolean
   openFileAvailable?: boolean
   imageExportAvailable?: boolean
+  nameWithAiAvailable?: boolean
   layouts?: NativeSlidesLayout[]
   locked?: boolean
 }): NativeSlidesRibbon {
@@ -375,6 +377,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         const unavailable = control.id === 'exportPdf' && !options.pdfExportAvailable ? '当前会话未开放 PDF 导出。'
           : control.id === 'saveAs' && !options.saveAsAvailable ? '当前会话未开放另存为。'
           : (control.id === 'exportImages' || control.id === 'exportImagesJpg') && !options.imageExportAvailable ? '当前会话未开放图片导出。'
+          : control.id === 'nameWithAi' && !options.nameWithAiAvailable ? '当前会话未开放 AI 命名。'
           : control.id === 'openFile' && !options.openFileAvailable ? '当前会话未开放文件导入。' : control.unavailable
         const controlId = `slides-native-command-${tab.id}-${control.id}`
         const sourceGlyph = control.sourceIcon ?? slidesRibbonSourceIcons[control.id]

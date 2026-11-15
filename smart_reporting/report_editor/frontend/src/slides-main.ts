@@ -3,6 +3,8 @@ import { createSlidesPdfExport } from './slides-export-pdf'
 import { createSlidesOpenFile } from './slides-open-file'
 import type { createNativeApi, NativePreviewRequest } from './native-api'
 import { createNativeFileActions } from './docx-file-actions'
+import { OfficeAssistantController } from './office-assistant-controller'
+import { sanitizeFileStem } from './slides-file-name'
 import {validateZoomDraft} from './slides-zoom-model'
 import {mountModel3d} from './slides-model3d-ui'
 import {validateModelDraft,type ModelInsertion,type ModelViewEdit,type ModelSource} from './slides-model3d'
@@ -153,6 +155,7 @@ export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
   previewPdf?: (payload: NativePreviewRequest, signal: AbortSignal) => Promise<ArrayBuffer>
   filename?: string
   saveAs?: ReturnType<typeof createNativeApi>['saveSlidesAs']
+  slideNaming?: Pick<ReturnType<typeof createNativeApi>, 'officeAIStart' | 'officeAIStatus' | 'officeAICancel'>
   openFile?: ReturnType<typeof createNativeApi>['openSlidesFile']
 }) {
 const root = host
@@ -1404,6 +1407,39 @@ const pdfExport = sharedShell?.previewPdf && createSlidesPdfExport({
   status: message => { statusMessage.textContent = message },
 })
 const saveAs = sharedShell?.saveAs
+const slideNaming = sharedShell?.slideNaming
+const namingController = slideNaming && new OfficeAssistantController({
+  start: slideNaming.officeAIStart,
+  status: slideNaming.officeAIStatus,
+  cancelRequest: slideNaming.officeAICancel,
+  id: job => job.taskId,
+  running: job => job.status === 'running',
+})
+let naming = false
+async function nameWithAi() {
+  if (!nativeDraft || !saveAsActions || !namingController || naming || loading || locked() || mutationPending) return
+  if (!flushSlideOutputInputs('请先确认或取消当前编辑，再用 AI 命名。')) return
+  const expectedSha256 = deck.sha256
+  const snapshot = JSON.stringify(nativeDraft.operations)
+  const clientRequestId = crypto.randomUUID()
+  naming = true
+  statusMessage.textContent = '正在生成文件名建议…'
+  try {
+    const job = await namingController.run({ expectedSha256, operations: JSON.parse(snapshot), clientRequestId,
+      action: 'fileName', instruction: '', selection: null }, clientRequestId)
+    if (disposed || !job) return
+    if (deck.sha256 !== expectedSha256 || JSON.stringify(nativeDraft.operations) !== snapshot) {
+      statusMessage.textContent = '草稿已变化，请重新用 AI 命名。'
+      return
+    }
+    const stem = job.status === 'completed' && job.result?.sourceSha256 === expectedSha256
+      ? sanitizeFileStem(job.result.answer) : ''
+    statusMessage.textContent = stem ? '' : job.error?.message ?? 'AI 暂未提供文件名建议。'
+    if (stem) saveAsActions.open('save-as', stem)
+  } catch {
+    if (!disposed) statusMessage.textContent = '文件名生成失败，请重试。'
+  } finally { naming = false }
+}
 const openFileDialog = sharedShell?.openFile && createSlidesOpenFile(root, sharedShell.openFile)
 const saveAsActions = nativeDraft && saveAs ? createNativeFileActions({
   root, extension: 'pptx', formatLabel: 'PowerPoint 演示文稿',
@@ -2464,13 +2500,22 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   saveAsAvailable: !!saveAsActions,
   openFileAvailable: !!openFileDialog,
   imageExportAvailable: !!nativeDraft,
+  nameWithAiAvailable: !!(namingController && saveAsActions),
   onAssistant: sharedShell?.onAssistant ?? (sharedShell?.nativeAI ? () => nativeAIHost?.open() : undefined),
   onAction(command, value) {
     if (command === 'openFile') {
       if (!loading && !locked() && !mutationPending) openFileDialog?.open()
       return
     }
-    if (command === 'saveAs') { saveAsActions?.open('save-as'); return }
+    if (command === 'nameWithAi') { void nameWithAi(); return }
+    if (command === 'saveAs') {
+      if (naming) {
+        void namingController?.cancel().catch(() => {})
+        statusMessage.textContent = ''
+      }
+      saveAsActions?.open('save-as')
+      return
+    }
     if (command === 'exportPdf') {
       if (pdfExport && !loading && !locked() && !mutationPending &&
           flushSlideOutputInputs('请先确认或取消当前编辑，再导出 PDF')) void pdfExport.run()
@@ -3589,7 +3634,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; void namingController?.cancel().catch(() => {}); pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

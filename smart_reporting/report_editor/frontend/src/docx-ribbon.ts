@@ -437,6 +437,29 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     label.append(caption, input, unit)
     return label
   }
+  const pictureFormatButton = (label: string, action: import('./docx-picture-format-controls').DocxPictureFormatAction, button = document.createElement('button')) => {
+    const controls = tools?.pictureFormat
+    if (!controls) return button
+    button.type = 'button'
+    button.className = 'rb-icon docx-ribbon-command'
+    button.textContent = label
+    button.dataset.pictureFormatAction = action
+    button.dataset.action = 'picture-format-' + action
+    const reason = controls.reason()
+    button.disabled = reason !== null
+    button.title = reason ?? label
+    button.onmousedown = event => event.preventDefault()
+    if (action === 'position') {
+      const wrapper = document.createElement('div')
+      wrapper.className = 'rb-split-wrap'
+      button.setAttribute('aria-expanded','false')
+      button.onclick = () => controls.open(action, button)
+      wrapper.append(button)
+      return wrapper
+    }
+    button.onclick = () => controls.open(action)
+    return button
+  }
   const renderPending = (id: string) => {
     body.replaceChildren()
     cellBorderControls = undefined
@@ -709,15 +732,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           ? arrangeAction ?? pictureActions[label as keyof typeof pictureActions]
           : id === 'layout' && groupLabel === '排列' ? arrangeAction : undefined
         if (pictureFormat && pictureAction) {
-          command.textContent = label
-          command.dataset.pictureFormatAction = pictureAction
-          command.dataset.action = 'picture-format-' + pictureAction
-          const reason = pictureFormat.reason()
-          command.disabled = reason !== null
-          command.title = reason ?? label
-          command.onmousedown = event => event.preventDefault()
-          command.onclick = () => pictureFormat.open(pictureAction)
-          items.append(command)
+          items.append(pictureFormatButton(label, pictureAction, command))
           continue
         }
         if (id === 'pictureFormat' && pictures && ['替换图片', '删除背景', '裁剪'].includes(label)) {
@@ -847,6 +862,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
+    tools?.pictureFormat?.closePositionGallery()
     if (active === 'headerFooter' && id !== active) {
       headerFooter?.flushPendingEdits?.()
       headerFooterTarget = undefined
@@ -874,6 +890,20 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       if (layoutParagraph) layoutParagraph.replaceWith(paragraph)
       else layout.querySelector('.docx-source-layout')!.append(paragraph)
       layoutParagraph = paragraph
+      if (tools?.pictureFormat) {
+        const arrange = document.createElement('section'), actions = document.createElement('div'), label = document.createElement('div')
+        arrange.className = 'ribbon-group docx-ribbon-group'
+        arrange.setAttribute('aria-label', '排列')
+        actions.className = 'ribbon-group-items'
+        actions.append(pictureFormatButton('位置', 'position'), pictureFormatButton('环绕文字', 'wrap'))
+        label.className = 'ribbon-group-label'
+        label.textContent = '排列'
+        arrange.append(actions, label)
+        fillDocxCommandIcons(arrange)
+        const existing = layout.querySelector('section[aria-label="排列"]')
+        if (existing) existing.replaceWith(arrange)
+        else paragraph.after(arrange)
+      }
       body.replaceChildren(layout); body.setAttribute('aria-label', '布局')
     }
     else if (id === 'headerFooter' && headerFooter) {
@@ -1275,7 +1305,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
-    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); numberingValueControl.destroy()
+    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closePositionGallery(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)

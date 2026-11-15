@@ -4,6 +4,7 @@
  */
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { foldCase, isWordChar } from './genoffice-find-text'
+import { findPattern, type RedactPattern } from './genoffice-pdf-redact-patterns'
 
 /** One hit: original page + PDF user-space rects (multiple when spanning several text items) */
 export interface SearchMatch {
@@ -20,6 +21,7 @@ interface IndexedItem {
   h: number
   /** Rotated run (tilted baseline) — excluded from block grouping */
   rot?: boolean
+  redactUnsafe?: boolean
   /** pdf.js font id (e.g. 'g_d0_f7'); resolves to the run's font for edit previews */
   font?: string
 }
@@ -79,6 +81,7 @@ interface RawTextItem {
   height?: number
   hasEOL?: boolean
   fontName?: string
+  dir?: string
 }
 
 /** Concatenate text per page + record each item's char range and PDF-space box (built once, cached per doc by caller) */
@@ -108,6 +111,7 @@ export async function buildSearchIndex(doc: PDFDocumentProxy): Promise<SearchInd
             w: it.width ?? 0,
             h,
             ...(rot ? { rot: true } : {}),
+            ...(it.dir === "rtl" || (it.transform[0] ?? 0) <= 0 || (it.transform[3] ?? 0) <= 0 ? { redactUnsafe: true } : {}),
             ...(typeof it.fontName === 'string' ? { font: it.fontName } : {}),
           })
         }
@@ -171,20 +175,84 @@ export function searchInIndex(
       }
       const e = s + q.length
       from = e
-      const rects: [number, number, number, number][] = []
-      for (const it of items) {
-        if (it.end <= s || it.start >= e) continue
-        const len = it.end - it.start
-        const lo = (Math.max(s, it.start) - it.start) / len
-        const hi = (Math.min(e, it.end) - it.start) / len
-        const x1 = it.x + it.w * lo
-        const x2 = it.x + it.w * hi
-        if (x2 - x1 < 0.01) continue
-        rects.push([x1, it.y, x2, it.y + it.h])
-      }
+      const rects = rangeRects(items, s, e)
       if (rects.length > 0) matches.push({ pageIndex, rects })
     }
     if (matches.length >= MAX_MATCHES) break
   }
   return matches
+}
+
+/** GenOffice 19a389b39be75f611ec21dcda4a7b91a658239d2, Apache-2.0. LICENSE/NOTICE: reporting/pdf_engine. */
+/** PDF-space boxes covering chars [s, e) of a page, interpolated within each item by char ratio */
+export function rangeRects(
+  items: readonly IndexedItem[],
+  s: number,
+  e: number,
+): [number, number, number, number][] {
+  const rects: [number, number, number, number][] = []
+  for (const it of items) {
+    if (it.end <= s || it.start >= e) continue
+    const len = it.end - it.start
+    const lo = (Math.max(s, it.start) - it.start) / len
+    const hi = (Math.min(e, it.end) - it.start) / len
+    const x1 = it.x + it.w * lo
+    const x2 = it.x + it.w * hi
+    if (x2 - x1 < 0.01) continue
+    rects.push([x1, it.y, x2, it.y + it.h])
+  }
+  return rects
+}
+
+export interface PatternMatch extends SearchMatch {
+  pattern: RedactPattern
+  geometryIncomplete: boolean
+  /** Part of the hit sits on a rotated run, whose interpolated box does not cover the glyphs */
+  rotated?: boolean
+}
+
+/** Every hit of the given sensitive-information patterns, page by page, capped like search */
+export function findPatternsInIndex(
+  index: SearchIndex,
+  patterns: readonly RedactPattern[],
+  skipPage: (pageIndex: number) => boolean = () => false,
+): PatternMatch[] {
+  const matches: PatternMatch[] = []
+  for (let pageIndex = 0; pageIndex < index.length; pageIndex++) {
+    if (skipPage(pageIndex)) continue
+    const { text, items } = index[pageIndex]!
+    for (const pattern of patterns) {
+      for (const [s, e] of findPattern(pattern, text)) {
+        const runs = items.filter(it => it.end > s && it.start < e)
+        const rects = rangeRects(runs, s, e)
+        const rotated = runs.some(it => it.rot)
+        let covered = s
+        const geometryIncomplete = !rects.length || rects.length !== runs.length || runs.some(it => {
+          const missing = /\S/.test(text.slice(covered, Math.max(s, it.start)))
+          covered = Math.max(covered, Math.min(e, it.end))
+          return missing || it.redactUnsafe || !Number.isFinite(it.h) || it.h <= 0
+        }) || /\S/.test(text.slice(covered, e))
+        matches.push({
+          pageIndex,
+          rects,
+          pattern,
+          geometryIncomplete,
+          ...(rotated ? { rotated: true } : {}),
+        })
+        if (matches.length >= MAX_MATCHES) return matches
+      }
+    }
+  }
+  return matches
+}
+
+/** Pad a text box so descenders and the interpolation slack at either end are covered */
+export function redactionRect([x1, y1, x2, y2]: [number, number, number, number]): [
+  number,
+  number,
+  number,
+  number,
+] {
+  const h = y2 - y1
+  return [x1 - h * 0.1, y1 - h * 0.25, x2 + h * 0.1, y2 + h * 0.05]
 }

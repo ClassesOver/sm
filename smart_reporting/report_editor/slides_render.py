@@ -10,14 +10,14 @@ from ..reporting.delivery.office_engine import run_bridge
 from ..reporting.models import ReportingError
 
 
-def render_pptx_tree(content: bytes) -> dict[str, Any]:
+def render_pptx_tree(content: bytes, *, purpose: str | None = None) -> dict[str, Any]:
     """只在已核验的 PPTX bytes 上运行冻结版本的静态 RenderTree builder。"""
     with tempfile.TemporaryDirectory(prefix="report-slides-render-") as directory:
         root = Path(directory)
         source = root / "source.pptx"
         source.write_bytes(content)
         request = root / "request.json"
-        request.write_text(json.dumps({"input": str(source)}), encoding="utf-8")
+        request.write_text(json.dumps({"input": str(source), "purpose": purpose}), encoding="utf-8")
         result = run_bridge("slides", "render-pptx", request)
         if result.returncode:
             raise ReportingError("report_slides_render_failed", result.stderr[-2000:] or "幻灯片画布载入失败。")

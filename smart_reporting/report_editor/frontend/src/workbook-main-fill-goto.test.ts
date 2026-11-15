@@ -25,6 +25,12 @@ vi.mock('@univerjs/preset-sheets-note', () => ({ UniverSheetsNotePreset: () => (
 vi.mock('@univerjs/preset-sheets-find-replace', () => ({ UniverSheetsFindReplacePreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-drawing', () => ({ UniverSheetsDrawingPreset: () => ({}) }))
 vi.mock('@univerjs/preset-sheets-table', () => ({ UniverSheetsTablePreset: () => ({ plugins: [] }) }))
+// This fixture mounts Univer without the UI services used by comment hover markers.
+vi.mock('./workbook-threaded-comment-marker', () => ({ installThreadedCommentAffordances: () => ({ dispose() {} }) }))
+vi.mock(import('./workbook-note-pictures-host'), async original => ({
+  ...await original(),
+  installNotePictureHover: () => ({ dispose() {} }),
+}))
 vi.mock('./workbook-ribbon', () => ({
   mountWorkbookRibbon: (_host: unknown, callback: unknown) => { grid.ribbon = callback; return { dispose() {}, refreshState() {} } },
   applyWorkbookRibbonCommand: grid.apply,

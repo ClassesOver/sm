@@ -1,6 +1,8 @@
 /** Small browser-safe localization closure adapted from GenOffice PDF i18n/strings.ts at f8c17004fb730df11f0f743164ffd8b4281bb38c. */
 const labels = {
   'Edit': ['Edit', '编辑'], 'Convert & Export': ['Convert & Export', '转换与导出'], 'Search, Print & Properties': ['Search, Print & Properties', '搜索、打印与属性'], 'Signature & Protection': ['Signature & Protection', '签名与保护'],
+  '查找敏感信息': ['Find sensitive info', '查找敏感信息'], '以上全部': ['All of the above', '以上全部'],
+  '电话号码': ['Phone numbers', '电话号码'], '电子邮箱': ['Email addresses', '电子邮箱'], '信用卡号码': ['Credit card numbers', '信用卡号码'], '美国社会安全号码': ['US Social Security numbers', '美国社会安全号码'], '日期': ['Dates', '日期'], 'IBAN 账号': ['IBANs', 'IBAN 账号'],
   'AI': ['AI', 'AI 助手'], 'AI Review': ['AI Review', 'AI 审阅'], 'Draw Tools': ['Draw Tools', '绘图工具'],
   '双页视图': ['Two-page view', '双页视图'], '单页视图': ['Single-page view', '单页视图'],
   '开始': ['Home', '开始'], '注释': ['Annotate', '注释'], '编辑': ['Edit', '编辑'], '页面': ['Pages', '页面'], '视图': ['View', '视图'],

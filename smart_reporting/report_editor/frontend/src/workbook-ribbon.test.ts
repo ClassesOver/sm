@@ -561,19 +561,33 @@ it('dispatches clear formats/all through the official selection commands and ref
 
 it('renders GenOffice Data Tools in source order with explicit native writeback limits', () => {
   document.body.innerHTML = '<main></main>'
-  mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
+  const command = vi.fn()
+  let editable = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, { editable: () => editable, rotation: () => 0 })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
   const groups = [...document.querySelectorAll<HTMLElement>('.workbook-ribbon-group')]
   const groupFor = (title: string) => groups.find(group => group.querySelector('h2')?.textContent === title)
   const dataTools = groupFor('数据工具')!
-  const ids = [...dataTools.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
-    .map(button => button.dataset.ribbonCommand)
+  const ids = [...dataTools.querySelectorAll<HTMLElement>('[data-ribbon-control], [data-ribbon-command]')]
+    .map(control => control.dataset.ribbonControl ?? control.dataset.ribbonCommand)
   expect(ids).toEqual([
-    'text-to-columns:2', 'text-to-columns:4', 'text-to-columns:8', 'text-to-columns:1',
+    'text-to-columns',
     'flash-fill', 'remove-duplicates-open', 'dv-open', 'consolidate-open',
   ])
   const flash = dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="flash-fill"]')!
-  for (const id of [1, 2, 4, 8]) expect(dataTools.querySelector<HTMLButtonElement>(`[data-ribbon-command="text-to-columns:${id}"]`)!.disabled).toBe(false)
+  const split = dataTools.querySelector<HTMLSelectElement>('[data-ribbon-control="text-to-columns"]')!
+  expect(split.title).toBe('拆分单列文本（需完整加载的工作簿）')
+  expect(split.disabled).toBe(false)
+  expect(Array.from(split.options, option => [option.value, option.text])).toEqual([
+    ['', '分列'], ['text-to-columns:2', '按逗号拆分'], ['text-to-columns:4', '按分号拆分'],
+    ['text-to-columns:8', '按空格拆分'], ['text-to-columns:1', '按制表符拆分'],
+  ])
+  for (const option of Array.from(split.options).slice(1)) {
+    split.value = option.value
+    split.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(split.value).toBe('')
+  }
   expect(dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="remove-duplicates-open"]')!.disabled).toBe(false)
   expect(flash.disabled).toBe(false)
   const validation = dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="dv-open"]')!
@@ -591,6 +605,9 @@ it('renders GenOffice Data Tools in source order with explicit native writeback 
   expect(subtotal?.textContent).toBe('分类汇总')
   expect(subtotal?.disabled).toBe(false)
   expect(subtotal?.dataset.unavailableReason).toBeUndefined()
+  editable = false; ribbon.refreshState()
+  expect(split.disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('dispatches the official sort-range command with absolute bounds for asc and desc', () => {

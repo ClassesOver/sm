@@ -348,3 +348,34 @@ async def test_office_followup_uses_prior_answer_for_unchanged_scope(office_samp
         assert "刚才的数值是多少" not in instructions[2]
     finally:
         await service.aclose()
+
+@pytest.mark.anyio
+async def test_file_naming_uses_verified_pptx_draft_and_has_no_read_history(office_sample):
+    from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
+
+    editor, context, session, model, original = office_sample
+    suggest = AsyncMock(return_value={'answer': 'Quarterly update'})
+    service = NativeOfficeReadService(editor,
+        planners={context.format: SimpleNamespace(suggest_filename=suggest)}, enabled=True)
+    try:
+        if context.format == 'xlsx':
+            with pytest.raises(ReportingError) as captured:
+                await service.start(session, **request_for(context, action='fileName'))
+            assert captured.value.code == 'native_ai_instruction_invalid'
+            suggest.assert_not_awaited()
+            return
+        selection, operations = selection_and_change(context, model)
+        with pytest.raises(ReportingError) as captured:
+            await service.start(session, **request_for(context, action='fileName', selection=selection))
+        assert captured.value.code == 'native_ai_instruction_invalid'
+        job = await service.start(session, **request_for(context, action='fileName', operations=operations))
+        job = await service.status(session, job['taskId'])
+        assert job['status'] == 'completed', job
+        assert job['result']['answer'] == 'Quarterly update'
+        assert job['result']['readingVersion'] == 'draft'
+        assert job['result']['sourceSha256'] == context.source_file.sha256
+        assert '73' in suggest.await_args.args[0]
+        assert '42' not in suggest.await_args.args[0]
+        assert await editor.read_file(context) == original
+    finally:
+        await service.aclose()

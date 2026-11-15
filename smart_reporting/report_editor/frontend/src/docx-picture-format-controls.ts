@@ -6,6 +6,7 @@ export type DocxPictureFormatAction='rotateRight'|'rotateLeft'|'flipH'|'flipV'|'
 /** Host provides actual section content width, in CSS px, for GenOffice Reset Size. */
 export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFormatAnchor[],host:HTMLElement,locked:()=>string|null,reportError:(error:unknown)=>void,contentWidth:()=>number=()=>624){
  let active=true,generation=0,modal:HTMLElement|undefined
+ let positionGallery: { trigger: HTMLButtonElement; dispose: () => void } | undefined
  const selected=()=>{
   const s=editor.state.selection
   if(!(s instanceof NodeSelection)||s.node.type.name!=='docProtected'||s.node.attrs.blockType!=='image')return null
@@ -13,18 +14,88 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
   return anchor?{node:s.node,pos:s.from,anchor}:null
  }
  const reason=()=>locked()??(!editor.isEditable?'当前文档不可编辑':null)??(selected()?.node.attrs.imageReplace?'图片替换与格式修改需分别保存':null)??(selected()?.anchor.imageFormatEditable?null:'请选择支持原生格式保存的整块图片')
- const close=()=>{generation++;modal?.remove();modal=undefined}
- const open=(action:DocxPictureFormatAction)=>{
+ const closePositionGallery=()=>{
+  const gallery=positionGallery
+  if(!gallery)return
+  positionGallery=undefined
+  gallery.dispose()
+ }
+ const close=()=>{generation++;closePositionGallery();modal?.remove();modal=undefined}
+ const open=(action:DocxPictureFormatAction,trigger?:HTMLButtonElement)=>{
   try{
+   if(action==='position'&&positionGallery&&positionGallery.trigger===trigger){close();return}
    const unavailable=reason();if(unavailable)throw new Error(unavailable)
    close();const target=selected()!,snapshot=editor.state.doc,ticket=generation
    const current=()=>active&&ticket===generation&&!editor.isDestroyed&&!reason()&&editor.state.doc===snapshot&&selected()?.node===target.node&&selected()?.pos===target.pos
    const apply=(patch:PictureFormatPatch)=>{
     if(!current())throw new Error('文档或图片选择已变化，请重新打开图片格式工具')
-    const op={kind:'formatImage',blockId:target.anchor.blockId,expectedObjectSha256:target.anchor.expectedObjectSha256,expectedImageSha256:target.anchor.imageSha256,...target.node.attrs.imageFormat,...patch}
+    const pending:PictureFormatPatch={...target.node.attrs.imageFormat,...patch}
+    if(patch.wrap===null){delete pending.posH;delete pending.posV}
+    const op={kind:'formatImage',blockId:target.anchor.blockId,expectedObjectSha256:target.anchor.expectedObjectSha256,expectedImageSha256:target.anchor.imageSha256,...pending}
     const projected=projectDocxPictureFormat(target.node.toJSON(),target.anchor,op)
     const tr=closeHistory(editor.state.tr).setNodeMarkup(target.pos,undefined,projected.attrs)
-    editor.view.dispatch(tr.setSelection(NodeSelection.create(tr.doc,target.pos)));close();editor.view.focus()
+    close();editor.view.dispatch(tr.setSelection(NodeSelection.create(tr.doc,target.pos)));editor.view.focus()
+   }
+   if(action==='position'){
+    const wrapper=trigger?.parentElement
+    if(!trigger||!wrapper)return
+    const panel=document.createElement('div'),grid=document.createElement('div')
+    panel.className='layout-menu'
+    panel.dataset.rbPanel=''
+    panel.setAttribute('role','group')
+    panel.setAttribute('aria-label','位置')
+    grid.className='pos-grid'
+    const button=(label:string,pressed:boolean,patch:PictureFormatPatch)=>{
+     const item=document.createElement('button')
+     item.type='button'
+     item.classList.toggle('active',pressed)
+     item.setAttribute('aria-label',label)
+     item.setAttribute('aria-pressed',String(pressed))
+     item.title=label
+     item.onclick=()=>{try{apply(patch)}catch(error){close();reportError(error)}}
+     return item
+    }
+    const {imageWrap,imagePosH,imagePosV}=target.node.attrs
+    const inline=button('嵌入型',!imageWrap,{wrap:null})
+    inline.dataset.position='inline'
+    const caption=document.createElement('b')
+    caption.textContent='嵌入型'
+    inline.append(caption)
+    panel.append(inline,grid)
+    for(const [v,vertical] of [['top','顶部'],['center','中部'],['bottom','底部']] as const){
+     for(const [h,horizontal] of [['left','左侧'],['center','居中'],['right','右侧']] as const){
+      const item=button(vertical+horizontal,!!imageWrap&&imagePosH===h&&imagePosV===v,{posH:h,posV:v,wrap:h==='right'?'square-right':'square-left'})
+      item.classList.add('pos-cell',`ph-${h}`,`pv-${v}`)
+      const dot=document.createElement('span')
+      dot.className='pos-dot'
+      item.append(dot);grid.append(item)
+     }
+    }
+    const doc=trigger.ownerDocument
+    const onOutside=(event:Event)=>{if(!wrapper.contains(event.target as Node))closePositionGallery()}
+    const onTransaction=()=>{if(!current())closePositionGallery()}
+    positionGallery={trigger,dispose:()=>{
+     doc.removeEventListener('pointerdown',onOutside,true)
+     doc.removeEventListener('focusin',onOutside)
+     editor.off('transaction',onTransaction)
+     trigger.setAttribute('aria-expanded','false')
+     panel.remove()
+    }}
+    panel.onkeydown=event=>{
+     if(event.key!=='Escape')return
+     event.preventDefault()
+     event.stopPropagation()
+     closePositionGallery()
+     trigger.focus()
+    }
+    trigger.setAttribute('aria-expanded','true')
+    wrapper.append(panel)
+    doc.addEventListener('pointerdown',onOutside,true)
+    doc.addEventListener('focusin',onOutside)
+    editor.on('transaction',onTransaction)
+    const selectedItem=panel.querySelector<HTMLButtonElement>('[aria-pressed="true"]')??inline
+    selectedItem.focus({preventScroll:true})
+    return
    }
    if(action==='rotateRight'||action==='rotateLeft'){apply({rotDeg:((Number(target.node.attrs.imageRotDeg)||0)+(action==='rotateRight'?90:270))%360});return}
    if(action==='flipH'||action==='flipV'){apply({[action]:!target.node.attrs[action==='flipH'?'imageFlipH':'imageFlipV']});return}
@@ -42,15 +113,13 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    const select=(label:string,options:readonly (readonly [string,string])[],value:string)=>{const row=document.createElement('label'),field=document.createElement('select');row.textContent=label;for(const [key,name] of options){const option=document.createElement('option');option.value=key;option.textContent=name;field.append(option)}field.value=value;row.append(field);form.append(row);return field}
    const wrap=select('文字环绕',[['','嵌入型'],...PICTURE_WRAPS.map((v,i)=>[v,['四周型（左）','四周型（右）','紧密型（左）','紧密型（右）','穿越型（左）','穿越型（右）','上下型','衬于文字下方','浮于文字上方'][i]!] as const)],String(target.node.attrs.imageWrap??''))
    const align=select('对齐',[['left','左对齐'],['center','居中'],['right','右对齐']],String(target.node.attrs.imageAlign??'left'))
-   const posH=select('水平位置',[['left','左'],['center','中'],['right','右']],String(target.node.attrs.imagePosH??'left'))
-   const posV=select('垂直位置',[['top','上'],['center','中'],['bottom','下']],String(target.node.attrs.imagePosV??'top'))
    const submit=document.createElement('button');submit.type='submit';submit.textContent='应用';const cancel=document.createElement('button');cancel.type='button';cancel.textContent='取消';cancel.onclick=close;form.append(submit,cancel)
    // Only the requested group is written: size and alignment changes preserve source anchor geometry.
-   form.onsubmit=e=>{e.preventDefault();try{if(action==='size')apply(pictureSizeForSide(Number(width.value),Number(height.value),'w',Number(width.value),false));else if(action==='wrap')apply({wrap:(wrap.value||null) as PictureFormatPatch['wrap']});else if(action==='position')apply({posH:posH.value as PictureFormatPatch['posH'],posV:posV.value as PictureFormatPatch['posV'],wrap:posH.value==='right'?'square-right':'square-left'});else apply({align:align.value as PictureFormatPatch['align']})}catch(error){reportError(error)}}
-   const visible:(HTMLInputElement|HTMLSelectElement)[]=action==='size'?[width,height,lock]:action==='wrap'?[wrap]:action==='position'?[posH,posV]:[align]
-   for(const field of [width,height,lock,wrap,align,posH,posV])field.closest('label')!.hidden=!visible.includes(field)
-   modal.append(form);host.append(modal);(action==='size'?width:action==='wrap'?wrap:action==='position'?posH:align).focus()
+   form.onsubmit=e=>{e.preventDefault();try{if(action==='size')apply(pictureSizeForSide(Number(width.value),Number(height.value),'w',Number(width.value),false));else if(action==='wrap')apply({wrap:(wrap.value||null) as PictureFormatPatch['wrap']});else apply({align:align.value as PictureFormatPatch['align']})}catch(error){reportError(error)}}
+   const visible:(HTMLInputElement|HTMLSelectElement)[]=action==='size'?[width,height,lock]:action==='wrap'?[wrap]:[align]
+   for(const field of [width,height,lock,wrap,align])field.closest('label')!.hidden=!visible.includes(field)
+   modal.append(form);host.append(modal);(action==='size'?width:action==='wrap'?wrap:align).focus()
   }catch(error){reportError(error)}
  }
- return {reason,open,dispose(){active=false;close()}}
+ return {reason,open,closePositionGallery,dispose(){active=false;close()}}
 }

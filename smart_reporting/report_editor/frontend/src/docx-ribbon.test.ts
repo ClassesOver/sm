@@ -25,20 +25,21 @@ const TextStyle = Mark.create({
 
 afterEach(() => { document.body.replaceChildren() })
 
-function setupTabNavigation(tools?: Parameters<typeof createDocxRibbon>[25]) {
+function setupTabNavigation(tools?: Parameters<typeof createDocxRibbon>[25], section?: Parameters<typeof createDocxRibbon>[4]) {
   const host = document.body.appendChild(document.createElement('div'))
   const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Protected, Text], content: { type: 'doc', content: [
     { type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }, { type: 'docProtected', attrs: { blockType: 'image' } },
   ] } })
-  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, tools); document.body.append(ribbon)
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, section, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, tools); document.body.append(ribbon)
   const tab = (id: string) => ribbon.querySelector<HTMLButtonElement>(`[data-tab-id="${id}"]`)!
   return { editor, ribbon, tab }
 }
 
-it('routes Layout Arrange position and wrap to the existing picture format controls', () => {
+it.each([false,true])('routes Layout Arrange through existing picture controls with section settings=%s', withSection => {
   const open = vi.fn()
   let unavailable: string | null = '请选择图片'
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, dispose: vi.fn() } })
+  const section = withSection ? { settings: {} as NonNullable<Parameters<typeof createDocxRibbon>[4]>['settings'], onChange: vi.fn() } : undefined
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, closePositionGallery: vi.fn(), dispose: vi.fn() } }, section)
   try {
     f.tab('layout').click()
     const arrange = () => f.ribbon.querySelector('section[aria-label="排列"]')!
@@ -50,7 +51,7 @@ it('routes Layout Arrange position and wrap to the existing picture format contr
     expect(action('position').disabled).toBe(false)
     action('position').click()
     action('wrap').click()
-    expect(open.mock.calls).toEqual([['position'], ['wrap']])
+    expect(open.mock.calls).toEqual([['position', action('position')], ['wrap']])
   } finally { f.editor.destroy() }
 })
 

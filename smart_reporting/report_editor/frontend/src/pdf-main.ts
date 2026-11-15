@@ -82,6 +82,8 @@ import { MARKUP_COLORS, quadToRect, selectionQuadsByPage } from './genoffice-pdf
 import { markupSelectionState, togglePdfMarkup, type MarkupType, type PdfMarkupSelection } from './pdf-markup'
 
 import { createSearchIndexCache, searchInIndex, type SearchIndex } from './genoffice-pdf-search'
+import { REDACT_PATTERNS, type RedactPattern } from './genoffice-pdf-redact-patterns'
+import { PDF_REDACT_PATTERN_LABELS, stagePdfPatternRedactions } from './pdf-redact-find'
 
 import { loadViewState, saveViewState, type PdfFitMode, type PdfViewState } from './genoffice-pdf-reading-state'
 import { pdfReadingKey, capturePdfReading, restorePdfReading, pdfReadingRows } from './pdf-reading-state'
@@ -824,7 +826,55 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }, true)
   sourceCommand(applyRedaction, 'annotate.drawTools.applyRedaction')
   applyRedaction.title = '应用涂黑：保存新修订并永久移除标记区域内的内容（来源修订不变）'
-  annotateDrawGroup.append(redactTool, clearRedaction, applyRedaction)
+  let findingRedactions = false
+  const redactionFinder = documentElement('select', 'pdf-draw-color')
+  sourceCommand(redactionFinder, 'annotate.drawTools.redactFind')
+  redactionFinder.setAttribute('aria-label', pdfRibbonLabel('查找敏感信息'))
+  for (const [value, label] of [
+    ['', '查找敏感信息'],
+    ...REDACT_PATTERNS.map(pattern => [pattern, PDF_REDACT_PATTERN_LABELS[pattern]]),
+    ['all', '以上全部'],
+  ]) {
+    const option = documentElement('option'); option.value = value; option.textContent = pdfRibbonLabel(label)
+    redactionFinder.append(option)
+  }
+  redactionFinder.title = '从可搜索文本识别敏感信息，检查区域后再应用涂黑'
+  function canFindRedactions() {
+    return !!document && !disposed && !locked && !previewing && !printing && !previewDocument
+      && response.editingEnabled && !draft.closed && !draft.saving && !mutationBlocked?.()
+      && !draft.operations.some(op => PDF_EXCLUSIVE_DRAFT_KINDS.includes(op.kind))
+  }
+  async function findRedactions(patterns: readonly RedactPattern[]) {
+    if (!canFindRedactions() || findingRedactions) return
+    const source = document!, snapshot = JSON.stringify(draft.operations)
+    findingRedactions = true
+    redactionFinder.setAttribute('aria-busy', 'true')
+    redactionFinder.disabled = true
+    try {
+      const index = await searchCache.get(source)
+      if (!canFindRedactions() || source !== document || snapshot !== JSON.stringify(draft.operations)) return
+      const result = stagePdfPatternRedactions(index, model.pages, draft.operations, patterns)
+      if (result.added) {
+        draft.setOperations(result.operations)
+        await refresh()
+      }
+      status.textContent = [
+        result.added ? '已标记 ' + result.hits + ' 处匹配（' + result.added + ' 个区域），请检查后应用涂黑。' : '没有新增可标记的匹配。',
+        result.skipped ? '有 ' + result.skipped + ' 处匹配的文字区域无法可靠定位。' : '',
+        result.capped ? '已达到当前批次的区域上限。' : '',
+      ].filter(Boolean).join(' ')
+    } finally {
+      findingRedactions = false
+      redactionFinder.removeAttribute('aria-busy')
+      redactionFinder.disabled = !canFindRedactions()
+    }
+  }
+  redactionFinder.addEventListener('change', () => {
+    const pattern = redactionFinder.value
+    redactionFinder.value = ''
+    if (pattern) void findRedactions(pattern === 'all' ? REDACT_PATTERNS : [pattern as RedactPattern]).catch(showError)
+  })
+  annotateDrawGroup.append(redactTool, redactionFinder, clearRedaction, applyRedaction)
   // 固定源 SignatureDialog：手写（矢量笔迹）或键入（按所选字体栅格化为图像），再在页面上拖出放置区域。
   commandGroup = ribbon.group('annotate', 'Signature & Protection')
   const signButton = button('签名', () => openSignature(), true)
@@ -1909,6 +1959,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     undo.disabled ||= !draft.canUndo; redo.disabled ||= !draft.canRedo
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-note-editable]')) control.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed || control.dataset.pdfNoteEditable !== 'true'
     commentsToggle.disabled = attachmentsToggle.disabled = compareToggle.disabled = !document || previewing || printing
+    redactionFinder.disabled = findingRedactions || !canFindRedactions()
     comparison?.sync()
     noteInput.disabled = locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
     textObjects.disabled = (exclusiveDraft&&!textDraftControl(homeTextEdit)) || draft.operations.some(op=>op.kind==='setPageSize') || locked || previewing || !!previewDocument || draft.closed

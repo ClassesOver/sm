@@ -72,3 +72,50 @@ def test_render_preview_rejects_invalid_edit_payload(payload):
 
     with pytest.raises(ReportingError):
         validate_preview_edits(payload, 'a' * 64)
+
+def test_naming_bridge_projects_current_slide_text_without_render_payload(tmp_path: Path):
+    request = tmp_path / 'naming.json'
+    request.write_text(json.dumps({'input': str(FIXTURE), 'purpose': 'fileName'}))
+    from smart_reporting.reporting.delivery.office_engine import run_bridge
+
+    result = run_bridge('slides', 'render-pptx', request)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert set(payload) == {'content'}
+    assert payload['content'].startswith('## Slide 1\n')
+    assert '## Slide 2' in payload['content']
+    assert 50 < len(payload['content']) <= 4002
+    assert 'data:image' not in payload['content']
+
+def test_naming_bridge_withholds_marked_runs_in_actual_pptx(tmp_path: Path):
+    from zipfile import ZipFile
+
+    from lxml import etree
+    from smart_reporting.reporting.delivery.office_engine import run_bridge
+
+    a = '{http://schemas.openxmlformats.org/drawingml/2006/main}'
+    source = tmp_path / 'marked.pptx'
+    with ZipFile(FIXTURE) as original, ZipFile(source, 'w') as output:
+        for part in original.namelist():
+            data = original.read(part)
+            if part == 'ppt/slides/slide1.xml':
+                xml = etree.fromstring(data)
+                run = next(run for run in xml.iter(a + 'r') if run.find(a + 't') is not None)
+                run.find(a + 't').text = 'PRIVATE00'
+                props = run.find(a + 'rPr')
+                if props is None:
+                    props = etree.Element(a + 'rPr')
+                    run.insert(0, props)
+                extensions = etree.SubElement(props, a + 'extLst')
+                ext = etree.SubElement(extensions, a + 'ext', uri='{9F1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D}')
+                etree.SubElement(ext, '{https://genspark.ai/genoffice/redaction/2026}redact',
+                                 label='private client', nsmap={'go': 'https://genspark.ai/genoffice/redaction/2026'})
+                data = etree.tostring(xml)
+            output.writestr(part, data)
+    request = tmp_path / 'naming.json'
+    request.write_text(json.dumps({'input': str(source), 'purpose': 'fileName'}))
+    result = run_bridge('slides', 'render-pptx', request)
+    assert result.returncode == 0, result.stderr
+    text = json.loads(result.stdout)['content']
+    assert '{{private client}}' in text
+    assert 'PRIVATE00' not in text

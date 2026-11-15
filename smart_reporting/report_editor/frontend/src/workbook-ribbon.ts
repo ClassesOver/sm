@@ -531,8 +531,6 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('重新应用筛选', 'filter-reapply', 'filter-reapply'), action('高级筛选', 'filter-advanced', 'filter-advanced'),
     ] },
     { title: '数据工具', actions: [
-      action('按逗号拆分', 'text-to-columns:2', 'text-to-columns:2'), action('按分号拆分', 'text-to-columns:4', 'text-to-columns:4'),
-      action('按空格拆分', 'text-to-columns:8', 'text-to-columns:8'), action('按制表符拆分', 'text-to-columns:1', 'text-to-columns:1'),
       action('快速填充', 'flash-fill', 'flash-fill'), action('删除重复值', 'remove-duplicates-open', 'remove-duplicates-open'),
       action('数据验证', 'dv-open', 'dv-open'), action('合并计算', 'consolidate-open', 'consolidate-open'),
     ] },
@@ -609,6 +607,15 @@ const DATA_COMMAND_MENUS: ReadonlyArray<{
   detail: string
   choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
 }> = [
+  {
+    id: 'text-to-columns', label: '分列', group: '数据工具', icon: '⇶', detail: '拆分单列文本（需完整加载的工作簿）',
+    choices: [
+      { command: 'text-to-columns:2', label: '按逗号拆分' },
+      { command: 'text-to-columns:4', label: '按分号拆分' },
+      { command: 'text-to-columns:8', label: '按空格拆分' },
+      { command: 'text-to-columns:1', label: '按制表符拆分' },
+    ],
+  },
   {
     id: 'what-if-analysis', label: '模拟分析', group: '预测', icon: '❔', detail: '对目标值反解输入',
     choices: [

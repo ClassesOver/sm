@@ -148,6 +148,7 @@ export async function createNativeOfficeView(shell: EditorShell, options: {
   const view = createSlidesEditorView(shell.editor, { save: shell.save, download: shell.exportPptx, native: true, request: transport.slides, draft: options.draft, onAssistant,
     previewPdf: options.api.previewFile, filename: options.context.context.displayName ?? undefined,
     ...(options.context.editingEnabled ? { saveAs: options.api.saveSlidesAs, openFile: options.api.openSlidesFile } : {}),
+    ...(options.context.officeReadAIEnabled ? { slideNaming: options.api } : {}),
     ...(options.context.aiEnabled ? { nativeAI: createSlidesNativeAIClient(options.context.context.documentId, options.context.context.revision, options.context.csrfToken) } : {}) })
   try { await view.ready; return attach(view) } catch (error) { view.dispose(); throw error }
 }

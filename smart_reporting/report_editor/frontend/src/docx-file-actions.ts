@@ -100,14 +100,14 @@ export function createNativeFileActions(options: FileActionOptions & {
   })
   return {
     reason,
-    open(action: DocxFileAction) {
+    open(action: DocxFileAction, suggestedStem?: string) {
       if (disposed) return
       const blocked = reason(action)
       if (blocked) { options.onError(new Error(blocked)); return }
       generation++; busy = false; retry = undefined; kind = action; resetBusy(); message.textContent = ''; delivery.replaceChildren()
       const sourceName = options.displayName || '文档'
       const name = sourceName.toLowerCase().endsWith(suffix) ? sourceName.slice(0, -suffix.length) : sourceName
-      input.value = action === 'new' ? '新建文档' + suffix : `${name} - 副本${suffix}`
+      input.value = action === 'new' ? '新建文档' + suffix : (suggestedStem || `${name} - 副本`) + suffix
       title.textContent = (action === 'new' ? '新建 ' : '另存为 ') + options.formatLabel
       modal.overlay.setAttribute('aria-label', title.textContent)
       note.textContent = action === 'new' ? '创建独立的空白文档；当前文档及未保存的修改保持不变。' : options.saveAsNote
