@@ -151,10 +151,12 @@ Fernet key, and `AGENT_REPORT_PUBLIC_BASE_URL` for the isolated run. Put a
 working Node executable for the test OS on `PATH` and install the frontend
 dependencies used by the native DOCX engine.
 
-The fixture injects a `WordTaskDispatcher`. In application startup,
-`create_native_ai_service` uses the GenOffice Agno planner. Production recovery
-through the dispatcher requires application wiring and a trusted execution
-transport.
+The application can also construct the dispatcher with the configured GenOffice
+Agno model when `AGENT_REPORT_EDITOR_WORD_TASKS_ENABLED=true`. It reuses the
+reporting task repository for supported DOCX paragraph selections. An isolated
+ASGI application run with PostgreSQL and a scripted Agno model covered Office
+login, DOCX upload, authenticated MCP registration, completed task lookup,
+explicit acceptance, revision save and independent download readback.
 
 The isolated run passed five selected cases on PostgreSQL with Node 24. It
 covered HTTP upload, start, explicit acceptance, save and independent DOCX

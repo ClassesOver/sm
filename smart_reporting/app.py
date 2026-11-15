@@ -402,8 +402,27 @@ native_editor = NativeEditorService(
     pdf_text_enabled=settings.native_pdf_text_enabled,
 )
 genoffice_model = office_model(settings, reporting_agent_template.model)
+word_task_dispatcher = None
+if settings.native_ai_enabled and settings.native_word_tasks_enabled:
+    from .report_editor.native import bind_native_workspace
+    from .report_editor.native_word_agno_transport import AgnoWordTaskTransport
+    from .report_editor.native_word_task_dispatcher import WordTaskDispatcher
+    from .task_execution.models import TaskExecutionScope
+
+    def word_task_scope(context, task_id):
+        return TaskExecutionScope(
+            task_id, context.scope.user_id, context.scope.thread_id,
+            bind_native_workspace(native_editor.workspace, context.scope), "native-word-candidate",
+        )
+
+    word_task_dispatcher = WordTaskDispatcher(
+        report_runtime.task_runner.repository, report_editor_grants, native_editor,
+        scope_factory=word_task_scope, secret=settings.workspace_hmac_secret,
+        transport=AgnoWordTaskTransport(genoffice_model), enabled=True,
+    )
 native_ai = create_native_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,
+    word_task_dispatcher=word_task_dispatcher,
 )
 native_slides_ai = create_native_slides_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,

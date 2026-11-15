@@ -33,6 +33,11 @@ def _session_identity(session) -> bytes:
     })
 
 
+def supports_word_task_targets(targets):
+    return all(target.get("type") == "paragraph" and not target.get("cellId")
+               and not target.get("selectionKind") for target in targets)
+
+
 class NativeWordTaskInputBuilder:
     """Return private typed input only; current authority must be checked again later."""
     def __init__(self, grants: Any, editor: Any):
@@ -78,8 +83,7 @@ class NativeWordTaskInputBuilder:
         self.editor.require_enabled('docx')
         original = await self.editor.preview(context, expected_sha256=expected_sha256, operations=[])
         targets = selected_word_objects(original['model'], base, selected_request)
-        if any(item.get('type') != 'paragraph' or item.get('cellId') or item.get('selectionKind')
-               for item in targets):
+        if not supports_word_task_targets(targets):
             raise _invalid()
         await self.editor.preview(context, expected_sha256=expected_sha256, operations=base)
         # Reuse the existing exact full-draft snapshot definition, not a new hash convention.

@@ -255,6 +255,7 @@ class AgentSettings:
     native_docx_enabled: bool = True
     native_pdf_enabled: bool = True
     native_ai_enabled: bool = True
+    native_word_tasks_enabled: bool = False
     office_model_id: str = ""
     office_model_base_url: str = ""
     office_model_api_key: str = field(default="", repr=False)
@@ -483,6 +484,7 @@ class AgentSettings:
             native_docx_enabled=_flag(values.get("AGENT_REPORT_EDITOR_DOCX_ENABLED", values.get("AGENT_NATIVE_DOCX_ENABLED")), default=True),
             native_pdf_enabled=_flag(values.get("AGENT_REPORT_EDITOR_PDF_ENABLED", values.get("AGENT_NATIVE_PDF_ENABLED")), default=True),
             native_ai_enabled=_flag(values.get("AGENT_REPORT_EDITOR_AI_ENABLED", values.get("AGENT_NATIVE_AI_ENABLED")), default=True),
+            native_word_tasks_enabled=_flag(values.get("AGENT_REPORT_EDITOR_WORD_TASKS_ENABLED")),
             office_model_id=values.get("AGENT_OFFICE_MODEL", "").strip(),
             office_model_base_url=values.get("AGENT_OFFICE_MODEL_BASE_URL", "").strip(),
             office_model_api_key=values.get("AGENT_OFFICE_MODEL_API_KEY", "").strip(),

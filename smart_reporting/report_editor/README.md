@@ -52,6 +52,8 @@ GenOffice 网页入口为 `/office`。使用独立的组织域、公司、账号
 
 原生 Word/PDF 编辑、四格式上传和灰度回滚见 [原生 Office 接入指南](NATIVE_EDITING.md)。
 
+设置 `AGENT_REPORT_EDITOR_WORD_TASKS_ENABLED=true` 可启用 Word 段落 AI 编辑的持久任务。任务复用现有 PostgreSQL 任务仓储和 GenOffice 模型。服务恢复后，在同一编辑会话重试原请求可接管原任务。其他 Word 选区继续使用现有编辑链路。
+
 发布前按 [`frontend/smoke/README.md`](frontend/smoke/README.md) 使用真实编辑会话执行桌面端、移动端和导出冒烟；Vite fixture 不替代真实后端链路。
 
 发布与恢复操作分别见 [`docs/runbooks/report-editor-release.md`](../../docs/runbooks/report-editor-release.md) 和 [`docs/runbooks/report-editor-recovery.md`](../../docs/runbooks/report-editor-recovery.md)。

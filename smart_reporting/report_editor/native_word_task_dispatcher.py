@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from ..external_word_transport import ExternalWordTransport
+from ..office.native_access import check as check_office_access
 from ..reporting.models import ReportingError
 from ..task_execution.models import AttemptOutcome, TaskExecutionScope, TaskState
 from ..task_execution.native_word_contracts import (
@@ -103,6 +104,7 @@ class WordTaskDispatcher:
         final_context = await self.editor.context_for_session(last)
         if final_context.digest() != binding.context_sha256:
             raise _invalid()
+        await check_office_access(context.document_id, write=True)
         last = await self.grants.lookup_registered_session(session_reference)
         if (_session_identity(last) != identity or last.expires_at <= datetime.now(UTC)):
             raise _invalid()
