@@ -1,3 +1,4 @@
+import './office-ui-theme.css'
 import { setOfficeAssistantIdentity } from './office-assistant-preferences'
 import {openInlineFolder, renameInlineItem} from './office-inline-folder'
 import type { renderOfficeAnswer } from './office-answer'

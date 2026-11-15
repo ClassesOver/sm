@@ -4,12 +4,6 @@
 .office-account-entry:hover{background:#8881}
 .office-account-avatar{display:flex;align-items:center;justify-content:center;border-radius:50%;width:30px;height:30px;flex:none;background:#f0f0f0;color:#555}
 .office-account-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-html[data-office-theme=dark] .editor-account-settings{--surface:#242424;--text-primary:#eee;--text-secondary:#bbb;--text-tertiary:#aaa;--bg-hover:#383838;--bg-content:#303030;--border-subtle:#444}
-html[data-office-theme=dark] #office{color:#eee;--line:#444;--muted:#bbb}
-html[data-office-theme=dark] #office :is(.office-body,main,.tabbar,aside,.space-selector,.file-list,.home-content){background:#222;color:#eee}
-html[data-office-theme=dark] #office :is(.tab.active,.file-tab.active,.file-row:hover){background:#333;color:#eee}
-html[data-office-theme=dark] :is(.app-bar,.report-meta,.report-outline,.report-actions){background:#242424;color:#eee;border-color:#444;--color-ink:#eee;--color-ink-2:#ddd;--color-text-muted:#bbb;--color-border:#444;--color-primary-soft:#354359}
-html[data-office-theme=dark] .report-app{background:#191919}
 .office-admin-page{max-width:1120px;margin:auto;padding:28px;font:14px/1.6 system-ui,sans-serif}
 .office-admin-page header{display:flex;align-items:center;justify-content:space-between}
 .office-admin-layout{display:grid;grid-template-columns:200px 1fr;gap:24px;margin-top:24px}

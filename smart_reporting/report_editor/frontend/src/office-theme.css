@@ -1,51 +1,9 @@
-/*
- * 原生 Office 编辑器统一视觉语言（Word / Excel / PowerPoint / PDF），以 Markdown 报告编辑器为基准。
- *
- * 基准来源（style.css）：
- *   - 命令按钮：`.report-actions button`（透明底、ink-2 文字、hover #f2f6f9 + border-strong、
- *     按下/选中 primary-soft + border-strong、禁用 0.55 透明度、焦点 2px #8fc9df）
- *   - 分组分隔：`.toolbar-group + .toolbar-group::before`（1px #dfe8ef）
- *   - 导航与选中：`.outline-link`（hover / 当前项 primary-soft + primary）
- *   - 主操作：`.report-actions button[data-action="save"]`（primary 实底，hover accent）
- *   - 画布与纸面：页面底色 --color-bg，纸面 `.editor-surface` 边框与阴影
- * 四种格式只保留结构差异，颜色、尺寸、交互状态一律引用 --office-*；不得再引入格式专属强调色
- * （例如旧 PDF/PPTX 青绿色）。这些 token 只作用于编辑器外壳，不改源文档内容的字体与颜色。
+@import './office-ui-theme.css';
+/* Office structural compatibility styles. Palette and theme switching are
+ * isolated in office-ui-theme.css using pinned GenOffice UI source tokens.
+ * These selectors describe chrome controls; document content keeps its own styles.
  */
-:root {
-  --office-accent: var(--color-primary);
-  --office-accent-hover: var(--color-accent);
-  --office-accent-soft: var(--color-primary-soft);
-  --office-ink: var(--color-ink);
-  --office-ink-2: var(--color-ink-2);
-  --office-muted: var(--color-text-muted);
-  --office-chrome: var(--color-surface);
-  --office-tabbar: var(--color-bg-soft);
-  --office-border: var(--color-border);
-  --office-border-soft: var(--color-border-soft);
-  --office-border-strong: var(--color-border-strong);
-  --office-separator: #dfe8ef;
-  --office-hover-bg: #f2f6f9;
-  --office-hover-border: var(--color-border-strong);
-  --office-pressed-bg: var(--color-primary-soft);
-  --office-pressed-border: var(--color-border-strong);
-  --office-pressed-ink: var(--color-ink-2);
-  --office-selection: var(--color-select-border);
-  --office-disabled-opacity: 0.55;
-  --office-focus-ring: #8fc9df;
-  --office-canvas: var(--color-bg);
-  --office-sidebar: var(--color-bg-soft);
-  --office-page-border: #d5dfe6;
-  --office-page-shadow: 0 1px 2px rgb(27 42 65 / 4%), 0 14px 36px rgb(27 42 65 / 8%);
-  --office-primary-shadow: 0 2px 7px rgb(11 79 138 / 18%);
-  --office-radius: var(--radius-sm);
-  --office-font-size: var(--font-size-md);
-  --office-label-size: var(--font-size-xs);
-  --office-tabbar-height: 36px;
-  --office-tab-height: 32px;
-  --office-body-height: 112px;
-  --office-control-height: 28px;
-  --office-big-control-height: 60px;
-}
+
 
 /* ---- Ribbon 外壳：PDF 与 PowerPoint 采用与 Word/Excel 相同的标签栏、分组和控件 ---- */
 :is(.pdf-ribbon, .slides-native-ribbon) {

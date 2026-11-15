@@ -82,7 +82,7 @@ export async function createNativeOfficeView(shell: EditorShell, options: {
     const entry = reader && !options.context.editingEnabled ? createOfficeAIEntry(onAssistant) : undefined
     if (entry) {
       entry.type='button';entry.dataset.action='office-read-ai'
-      ;(shell.editor.closest('#app')?.querySelector('.toolbar-group-output') ?? shell.editor.parentElement ?? shell.editor).append(entry)
+      ;(shell.editor.closest('#app')?.querySelector('.report-meta') ?? shell.editor.parentElement ?? shell.editor).append(entry)
     }
     const {mountOfficeTaskDock}=await import('./office-task-dock')
     const panels:import('./office-task-dock').OfficeTaskEntry[]=[]

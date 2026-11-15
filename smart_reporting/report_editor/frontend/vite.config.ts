@@ -16,7 +16,7 @@ export default defineConfig({
       const directory = output.dir ?? fileURLToPath(new URL('../static/', import.meta.url))
       await mkdir(join(directory, 'licenses'), { recursive: true })
       await cp(new URL('./node_modules/pdfjs-dist/LICENSE', import.meta.url), join(directory, 'licenses/pdfjs-LICENSE'))
-      for (const family of ['genoffice-docs', 'genoffice-sheets-format']) for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/vendor/${family}/${file}`, import.meta.url), join(directory, `licenses/${family}-${file}`))
+      for (const family of ['genoffice-docs', 'genoffice-sheets-format', 'genoffice-ui']) for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/vendor/${family}/${file}`, import.meta.url), join(directory, `licenses/${family}-${file}`))
       for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/account-settings/${file}`, import.meta.url), join(directory, `licenses/genoffice-settings-${file}`))
       for (const folder of ['cmaps', 'standard_fonts', 'wasm']) {
         await cp(new URL(`./node_modules/pdfjs-dist/${folder}`, import.meta.url),

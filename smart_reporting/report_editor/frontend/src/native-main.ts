@@ -12,6 +12,7 @@ import {
   PanelLeft, Save, Search, Share2, Settings2, Sparkles, X,
 } from 'lucide'
 import './native.css'
+import { configureOfficeWorkspaceChrome } from './office-workspace-chrome'
 
 export async function startNativeEditor() {
   const root = document.querySelector<HTMLElement>('#app')
@@ -25,6 +26,8 @@ export async function startNativeEditor() {
   const context = response.context
   if (context.documentId !== documentId || context.revision !== revision) throw new Error('文档身份与打开路径不一致')
   const shell = createEditorShell(root, toolbarMode(window.innerWidth), context.format)
+  const chrome = configureOfficeWorkspaceChrome(root,shell)
+  window.addEventListener('pagehide',()=>chrome.dispose(),{once:true})
   createIcons({ icons: { Database, FileDown, FileText, Focus, History, Keyboard, MoreHorizontal, PanelLeft, Save, Search, Share2, Settings2, X } })
   root.dataset.nativeEditor = 'true'
   const api = createNativeApi(documentId, revision, response.csrfToken)
@@ -46,7 +49,7 @@ export async function startNativeEditor() {
   original.textContent = '下载原件'
   original.download = context.displayName || `report.${context.format}`
   original.referrerPolicy = 'no-referrer'
-  root.querySelector('.toolbar-group-output')?.append(original)
+  root.querySelector('.report-meta')?.append(original)
   if (context.format === 'xlsx' || context.format === 'pptx') {
     try {
       const { createNativeOfficeView } = await import('./native-office-view')

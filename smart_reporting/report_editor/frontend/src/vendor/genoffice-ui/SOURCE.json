@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/genspark-ai/genoffice",
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "path": "packages/ui/src/tokens.css",
+  "sha256": "2d51d90a80d1598ba32a21f34b9e72024c5230a64885b7ade147818f96cd9014",
+  "size": 6612,
+  "adapter": "tokens.scoped.css changes only root/theme selectors to Office UI scopes; document content has no selectors here."
+}
