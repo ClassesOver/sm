@@ -27,10 +27,10 @@ export class OfficeAssistantController<Input, Job> {
     return this.track(signal => this.transport.start(input, signal), requestId, onStart)
   }
   follow(taskId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
-    return this.track(signal => this.transport.status(taskId, signal), '', onStart)
+    return this.track(signal => this.transport.status(taskId, signal), '', onStart, taskId)
   }
   private async track(load: (signal: AbortSignal) => Promise<Job>, requestId: string,
-    onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
+    onStart?: (job: Job, signal: AbortSignal) => void, knownTaskId = ''): Promise<Job | undefined> {
     if (this.busy || this.accepting) throw new Error('office_task_busy')
     const previousRequest = this.requestId, previousTask = this.taskId
     if (previousRequest || previousTask) void this.cleanup(previousRequest, previousTask).catch(() => {})
@@ -38,14 +38,21 @@ export class OfficeAssistantController<Input, Job> {
     this.terminalObserved = false
     this.abort.abort(); this.abort = new AbortController()
     const signal = this.abort.signal
-    this.requestId = requestId; this.taskId = ''; this.busy = true
+    // A followed task already exists on the server even while status is pending.
+    // Record its identity before awaiting so cancel() can reach it immediately.
+    this.requestId = requestId; this.taskId = knownTaskId; this.busy = true
     try {
       let job = await load(signal)
       if (turn !== this.generation) {
         // An aborted HTTP request may still have created a server-side task.
         // A late task is independent of the active run. Keep its cleanup handle
         // until cancellation succeeds, without restoring it over a replacement.
-        await this.cleanup(this.transport.cancel ? '' : requestId, this.transport.cancel ? this.transport.id(job) : '')
+        const returnedTaskId = this.transport.id(job)
+        // cancel() already queued cleanup for a known followed task. Do not
+        // enqueue the same successful cancellation again after a late response.
+        if (!knownTaskId || returnedTaskId !== knownTaskId) {
+          await this.cleanup(this.transport.cancel ? '' : requestId, this.transport.cancel ? returnedTaskId : '')
+        }
         return undefined
       }
       this.taskId = this.transport.id(job)
