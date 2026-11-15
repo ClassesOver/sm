@@ -30,6 +30,7 @@ from .pptx_model3d import native_model_edits
 _ALLOWED_KEYS = {'customShows', 'backgroundImageReuses', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'zoomInsertions', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'advanceTimes', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
+    'applyNoteSource': {'sheetName', 'row', 'column', 'text'},
     'applyHyperlinkSource': {'sheetName', 'ref', 'target'},
     'applyTableSource': {'sheetName', 'range', 'name', 'style', 'bandedRows'},
     'clearCellRange': {'sheetName', 'range'},

@@ -16,6 +16,7 @@ import { applyChartEdits } from '@sheets-web/xlsx-engine'
 import { applyChartAnchors } from '../packages/xlsx-engine/src/chart-anchor'
 import { applyChartSource } from './chart-sources'
 import { applyTableSource } from './table-source'
+import { applyNoteSource } from '../packages/xlsx-engine/src/notes'
 import { clearCellRange } from '../packages/xlsx-engine/src/workbook-write'
 import { parseAddress } from '../packages/xlsx-engine/src/cell-address'
 import { normalizeLinkTarget } from '../packages/xlsx-engine/src/hyperlink-target'
@@ -168,6 +169,15 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await patchSheetNotes(bytes, parsed.sheetName, parsed.sourceIdentity, parsed.changes); break
       }
       case 'applySheetNotes': bytes = await applySheetNotes(bytes, op.sheetName, op.notes); break
+      case 'applyNoteSource': {
+        const parsed = z.object({
+          kind: z.literal('applyNoteSource'), sheetName: z.string().min(1).max(31),
+          row: z.number().int().min(0).max(1048575), column: z.number().int().min(0).max(16383),
+          text: z.string().min(1).max(32000).nullable(),
+        }).strict().parse(op)
+        bytes = await applyNoteSource(bytes, parsed.sheetName, {row: parsed.row, column: parsed.column, text: parsed.text})
+        break
+      }
       case 'applySheetFilter': {
         const parsed = z.object({
           kind: z.literal('applySheetFilter'), sheetName: z.string().min(1).max(31),

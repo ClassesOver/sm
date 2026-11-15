@@ -405,6 +405,7 @@ class WorkbookAIToolkit(Toolkit):
             catalog['layout'] += (
                 '整簿授权下用 {op:set_hyperlink,sheetId,address,target} 设置链接。'
                 'target 是网址或同工作簿工作表引用；传 null 移除。'
+                '用 {op:set_note,sheetId,address,text} 设置单元格旧式备注，传 null 删除。'
                 '用 {op:set_freeze,sheetId,rows,columns} 从工作表左上角冻结行列，'
                 '行数和列数均为 0–100 的整数；同时传 0 取消冻结。'
                 '用 set_page_setup(sheetId,orientation?,paperSize?,scale?,fitToWidth?,fitToHeight?,margins?,'
@@ -488,6 +489,16 @@ class WorkbookAIToolkit(Toolkit):
                 raise ValueError('workbook_ai_hyperlink_invalid')
             return {'kind': 'applyHyperlinkSource', 'sheetName': self._sheet(sheet_id)['name'],
                     'ref': _cell_address(operation['address']), 'target': target}
+        if op == 'set_note':
+            if set(operation) != {'op', 'sheetId', 'address', 'text'}:
+                raise ValueError('workbook_ai_note_invalid')
+            sheet_id, text = operation['sheetId'], operation['text']
+            if (not isinstance(sheet_id, str) or not sheet_id
+                    or (text is not None and (not isinstance(text, str) or not 1 <= len(text) <= 32000))):
+                raise ValueError('workbook_ai_note_invalid')
+            row, _, column, _ = _bounds(_cell_address(operation['address']))
+            return {'kind': 'applyNoteSource', 'sheetName': self._sheet(sheet_id)['name'],
+                    'row': row, 'column': column, 'text': text}
         if op == 'set_freeze':
             if set(operation) != {'op', 'sheetId', 'rows', 'columns'}:
                 raise ValueError('workbook_ai_freeze_invalid')

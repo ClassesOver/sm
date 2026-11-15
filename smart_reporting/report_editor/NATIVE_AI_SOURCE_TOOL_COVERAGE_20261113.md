@@ -56,6 +56,8 @@ XLSX `add_sheet`、`rename_sheet` 和 `delete_sheet` 接到原生结构写入器
 
 XLSX `set_page_setup` 接到原生打印设置写入器，支持纸张、方向、缩放或按页适配、边距、打印网格线和标题、打印区域、重复行列、页眉页脚及手动分页。只改某一适配轴时保留另一轴的已知设置。Excel 重复标题保存为带工作表限定的行列引用。
 
+XLSX `set_note` 在整簿授权下更新 Excel 旧式单元格备注，`null` 删除。每步从当前重放文件核对备注身份，替换文字时保留原作者，模型参数只提供地址和文字。沿用写入器对线程批注与带图备注的限制。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

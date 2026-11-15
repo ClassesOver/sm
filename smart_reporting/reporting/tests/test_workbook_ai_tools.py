@@ -10,6 +10,7 @@ import pytest
 from agno.agent import Agent
 from agno.models.response import ModelResponse
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
 from openpyxl.styles import Font
 from openpyxl.worksheet.table import Table
 
@@ -20,6 +21,55 @@ from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
+
+
+@pytest.mark.anyio
+async def test_source_set_note_replays_added_replaced_and_removed_notes():
+    book = Workbook()
+    book.active['A1'] = '=2+3'
+    book.active['A1'].comment = Comment('旧备注', '原作者')
+    book.active['A2'].comment = Comment('待移除', '原作者')
+    book.active['A3'].comment = Comment('保留', '同事')
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_note', 'sheetId': 'Sheet', 'address': address, 'text': text}
+        for address, text in [('A1', '更新备注'), ('A2', None), ('B1', '新增备注')]
+    ], '整理备注')
+    sheet = load_workbook(BytesIO(written)).active
+    assert sheet['A1'].value == '=2+3'
+    assert (sheet['A1'].comment.text, sheet['A1'].comment.author) == ('更新备注', '原作者')
+    assert sheet['A2'].comment is None
+    assert (sheet['A3'].comment.text, sheet['A3'].comment.author) == ('保留', '同事')
+    assert sheet['B1'].comment.text == '新增备注'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'fields', 'error'), [
+    ('workbook', {'text': ''}, 'note_invalid'),
+    ('workbook', {'text': '内容', 'author': '管理员'}, 'note_invalid'),
+    ('range', {'text': None}, 'selection_mismatch'),
+])
+async def test_source_set_note_rejects_invalid_arguments_or_scope(scope, fields, error):
+    async def preview(_):
+        pytest.fail('Invalid note proposal reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope=scope,
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0},
+        preview=preview)
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([
+            {'op': 'set_note', 'sheetId': 'Sheet', 'address': 'A1', **fields},
+        ], '更新备注')
 
 
 @pytest.mark.anyio
