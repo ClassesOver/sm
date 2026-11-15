@@ -80,6 +80,8 @@ pytest -m integration smart_reporting/reporting/tests/test_native_office_read_ta
 
 服务器可通过 `AGENT_OFFICE_MODEL` 和 `AGENT_OFFICE_MODEL_BASE_URL` 为 GenOffice 指定独立的 OpenAI 兼容模型。服务需要凭据时，从部署环境注入 `AGENT_OFFICE_MODEL_API_KEY`。该配置用于原生文档助手、首页问答和手动搜索重排。全部留空时，GenOffice 沿用报告工作流的模型配置。
 
+需要在 GenOffice 中修改 PDF 原文时，部署需启用 `AGENT_REPORT_EDITOR_PDF_TEXT_ENABLED=true`。PDF 阅读问答无需打开该开关。
+
 StarRocks 验收需配置 `REPORTING_STARROCKS_INTEGRATION_DSN` 和独立的 `REPORTING_MANAGEMENT_TEST_DB_URL`。用例会在 StarRocks 创建并清理独立测试数据库，并重建 PostgreSQL 的管理测试表，请使用专用测试库。用例覆盖真实表目录发布、工作区授权、成员表范围收窄和撤销后的查询拒绝：
 
 ```bash
