@@ -57,7 +57,9 @@ it('shows the effective member table scope after saving and restoring inheritanc
     if (url.endsWith('/sales/members')) {
       return Response.json({ tables, items: memberTables === null ? [] : [{ user: 'member', tables: memberTables }] })
     }
-    if (url.endsWith('/members')) return Response.json({ items: [{ user: 'member', name: '成员' }] })
+    if (url.endsWith('/members')) return Response.json({
+      items: [{ user: 'member', name: '成员' }, { user: 'other', name: '另一位成员' }],
+    })
     return Response.json({ items: [{ id: 'sales', name: '销售', available: true, tables }] })
   })
   const host = document.body.appendChild(document.createElement('div'))
@@ -67,10 +69,17 @@ it('shows the effective member table scope after saving and restoring inheritanc
   const click = (label: string) => [...host.querySelectorAll('button')].find(button => button.textContent === label)!.click()
   click('成员表权限')
   await vi.waitFor(() => expect(host.textContent).toContain('继承工作区范围 · 2 张表'))
-  for (const input of host.querySelectorAll<HTMLInputElement>('input[type=checkbox]')) input.checked = false
+  const boxes = (member: string) => {
+    const heading = [...host.querySelectorAll('h4')].find(node => node.textContent === member)!
+    return [...heading.parentElement!.querySelectorAll<HTMLInputElement>('input[type=checkbox]')]
+  }
+  boxes('另一位成员')[0].checked = false
+  for (const input of boxes('成员')) input.checked = false
   click('保存成员范围')
   await vi.waitFor(() => expect(host.textContent).toContain('自定义范围 · 无可访问表'))
+  expect(boxes('另一位成员').map(box => box.checked)).toEqual([false, true])
   click('继承工作区范围')
-  await vi.waitFor(() => expect(host.textContent).toContain('继承工作区范围 · 2 张表'))
+  await vi.waitFor(() => expect(host.textContent).not.toContain('自定义范围 · 无可访问表'))
+  expect(boxes('另一位成员').map(box => box.checked)).toEqual([false, true])
   expect(updates).toEqual([[], null])
 })

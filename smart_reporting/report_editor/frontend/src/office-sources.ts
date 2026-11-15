@@ -53,7 +53,9 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
   async function run(action: () => Promise<void>) {
     if (panel.getAttribute('aria-busy') === 'true') return
     panel.setAttribute('aria-busy', 'true')
-    const controls = [...panel.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('button:enabled, select:enabled, textarea:enabled')]
+    const controls = [...panel.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement | HTMLInputElement>(
+      'button:enabled, select:enabled, textarea:enabled, input[type=checkbox]:enabled',
+    )]
     controls.forEach(control => { control.disabled = true })
     status.textContent = '正在处理…'
     try { await action(); status.textContent = '' }
@@ -239,27 +241,42 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
     }
   }
 
-  async function memberLimits(source: string) {
+  async function memberLimits(source: string, edits = new Map<string, Map<string, boolean>>()) {
     const base = `/workspaces/${enc(options.space!.id)}`
     const [members, limits] = await Promise.all([
       officeRequest<{ items: { user: string; name: string }[] }>(`${base}/members`),
       officeRequest<{ tables: string[]; items: { user: string; tables: string[] }[] }>(`${base}/data-sources/${enc(source)}/members`),
     ])
     content.replaceChildren(button('返回数据源', list), node('h3', '成员数据表权限'))
+    const memberSelections = new Map<string, { saved: string[]; values: () => string[] }>()
+    async function updateMember(user: string, tables: string[] | null) {
+      const path = `${base}/data-sources/${enc(source)}/members/${enc(user)}`
+      await officeRequest(path, 'PUT', { tables })
+      const remaining = new Map<string, Map<string, boolean>>()
+      for (const [member, selection] of memberSelections) {
+        if (member === user) continue
+        const selected = new Set(selection.values())
+        const saved = new Set(selection.saved)
+        const changes = new Map<string, boolean>()
+        for (const table of limits.tables) {
+          if (selected.has(table) !== saved.has(table)) changes.set(table, selected.has(table))
+        }
+        if (changes.size) remaining.set(member, changes)
+      }
+      await memberLimits(source, remaining)
+    }
     for (const member of members.items) {
       const current = limits.items.find(item => item.user === member.user)
       const allowedTables = current ? limits.tables.filter(table => current.tables.includes(table)) : limits.tables
-      const selection = choices(limits.tables, allowedTables)
+      const changes = edits.get(member.user)
+      const selection = choices(limits.tables, limits.tables.filter(table => changes?.get(table) ?? allowedTables.includes(table)))
+      memberSelections.set(member.user, { saved: allowedTables, values: selection.values })
       const scope = current ? '自定义范围' : '继承工作区范围'
       const count = allowedTables.length ? `${allowedTables.length} 张表` : '无可访问表'
       const section = node('section')
-      const path = `${base}/data-sources/${enc(source)}/members/${enc(member.user)}`
-      section.append(node('h4', member.name), node('p', `${scope} · ${count}`), selection.container, button('保存成员范围', async () => {
-        await officeRequest(path, 'PUT', { tables: selection.values() })
-        await memberLimits(source)
-      }), button('继承工作区范围', async () => {
-        await officeRequest(path, 'PUT', { tables: null }); await memberLimits(source)
-      }))
+      section.append(node('h4', member.name), node('p', `${scope} · ${count}`), selection.container,
+        button('保存成员范围', () => updateMember(member.user, selection.values())),
+        button('继承工作区范围', () => updateMember(member.user, null)))
       content.append(section)
     }
   }
