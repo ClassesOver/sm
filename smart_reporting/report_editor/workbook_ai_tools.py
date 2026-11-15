@@ -19,7 +19,6 @@ from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_bounda
 
 from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
-
 from .workbook_ai_structure import ROW_COLUMN_SOURCE_OPS, translate_row_column_operation
 from .workbook_search import find_cell_indexes
 

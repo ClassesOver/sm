@@ -114,6 +114,8 @@ async def test_invalid_source_structural_input_rejected_before_preview(operation
 @pytest.mark.parametrize('other', [
     {'op': 'set_cell', 'sheetId': 'Source', 'address': 'A1', 'value': 9},
     {'op': 'merge_cells', 'sheetId': 'Source', 'range': 'A1:B1'},
+    {'op': 'set_range', 'sheetId': 'Source', 'start': 'A1', 'values': [[9]]},
+    {'op': 'clear_range', 'sheetId': 'Source', 'range': 'A1:B2'},
     {'kind': 'applyCellEdits', 'arguments': {'edits': []}},
 ])
 @pytest.mark.parametrize('structural_first', [True, False])
