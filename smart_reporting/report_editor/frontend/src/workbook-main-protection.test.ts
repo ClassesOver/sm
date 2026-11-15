@@ -279,6 +279,9 @@ it('saves changed AutoFilter criteria on a protected sheet and reopens the origi
     { kind: 'protectSheet', sheetName: 'Sheet1', protect: false },
     { kind: 'applySheetFilter', sheetName: 'Sheet1', filter: { range, columns: [] } },
     { kind: 'protectSheet', sheetName: 'Sheet1', protect: true, allow: { autoFilter: true } },
+    { kind: 'applySheetFilter', sheetName: 'Open', filter: {
+      range, columns: [{ colId: 0, dateGroups: [{ year: 2024, month: 1, dateTimeGrouping: 'month' }] }],
+    } },
   ])
   const draft = new NativeDraft(identity, store())
   let downloaded: Uint8Array | undefined
@@ -290,16 +293,25 @@ it('saves changed AutoFilter criteria on a protected sheet and reopens the origi
     expect(grid.view.protection().sheet).toMatchObject({ protected: true, allowFilter: true })
     await grid.api.executeCommand('sheet.command.remove-sheet-filter').catch(() => false)
     expect(sheet().getFilter()).toBeTruthy()
+    const workbook = grid.api.getActiveWorkbook()
+    const target = { unitId: workbook.getId(), subUnitId: sheet().getSheetId() }
+    const dateSheet = workbook.getSheetByName('Open')
+    const datesTarget = { unitId: workbook.getId(), subUnitId: dateSheet.getSheetId() }
+    await grid.api.executeCommand('sheet.command.set-filter-range', { ...datesTarget, range }).catch(() => false)
+    expect(dateSheet.getFilter()).toBeNull()
+    expect(current.shell.editor.textContent).toContain('筛选含日期分组条件')
+    workbook.setActiveSheet(dateSheet)
     const criteria = { colId: 0, filters: { filters: ['other'] } }
-    expect(await grid.api.executeCommand('sheet.command.set-filter-criteria', { col: 0, criteria })).toBe(true)
+    expect(await grid.api.executeCommand('sheet.command.set-filter-criteria', { ...target, col: 0, criteria })).toBe(true)
     await vi.waitFor(() => expect(draft.operations).toMatchObject([
       { kind: 'applySheetFilter', sheetName: 'Sheet1', filter: { range, columns: [{ colId: 0, values: ['other'] }] }, hiddenRows: [1] },
     ]))
     current.shell.save.click()
     await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
-    const saved = (await readWorkbook(downloaded!)).sheets[0]!
-    expect(saved.protection).toMatchObject({ protected: true, allow: { autoFilter: true } })
-    expect(saved.filter).toMatchObject({ range, columns: [{ colId: 0, values: ['other'] }] })
+    const { sheets: [saved, dates] } = await readWorkbook(downloaded!)
+    expect(dates?.filter?.columns).toEqual([{ colId: 0, dateGroups: [{ year: 2024, month: 1, dateTimeGrouping: 'month' }] }])
+    expect(saved?.protection).toMatchObject({ protected: true, allow: { autoFilter: true } })
+    expect(saved?.filter).toMatchObject({ range, columns: [{ colId: 0, values: ['other'] }] })
   } finally { current.view?.dispose() }
 })
 

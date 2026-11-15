@@ -3131,8 +3131,13 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         feedback.textContent = '当前工作簿处于只读、保存或关闭状态，不能修改筛选。'
         return
       }
-      const sheetName = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetName()
-      const filter = currentModel?.sheets.find(item => item.name === sheetName)?.filter
+      const target = command.params as { unitId?: string; subUnitId?: string } | undefined
+      const workbook = runtime.univerAPI.getActiveWorkbook()
+      if (!workbook || (target?.unitId && target.unitId !== workbook.getId())) {
+        command.cancel = true
+        return
+      }
+      const filter = originalSheet(target?.subUnitId || workbook.getActiveSheet()?.getSheetId())?.filter
       // dateGroups 同样无法由网格承载（未灌入网格），拒绝网格内新建/改写以免覆盖。
       const reason = filter?.readOnlyReason ?? (filter?.columns.some(column => column.dateGroups !== undefined)
         ? '筛选含日期分组条件，网格暂不能编辑回写（仅服务端路径可写 dateGroups）' : undefined)
