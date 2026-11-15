@@ -2662,7 +2662,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
             if (!range || range.startRow >= range.endRow) throw new Error('请至少选择两行以排序')
             void sortProtectedRange(range, false, [{ colIndex: range.startColumn, type: command === 'sort:asc' ? 'asc' : 'desc' }]).catch(error => {
               feedback.textContent = (error as Error).message
-            })
+            }).finally(() => { feedback.hidden = false })
             return
           }
           const reason = noteStructureReason(currentModel, noteWorkbook(), { id: 'sheet.command.sort-range' })
