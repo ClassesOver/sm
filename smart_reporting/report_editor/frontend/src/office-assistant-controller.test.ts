@@ -84,7 +84,10 @@ describe('shared Office task control',()=>{
   const running=controller.run({},'new-request');rejectCleanup(new Error('old cancel offline'));await expect(cleanup).rejects.toThrow('old cancel offline')
   await expect(controller.run({},'third')).rejects.toThrow('office_task_busy')
   next.resolve({id:'new',status:'completed'});await running;await controller.cancel()
-  expect(cancel).toHaveBeenLastCalledWith('new')
+  expect(cancel).toHaveBeenCalledTimes(3)
+  expect(cancel).toHaveBeenNthCalledWith(1,'old')
+  expect(cancel).toHaveBeenNthCalledWith(2,'old')
+  expect(cancel).toHaveBeenNthCalledWith(3,'new')
  })
  it('does not wait for a hung cleanup endpoint before returning the status error',async()=>{
   const controller=new OfficeAssistantController({start:async()=>({id:'known',status:'running'}),status:async()=>{throw new Error('status error')},cancel:()=>new Promise(()=>{}),id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
