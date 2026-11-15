@@ -124,3 +124,26 @@ async def test_gateway_rechecks_scope_before_dispatch():
     with pytest.raises(DocumentCandidateDenied, match="document_scope_changed"):
         await gateway.status("channel-a", "member", "task")
     assert executed == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("task_id", ["", "../other", "task\\nother", "含中文", "x" * 257])
+async def test_gateway_rejects_unsafe_task_id_before_adapter_status(task_id):
+    invoked = []
+
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def status(self, authorized_scope, task_id):
+            invoked.append(task_id)
+            return {"status": "ready"}
+
+    async def resolve(channel, identity):
+        return scope()
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+    gateway = DocumentCandidateGateway(registry, resolve)
+    with pytest.raises(ValueError, match="document_task_id_invalid"):
+        await gateway.status("channel-a", "member", task_id)
+    assert invoked == []
