@@ -3,15 +3,16 @@ import {NodeSelection} from '@tiptap/pm/state'
 import {closeHistory} from '@tiptap/pm/history'
 import {projectDocxPictureFormat,pictureSizeForSide,resetPictureDimensions,type PictureFormatAnchor,type PictureFormatPatch} from './docx-picture-format'
 import {zh} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/app/zh'
-export type DocxPictureFormatAction='rotateRight'|'rotateLeft'|'flipH'|'flipV'|'size'|'wrap'|'alignLeft'|'alignCenter'|'alignRight'|'resetSize'|'position'
+import {twipsToPx} from './vendor/genoffice-docs/apps/docs/src/renderer/units'
+export type DocxPictureFormatAction='rotateRight'|'rotateLeft'|'flipH'|'flipV'|'wrap'|'alignLeft'|'alignCenter'|'alignRight'|'resetSize'|'position'
 // GenOffice ContextMenu.tsx WRAP_OPTIONS, shared by the Layout and Picture Format ribbons.
 const wrapOptions=[
  [null,zh.appWrapInline],['square-left',zh.appWrapSquareLeft],['square-right',zh.appWrapSquareRight],
  ['topBottom',zh.appWrapTopBottom],['behind',zh.appWrapBehind],['front',zh.appWrapFront],
 ] as const
 /** Host provides actual section content width, in CSS px, for GenOffice Reset Size. */
-export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFormatAnchor[],host:HTMLElement,locked:()=>string|null,reportError:(error:unknown)=>void,contentWidth:()=>number=()=>624){
- let active=true,generation=0,modal:HTMLElement|undefined
+export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFormatAnchor[],locked:()=>string|null,reportError:(error:unknown)=>void,contentWidth:()=>number=()=>624){
+ let active=true,generation=0
  let arrangeMenu: { trigger: HTMLButtonElement; dispose: () => void } | undefined
  const selected=()=>{
   const s=editor.state.selection
@@ -30,7 +31,40 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
   arrangeMenu=undefined
   menu.dispose()
  }
- const close=()=>{generation++;closeArrangeMenu();modal?.remove();modal=undefined}
+ const close=()=>{generation++;closeArrangeMenu()}
+ const writePatch=(target:NonNullable<ReturnType<typeof selected>>,patch:PictureFormatPatch,focusEditor:boolean)=>{
+  const pending:PictureFormatPatch={...target.node.attrs.imageFormat,...patch}
+  if(patch.wrap===null){delete pending.posH;delete pending.posV}
+  const {imagePosH,imagePosV,imageRelH,imageRelV}=target.node.attrs
+  if(patch.wrap&&!pending.posH&&imageRelH==='margin'&&imageRelV==='margin'&&imagePosH&&imagePosV){
+   pending.posH=imagePosH
+   pending.posV=imagePosV
+  }
+  // The two square choices move the object to the named side. Keep the vertical preset.
+  if(pending.posH&&patch.wrap==='square-left'&&pending.posH==='right')pending.posH='left'
+  if(pending.posH&&patch.wrap==='square-right')pending.posH='right'
+  const op={kind:'formatImage',blockId:target.anchor.blockId,expectedObjectSha256:target.anchor.expectedObjectSha256,expectedImageSha256:target.anchor.imageSha256,...pending}
+  const projected=projectDocxPictureFormat(target.node.toJSON(),target.anchor,op)
+  const tr=closeHistory(editor.state.tr).setNodeMarkup(target.pos,undefined,projected.attrs)
+  close()
+  editor.view.dispatch(tr.setSelection(NodeSelection.create(tr.doc,target.pos)))
+  if(focusEditor)editor.view.focus()
+ }
+ const size=()=>{
+  const target=selected()
+  if(!target)return null
+  const width=Number(target.node.attrs.imageWidthPx),height=Number(target.node.attrs.imageHeightPx)
+  if(![width,height].every(value=>Number.isFinite(value)&&value>0))return null
+  const snapshot=editor.state.doc
+  return {
+   key:target.anchor.blockId,width,height,
+   resize(side:'w'|'h',twips:number,lockAspect:boolean){
+    const current=selected()
+    if(!active||editor.isDestroyed||reason()||editor.state.doc!==snapshot||current?.node!==target.node||current.pos!==target.pos)return
+    try{writePatch(target,pictureSizeForSide(width,height,side,twipsToPx(twips),lockAspect),false)}catch(error){reportError(error)}
+   },
+  }
+ }
  const open=(action:DocxPictureFormatAction,trigger?:HTMLButtonElement)=>{
   try{
    const arrange=action==='position'||action==='wrap'
@@ -40,20 +74,7 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    const current=()=>active&&ticket===generation&&!editor.isDestroyed&&!reason()&&editor.state.doc===snapshot&&selected()?.node===target.node&&selected()?.pos===target.pos
    const apply=(patch:PictureFormatPatch)=>{
     if(!current())throw new Error('文档或图片选择已变化，请重新打开图片格式工具')
-    const pending:PictureFormatPatch={...target.node.attrs.imageFormat,...patch}
-    if(patch.wrap===null){delete pending.posH;delete pending.posV}
-    const {imagePosH,imagePosV,imageRelH,imageRelV}=target.node.attrs
-    if(action==='wrap'&&patch.wrap&&!pending.posH&&imageRelH==='margin'&&imageRelV==='margin'&&imagePosH&&imagePosV){
-     pending.posH=imagePosH
-     pending.posV=imagePosV
-    }
-    // The two square choices move the object to the named side. Keep the vertical preset.
-    if(pending.posH&&patch.wrap==='square-left'&&pending.posH==='right')pending.posH='left'
-    if(pending.posH&&patch.wrap==='square-right')pending.posH='right'
-    const op={kind:'formatImage',blockId:target.anchor.blockId,expectedObjectSha256:target.anchor.expectedObjectSha256,expectedImageSha256:target.anchor.imageSha256,...pending}
-    const projected=projectDocxPictureFormat(target.node.toJSON(),target.anchor,op)
-    const tr=closeHistory(editor.state.tr).setNodeMarkup(target.pos,undefined,projected.attrs)
-    close();editor.view.dispatch(tr.setSelection(NodeSelection.create(tr.doc,target.pos)));editor.view.focus()
+    writePatch(target,patch,true)
    }
    if(arrange){
     const wrapper=trigger?.parentElement
@@ -137,19 +158,7 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    if(action==='resetSize'){
     const image=new Image();image.onload=()=>{try{apply(resetPictureDimensions(image.naturalWidth,image.naturalHeight,contentWidth()))}catch(error){reportError(error)}};image.onerror=()=>reportError(new Error('图片自然尺寸无法读取'));image.src=String(target.node.attrs.imageDataUrl);return
    }
-   modal=document.createElement('div');modal.className='docx-picture-format-dialog';modal.setAttribute('role','dialog');modal.setAttribute('aria-label','图片格式');modal.setAttribute('aria-modal','true');Object.assign(modal.style,{position:'fixed',left:'50%',top:'25%',transform:'translateX(-50%)',zIndex:'1000',background:'white',color:'#242424',padding:'20px',border:'1px solid #d0d0d0',borderRadius:'8px',boxShadow:'0 8px 32px #0003',minWidth:'280px',maxHeight:'70vh',overflow:'auto'});modal.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();close();editor.view.focus()}}
-   const form=document.createElement('form'),title=document.createElement('h3');title.textContent='图片格式';Object.assign(form.style,{display:'grid',gap:'12px'});form.append(title)
-   const input=(label:string,value:number)=>{const row=document.createElement('label'),field=document.createElement('input');row.textContent=label;field.type='number';field.min='1';field.max='10000';field.value=String(value);row.append(field);form.append(row);return field}
-   const width=input('宽度（px）',Number(target.node.attrs.imageWidthPx)),height=input('高度（px）',Number(target.node.attrs.imageHeightPx))
-   const lock=document.createElement('input');lock.type='checkbox';lock.checked=true;const lockLabel=document.createElement('label');lockLabel.textContent='锁定纵横比';lockLabel.append(lock);form.append(lockLabel)
-   const ratio=Number(target.node.attrs.imageWidthPx)/Number(target.node.attrs.imageHeightPx)
-   width.onchange=()=>{if(lock.checked)height.value=String(Math.max(1,Math.round(Number(width.value)/ratio)))}
-   height.onchange=()=>{if(lock.checked)width.value=String(Math.max(1,Math.round(Number(height.value)*ratio)))}
-   const submit=document.createElement('button');submit.type='submit';submit.textContent='应用';const cancel=document.createElement('button');cancel.type='button';cancel.textContent='取消';cancel.onclick=close;form.append(submit,cancel)
-   // Only the requested group is written: size and alignment changes preserve source anchor geometry.
-   form.onsubmit=e=>{e.preventDefault();try{apply(pictureSizeForSide(Number(width.value),Number(height.value),'w',Number(width.value),false))}catch(error){reportError(error)}}
-   modal.append(form);host.append(modal);width.focus()
   }catch(error){reportError(error)}
  }
- return {reason,alignment,open,closeArrangeMenu,dispose(){active=false;close()}}
+ return {reason,alignment,size,open,closeArrangeMenu,dispose(){active=false;close()}}
 }

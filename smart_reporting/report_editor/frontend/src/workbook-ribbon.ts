@@ -469,7 +469,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('清除内容', 'clear-contents', 'clear-contents'),
     ] },
     { title: '编辑', actions: [
-      action('排序', 'sort-custom-open', 'sort-custom-open'), action('查找', 'find', 'find'),
+      action('查找', 'find', 'find'),
       action('替换', 'replace', 'replace'), action('定位', 'goto-open', 'goto-open'),
     ] },
   ],
@@ -605,6 +605,12 @@ const AUTOSUM_MENU = {
   ],
 } as const
 
+const SORT_CHOICES = [
+  { command: 'sort:asc', label: '升序' },
+  { command: 'sort:desc', label: '降序' },
+  { command: 'sort-custom-open', label: '自定义排序…' },
+] as const
+
 const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   id: string
   label: string
@@ -618,12 +624,17 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
   { ...AUTOSUM_MENU, tab: 'Formulas', group: '函数库', after: 'insert-function-open' },
   {
-    tab: 'Data', id: 'sort', label: '排序', group: '排序和筛选', icon: '⇅', detail: '对所选内容排序',
+    tab: 'Home', id: 'sort-filter', label: '排序和筛选', group: '编辑', icon: '⇅', detail: '排序和筛选',
     choices: [
-      { command: 'sort:asc', label: '升序' },
-      { command: 'sort:desc', label: '降序' },
-      { command: 'sort-custom-open', label: '自定义排序…' },
+      ...SORT_CHOICES,
+      { command: 'filter-toggle', label: '筛选' },
+      { command: 'filter-clear', label: '清除筛选条件' },
+      { command: 'filter-reapply', label: '重新应用当前筛选' },
     ],
+  },
+  {
+    tab: 'Data', id: 'sort', label: '排序', group: '排序和筛选', icon: '⇅', detail: '对所选内容排序',
+    choices: SORT_CHOICES,
   },
   {
     tab: 'Data', id: 'text-to-columns', label: '分列', group: '数据工具', icon: '⇶', detail: '拆分单列文本（需完整加载的工作簿）',

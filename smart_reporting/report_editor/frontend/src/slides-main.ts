@@ -4,7 +4,7 @@ import { createSlidesOpenFile } from './slides-open-file'
 import type { createNativeApi, NativePreviewRequest } from './native-api'
 import { createNativeFileActions } from './docx-file-actions'
 import { OfficeAssistantController } from './office-assistant-controller'
-import { sanitizeFileStem } from './slides-file-name'
+import { sanitizeFileStem, slidesNameLocale } from './slides-file-name'
 import {validateZoomDraft} from './slides-zoom-model'
 import {mountModel3d} from './slides-model3d-ui'
 import {validateModelDraft,type ModelInsertion,type ModelViewEdit,type ModelSource} from './slides-model3d'
@@ -1430,7 +1430,7 @@ async function nameWithAi() {
   statusMessage.textContent = '正在生成文件名建议…'
   try {
     const job = await namingController.run({ expectedSha256, operations: JSON.parse(snapshot), clientRequestId,
-      action: 'fileName', instruction: '', selection: null }, clientRequestId)
+      action: 'fileName', nameLocale: slidesNameLocale(document.documentElement.lang), instruction: '', selection: null }, clientRequestId)
     if (disposed || !job) return
     if (deck.sha256 !== expectedSha256 || JSON.stringify(nativeDraft.operations) !== snapshot) {
       statusMessage.textContent = '草稿已变化，请重新用 AI 命名。'

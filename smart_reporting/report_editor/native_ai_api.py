@@ -72,6 +72,7 @@ class NativeSlidesReadSelection(BaseModel):
 class NativeOfficeReadPayload(_DraftPayload):
     client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     action: Literal["ask", "summarize", "keyPoints", "fileName"] = "ask"
+    name_locale: Literal["en", "zh-CN", "zh-TW"] | None = Field(default=None, alias="nameLocale")
     instruction: str = Field(default="", max_length=2000)
     previous_task_id: str | None = Field(default=None, alias="previousTaskId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     selection: NativeWorkbookReadSelection | Annotated[list[NativeSlidesReadSelection], Field(min_length=1, max_length=100)] | None = None

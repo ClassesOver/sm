@@ -12,12 +12,12 @@ const result = (): NativeSaveResponse => ({ documentId: 'child', revision: 1, pa
   artifacts: { pdf: { downloadUrl: '/reports/v1/download/verified/pdf', sha256: 'b'.repeat(64), size: 123 } },
   editor: { openUrl: '/reports/v1/native/open/child' }, validation: { ok: false, issues: [{ code: 'pending', message: '业务验收尚未完成' }] } })
 
-function fixture() {
+function fixture(prepareSource?: () => Promise<{sha256:string}>) {
   const root = document.createElement('div'); document.body.append(root)
   let reason: string | null = null
   const extract = vi.fn(async (_payload: {requestId: string; expectedSha256: string; pages: number[]}) => result())
   const view = bindPdfExtractDialog({ root, pageCount: () => 4, currentPage: () => 2, unavailable: () => reason,
-    sourceSha256: 'a'.repeat(64), extract })
+    sourceSha256: 'a'.repeat(64), prepareSource: prepareSource ? async () => ({...await prepareSource(), extract}) : undefined, extract })
   const dialog = root.querySelector('dialog')!, input = root.querySelector('input')!, apply = root.querySelector<HTMLButtonElement>('[data-pdf-extract-apply]')!
   return { root, view, dialog, input, apply, extract, block: () => { reason = '请先保存草稿' } }
 }
@@ -143,4 +143,27 @@ it('提取说明与进度滚动区在页码被禁用后仍有独立键盘阅读�
   region?.focus(); expect(document.activeElement).toBe(region)
   expect(region?.textContent).toContain('从已保存版本提取')
   f.view.dispose()
+})
+it('waits for the newly saved revision before issuing the extract request and namespaces retries by its digest', async () => {
+  const saved = vi.fn(async () => ({sha256:'c'.repeat(64)}))
+  const f = fixture(saved)
+  f.view.open(3); expect(f.input.value).toBe('3')
+  f.apply.click()
+  await vi.waitFor(() => expect(f.extract).toHaveBeenCalledOnce())
+  expect(f.extract.mock.calls[0]![0]).toMatchObject({expectedSha256:'c'.repeat(64),pages:[3]})
+  const first = f.extract.mock.calls[0]![0].requestId
+  await vi.waitFor(() => expect(f.apply.disabled).toBe(false))
+  saved.mockResolvedValue({sha256:'d'.repeat(64)})
+  f.apply.click()
+  await vi.waitFor(() => expect(f.extract).toHaveBeenCalledTimes(2))
+  expect(f.extract.mock.calls[1]![0]).toMatchObject({expectedSha256:'d'.repeat(64),pages:[3]})
+  expect(f.extract.mock.calls[1]![0].requestId).not.toBe(first)
+})
+it('does not start extraction if the dialog closes during source preparation', async () => {
+  let complete!: (source: {sha256:string}) => void
+  const f = fixture(() => new Promise(resolve => { complete = resolve }))
+  f.view.open(); f.apply.click(); f.dialog.close()
+  complete({sha256:'c'.repeat(64)})
+  await new Promise(resolve => setTimeout(resolve, 0))
+  expect(f.extract).not.toHaveBeenCalled()
 })

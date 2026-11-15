@@ -368,12 +368,19 @@ async def test_file_naming_uses_verified_pptx_draft_and_has_no_read_history(offi
         with pytest.raises(ReportingError) as captured:
             await service.start(session, **request_for(context, action='fileName', selection=selection))
         assert captured.value.code == 'native_ai_instruction_invalid'
-        job = await service.start(session, **request_for(context, action='fileName', operations=operations))
+        with pytest.raises(ReportingError) as rejected:
+            await service.start(session, **request_for(context, action='ask', instruction='read', name_locale='en'))
+        assert rejected.value.code == 'native_ai_instruction_invalid'
+        job = await service.start(session, **request_for(context, action='fileName', operations=operations, name_locale='en'))
+        with pytest.raises(ReportingError) as changed:
+            await service.start(session, **request_for(context, action='fileName', operations=operations, name_locale='zh-TW'))
+        assert changed.value.code == 'native_ai_snapshot_changed'
         job = await service.status(session, job['taskId'])
         assert job['status'] == 'completed', job
         assert job['result']['answer'] == 'Quarterly update'
         assert job['result']['readingVersion'] == 'draft'
         assert job['result']['sourceSha256'] == context.source_file.sha256
+        assert suggest.await_args.kwargs['name_locale'] == 'en'
         assert '73' in suggest.await_args.args[0]
         assert '42' not in suggest.await_args.args[0]
         assert await editor.read_file(context) == original

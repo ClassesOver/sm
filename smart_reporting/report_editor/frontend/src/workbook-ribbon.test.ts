@@ -512,6 +512,39 @@ it('rejects AutoSum for a single-row selection', () => {
   expect(() => applyWorkbookRibbonCommand('autofn:SUM', workbook)).toThrow('请至少选择两行')
 })
 
+it('dispatches the GenOffice Home Sort and Filter menu beside AutoSum', () => {
+  document.body.innerHTML = '<main></main>'
+  const command = vi.fn()
+  let selected = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    rotation: () => 0, editable: () => true, hasSelection: () => selected,
+  })
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="sort-filter"]')!
+  expect(select).not.toBeNull()
+  expect(select.title).toBe('排序和筛选')
+  expect(select.disabled).toBe(false)
+  const editing = select.closest('.workbook-ribbon-group')!
+  const controls = Array.from(editing.querySelectorAll<HTMLElement>('[data-ribbon-control], [data-ribbon-command]'))
+  expect(controls.slice(0, 3).map(control => control.dataset.ribbonControl ?? control.dataset.ribbonCommand))
+    .toEqual(['autosum', 'sort-filter', 'find'])
+  expect(Array.from(select.options, option => [option.value, option.text])).toEqual([
+    ['', '排序和筛选'], ['sort:asc', '升序'], ['sort:desc', '降序'], ['sort-custom-open', '自定义排序…'],
+    ['filter-toggle', '筛选'], ['filter-clear', '清除筛选条件'], ['filter-reapply', '重新应用当前筛选'],
+  ])
+  for (const option of Array.from(select.options).slice(1)) {
+    select.value = option.value
+    select.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(select.value).toBe('')
+  }
+  selected = false; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  select.value = 'sort:asc'
+  select.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledTimes(6)
+  ribbon.dispose()
+})
+
 it('dispatches the GenOffice Sort menu and keeps the filter controls in source order', () => {
   document.body.innerHTML = '<main></main>'
   const command = vi.fn()

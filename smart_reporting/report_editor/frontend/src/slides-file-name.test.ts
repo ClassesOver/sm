@@ -5,9 +5,10 @@ import { NativeDraft } from './native-draft'
 import type { NativeOfficeReadTask } from './native-api'
 
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
-afterEach(() => { document.body.innerHTML = ''; vi.unstubAllGlobals() })
+afterEach(() => { document.body.innerHTML = ''; document.documentElement.lang = ''; vi.unstubAllGlobals() })
 
-it('suggests a sanitized PPTX stem through the office task and leaves saving to the dialog', async () => {
+it.each([['en-US', 'en'], ['zh-CN', 'zh-CN'], ['zh-Hant-HK', 'zh-TW']])('uses %s for naming and leaves saving to the dialog', async (language, nameLocale) => {
+  document.documentElement.lang = language
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   const sha256 = 'a'.repeat(64)
   const draft = new NativeDraft({ documentId: 'slides', revision: 1, sourceSha256: sha256,
@@ -35,7 +36,7 @@ it('suggests a sanitized PPTX stem through the office task and leaves saving to 
     for (let turn = 0; turn < 8; turn++) await Promise.resolve()
     expect(app.querySelector<HTMLInputElement>('input[name="filename"]')!.value).toBe('Quarterly Results.pptx')
     expect(officeAIStart).toHaveBeenCalledWith(expect.objectContaining({
-      action: 'fileName', expectedSha256: sha256, operations: [], selection: null,
+      action: 'fileName', nameLocale, expectedSha256: sha256, operations: [], selection: null,
     }), expect.any(AbortSignal))
     expect(officeAIStatus).toHaveBeenCalledWith('naming', expect.any(AbortSignal))
     expect(saveAs).not.toHaveBeenCalled()

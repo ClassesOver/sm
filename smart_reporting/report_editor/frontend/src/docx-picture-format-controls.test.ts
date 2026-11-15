@@ -10,7 +10,7 @@ const Picture=Node.create({name:'docProtected',group:'block',atom:true,selectabl
 const anchor={docxIndex:1,blockId:'p',expectedObjectSha256:'xml',editable:false,imageEditable:true,imageFormatEditable:true,imageSha256:'media'}
 const cleanup:(()=>void)[]=[]
 afterEach(()=>{cleanup.splice(0).forEach(fn=>fn());vi.unstubAllGlobals()})
-function setup(){const host=document.createElement('div');document.body.append(host);const editor=new Editor({element:host.appendChild(document.createElement('div')),extensions:[Doc,Text,Picture,UndoRedo],content:{type:'doc',content:[{type:'docProtected'}]},editorProps:{handleScrollToSelection:()=>true}});editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc,0)));const errors:unknown[]=[];const controls=createDocxPictureFormatControls(editor,[anchor],host,()=>null,e=>errors.push(e),()=>624);cleanup.push(()=>{controls.dispose();editor.destroy();host.remove()});return{host,editor,controls,errors}}
+function setup(){const host=document.createElement('div');document.body.append(host);const editor=new Editor({element:host.appendChild(document.createElement('div')),extensions:[Doc,Text,Picture,UndoRedo],content:{type:'doc',content:[{type:'docProtected'}]},editorProps:{handleScrollToSelection:()=>true}});editor.view.dispatch(editor.state.tr.setSelection(NodeSelection.create(editor.state.doc,0)));const errors:unknown[]=[];const controls=createDocxPictureFormatControls(editor,[anchor],()=>null,e=>errors.push(e),()=>624);cleanup.push(()=>{controls.dispose();editor.destroy();host.remove()});return{host,editor,controls,errors}}
 describe('图片格式控制器',()=>{
  it('旋转保持图片选择并支持撤销',()=>{const {editor,controls,errors}=setup();controls.open('rotateRight');expect(editor.state.selection).toBeInstanceOf(NodeSelection);expect(editor.state.doc.firstChild!.attrs).toMatchObject({imageRotDeg:90,imageFormat:{rotDeg:90}});editor.commands.undo();expect(editor.state.doc.firstChild!.attrs.imageRotDeg).toBeNull();expect(errors).toEqual([])})
  it('图片对齐立即生效，选择左对齐使用源文档的默认值',()=>{
@@ -28,6 +28,21 @@ describe('图片格式控制器',()=>{
   expect(host.querySelector('[role="dialog"]')).toBeNull()
   editor.commands.undo()
   expect(controls.alignment()).toBe('right')
+  expect(errors).toEqual([])
+ })
+ it('尺寸字段按边写回，纵横比开关控制另一边且维持图片选中',()=>{
+  const {editor,controls,errors}=setup()
+  const original=controls.size()
+  expect(original).toMatchObject({width:192,height:144})
+  original!.resize('w',1440,true)
+  expect(editor.state.doc.firstChild!.attrs).toMatchObject({imageWidthPx:96,imageHeightPx:72,imageFormat:{widthPx:96,heightPx:72}})
+  controls.size()!.resize('h',1440,false)
+  expect(editor.state.doc.firstChild!.attrs).toMatchObject({imageWidthPx:96,imageHeightPx:96,imageFormat:{widthPx:96,heightPx:96}})
+  original!.resize('w',2880,true)
+  expect(editor.state.doc.firstChild!.attrs.imageWidthPx).toBe(96)
+  expect(editor.state.selection).toBeInstanceOf(NodeSelection)
+  editor.commands.undo()
+  expect(controls.size()).toMatchObject({width:96,height:72})
   expect(errors).toEqual([])
  })
  it('位置九宫格和嵌入型复用图片写回，连续修改可保存和撤销',()=>{

@@ -1,3 +1,15 @@
+import type { SlidesNameLocale } from './native-api'
+
+export function slidesNameLocale(language: string): SlidesNameLocale {
+  try {
+    const locale = new Intl.Locale(language).maximize()
+    if (locale.language === 'zh') return locale.script === 'Hant' ? 'zh-TW' : 'zh-CN'
+  } catch {
+    return 'zh-CN'
+  }
+  return 'en'
+}
+
 // GenOffice apps/shell/src/main/ai-naming.ts.
 const MAX_NAME_LENGTH = 60
 

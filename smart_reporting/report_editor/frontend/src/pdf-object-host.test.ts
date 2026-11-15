@@ -3,7 +3,7 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {NativeDraft,type NativeOperation} from './native-draft'
 import {createPdfEditorView,type PdfEditorHandle} from './pdf-main'
 import type {EditorShell} from './shell'
-import type {createNativeApi,NativeContextResponse} from './native-api'
+import type {createNativeApi,NativeContextResponse,NativeSaveResponse} from './native-api'
 import {pdfReadingKey} from './pdf-reading-state'
 import {saveViewState} from './genoffice-pdf-reading-state'
 type TestAnnotation = { id:string;annotationType:number;subtype:string;contentsObj:{str:string};inReplyTo?:string }
@@ -25,7 +25,7 @@ function operation(kind:string):NativeOperation{
 }
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
-async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number}={}){
+async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
  pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??''
  const notes=options.savedThread?[
   { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
@@ -40,7 +40,7 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
  const attachmentModel=options.attachments?{attachmentsEditable:true,attachments:[{key:'stored',name:'keep.txt',description:'保留附件',size:3,contentSha256:'b'.repeat(64),attachmentId:'c'.repeat(64),expectedAttachmentSha256:'d'.repeat(64)}]}:{}
  const api={exportImages:vi.fn(async()=>{throw new Error('test request observed')}),file:async()=>new Uint8Array(options.sourceSize??2).buffer,preview:vi.fn(async()=>({sourceSha256,model:{...model,...attachmentModel,...staticModel,...(options.digitalSignatures?{digitalSignatures:[],signatureVerification:{scope:"basic-integrity-only",trustPolicy:"none",readable:true,issues:[],revocationChecked:false,timestampsVerified:false}}:{})}})),previewFile:vi.fn(async()=>new Uint8Array([3,4]).buffer)} as unknown as ReturnType<typeof createNativeApi>
  const context={context:{documentId:identity.documentId,revision:1,format:'pdf',scope:identity.scope,sourceFile:{sha256:sourceSha256,path:'source.pdf'}},editingEnabled:options.editingEnabled??true,pdfTextEnabled:false,capabilities:{}} as NativeContextResponse
- const create=async()=>{const view=await createPdfEditorView({editor:root,save:document.createElement('button')} as unknown as EditorShell,{api,context,draft});views.push(view);return view}
+ const create=async()=>{const view=await createPdfEditorView({editor:root,save:document.createElement('button')} as unknown as EditorShell,{api,context,draft,flushForFileOperation:options.flushForFileOperation});views.push(view);return view}
  return {root,draft,create,api}
 }
 it.each(['composition','legacy','handled'])('PDF页码与搜索保留受保护按键，不清草稿或移走焦点：%s',async protection=>{
@@ -84,6 +84,38 @@ it.each([['Png','png'],['Jpg','jpeg']])('PNG/JPG ribbon command opens all saved 
  dialog.querySelector<HTMLButtonElement>('[data-pdf-image-export-apply]')!.click()
  await vi.waitFor(()=>expect(f.api.exportImages).toHaveBeenCalledWith({expectedSha256:sourceSha256,pages:[1,2,3],format,dpi:150}))
  expect(f.draft.operations).toEqual([])
+})
+it('extracts the visible range from the authorized saved revision after a draft page deletion', async () => {
+ const events:string[]=[]
+ const nextSha='b'.repeat(64)
+ const flush=vi.fn(async ():Promise<NativeSaveResponse> => {
+  events.push('save')
+  return {documentId:'pdf-object-host',revision:2,parentRevision:1,revisionRegistered:true,artifacts:{pdf:{sha256:nextSha}},editor:{openUrl:'/reports/v1/native/open/extract-save'},validation:{ok:false,issues:[]}}
+ })
+ const f=await fixture({exportPages:3,restored:{kind:'deletePage',pageId:'sha256:'+sourceSha256+':page:1'},flushForFileOperation:flush});await f.create()
+ vi.stubGlobal('fetch',async (input:string|URL,init?:RequestInit) => {
+  const path=new URL(String(input),window.location.href).pathname
+  events.push(path)
+  if(path==='/reports/v1/native/open/extract-save')return new Response('authorized')
+  if(path.endsWith('/2/api/context'))return Response.json({csrfToken:'new-csrf',context:{documentId:'pdf-object-host',revision:2,format:'pdf',sourceFile:{sha256:nextSha},scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}})
+  if(path.endsWith('/2/api/extract-pages')){
+   expect(JSON.parse(String(init?.body))).toMatchObject({expectedSha256:nextSha,pages:[2]})
+   expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('new-csrf')
+   return Response.json({validation:{ok:false,issues:[{code:'review',message:'仍需验收'}]},artifacts:{pdf:{downloadUrl:'/reports/v1/download/verified/pdf'}}})
+  }
+  throw Error('Unexpected path '+path)
+ })
+ const button=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.extract"]')!
+ expect(button.disabled).toBe(false)
+ button.click()
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="提取页面"]')!
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ const pageRange=dialog.querySelector<HTMLInputElement>('input')!,apply=dialog.querySelector<HTMLButtonElement>('[data-pdf-extract-apply]')!
+ pageRange.value='3';apply.click();expect(flush).not.toHaveBeenCalled()
+ pageRange.value='2';apply.click()
+ await vi.waitFor(()=>expect(dialog.querySelector('a')?.getAttribute('href')).toBe('/reports/v1/download/verified/pdf'))
+ expect(dialog.textContent).toContain('仍需验收')
+ expect(events).toEqual(['save','/reports/v1/native/open/extract-save','/reports/v1/native/pdf-object-host/2/api/context','/reports/v1/native/pdf-object-host/2/api/extract-pages'])
 })
 it('watermark settings expose both source tabs and current slider values without changing the draft',async()=>{
  const f=await fixture();await f.create()

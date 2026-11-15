@@ -27,6 +27,7 @@ import {bindPdfTextMove,PDF_MOVE_TEXT_ALONE_REASON} from './pdf-text-move'
 import {bindPdfPendingText} from './pdf-pending-text'
 import { mountPdfCropCanvas } from './pdf-crop-canvas'
 import { bindPdfExtractDialog } from './pdf-extract-dialog'
+import { authorizeSavedPdfSource } from './pdf-file-source'
 import { bindPdfPrintDialog } from './pdf-print-dialog'
 import {bindPdfSplitHost} from './pdf-split-host'
 import {bindPdfMergeHost} from './pdf-merge-host'
@@ -581,7 +582,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       addAction('向左旋转', () => append({ kind: 'rotatePage', pageId: sourcePage.pageId, delta: 270 }))
       addAction('向右旋转', () => append({ kind: 'rotatePage', pageId: sourcePage.pageId, delta: 90 }))
       addAction('删除页面', async () => { draft.setOperations(deletePdfPage(model.pages, draft.operations, sourcePage.pageId)); await refresh() }, state().length <= 1)
-      addAction('提取页面', () => { activeId = sourcePage.pageId; updateControls(); extraction.open() }, extractionUnavailable() !== null)
+      addAction('提取页面', () => { activeId = sourcePage.pageId; updateControls(); extraction.open(extractionPageIds().indexOf(activeId) + 1) }, pageExtractionUnavailable() !== null)
     }
     addAction('插入 PDF', () => {
       if (afterPageId !== null) activeId = afterPageId
@@ -1135,9 +1136,34 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (draft.operations.length || hasUnstagedText()) return '请先保存或撤销当前修改，再从已保存版本提取页面'
     return null
   }
+  let extractionSource: Awaited<ReturnType<typeof authorizeSavedPdfSource>> | undefined
+  let savedExtractionPageIds: string[] | undefined
+  function extractionPageIds() { return savedExtractionPageIds ?? state().map(page => page.pageId) }
+  function pageExtractionUnavailable() {
+    if (!flushForFileOperation) return extractionUnavailable()
+    if (disposed || !document || locked || previewing || printing || previewDocument || pendingMutations > 0 || draft.saving || mutationBlocked?.() || !response.editingEnabled || (draft.closed && !savedExtractionPageIds)) return '当前 PDF 只读或正在变更，请稍后提取'
+    if (draft.operations.some(op => op.kind === 'redact')) return '请先应用或清除涂黑标记，再提取页面'
+    if (draft.operations.some(op => op.kind === 'mergePages' || op.kind === 'splitPages')) return '页面合并或拆分会改变页数，请保存并打开新修订后提取'
+    return staticText?.incompleteReason() ?? existingImagePanel?.incompleteReason() ?? null
+  }
   const extraction = bindPdfExtractDialog({ root, sourceSha256: context.sourceFile.sha256,
-    pageCount: () => model.pages.length, currentPage: () => (model.pages.find(page => page.pageId === activeId)?.index ?? 0) + 1,
-    unavailable: extractionUnavailable, extract: payload => api.extractPages(payload) })
+    pageCount: () => extractionPageIds().length, currentPage: () => Math.max(1, extractionPageIds().indexOf(activeId) + 1),
+    unavailable: pageExtractionUnavailable, extract: payload => api.extractPages(payload),
+    prepareSource: flushForFileOperation ? async () => {
+      const visible = extractionPageIds()
+      const saved = await flushForFileOperation()
+      if (saved) {
+        savedExtractionPageIds = visible
+        if (!extractionSource || extractionSource.revision !== saved.revision || extractionSource.sha256 !== saved.artifacts.pdf?.sha256) extractionSource = await authorizeSavedPdfSource(context, saved, '提取')
+      }
+      const source = extractionSource ?? { api, sha256:context.sourceFile.sha256 }
+      return { sha256:source.sha256, extract:async payload => {
+        if (disposed) throw new Error('编辑器已关闭，未提取页面')
+        const release = beginMutation()
+        try { return await source.api.extractPages(payload) } finally { release() }
+      }}
+    } : undefined,
+  })
   const splitPdf=bindPdfSplitHost({root,api,context,flushForFileOperation,beginMutation,
     state:()=>({disposed,loaded:!!document,locked,previewing,printing,mutating:pendingMutations>0,blocked:mutationBlocked?.()===true,
       editable:response.editingEnabled,pages:document?state().length:0,closed:draft.closed,dirty:draft.dirty,unstaged:!!document&&hasUnstagedText()}),
@@ -2010,8 +2036,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
     for (const id of ['genoffice.pdf.page.rotateLeft', 'genoffice.pdf.page.rotateRight']) pageButtons.get(id)!.disabled ||= !activeId
     const extract = pageButtons.get('genoffice.pdf.page.extract')!
-    extract.disabled ||= extractionUnavailable() !== null
-    extract.title = extractionUnavailable() ?? '按所选页码生成独立 PDF，来源文档保持不变'
+    extract.disabled = pageExtractionUnavailable() !== null
+    extract.title = pageExtractionUnavailable() ?? '保存当前修改后，按所选页码生成独立 PDF'
     const splitControl=pageButtons.get('genoffice.pdf.page.splitPdf')!
     splitControl.disabled=splitPdf.unavailable()!==null
     splitControl.title=splitPdf.unavailable()??'先保存当前修改，再每 N 页生成一份独立 PDF；逐份保留下载和告警'

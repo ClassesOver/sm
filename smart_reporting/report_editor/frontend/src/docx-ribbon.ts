@@ -3,6 +3,7 @@ import {getLang} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/local
 import {createDocxRevisionScopeMenu} from './docx-revision-scope-menu'
 import {showDocxPasteDialog} from './docx-paste-ui'
 import type { createDocxPictureControls } from './docx-picture-controls'
+import { DocxPictureSizeSource } from './docx-picture-size-source'
 import { openDocxPageBorderDialog as openDocxPageBorderSourceDialog } from './docx-page-border-dialog-source'
 import { openDocxFontDialog, docxFontDialogUnavailable } from './docx-font-dialog'
 import { docxDefaultPageBox } from '../../../reporting/doc_engine/bridge/docx-section-settings'
@@ -184,6 +185,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeSpecialIndent: (() => void) | undefined
   const contextTabs = new Map<string, HTMLButtonElement>()
   const body = document.createElement('div')
+  const pictureSize = document.createElement('section')
+  pictureSize.className = 'table-tool-group'
+  pictureSize.setAttribute('aria-label', '大小')
+  let pictureSizeRoot: ReturnType<typeof createRoot> | undefined
+  const refreshPictureSize = () => {
+    const controls = tools?.pictureFormat
+    if (!controls || !body.contains(pictureSize)) return
+    pictureSizeRoot ??= createRoot(pictureSize)
+    flushSync(() => pictureSizeRoot!.render(createElement(DocxPictureSizeSource, { controls })))
+  }
   const refreshView = () => {
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-view-command]')) {
       button.setAttribute('aria-pressed', String(viewCommands?.active?.(button.dataset.viewCommand!) ?? false))
@@ -484,6 +495,10 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     const groups = tableRibbonGroups[id] ?? (pendingGroups[id] ?? []).map(([label, commands]) =>
       [label, commands.map(commandLabel => command('', commandLabel))] as [string, TableRibbonCommand[]])
     for (const [groupLabel, commands] of groups) {
+      if (id === 'pictureFormat' && groupLabel === '大小' && tools?.pictureFormat) {
+        content.append(pictureSize)
+        continue
+      }
       const group = document.createElement('section')
       group.className = 'ribbon-group docx-ribbon-group'
       group.setAttribute('aria-label', groupLabel)
@@ -768,7 +783,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           continue
         }
         const arrangeAction = label === '位置' ? 'position' : label === '环绕文字' ? 'wrap' : undefined
-        const pictureActions = { '旋转': 'rotateRight', '向左旋转': 'rotateLeft', '水平翻转': 'flipH', '垂直翻转': 'flipV', '高度': 'size', '宽度': 'size', '重置大小': 'resetSize' } as const
+        const pictureActions = { '旋转': 'rotateRight', '向左旋转': 'rotateLeft', '水平翻转': 'flipH', '垂直翻转': 'flipV' } as const
         const pictureAction = id === 'pictureFormat'
           ? arrangeAction ?? pictureActions[label as keyof typeof pictureActions]
           : id === 'layout' && groupLabel === '排列' ? arrangeAction : undefined
@@ -901,6 +916,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     fillDocxCommandIcons(content)
     syncPictureFormatButtons(content)
     body.append(content)
+    refreshPictureSize()
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
@@ -1289,6 +1305,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if(tools?.files)for(const button of body.querySelectorAll<HTMLButtonElement>('[data-file-action]')){const kind=button.dataset.fileAction as 'new'|'save-as'|'save',reason=kind==='save'?tools.files.saveReason():tools.files.reason(kind);button.disabled=reason!==null;button.title=reason??(kind==='save-as'?'将当前已保存修订另存为独立文档':button.textContent??'')}
 
     syncPictureFormatButtons(body)
+    refreshPictureSize()
     refreshView()
     if (active === 'review') refreshReviewCommands()
     if (active === 'review') refreshCommentNavigation()
@@ -1361,7 +1378,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     closeSpecialIndent?.()
     closeFontDialog?.()
     closeParagraphDialog?.()
-    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount()
+    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount()
     editor.off('destroy', dispose)
   }
   editor.on('destroy', dispose)

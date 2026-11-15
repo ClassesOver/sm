@@ -39,7 +39,7 @@ it.each([false,true])('routes Layout Arrange through existing picture controls w
   const open = vi.fn()
   let unavailable: string | null = '请选择图片'
   const section = withSection ? { settings: {} as NonNullable<Parameters<typeof createDocxRibbon>[4]>['settings'], onChange: vi.fn() } : undefined
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => null, size: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
   try {
     f.tab('layout').click()
     const arrange = () => f.ribbon.querySelector('section[aria-label="排列"]')!
@@ -59,7 +59,7 @@ it('renders source Picture Format alignment as three immediate pressed buttons',
   const open = vi.fn()
   let alignment: 'left' | 'center' | 'right' = 'left'
   let unavailable: string | null = null
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => alignment, closeArrangeMenu: vi.fn(), dispose: vi.fn() } })
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => alignment, size: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } })
   try {
     f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
     f.tab('pictureFormat').click()
@@ -74,6 +74,33 @@ it('renders source Picture Format alignment as three immediate pressed buttons',
     f.editor.view.dispatch(f.editor.state.tr.setMeta('picture-align-refresh',true))
     expect(buttons.map(button => button.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true'])
     expect(buttons.every(button => button.disabled && button.title === unavailable)).toBe(true)
+  } finally { f.editor.destroy() }
+})
+
+it('mounts the source Picture Format size fields with units, aspect lock and reset', () => {
+  const open = vi.fn(), resize = vi.fn()
+  const f = setupTabNavigation({ pictureFormat: {
+    open, reason: () => null, alignment: () => null,
+    size: () => ({ key: 'image', width: 192, height: 144, resize }),
+    closeArrangeMenu: vi.fn(), dispose: vi.fn(),
+  } })
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    f.tab('pictureFormat').click()
+    const size = f.ribbon.querySelector('section[aria-label="大小"]')!
+    const height = size.querySelector<HTMLInputElement>('input[aria-label="高度"]')!
+    const width = size.querySelector<HTMLInputElement>('input[aria-label="宽度"]')!
+    const aspect = size.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    expect(height.classList).toContain('len-input')
+    expect(aspect.checked).toBe(true)
+    width.value = '1 in'
+    width.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+    flushSync(() => aspect.click())
+    height.value = '36 pt'
+    height.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+    expect(resize.mock.calls).toEqual([['w',1440,true],['h',720,false]])
+    size.querySelector<HTMLButtonElement>('[data-action="picture-format-resetSize"]')!.click()
+    expect(open).toHaveBeenCalledWith('resetSize')
   } finally { f.editor.destroy() }
 })
 

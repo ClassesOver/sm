@@ -415,3 +415,19 @@ def test_actual_formatted_notes_can_be_read_without_granting_edit_permission():
     assert content == [{'type': 'speakerNotes', 'text': '格式化备注可读59'}]
     assert reader.result('备注59', ['0'])['issues'] == []
     assert not hasattr(reader, 'propose_operations')
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('locale, language', [('en', 'English'), ('zh-CN', 'Simplified Chinese'), ('zh-TW', 'Traditional Chinese')])
+async def test_file_name_uses_the_ui_language_in_a_tool_free_agno_turn(locale, language):
+    class NamingModel(ScriptedModel):
+        def invoke(self, *args, **kwargs):
+            messages = kwargs.get('messages', args[0] if args else [])
+            assert any(m.role == 'system' and f'Write it in {language}.' in m.content for m in messages)
+            assert any(m.role == 'user' and m.content == '## Slide 1\nQuarterly sales' for m in messages)
+            assert not kwargs.get('tools')
+            return super().invoke(*args, **kwargs)
+
+    model = NamingModel(id='scripted', responses=[ModelResponse(content='\nQuarterly Sales\nsecond line')])
+    result = await adapter().AgnoNativeSlidesReadPlanner(model).suggest_filename(
+        '## Slide 1\nQuarterly sales', name_locale=locale, session_id='name-task', user_id='user')
+    assert result == {'answer': 'Quarterly Sales'}

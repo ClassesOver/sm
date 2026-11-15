@@ -117,3 +117,24 @@ async def test_pptx_pdf_preview_reports_unavailable_renderer_and_preserves_sourc
             assert result.status_code == 503
             assert result.json()["detail"]["code"] == "native_engine_unavailable"
         assert (await client.get(BASE + "/file")).content == source
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('office_sample', ['pptx'], indirect=True)
+async def test_pptx_filename_locale_is_forwarded_only_for_naming(office_http):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    client, token, headers, body, service, _, _ = office_http
+    client.cookies.set(NATIVE_SESSION_COOKIE, token)
+    suggest_filename = AsyncMock(return_value={'answer': 'Sales overview'})
+    service.planners['pptx'] = SimpleNamespace(suggest_filename=suggest_filename)
+    start = BASE + '/ai/office-read/start'
+    rejected = await client.post(start, json={**body, 'nameLocale': 'en'}, headers=headers)
+    assert rejected.status_code >= 400
+    invalid = await client.post(start, json={**body, 'action': 'fileName', 'nameLocale': 'other'}, headers=headers)
+    assert invalid.status_code == 422
+    accepted = await client.post(start, json={**body, 'action': 'fileName', 'nameLocale': 'en'}, headers=headers)
+    assert accepted.status_code == 200, accepted.text
+    result = await client.get(BASE + '/ai/office-read/' + accepted.json()['taskId'])
+    assert result.json()['result']['answer'] == 'Sales overview'
+    assert suggest_filename.await_args.kwargs['name_locale'] == 'en'
