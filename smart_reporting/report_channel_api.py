@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .report_channel_invitation import Invitation
 from .report_channel_acp import (
@@ -63,6 +63,13 @@ class DelegateRequest(BaseModel):
 class AcpMessage(ChannelMessage):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    @field_validator("text")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("ACP message cannot be blank")
+        return value
+
 
 class ReportChannelRouter(APIRouter):
     def __init__(self, authenticate: Callable[[Request], Awaitable[ConnectorIdentity | None]]):
@@ -108,8 +115,6 @@ def create_report_channel_router(
             raise HTTPException(409, str(error)) from None
         except ReportChannelAcpCapacity as error:
             raise HTTPException(429, str(error)) from None
-        except ValueError:
-            raise HTTPException(422, "report_channel_acp_message_invalid") from None
         except (ReportAcpError, TimeoutError, OSError):
             raise HTTPException(502, "report_channel_acp_unavailable") from None
 
