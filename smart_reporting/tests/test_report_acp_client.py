@@ -430,3 +430,26 @@ async def test_cancelled_acp_turn_keeps_unknown_receipt_after_reauthorization():
     with pytest.raises(ReportChannelAcpConflict, match="outcome_unknown"):
         await conversation.prompt(identity, "hello", message_id="first")
     assert calls == ["hello"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure,status", [("denied", 403), ("unavailable", 502)])
+async def test_acp_restore_failure_uses_safe_http_status(failure, status):
+    identity = ConnectorIdentity("dsh", "synthetic", "session")
+
+    class Bridge:
+        async def restore(self, channel, caller):
+            if failure == "denied":
+                raise ReportChannelAcpDenied("private membership detail")
+            raise ReportAcpError("private subprocess detail")
+
+    async def authenticate(request):
+        return identity
+
+    app = FastAPI()
+    app.include_router(create_report_channel_router(object(), authenticate, acp=Bridge()))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        response = await http.post("/reports/v1/channels/report-a/acp/messages",
+                                   json={"message_id": "one", "text": "hello"})
+    assert response.status_code == status
+    assert "private" not in response.text
