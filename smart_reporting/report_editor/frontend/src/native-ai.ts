@@ -106,7 +106,8 @@ export function bindNativeAI(container: HTMLElement, options: {
         progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, started.editId, signal, () => editable() && turn === generation)
         if(!disposed && turn===generation)show(started)
       }, (started, error, signal) => {
-        if (options.format === 'docx' && /^word-[0-9a-f]{64}$/.test(started.editId)
+        const durableId = options.format === 'docx' ? /^word-[0-9a-f]{64}$/ : /^[0-9a-f]{64}$/
+        if (durableId.test(started.editId)
           && (missingNativeAITask(error) || temporaryConnectionFailure(error))) {
           return reconnectNativeAITask(
             signal => options.api.aiStatus(started.editId, signal),

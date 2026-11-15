@@ -182,10 +182,10 @@ it('注释使用显式身份授权、显示前后差异，普通正文选区不�
  root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click();await vi.waitFor(()=>expect(draft.operations).toEqual([op]));binding.dispose()
 })
 
-it.each([false, true])('重连时用原请求和 Word 持久任务 ID 恢复轮询（经历网络中断=%s）', async outage => {
+it.each([{format:'docx',outage:false},{format:'docx',outage:true},{format:'pdf',outage:false}] as const)('重连时使用原持久任务 ID 恢复轮询（%o）', async ({format,outage}) => {
   const { NativeApiError } = await import('./native-api')
   const draft = new NativeDraft({documentId:'restart-word',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
-  const editId = 'word-' + 'b'.repeat(64)
+  const editId = (format === 'docx' ? 'word-' : '') + 'b'.repeat(64)
   const pending = {editId,status:'running'}
   const polling = vi.fn()
   if (outage) polling.mockRejectedValueOnce(new TypeError('Failed to fetch'))
@@ -198,8 +198,8 @@ it.each([false, true])('重连时用原请求和 Word 持久任务 ID 恢复轮�
     aiAccept: vi.fn(),
   }
   const root = document.createElement('div')
-  const binding = bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn()},onDraftChange:vi.fn()})
-  binding.setSelection([{blockId:'p1'}])
+  const binding = bindNativeAI(root,{api:api as never,draft,format,view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+  binding.setSelection(format === 'docx' ? [{blockId:'p1'}] : [{pageId:'p1',objectId:'o1'}])
   root.querySelector('textarea')!.value = '修改'
   root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
   await vi.waitFor(() => expect(root.textContent).toContain('恢复后的候选'), {timeout:5000})

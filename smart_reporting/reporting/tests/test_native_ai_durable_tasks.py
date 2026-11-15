@@ -16,6 +16,7 @@ from smart_reporting.report_editor.native_models import NativeArtifacts
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.tests.test_native_ai import pdf_sample as pdf_sample
 from smart_reporting.reporting.tests.test_native_pdf_extract import extract_fixture
 from smart_reporting.reporting.tests.test_workbook_native_ai import proposal
 from smart_reporting.runtime.database import create_agent_database
@@ -332,3 +333,59 @@ async def test_slides_candidate_survives_service_rebuild(durable):
         await second.accept_edit(None, initial["editId"], expected_sha256="a" * 64,
             operations=[], snapshot_sha256=candidate["snapshotSha256"])
         assert (await second.wait_edit_status(None, initial["editId"]))["accepted"] is True
+
+
+async def test_pdf_candidate_rebuild_rechecks_original_preview_and_requires_acceptance(durable, pdf_sample):
+    from contextlib import aclosing
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from smart_reporting.report_editor.native_ai_api import create_native_ai_router
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
+
+    from smart_reporting.report_editor.native_pdf_candidate import DurablePDFCandidateService
+    from smart_reporting.reporting.tests.test_native_ai import pdf_ai_plan, pdf_ai_selection
+
+    editor, context, session, model, source = pdf_sample
+    selected = pdf_ai_selection(model)
+    request = dict(client_request_id=uuid4().hex, instruction="Change amount",
+        expected_sha256=context.source_file.sha256, operations=[], selection=[selected])
+
+    async def planner(*_args, **_kwargs):
+        return pdf_ai_plan(selected, "Amount due 700")
+
+    repository = durable["repository"]
+    async with aclosing(DurablePDFCandidateService(editor, planner=planner, enabled=True, task_repository=repository)) as first:
+        initial = await first.start_edit(session, **request)
+        ready = await first.wait_edit_status(session, initial["editId"])
+        assert ready["status"] == "succeeded", ready
+        assert ready["proposal"]["skippedOperations"] == []
+        assert ready["accepted"] is False
+
+    async with aclosing(DurablePDFCandidateService(editor, planner=never_call, enabled=True, task_repository=repository)) as second:
+        app = FastAPI()
+        app.include_router(create_native_ai_router(editor.grants, editor=editor, ai=None, pdf_candidate=second))
+        raw, _ = await editor.grants.issue(context, capabilities=editor.capabilities(context))
+        token, _ = await editor.grants.exchange(raw)
+        endpoint = f"/reports/v1/native/{context.document_id}/{context.revision}/api/ai"
+        headers = {"Origin": "http://test", "X-CSRF-Token": editor.grants.csrf_token(token)}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.cookies.set(NATIVE_SESSION_COOKIE, token)
+            restored = await client.get(f"{endpoint}/{initial['editId']}")
+            assert restored.status_code == 200, restored.text
+            assert restored.json() == ready
+            rejected = await client.post(f"{endpoint}/start", headers=headers, json={
+                "clientRequestId": request["client_request_id"], "instruction": "Changed instruction",
+                "expectedSha256": context.source_file.sha256, "operations": [], "selection": [selected],
+                "resumeEditId": initial["editId"],
+            })
+            assert rejected.status_code == 404, rejected.text
+            accepted = await client.post(f"{endpoint}/{initial['editId']}/accept", headers=headers, json={
+                "expectedSha256": context.source_file.sha256, "operations": [],
+                "snapshotSha256": ready["snapshotSha256"],
+            })
+            assert accepted.status_code == 200, accepted.text
+            assert accepted.json()["needsVerification"] is True
+            assert (await client.get(f"{endpoint}/{initial['editId']}")).json()["accepted"] is True
+        assert await editor.read_file(context) == source

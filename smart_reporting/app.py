@@ -424,6 +424,13 @@ native_ai = create_native_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,
     word_task_dispatcher=word_task_dispatcher,
 )
+native_pdf_candidate = None
+if settings.native_ai_enabled and settings.native_pdf_candidate_tasks_enabled:
+    from .report_editor.native_pdf_candidate import DurablePDFCandidateService
+
+    native_pdf_candidate = DurablePDFCandidateService(
+        native_editor, planner=native_ai.planner, enabled=True, task_repository=report_runtime.task_runner.repository,
+    )
 native_slides_ai = create_native_slides_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,
     task_repository=(report_runtime.task_runner.repository
@@ -644,7 +651,7 @@ def create_base_app(
         cookie_secure=bool(settings.report_public_base_url and settings.report_public_base_url.startswith("https://")),
     ))
     application.include_router(create_native_ai_router(
-        report_editor_grants, editor=native_editor, ai=native_ai, pdf_read=native_pdf_read_ai,
+        report_editor_grants, editor=native_editor, ai=native_ai, pdf_candidate=native_pdf_candidate, pdf_read=native_pdf_read_ai,
         word_read=native_word_read_ai,
         office_read=native_office_read_ai,
         allowed_origin=settings.report_public_base_url,
@@ -721,6 +728,8 @@ def create_base_app(
     application.router.add_event_handler("shutdown", office_search.aclose)
     application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
     application.router.add_event_handler("shutdown", native_ai.aclose)
+    if native_pdf_candidate is not None:
+        application.router.add_event_handler("shutdown", native_pdf_candidate.aclose)
     application.router.add_event_handler("shutdown", native_pdf_read_ai.aclose)
     application.router.add_event_handler("shutdown", native_word_read_ai.aclose)
     application.router.add_event_handler("shutdown", native_office_read_ai.aclose)
