@@ -5,9 +5,9 @@ still verify formula dependencies and source identity against the actual file.
 """
 from __future__ import annotations
 
-from typing import Any
 import math
 import unicodedata
+from typing import Any
 
 from .document_candidate_xlsx_targets import canonical_xlsx_target, validate_xlsx_selection
 
