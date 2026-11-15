@@ -55,12 +55,15 @@ export class OfficeAssistantController<Input, Job> {
         }
         return undefined
       }
-      this.taskId = this.transport.id(job)
+      const expectedTaskId = knownTaskId || this.transport.id(job)
+      if (!expectedTaskId || this.transport.id(job) !== expectedTaskId) throw new Error('office_task_identity_mismatch')
+      this.taskId = expectedTaskId
       onStart?.(job, signal)
       if (turn !== this.generation) return undefined
       while (this.transport.running(job)) {
-        job = await this.transport.status(this.taskId, signal)
+        job = await this.transport.status(expectedTaskId, signal)
         if (turn !== this.generation) return undefined
+        if (this.transport.id(job) !== expectedTaskId) throw new Error('office_task_identity_mismatch')
       }
       this.terminalObserved = true
       return job
