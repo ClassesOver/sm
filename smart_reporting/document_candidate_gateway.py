@@ -73,4 +73,10 @@ class DocumentCandidateGateway:
         result = await adapter.status(scope, task_id)
         if await self._scope(channel, identity) != scope:
             raise DocumentCandidateDenied("document_scope_changed")
+        # Never present a receipt for a different task as if it belongs to
+        # this authorized request. Older Word adapters may omit taskId.
+        if not isinstance(result, dict):
+            raise ValueError("document_task_status_invalid")
+        if "taskId" in result and result["taskId"] != task_id:
+            raise DocumentCandidateDenied("document_task_identity_mismatch")
         return result
