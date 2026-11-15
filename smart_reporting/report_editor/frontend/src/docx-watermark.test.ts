@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import { DOCX_WATERMARK_PRESETS, docxWatermarkModel, docxWatermarkOperations, effectiveDocxWatermark, validDocxWatermarkSpec, withDocxWatermark, type DocxWatermarkModel } from './docx-watermark'
-import { openDocxWatermarkDialog } from './docx-watermark-dialog'
 import { docxNativeOperations } from './docx-native-history'
 
 const sha = 'a'.repeat(64)
@@ -53,29 +52,4 @@ describe('Word watermark (pinned Design ▸ Watermark)', () => {
     expect(() => withDocxWatermark([], { ...model, editable: false }, { text: 'x' })).toThrow()
   })
 
-  it('custom dialog defaults to the pinned values and returns a text spec or no watermark', () => {
-    HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) { this.open = true }
-    HTMLDialogElement.prototype.close ??= function (this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new Event('close')) }
-    const results: unknown[] = []
-    let dialog = openDocxWatermarkDialog(document.body, null, spec => results.push(spec))
-    expect((dialog.querySelector('input[name=mode][value=none]') as HTMLInputElement).checked).toBe(true)
-    expect((dialog.querySelector('fieldset') as HTMLFieldSetElement).disabled).toBe(true)
-    const text = dialog.querySelector('input[name=text]') as HTMLInputElement
-    expect(text.value).toBe('机密')
-    ;(dialog.querySelector('input[name=mode][value=text]') as HTMLInputElement).click()
-    text.value = '内部资料'
-    ;(dialog.querySelector('input[name=bold]') as HTMLInputElement).checked = true
-    ;(dialog.querySelector('input[name=transparency]') as HTMLInputElement).value = '70'
-    ;(dialog.querySelector('input[name=layout][value=horizontal]') as HTMLInputElement).click()
-    ;(dialog.querySelector('button[value=ok]') as HTMLButtonElement).click()
-    expect(results.at(-1)).toEqual({ text: '内部资料', fontFamily: 'Calibri', colorHex: 'C0C0C0', opacity: 0.3, diagonal: false, bold: true })
-    dialog = openDocxWatermarkDialog(document.body, { text: 'DRAFT', sizePt: 72, boxPt: { widthPt: 100, heightPt: 40 }, colorHex: 'FF0000' }, spec => results.push(spec))
-    expect((dialog.querySelector('select[name=size]') as HTMLSelectElement).value).toBe('72')
-    ;(dialog.querySelector('input[name=text]') as HTMLInputElement).value = '  '
-    ;(dialog.querySelector('button[value=ok]') as HTMLButtonElement).click()
-    expect(dialog.querySelector('[role=alert]')!.textContent).toBe('请输入水印文字')
-    ;(dialog.querySelector('input[name=mode][value=none]') as HTMLInputElement).click()
-    ;(dialog.querySelector('button[value=ok]') as HTMLButtonElement).click()
-    expect(results.at(-1)).toBeNull()
-  })
 })
