@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from ..office.native_access import check as check_office_access
 from ..reporting.models import ReportingError
 from .agent_event_streams import bind_agent_event_log
 from .native_ai import _copy_operations
@@ -71,6 +72,9 @@ class NativePDFFormService(NativePDFReviewService):
                 if job.status != 'running':
                     return
                 await job.event_log.emit('phase', label='正在读取并填写授权表单字段')
+                await check_office_access(context.document_id, write=True)
+                if job.status != "running":
+                    return
                 async with bind_agent_event_log(job.event_log):
                     result = await self.planner(selected=deepcopy(selected), instruction=instruction,
                                                 session_id=f'native-pdf-forms:{job.task_id}',
@@ -104,6 +108,7 @@ class NativePDFFormService(NativePDFReviewService):
                 current = await self.editor.context_for_session(session)
                 if current.digest() != job.context_sha256:
                     raise ReportingError('native_ai_snapshot_changed', 'PDF 会话来源已变化。')
+                await check_office_access(context.document_id, write=True)
                 if monotonic() >= deadline:
                     raise TimeoutError
                 applied = set(manifest['appliedOperationIndices'])

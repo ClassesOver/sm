@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from ..office.native_access import check as check_office_access
 from ..reporting.models import ReportingError
 from .agent_event_streams import bind_agent_event_log, event_stream_response
 from .native_ai import _copy_operations
@@ -110,6 +111,9 @@ class NativePDFReviewService(NativePDFReadService):
                 if job.status != "running":
                     return
                 await job.event_log.emit("phase", label="正在处理批注")
+                await check_office_access(context.document_id, write=True)
+                if job.status != "running":
+                    return
                 async with bind_agent_event_log(job.event_log):
                     result = await self.planner(
                         reader=reader,
@@ -262,6 +266,7 @@ class NativePDFReviewService(NativePDFReadService):
                 current = await self.editor.context_for_session(session)
                 if current.digest() != job.context_sha256:
                     raise ReportingError("native_ai_snapshot_changed", "PDF 会话来源已变化。")
+                await check_office_access(context.document_id, write=True)
                 if monotonic() >= deadline:
                     raise TimeoutError
                 applied = set(manifest["appliedOperationIndices"])

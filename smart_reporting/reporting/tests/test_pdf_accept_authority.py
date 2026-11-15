@@ -10,6 +10,9 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.tests.test_native_ai import pdf_sample
+from smart_reporting.reporting.tests.test_native_pdf_form_ai_tasks import form_sample
+from smart_reporting.reporting.tests.test_native_pdf_review_ai_tasks import review_sample
 
 from smart_reporting.report_editor._file_identity import read_verified_file
 from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
@@ -201,3 +204,59 @@ async def test_pdf_accept_rechecks_authority_after_preview(kind, fault, window, 
         ), response.text
         assert response.json()["detail"]["code"] == code
         assert "operations" not in response.json()
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("boundary", ["source", "candidate"])
+async def test_pdf_form_generation_rechecks_write_access(form_sample, boundary):
+    from smart_reporting.reporting.tests.test_native_pdf_form_ai_tasks import fill_candidate, payload
+
+    editor, context, session, _, _, model = form_sample
+    await _assert_generation_write_access(
+        NativePDFFormService, editor, session, fill_candidate, payload(context, model), boundary, "preview",
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("boundary", ["source", "candidate"])
+async def test_pdf_review_generation_rechecks_write_access(review_sample, boundary):
+    from smart_reporting.reporting.tests.test_native_pdf_review_ai_tasks import actual_candidates, payload
+
+    editor, context, session, _, _ = review_sample
+    await _assert_generation_write_access(
+        NativePDFReviewService, editor, session, actual_candidates, payload(context), boundary, "read_file",
+    )
+
+
+async def _assert_generation_write_access(service, editor, session, plan, payload, boundary, source_method):
+    from dataclasses import replace
+    from unittest.mock import AsyncMock
+
+    can_write = True
+
+    async def authorize(_session, *, write=False):
+        if write and not can_write:
+            raise ReportingError("native_permission_denied", "工作区写权限已撤销。")
+
+    method = source_method if boundary == "source" else "preview_file"
+    original = getattr(editor, method)
+
+    async def preview(*args, **kwargs):
+        nonlocal can_write
+        result = await original(*args, **kwargs)
+        can_write = False
+        return result
+
+    setattr(editor, method, preview)
+    editor.office_authorize = authorize
+    session = replace(session, capabilities={**session.capabilities, "office": True})
+    model = AsyncMock(side_effect=plan)
+    ai = service(editor, planner=model, enabled=True)
+    try:
+        started = await ai.start(session, **payload)
+        result = await ai.status(session, started["editId"])
+        assert result["status"] == "failed", result
+        assert result["error"]["code"] == "native_permission_denied"
+        assert "result" not in result
+        assert model.await_count == (boundary == "candidate")
+    finally:
+        await ai.aclose()
