@@ -41,7 +41,7 @@ let status = ''
 const collapsed = new Set<string>()
 const selectedFiles = new Set<string>()
 let folderTreeKey = ''
-const tabs = new Map<string, HTMLElement>()
+const tabs = new Map<string, HTMLIFrameElement>()
 const activeKnowledgeConversation = new Map<string, string>()
 const knowledgeConversations = new Map<string, {id: string; title: string}[]>()
 const conversationOf = (space: string) => activeKnowledgeConversation.get(space) ?? 'default'
@@ -552,6 +552,18 @@ async function reopenClosedTab() {
   if (account === accountGeneration) throw new Error('最近关闭的文件均已不可用。')
 }
 
+function currentTabRevision(entry: Entry, frame?: HTMLIFrameElement): Entry {
+  let path: string | undefined
+  try { path = frame?.contentWindow?.location.pathname }
+  catch { return entry }
+  const documentPath = entry.path.slice(0, entry.path.lastIndexOf('/') + 1)
+  if (!path?.startsWith(documentPath)) return entry
+  const number = path.slice(documentPath.length)
+  const revision = Number(number)
+  if (!/^[1-9]\d*$/.test(number) || !Number.isSafeInteger(revision)) return entry
+  return { ...entry, path, revision }
+}
+
 async function importFile(file: File, destination = view === 'folder' ? folder : rootFolder, openAfter = true) {
   const format = file.name.split('.').pop()?.toLowerCase() as Format
   if (!Object.hasOwn(formats, format)) throw new Error('请选择 DOCX、XLSX、PPTX 或 PDF 文件。')
@@ -1005,11 +1017,15 @@ root.addEventListener('click', event => {
   if (data.tab !== undefined) selectedTab = data.tab
   if (data.close) {
     const entry = tabEntries.get(data.close)
+    const frame = tabs.get(data.close)
     if (entry) {
-      closedTabs.push(entry)
+      const closed = currentTabRevision(entry, frame)
+      const prior = closedTabs.findIndex(item => item.path === closed.path)
+      if (prior >= 0) closedTabs.splice(prior, 1)
+      closedTabs.push(closed)
       if (closedTabs.length > 20) closedTabs.shift()
     }
-    tabs.get(data.close)?.remove()
+    frame?.remove()
     tabs.delete(data.close)
     tabEntries.delete(data.close)
     if (selectedTab === data.close) selectedTab = ''
