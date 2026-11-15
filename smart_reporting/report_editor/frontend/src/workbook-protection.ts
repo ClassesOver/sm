@@ -56,7 +56,7 @@ export function protectionBlockReason(commandId: string, sheetProtected: boolean
 
 /** Ribbon commands still available on a protected sheet (view, navigation, copy, protection, structure). */
 export const PROTECTED_SHEET_RIBBON = new Set([
-  'find', 'print', 'copy', 'note-prev', 'note-next', 'note-show-toggle', 'sheet-protect', 'workbook-protect',
+  'find', 'print', 'copy', 'note-prev', 'note-next', 'note-show-toggle', 'note-show-all', 'sheet-protect', 'workbook-protect',
   'toggle-gridlines', 'name-manager-open', 'insert-sheet', 'undo', 'redo',
   'toggle-show-formulas', 'calculate-now', 'calculate-sheet', 'goto-open',
   'zoom-to-selection', 'zoom-open', 'workbook-statistics',

@@ -147,6 +147,7 @@ type RibbonCommand =
   | 'note-prev'
   | 'note-next'
   | 'note-show-toggle'
+  | 'note-show-all'
   | 'freeze-panes'
   | 'zoom-in'
   | 'zoom-out'
@@ -541,7 +542,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('上一条', 'note-prev', 'note-prev'), action('下一条', 'note-next', 'note-next'),
       action('显示批注', 'note-show-toggle', 'note-show-toggle'),
     ] },
-    { title: '注释', actions: [action('注释', 'note-open', 'note-open')] },
+    { title: '注释', actions: [action('注释', 'note-open', 'note-open'), action('显示所有注释', 'note-show-all', 'note-show-all')] },
     { title: '保护', actions: [
       action('保护工作表', 'sheet-protect', 'sheet-protect'), action('保护工作簿', 'workbook-protect', 'workbook-protect'),
       action('允许编辑区域', 'allow-edit-ranges-open', 'allow-edit-ranges-open'),
@@ -887,7 +888,7 @@ export function mountWorkbookRibbon(
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')) {
       const id = button.dataset.ribbonCommand!
       if (button.dataset.unavailableReason) continue
-      const noteViewAction = ['note-prev', 'note-next', 'note-show-toggle'].includes(id)
+      const noteViewAction = ['note-prev', 'note-next', 'note-show-toggle', 'note-show-all'].includes(id)
       // 打印 is read-only (available like 查找 even while read-only/saved);
       // 撤销/恢复 replay history mutations and follow editability.
       // 复制只读选区（固定源 read-only-safe），只读/已保存时仍可用。
@@ -976,6 +977,7 @@ export function mountWorkbookRibbon(
       }
       if (id.startsWith('note-')) {
         const noteReason = view.noteReason?.(id) ?? (!view.noteReason ? '批注来源尚未完成身份读取' : undefined)
+        if (id === 'note-show-all' && !noteReason) { button.disabled = false; button.title = button.textContent ?? '' }
         if (noteReason) { button.disabled = true; button.title = noteReason }
       }
       if (format) {

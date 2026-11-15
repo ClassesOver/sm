@@ -694,7 +694,7 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   expect(idsByGroup).toEqual([
     ['workbook-statistics'], ['translate'],
     ['note-open', 'note-delete', 'note-prev', 'note-next', 'note-show-toggle'],
-    ['note-open'], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
+    ['note-open', 'note-show-all'], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
   ])
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => [button.dataset.ribbonCommand!, button.textContent ?? '']))
@@ -703,6 +703,7 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   expect(labels.get('sheet-protect')).toBe('保护工作表')
   expect(labels.get('workbook-protect')).toBe('保护工作簿')
   expect(labels.get('allow-edit-ranges-open')).toBe('允许编辑区域')
+  expect(labels.get('note-show-all')).toBe('显示所有注释')
   for (const [id, reason] of [
     ['translate', '翻译操作'],
   ]) {

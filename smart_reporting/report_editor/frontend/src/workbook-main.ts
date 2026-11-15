@@ -2044,7 +2044,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         }, (error: unknown) => { feedback.textContent = (error as Error).message })
         return
       }
-      const readingNote = ['note-open', 'note-prev', 'note-next', 'note-show-toggle'].includes(command)
+      const readingNote = ['note-open', 'note-prev', 'note-next', 'note-show-toggle', 'note-show-all'].includes(command)
       // 定位只移动选区（固定源只读安全）：保存中/已保存/只读亦可用。
       if (command === 'goto-open') {
         if (loading || disposed) return
@@ -2228,6 +2228,21 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
             if (!editable()) return
             await runtime.univerAPI.executeCommand('data-validation.operation.open-validation-panel', {})
           })().catch(error => { feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'note-show-all') {
+          const activeSheet = noteWorkbook()?.getActiveSheet()
+          const notes = activeSheet?.getNotes() ?? []
+          if (!activeSheet || !notes.length) throw new Error('当前工作表没有注释')
+          const hidden = notes.filter(note => !note.show)
+          const targets = hidden.length ? hidden : notes
+          const sheetId = activeSheet.getSheetId(), unitId = workbook.getId()
+          for (const { row, col } of targets) {
+            if (!runtime.univerAPI.syncExecuteCommand('sheet.mutation.toggle-note-popup', { unitId, sheetId, row, col })) {
+              throw new Error('部分注释的显示状态无法切换')
+            }
+          }
+          feedback.textContent = hidden.length ? '已显示当前工作表的所有注释。' : '已隐藏当前工作表的所有注释。'
           return
         }
         if (command.startsWith('note-')) {
@@ -2618,6 +2633,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       },
       noteReason: command => {
         try {
+          if (command === 'note-show-all') {
+            if (loading || saving || disposed) return '当前工作簿正在加载、保存或已关闭'
+            return noteWorkbook()?.getActiveSheet()?.getNotes().length ? undefined : '当前工作表没有注释'
+          }
           const target = captureNoteTarget(noteWorkbook())
           if (!target) return '请先选择单个单元格'
           const sheet = noteWorkbook()!.getActiveSheet()!
