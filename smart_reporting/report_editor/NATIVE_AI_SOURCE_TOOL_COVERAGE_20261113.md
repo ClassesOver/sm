@@ -34,6 +34,8 @@
 
 2026-11-15 补齐 `add_sparkline`。整簿授权下支持线形、柱形和盈亏图，可指定颜色与起始格，也可放在来源右侧。每行生成一个迷你图，最多取前 200 行。复用原生 `appendSheetSparklines` 写入 Excel x14 记录，保留候选预览、显式采纳与保存链路。单点折线的同表换绑已通过保存下载重开复测，见[来源图表专项](NATIVE_XLSX_AI_CHART_SOURCES_ACCEPTANCE_20261113.md)。
 
+柱形迷你图浏览器验收使用 `WORKBOOK_AI_CHARTS_SPARKLINE=1` 运行 `frontend/smoke/workbook-ai-charts-smoke.mjs`。Edge 经实际 HTTP、Agno 工具与 XLSX 写入器完成采纳、撤销重做、草稿恢复及修订 4→5 的下载重开。画布在采纳、草稿恢复、下载重开三处均为 B8 和 B9 各绘制两根格内柱。独立回读确认 x14 引用与颜色、两张原图、源数据和手工加粗。验收仍返回 `native_source_review_pending`，实际文件照常签发。验收使用 ScriptedModel 与内存修订仓储，证据位于 Windows `%TEMP%/genoffice-ai-sparkline-edge`。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

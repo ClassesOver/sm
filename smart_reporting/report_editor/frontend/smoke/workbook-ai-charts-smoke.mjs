@@ -17,6 +17,8 @@ const port=Number(process.env.WORKBOOK_AI_CHARTS_PORT??4353),origin=`http://127.
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
 const manualRange=process.env.WORKBOOK_AI_CHARTS_VALUE_RANGE==='1'
 const sourceData=process.env.WORKBOOK_AI_CHARTS_SOURCE_DATA==='1'
+const sparkline=process.env.WORKBOOK_AI_CHARTS_SPARKLINE==='1'
+assert(!(sourceData&&sparkline),'Choose one source scenario')
 const python=process.env.WORKBOOK_AI_CHARTS_PYTHON??join(repo,'.venv/bin/python')
 const externalServer=process.env.WORKBOOK_AI_CHARTS_EXTERNAL_SERVER==='1'
 if(!externalServer)await mkdir(directory,{recursive:false})
@@ -39,6 +41,15 @@ try{
  await writeFile(join(directory,'canvas-font-preflight.json'),JSON.stringify(fontPreflight,null,2))
  assert.equal(fontPreflight.ok,true,'Canvas text is not renderable in this browser environment: '+JSON.stringify(fontPreflight))
  page=await browser.newPage({viewport:{width:1560,height:1200}})
+ if(sparkline)await page.addInitScript(()=>{
+  window.__aiSparklinePaints=[]
+  const fillRect=CanvasRenderingContext2D.prototype.fillRect
+  CanvasRenderingContext2D.prototype.fillRect=function(x,y,width,height){
+   if(this.fillStyle==='#214365'&&window.__aiSparklinePaints.length<2000)
+    window.__aiSparklinePaints.push({x,y,width,height})
+   return fillRect.call(this,x,y,width,height)
+  }
+ })
  if(sourceData)await page.addInitScript(()=>{
   const prototype=CanvasRenderingContext2D.prototype
   const {save,restore,fillText,beginPath,arc,fill}=prototype
@@ -119,7 +130,23 @@ try{
   await panel.locator('textarea').fill(instruction)
   await panel.locator('[type=submit]').click()
   await panel.locator('.native-ai-preview').waitFor({timeout:60000})
-  assert.match(await panel.locator('.native-ai-preview').innerText(),sourceData?/A1:B3|xl\/charts\/chart3.xml/:/xl\/charts\/chart1.xml/)
+  assert.match(await panel.locator('.native-ai-preview').innerText(),sparkline?/appendSheetSparklines/:sourceData?/A1:B3|xl\/charts\/chart3.xml/:/xl\/charts\/chart1.xml/)
+ }
+ async function expectSparklinePaint(label){
+  const painted=await page.waitForFunction(()=>{
+   const diagnostics=window.__sheetsWebSparklines
+   if(!diagnostics)return null
+   const bounds=[...diagnostics.targetBounds.entries()]
+   const checks=['B8','B9'].map(target=>{
+    const cell=bounds.find(([key])=>key.endsWith('::'+target))?.[1]
+    if(!cell)return null
+    const bars=window.__aiSparklinePaints.filter(({x,y,width,height})=>width>0&&height>0&&
+      x>=cell.startX+1&&y>=cell.startY+1&&x+width<=cell.endX-1&&y+height<=cell.endY-1)
+    return new Set(bars.map(bar=>bar.x)).size===2?{target,cell,bars}:null
+   })
+   return checks.every(Boolean)?checks:null
+  },null,{timeout:15000})
+  await writeFile(join(directory,'sparkline-paints-'+label+'.json'),JSON.stringify(await painted.jsonValue(),null,2))
  }
  async function saveAndReopen(name,parent){
   const waiting=page.waitForResponse(response=>response.url().endsWith('/api/save')&&response.request().method()==='POST')
@@ -133,6 +160,7 @@ try{
   await download.saveAs(join(directory,name+'.xlsx'));assert.equal(await download.failure(),null)
   const bytes=await readFile(join(directory,name+'.xlsx'));assert.equal(sha(bytes),payload.artifacts.xlsx.sha256)
   await page.goto(payload.editor.openUrl);await ready()
+  if(name==='sparkline')await expectSparklinePaint('reopened')
   if(name==='rebound'){
    await page.waitForFunction(()=>window.__reboundLinePaints?.some(points=>points.length===1),null,{timeout:10000})
    const paints=await page.evaluate(()=>window.__reboundLinePaints)
@@ -151,7 +179,21 @@ try{
   saves.push({name,payload,reopened})
  }
  let adopted
- if(sourceData){
+ if(sparkline){
+  stage='sparkline-draft';await generate('在 Sheet 的 B8 开始为 B2:C3 每行创建柱形迷你图，颜色 #214365')
+  assert.deepEqual(await operations(),manual)
+  await panel.locator('.native-ai-accept').click();await waitKind('appendSheetSparklines',true)
+  adopted=await operations();assert.deepEqual(adopted.slice(0,manual.length),manual)
+  await expectSparklinePaint('accepted')
+  await panel.locator('.native-ai-undo').click();await waitKind('appendSheetSparklines',false)
+  assert.deepEqual(await operations(),manual)
+  await page.waitForFunction(()=>[...window.__sheetsWebSparklines.store.values()].flat().every(spec=>!['B8','B9'].includes(spec.target)))
+  await panel.locator('.native-ai-redo').click();await waitKind('appendSheetSparklines',true)
+  assert.deepEqual(await operations(),adopted)
+  stage='sparkline-restore';await page.reload();await ready();assert.deepEqual(await operations(),adopted)
+  await expectSparklinePaint('restored')
+  stage='sparkline-save';await saveAndReopen('sparkline',4)
+ }else if(sourceData){
   stage='source-discard';await generate('新增来源图表：Sheet!A1:B3，折线图，标题实际来源收入，放E20；保留两张原图')
   assert.deepEqual(await operations(),manual)
   await panel.locator('.native-ai-discard').click();await panel.locator('.native-ai-preview').waitFor({state:'hidden'})
@@ -206,14 +248,14 @@ try{
  stage='save-delete';await saveAndReopen('deleted',5)
  }
  stage='independent-checks'
- const verified=spawnSync(python,[join(frontend,'smoke/'+(sourceData?'workbook-ai-chart-sources-verify.py':'workbook-ai-charts-verify.py')),directory],{cwd:repo,encoding:'utf8'})
+ const verified=spawnSync(python,[join(frontend,'smoke/'+(sourceData||sparkline?'workbook-ai-chart-sources-verify.py':'workbook-ai-charts-verify.py')),directory,...(sparkline?['--sparkline']:[])],{cwd:repo,encoding:'utf8'})
  assert.equal(verified.status,0,verified.stdout+verified.stderr)
  const independent=JSON.parse(verified.stdout)
  await Promise.all(checks);assert(assets.size>0)
  assert.equal(sha(await readFile(join(staticDirectory,'.vite/manifest.json'))),sha(manifest))
  assert.deepEqual(pageErrors,[]);assert.deepEqual(consoleErrors,[]);assert.deepEqual(httpErrors,[]);assert.deepEqual(assetErrors,[])
  const state=await(await page.request.get(origin+'/__smoke__/state')).json()
- assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,2);assert.equal(state.plannerCalls,!sourceData&&manualRange?4:3)
+ assert.equal(state.sourceSha256,info.sourceSha256);assert.equal(state.savedRevisions,sparkline?1:2);assert.equal(state.plannerCalls,sparkline?1:!sourceData&&manualRange?4:3)
  const summary={ok:true,scope:'real UI/HTTP/grant/cookie/CSRF/Agno tools/writer/publication/download/reopen; ScriptedModel provider and scoped memory repository',browserVersion:browser.version(),fontPreflight,manifestSha256:sha(manifest),assets:Object.fromEntries(assets),manual,adopted,saves,independent,pageErrors,consoleErrors,httpErrors,assetErrors,state}
  await writeFile(join(directory,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({ok:true,directory,assets:assets.size,independent}))
 }catch(error){
