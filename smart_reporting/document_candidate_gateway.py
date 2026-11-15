@@ -58,7 +58,9 @@ class DocumentCandidateGateway:
 
     async def status(self, channel: str, identity: Any, task_id: str) -> dict[str, Any]:
         scope = await self._scope(channel, identity)
-        if not task_id or len(task_id) > 256:
+        if not isinstance(task_id, str) or not 1 <= len(task_id) <= 256 or not task_id.isascii() or not all(
+            char.isalnum() or char in "-_" for char in task_id
+        ):
             raise ValueError("document_task_id_invalid")
         adapter = self._registry.require(scope.format)
         if await self._scope(channel, identity) != scope:
