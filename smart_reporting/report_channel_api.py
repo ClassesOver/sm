@@ -108,6 +108,8 @@ def create_report_channel_router(
             raise HTTPException(409, str(error)) from None
         except ReportChannelAcpCapacity as error:
             raise HTTPException(429, str(error)) from None
+        except ValueError:
+            raise HTTPException(422, "report_channel_acp_message_invalid") from None
         except (ReportAcpError, TimeoutError, OSError):
             raise HTTPException(502, "report_channel_acp_unavailable") from None
 
