@@ -5,6 +5,7 @@ import hashlib
 import subprocess
 from io import BytesIO
 from pathlib import PurePosixPath
+from collections.abc import Awaitable, Callable
 from typing import Any
 from zipfile import ZipFile
 
@@ -20,10 +21,11 @@ from ..reporting.models import ReportingError
 from ..workspace import WorkspacePathConflict
 from ._file_identity import read_verified_file
 from .native import NativeEditorService, bind_native_workspace
-from .native_models import NATIVE_MEDIA, NativeFormat, NativeScope, NativeSource, native_digest
+from .native_models import NATIVE_MEDIA, NativeEditorContext, NativeFormat, NativeScope, NativeSource, native_digest
 from .slides import ReportSlidesEditorService
 
 MAX_IMPORT_BYTES = 24 * 1024 * 1024
+ImportAuthorization = Callable[[NativeEditorContext], Awaitable[dict[str, Any]]]
 _MAX_PART_BYTES = 64 * 1024 * 1024
 _MAX_TOTAL_BYTES = 128 * 1024 * 1024
 _MAIN_PARTS: dict[str, tuple[NativeFormat, str]] = {
@@ -117,7 +119,8 @@ class NativeImportService:
     def __init__(self, workspace: Any, repository: Any, grants: Any):
         self.workspace, self.repository, self.grants = workspace, repository, grants
 
-    async def import_file(self, scope: NativeScope, content: bytes, *, request_id: str, filename: str = '', display_name: str | None = None) -> dict[str, Any]:
+    async def import_file(self, scope: NativeScope, content: bytes, *, request_id: str, filename: str = '',
+                          display_name: str | None = None, authorize_created: ImportAuthorization | None = None) -> dict[str, Any]:
         """scope 必须由宿主可信会话构造，不接收上传表单中的身份字段。"""
         if not isinstance(scope, NativeScope) or not isinstance(request_id, str) or not request_id or len(request_id) > 256:
             raise ReportingError('native_import_request_invalid', '文件导入请求身份无效。')
@@ -135,12 +138,16 @@ class NativeImportService:
             sha256=identity.sha256, error_code='native_import_source_changed', format_name=format.upper())
         source = NativeSource(format=format, origin='upload', sourceFile=identity, displayName=display_name)
         document = await self.repository.create_from_source(source, scope=scope, request_id=request_id)
-        return await self.open_revision(scope, document.document_id, 1)
+        return await self.open_revision(scope, document.document_id, 1, authorize_created=authorize_created)
 
-    async def open_revision(self, scope: NativeScope, document_id: str, number: int) -> dict[str, Any]:
+    async def open_revision(self, scope: NativeScope, document_id: str, number: int, *,
+                            authorize_created: ImportAuthorization | None = None) -> dict[str, Any]:
         revision = await self.repository.get_revision(document_id, number, scope=scope)
         if revision is None or revision.context is None:
             raise ReportingError('native_document_not_found', '此工作区中找不到对应文档修订。')
-        grant, expires = await self.grants.issue(revision.context, capabilities=NativeEditorService.capabilities(revision.context))
+        capabilities = NativeEditorService.capabilities(revision.context)
+        if authorize_created is not None:
+            capabilities.update(await authorize_created(revision.context))
+        grant, expires = await self.grants.issue(revision.context, capabilities=capabilities)
         return {'documentId': document_id, 'revision': number, 'parentRevision': revision.parent_revision,
             'format': revision.context.format, 'editor': {'url': f'/reports/v1/native/open/{grant}', 'expiresAt': expires.isoformat()}}

@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from ..office.repository import OfficeError
 from ..reporting.delivery.office_engine import last_json_line, run_bridge, run_office_engine
 from ..reporting.models import ReportingError
 from .native_import import NativeImportService
@@ -46,7 +47,7 @@ def word_filename(filename: str) -> str:
 
 
 async def create_word_file(editor, context, *, action: str, expected_sha256: str, request_id: str,
-                           filename: str='document.docx'):
+                           filename: str='document.docx', session=None):
     editor.require_enabled('docx')
     if context.format!='docx':
         raise ReportingError('native_permission_denied','此命令只适用于 Word 文档。')
@@ -60,8 +61,21 @@ async def create_word_file(editor, context, *, action: str, expected_sha256: str
     else:raise ReportingError('native_word_file_action_invalid','Word 文件操作无效。')
     creation_id=native_digest({'action':action,'scope':context.scope.model_dump(),'documentId':context.document_id,
         'revision':context.revision,'sourceSha256':expected_sha256,'requestId':request_id,'filename':filename})
+    authorize_created = None
+    if session is not None and (session.capabilities or {}).get('office'):
+        documents = getattr(getattr(editor, 'office_authorize', None), '__self__', None)
+        if documents is None:
+            raise ReportingError('native_permission_denied', 'Office 文件权限服务不可用。')
+
+        async def authorize_created(created):
+            try:
+                return {'office': await documents.register_derived(session, created, name=filename)}
+            except OfficeError as error:
+                raise ReportingError('native_permission_denied', '无法将新文件登记到当前工作区。') from error
+
     result=await NativeImportService(editor.workspace,editor.repository,editor.grants).import_file(
-        scope=context.scope,content=content,request_id=creation_id,filename=filename,display_name=filename)
+        scope=context.scope,content=content,request_id=creation_id,filename=filename,display_name=filename,
+        authorize_created=authorize_created)
     result['filename']=filename
     result['editor']['openUrl']=result['editor']['url']
     return result

@@ -100,6 +100,64 @@ async def test_file_actions_reject_csrf_foreign_route_stale_source_and_path_name
             assert (await client.post(url+'/'+action,json={**payload,'filename':'../escape.docx'},headers=headers)).status_code==422
         assert not editor.repository.documents
 
+
+@pytest.mark.anyio
+async def test_office_word_file_actions_register_named_files_and_preserve_revocation(tmp_path, monkeypatch):
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from smart_reporting.office.documents import OfficeDocuments
+    from smart_reporting.office.repository import Identity, OfficeRepository
+    from smart_reporting.report_editor import native_word_file_actions
+
+    blank = BytesIO()
+    Document().save(blank)
+    monkeypatch.setattr(native_word_file_actions, 'render_blank_word', blank.getvalue)
+
+    editor, context, app, url, _ = await runtime(tmp_path)
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        identity = Identity(context.scope.database, context.scope.company_id, context.scope.user_id)
+        await office.bootstrap(identity, 'Office author')
+        raw_session = await office.create_session(identity)
+        actor = await office.authenticate(raw_session)
+        space = (await office.spaces(actor))[0]['id']
+        folder = (await office.create_folder(actor, space, None, 'Word files'))['id']
+        entry = await office.register_file(actor, space, folder, 'Original.docx', 'docx',
+                                           context.document_id, 1, context.scope.model_dump(by_alias=True))
+        documents = OfficeDocuments(office, None, editor.repository, editor.grants)
+        editor.office_authorize = documents.authorize
+        raw, _ = await editor.grants.issue(context, capabilities={
+            **editor.capabilities(context), 'office': {
+                'database': actor.database, 'company': actor.company, 'user': actor.user,
+                'version': actor.session_version, 'session': actor.session_reference, 'file': entry['id'],
+            },
+        })
+        token, _ = await editor.grants.exchange(raw)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
+                               cookies={NATIVE_SESSION_COOKIE: token}) as client:
+            headers = {'Origin': 'http://test', 'X-CSRF-Token': editor.grants.csrf_token(token)}
+            for action in ('new', 'save-as'):
+                filename = f'{action}.docx'
+                payload = {'requestId': action, 'expectedSha256': context.source_file.sha256, 'filename': filename}
+                response = await client.post(url + '/' + action, json=payload, headers=headers)
+                assert response.status_code == 200, response.text
+                result = response.json()
+                files = (await office.library(actor, space))['files']
+                derived, = [item for item in files if item['document'] == result['documentId']]
+                assert (derived['folder'], derived['name']) == (folder, filename)
+                _, session = await editor.grants.exchange(result['editor']['openUrl'].split('/')[-1])
+                assert session.capabilities['office']['file'] == derived['id']
+                await documents.authorize(session, write=True)
+                repeated = await client.post(url + '/' + action, json=payload, headers=headers)
+                assert repeated.status_code == 200 and repeated.json()['documentId'] == result['documentId']
+            await office.logout(raw_session)
+            with pytest.raises(ReportingError, match='Office'):
+                await documents.authorize(session)
+    finally:
+        await engine.dispose()
+
 @pytest.mark.anyio
 async def test_saved_copy_name_survives_next_revision_and_download(tmp_path,source_runtime):
     from smart_reporting.report_editor.native_word_file_actions import create_word_file

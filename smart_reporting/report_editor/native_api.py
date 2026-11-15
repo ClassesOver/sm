@@ -300,10 +300,11 @@ def create_native_editor_router(
     async def word_file_action(document_id: str, revision: int, action: Literal["new", "save-as"],
                                request: Request, payload: NativeWordFilePayload):
         from .native_word_file_actions import create_word_file
-        _, context = await session_context(request, document_id, revision, write=True)
+        session, context = await session_context(request, document_id, revision, write=True)
         try:
             return await create_word_file(editor, context, action=action,
-                expected_sha256=payload.expected_sha256, request_id=payload.request_id, filename=payload.filename)
+                expected_sha256=payload.expected_sha256, request_id=payload.request_id, filename=payload.filename,
+                session=session)
         except ReportingError as error:
             if error.code in {"native_word_filename_invalid", "native_word_file_action_invalid"}:
                 raise HTTPException(422, detail={"code":error.code,"message":error.message}) from None

@@ -150,14 +150,14 @@ class OfficeDocuments:
             from ..reporting.models import ReportingError
             raise ReportingError("native_permission_denied", "Office 文件权限已失效或不足。") from error
 
-    async def register_derived(self, session, context):
+    async def register_derived(self, session, context, *, name=None):
         await self.authorize(session, write=True)
         value = dict(session.capabilities['office'])
         actor = Identity(value['database'], value['company'], value['user'], value['version'], value['session'])
         parent = await self.office.file(actor, value['file'], write=True)
         if context.scope.model_dump(by_alias=True) != parent['scope']:
             raise OfficeError('office_document_mismatch', '派生文件与来源空间身份不一致。')
-        name = parent['name'].rsplit('.', 1)[0][:180] + f' - 副本.{context.format}'
+        name = name if name is not None else parent['name'].rsplit('.', 1)[0][:180] + f' - 副本.{context.format}'
         entry = await self.office.register_file(actor, parent['space'], parent['folder'], name,
             context.format, context.document_id, context.revision, context.scope.model_dump(by_alias=True))
         self._index(actor, entry)
