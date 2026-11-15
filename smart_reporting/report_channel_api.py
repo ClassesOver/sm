@@ -1,5 +1,6 @@
 """Opt-in channel invitation exchange for a host with connector authentication."""
 
+import asyncio
 import secrets
 import re
 import time
@@ -84,15 +85,19 @@ def create_report_channel_router(
     router = ReportChannelRouter(authenticate)
     router.acp_enabled = acp is not None
     acp_conversations: dict[tuple[str, ConnectorIdentity], ReportAcpConversation] = {}
+    acp_restore_lock = asyncio.Lock()
 
     async def acp_turn(channel: str, identity: ConnectorIdentity, text: str, message_id: str) -> str:
         bound = acp_conversations.get((channel, identity))
         if bound is None and acp is not None:
-            bound = await acp.restore(channel, identity)
-            if bound is not None:
-                # Keep the restored conversation in this worker. In-memory mode
-                # relies on this instance for its session and message receipts.
-                acp_conversations[(channel, identity)] = bound
+            async with acp_restore_lock:
+                # Two requests may arrive before the first restore completes.
+                # Reuse the same conversation instance within this worker.
+                bound = acp_conversations.get((channel, identity))
+                if bound is None:
+                    bound = await acp.restore(channel, identity)
+                    if bound is not None:
+                        acp_conversations[(channel, identity)] = bound
         if bound is None:
             raise HTTPException(403, "report_channel_membership_required")
         try:
