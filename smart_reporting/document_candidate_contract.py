@@ -5,6 +5,7 @@ The host must resolve the document and revision from an authenticated grant.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
@@ -47,8 +48,13 @@ class DocumentCandidateRequest:
             raise ValueError("document_request_id_invalid")
         if not self.instruction.strip() or len(self.instruction) > 2000:
             raise ValueError("document_instruction_invalid")
-        if not self.selection or len(self.selection) > 100:
+        if not self.selection or len(self.selection) > 100 or any(
+            not isinstance(item, dict) or not item for item in self.selection
+        ):
             raise ValueError("document_selection_invalid")
+        # Frozen dataclasses do not freeze nested caller-owned dictionaries.
+        # Snapshot selections so a caller cannot change targets during an await.
+        object.__setattr__(self, "selection", tuple(deepcopy(item) for item in self.selection))
 
 
 class DocumentCandidateAdapter(Protocol):
