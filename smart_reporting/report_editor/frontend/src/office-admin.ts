@@ -6,13 +6,14 @@ import './office.css'
 import './office-settings.css'
 type GlobalSettings = { version: number; modelId: string; imageModel: string; searchEnabled: boolean; integrationsEnabled: boolean }
 const host = document.querySelector<HTMLElement>('#office-admin')!
-let user: OfficeUser, settings: GlobalSettings, baseline = '', section = '模型配置', busy = false, providerDirty = false, providerBusy = false
+let user: OfficeUser, settings: GlobalSettings, baseline = '', section = '模型配置', busy = false, providerDirty = false, providerBusy = false, expired = false
 const labels = ['模型配置', '生图', '媒体', '搜索', '集成', '数据源管理', '用户管理']
 const dirty = () => settings && JSON.stringify(settings) !== baseline
 window.addEventListener('beforeunload', event => { if (dirty() || providerDirty || providerBusy) { event.preventDefault(); event.returnValue = '' } })
-window.addEventListener('genoffice-session-expired', () => { host.textContent = '登录已失效，请返回工作区重新登录。'; settings = undefined!; providerDirty = false })
+window.addEventListener('genoffice-session-expired', () => { expired = true; busy = false; providerBusy = false; host.textContent = '登录已失效，请返回工作区重新登录。'; settings = undefined!; providerDirty = false })
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, text = '') { const node = document.createElement(tag); node.textContent = text; return node }
 function render() {
+  if (expired) return
   host.className = 'office-admin-page'; host.replaceChildren()
   const header = element('header'), back = element('a', '返回工作区'); back.href = '/office'; back.onclick = event => { if (providerBusy || (providerDirty && !window.confirm('有未保存的提供商修改，是否离开？'))) event.preventDefault() }
   header.append(element('h1', '管理后台'), back); host.append(header)
@@ -39,7 +40,7 @@ function render() {
     queueMicrotask(() => void mountOfficeProviderSettings(cards, {
       capabilities: section === '媒体' ? ['imageAnalysis', 'videoAnalysis'] : section === '搜索' ? ['webSearch'] : section === '生图' ? ['imageGeneration'] : ['chatModel'],
       onDirty: value => { if (cards.isConnected) providerDirty = value },
-      onBusy: value => { providerBusy = value; for (const button of host.querySelectorAll<HTMLButtonElement>('nav button')) button.disabled = value; save.disabled = value },
+      onBusy: value => { if (!cards.isConnected || expired) return; providerBusy = value; for (const button of host.querySelectorAll<HTMLButtonElement>('nav button')) button.disabled = value; save.disabled = value },
     }))
   }
   if (section === '用户管理' || section === '数据源管理') {
@@ -56,7 +57,9 @@ function render() {
     for (const control of locked) control.disabled = true
     try {
       const { version, ...document } = settings
-      settings = await officeRequest('/admin/settings', 'PUT', { ...document, expectedVersion: version })
+      const saved = await officeRequest<GlobalSettings>('/admin/settings', 'PUT', { ...document, expectedVersion: version })
+      if (expired) return
+      settings = saved
       baseline = JSON.stringify(settings); status.textContent = '已保存，对后续任务生效。'
     } catch (e) { status.textContent = (e as Error).message } finally { busy = false; for (const control of locked) control.disabled = false }
   }
@@ -65,8 +68,11 @@ function render() {
 async function start() {
   try {
     user = await officeSession()
+    if (expired) return
     if (user.role !== 'admin') { host.textContent = '需要管理员权限。'; return }
-    settings = await officeRequest('/admin/settings'); baseline = JSON.stringify(settings); render()
-  } catch (error) { host.textContent = (error as Error).message; const back = element('a', '返回工作区登录'); back.href = '/office'; host.append(back) }
+    const loaded = await officeRequest<GlobalSettings>('/admin/settings')
+    if (expired) return
+    settings = loaded; baseline = JSON.stringify(settings); render()
+  } catch (error) { if (expired) return; host.textContent = (error as Error).message; const back = element('a', '返回工作区登录'); back.href = '/office'; host.append(back) }
 }
 void start()
