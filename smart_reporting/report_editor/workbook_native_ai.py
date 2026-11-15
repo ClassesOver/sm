@@ -4,23 +4,22 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from functools import partial
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any
 from uuid import uuid4
 
 from loguru import logger
 
 from ..office.native_access import check as check_office_access
-
 from .agent_event_streams import bind_agent_event_log, event_stream_response
 from .durable_native_candidate import DurableNativeCandidateService
 from .native_ai import _copy_operations, _invalid, _NativeAIJob
 from .native_candidate_runner import run_native_candidate
 from .native_models import native_digest
-from .workbook_ai import AgnoWorkbookProposalPlanner, WorkbookAIProposal
+from .workbook_ai import AgnoWorkbookProposalPlanner, WorkbookAINativePlan, WorkbookAIProposal
 from .workbook_ai_charts import validate_chart_candidates
 from .workbook_ai_tools import clear_range_bounds
 
@@ -49,7 +48,7 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
         return context
 
     async def start_edit(self, session, *, client_request_id, instruction, expected_sha256,
-                         operations, selection, scope="range", resume_edit_id=None):
+                         operations, selection, scope="range", resume_edit_id=None, navigation_enabled=False):
         context = await self._context(session)
         if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 2000:
             raise _invalid("native_ai_instruction_invalid", "请输入不超过 2000 字的修改要求。")
@@ -57,10 +56,15 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
             raise _invalid("native_ai_snapshot_changed", "原生 XLSX 来源已变化。")
         if scope not in {"range", "workbook"}:
             raise _invalid("native_ai_selection_invalid", "工作簿授权范围无效。")
+        if type(navigation_enabled) is not bool:
+            raise _invalid("native_ai_selection_invalid", "导航能力无效。")
         base = _copy_operations(operations)
         selection = deepcopy(selection)
         request_id = self._request_id(client_request_id)
-        fingerprint = native_digest({"context": context.digest(), "instruction": instruction, "operations": base, "selection": selection, "scope": scope})
+        identity = {"context": context.digest(), "instruction": instruction, "operations": base, "selection": selection, "scope": scope}
+        if navigation_enabled:
+            identity["navigationEnabled"] = True
+        fingerprint = native_digest(identity)
         if resume_edit_id is not None and (
             self.task_repository is None or resume_edit_id != self._durable_edit_id(context, request_id)
         ):
@@ -89,7 +93,7 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
             datetime.now(UTC), client_request_id=request_id, request_sha256=fingerprint)
         self._jobs[job.edit_id] = job
         self._requests[key] = job.edit_id
-        args = (job, context, base, selection, scope, instruction.strip())
+        args = (job, context, base, selection, scope, instruction.strip(), navigation_enabled)
         prepare = partial(self._prepare_job, *args)
         job.task = asyncio.create_task(
             prepare() if task_scope is None else run_native_candidate(
@@ -142,12 +146,21 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
                     or not selection["startColumn"] <= edit["column"] <= selection["endColumn"]):
                     raise _invalid("native_ai_selection_mismatch", "候选修改了授权选区之外的单元格。")
 
-    async def _prepare_job(self, job, context, base, selection, scope, instruction, *, persist=None):
+    async def accept_edit(self, session, edit_id, **kwargs):
+        job, _ = await self._job(session, edit_id)
+        if job.proposal is not None and not job.proposal.get("operations"):
+            raise _invalid("native_ai_not_ready", "纯导航结果没有可采纳的修改。")
+        return await super().accept_edit(session, edit_id, **kwargs)
+
+    async def _prepare_job(self, job, context, base, selection, scope, instruction, navigation_enabled=False, *, persist=None):
         try:
             await job.event_log.emit("phase", label="正在准备工作簿上下文")
             preview = await self.editor.preview(context, expected_sha256=context.source_file.sha256, operations=base)
             if job.status != "running":
                 return
+            if navigation_enabled:
+                from .native_workbook_read_ai import _validate_selection
+                _validate_selection(selection, {sheet["name"] for sheet in preview["model"]["sheets"]})
             material = preview["model"] if scope == "workbook" else self._selection(preview["model"], selection)
             encoded = json.dumps(material, ensure_ascii=False, allow_nan=False)
             if len(encoded) > 120000:
@@ -171,7 +184,9 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
             await check_office_access(context.document_id, write=True)
             if job.status != "running":
                 return
-            workbook_planner = getattr(self.planner, "plan_workbook", None)
+            workbook_planner = (getattr(self.planner, "plan_native_workbook", None) if navigation_enabled else None)
+            if not callable(workbook_planner):
+                workbook_planner = getattr(self.planner, "plan_workbook", None)
             plan = (workbook_planner(prompt, model=material, scope=scope, selection=selection,
                     preview=lambda candidate: self.editor.preview(context,
                         expected_sha256=context.source_file.sha256,
@@ -183,8 +198,16 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
                 planned = await asyncio.wait_for(plan, timeout=self.timeout_seconds)
             if job.status != "running":
                 return
-            planned = WorkbookAIProposal.model_validate(planned)
-            candidate = planned.engine_operations()
+            navigation = None
+            if isinstance(planned, WorkbookAINativePlan):
+                if not navigation_enabled:
+                    raise ValueError("workbook_ai_navigation_unavailable")
+                navigation, planned = deepcopy(planned.navigation), planned.proposal
+            if planned is None and navigation is None:
+                raise ValueError("workbook_ai_proposal_not_submitted")
+            if planned is not None:
+                planned = WorkbookAIProposal.model_validate(planned)
+            candidate = planned.engine_operations() if planned is not None else []
             if scope == "range":
                 self._within_selection(candidate, selection)
             validate_chart_candidates(material, candidate)
@@ -195,7 +218,10 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
             await check_office_access(context.document_id, write=True)
             if job.status != "running":
                 return
-            proposal = {"summary": planned.summary, "operations": candidate, "previewSha256": preview["draftSha256"]}
+            proposal = {"summary": planned.summary if planned is not None else "已请求定位，文档与草稿未修改。",
+                        "operations": candidate, "previewSha256": preview["draftSha256"]}
+            if navigation is not None:
+                proposal["navigation"] = navigation
             if persist is not None:
                 await persist(proposal)
             if job.status == "running":

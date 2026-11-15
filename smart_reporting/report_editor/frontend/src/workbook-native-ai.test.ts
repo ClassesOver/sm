@@ -1,19 +1,20 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import type { NativeOperation } from './native-draft'
-import { NativeApiError } from './native-api'
+import { NativeApiError, type NativeWorkbookNavigation } from './native-api'
 import { createWorkbookNativeAIClient, mountWorkbookNativeAI } from './workbook-native-ai'
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
-function setup() {
+function setup(navigate?: (target: NativeWorkbookNavigation, current: () => boolean) => Promise<void>) {
   const host = document.createElement('div'); document.body.append(host)
   let operations: NativeOperation[] = []
   const selection = { sheetName: 'Sheet', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }
-  const candidate = { editId: 'id', status: 'succeeded', snapshotSha256: 'b'.repeat(64), proposal: { summary: '修改选区', operations: [{ kind: 'applyCellEdits', edits: [{ sheetName: 'Sheet', row: 0, column: 0, writeValue: true, cell: { value: '候选值' } }] }] } }
+  const candidate = { editId: 'id', status: 'succeeded', snapshotSha256: 'b'.repeat(64), proposal: { summary: '修改选区', operations: [{ kind: 'applyCellEdits', edits: [{ sheetName: 'Sheet', row: 0, column: 0, writeValue: true, cell: { value: '候选值' } }] }] as NativeOperation[] } }
+  const navigationCandidate = (operations: NativeOperation[] = []) => ({ ...candidate, proposal: { summary: '已请求定位', operations, navigation: { sheetName: 'Sheet', range: 'B2', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 } } })
   const api = { start: vi.fn(async (_payload: Parameters<ReturnType<typeof createWorkbookNativeAIClient>['start']>[0]) => candidate), status: vi.fn(async () => candidate), accept: vi.fn(async () => ({ operations: candidate.proposal.operations })), cancel: vi.fn(async () => ({})), cancelRequest: vi.fn(async () => ({})) }
   const apply = vi.fn(async (next: NativeOperation[]) => { operations = next })
   const context = vi.fn(async (scope: 'range' | 'workbook') => ({ expectedSha256: 'a'.repeat(64), operations, scope, selection, label: 'Sheet!A1', cells: { A1: { value: '人工值' } } }))
-  const view = mountWorkbookNativeAI(host, { api, locked: () => false, context, apply })
+  const view = mountWorkbookNativeAI(host, { api, locked: () => false, context, apply, navigate })
   const submit = () => { host.querySelector('textarea')!.value = '改成候选值'; host.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })) }
-  return { host, api, apply, view, submit, context, candidate, change: () => { operations = [{ kind: 'applyColumnWidths', sheetName: 'Sheet', entries: [] }] } }
+  return { host, api, apply, view, submit, context, candidate, selection, navigationCandidate, change: () => { operations = [{ kind: 'applyColumnWidths', sheetName: 'Sheet', entries: [] }] } }
 }
 it('resumes the same XLSX task after connection loss and a missing in-memory job', async () => {
   const { host, api, apply, view, submit, candidate } = setup()
@@ -86,4 +87,80 @@ it('打开助手只聚焦现有输入，不提交 AI 任务', () => {
   expect(document.activeElement).toBe(host.querySelector('textarea'))
   expect(api.start).not.toHaveBeenCalled()
   view.dispose()
+})
+
+it('navigation-only result awaits viewport confirmation and never offers adoption', async () => {
+  let finish!: () => void
+  const navigate = vi.fn((_target: NativeWorkbookNavigation, _current: () => boolean) => new Promise<void>(done => { finish = done }))
+  const {host, api, apply, submit, view, navigationCandidate} = setup(navigate)
+  api.start.mockResolvedValueOnce(navigationCandidate())
+  try {
+    submit()
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledOnce())
+    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({navigationEnabled:true}), expect.any(AbortSignal))
+    expect(host.querySelector('.native-ai-status')!.textContent).not.toContain('已定位到')
+    finish()
+    await vi.waitFor(() => expect(host.querySelector('.native-ai-status')!.textContent).toContain('已定位到 Sheet!B2'))
+    expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(true)
+    expect(api.accept).not.toHaveBeenCalled(); expect(apply).not.toHaveBeenCalled()
+  } finally { view.dispose() }
+})
+it('failed navigation retains a separately adoptable edit candidate', async () => {
+  const navigate = vi.fn(async () => { throw new Error('目标未能显示') })
+  const {host, api, submit, view, navigationCandidate, candidate} = setup(navigate)
+  api.start.mockResolvedValueOnce(navigationCandidate(candidate.proposal.operations))
+  try {
+    submit()
+    await vi.waitFor(() => expect(host.querySelector('.native-ai-status')!.textContent).toContain('目标未能显示'))
+    expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false)
+    expect(api.accept).not.toHaveBeenCalled()
+  } finally { view.dispose() }
+})
+it('changed view blocks delayed navigation while retaining edit candidate', async () => {
+  const navigate = vi.fn(async () => {})
+  const {host, api, submit, view, navigationCandidate, candidate, selection} = setup(navigate)
+  api.start.mockImplementationOnce(async () => { selection.startRow=1; selection.endRow=1; return navigationCandidate(candidate.proposal.operations) })
+  try {
+    submit()
+    await vi.waitFor(() => expect(host.querySelector('.native-ai-status')!.textContent).toContain('视图已变化'))
+    expect(navigate).not.toHaveBeenCalled()
+    expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false)
+  } finally { view.dispose() }
+})
+it('closing during navigation invalidates the host completion guard', async () => {
+  let current!: () => boolean, finish!: () => void
+  const navigate = vi.fn(async (_target: NativeWorkbookNavigation, guard: () => boolean) => { current=guard; await new Promise<void>(done=>{finish=done}) })
+  const {host, api, submit, view, navigationCandidate} = setup(navigate)
+  api.start.mockResolvedValueOnce(navigationCandidate())
+  submit(); await vi.waitFor(() => expect(navigate).toHaveBeenCalledOnce())
+  view.close(); expect(current()).toBe(false); finish()
+  await new Promise(done=>setTimeout(done,20))
+  expect(host.querySelector('.native-ai-status')!.textContent).not.toContain('已定位到')
+  view.dispose()
+})
+
+it('successful navigation leaves mixed edits pending explicit adoption even after view changes', async () => {
+  const navigate = vi.fn(async () => { selection.startRow=1; selection.endRow=1 })
+  const {host, api, apply, submit, view, navigationCandidate, candidate, selection} = setup(navigate)
+  api.start.mockResolvedValueOnce(navigationCandidate(candidate.proposal.operations))
+  try {
+    submit()
+    await vi.waitFor(() => expect(host.querySelector('.native-ai-status')!.textContent).toContain('已定位到 Sheet!B2'))
+    expect(apply).not.toHaveBeenCalled(); expect(api.accept).not.toHaveBeenCalled()
+    host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()
+    await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce())
+  } finally { view.dispose() }
+})
+it('changed draft blocks navigation and subsequent adoption', async () => {
+  const navigate = vi.fn(async () => {})
+  const {host, api, submit, view, navigationCandidate, candidate, change} = setup(navigate)
+  api.start.mockImplementationOnce(async () => { change(); return navigationCandidate(candidate.proposal.operations) })
+  try {
+    submit()
+    await vi.waitFor(() => expect(host.querySelector('.native-ai-status')!.textContent).toContain('草稿已变化'))
+    expect(navigate).not.toHaveBeenCalled()
+    host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()
+    await vi.waitFor(() => expect(host.querySelector('.native-ai-status')!.textContent).toContain('草稿已变化'))
+    expect(api.accept).not.toHaveBeenCalled()
+  } finally { view.dispose() }
 })

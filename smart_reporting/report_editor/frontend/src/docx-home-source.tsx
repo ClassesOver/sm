@@ -10,9 +10,10 @@ import {
 } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { DocxPasteMode } from './docx-clipboard'
 import type { CaseMode } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/case-transform'
+import type { DocxCellBorderMode } from '../../../reporting/doc_engine/bridge/docx-cell-borders-spec'
 import { DOCX_BORDER_COLORS, DOCX_BORDER_WIDTHS_PT, safeDocxBorders, type DocxBorderSpec } from './docx-borders'
 import { DOCX_HIGHLIGHTS } from './docx-highlight'
-import { DOCX_SHADING_COLORS } from './docx-shading'
+import { RibbonColorPalette } from './vendor/genoffice-docs/apps/docs/src/renderer/components/ribbon-color-palette'
 import { HIGHLIGHT_CSS } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/marks'
 import { useId, useRef, useState } from 'react'
 import { useDismissablePopover } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
@@ -77,6 +78,7 @@ type Props = {
   shading?: string | null
   shadingAvailable?: boolean
   onBorders?: (value: { sides: string; color: string | null; szPt: number } | null) => void
+  tableBorders?: { reason: string | null; mode: DocxCellBorderMode; color: string; apply(mode: DocxCellBorderMode): void }
   borders?: DocxBorderSpec | null
   bordersAvailable?: boolean
   onParagraph?: (command: 'add' | 'delete') => void
@@ -101,7 +103,7 @@ const unavailable = '原版控件保留；当前 DOCX 原生操作协议未支�
  * recorded in SOURCE-SHA256.json). Its App callbacks are replaced by Native
  * Tiptap/DOCX operations; unsupported commands remain visible and disabled.
  */
-export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, documentSummaryUnavailable, onPolish, polishUnavailable, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
+export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, documentSummaryUnavailable, onPolish, polishUnavailable, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, tableBorders, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
   const fontListId = useId()
   const [caseOpen, setCaseOpen] = useState(false)
   const caseWrap = useRef<HTMLDivElement>(null)
@@ -119,10 +121,10 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
   const canHighlight = editable && !!highlightAvailable && !!onHighlight
   const highlightTip = '文字突出显示颜色；作用于选中文字，未选文字时作用于整段'
   const [shadingOpen, setShadingOpen] = useState(false)
-  const [penShading, setPenShading] = useState('EDF5FC')
   const shadingWrap = useRef<HTMLDivElement>(null)
-  useDismissablePopover(shadingOpen, () => setShadingOpen(false), { inside: () => [shadingWrap.current], escape: true })
   const canShading = editable && !!shadingAvailable && !!onShading
+  useDismissablePopover(shadingOpen && canShading, () => setShadingOpen(false), { inside: () => [shadingWrap.current], escape: true })
+  const shadingColor = typeof shading === 'string' && /^[0-9a-f]{6}$/i.test(shading) ? shading : null
   const shadingTip = '段落底纹；请选择有唯一来源锚点的非空正文段落'
   // GenOffice f8c17004 Ribbon.tsx table pen defaults (borderColor 000000, borderSz 4
   // eighth-points) with Word's Home border split default (bottom); the paragraph
@@ -133,7 +135,7 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
   const [penBorderWidth, setPenBorderWidth] = useState(0.5)
   const bordersWrap = useRef<HTMLDivElement>(null)
   useDismissablePopover(bordersOpen, () => setBordersOpen(false), { inside: () => [bordersWrap.current], escape: true })
-  const canBorders = editable && !!bordersAvailable && !!onBorders
+  const canBorders = editable && (tableBorders ? tableBorders.reason === null : !!bordersAvailable && !!onBorders)
   // 粘贴分体（固定源 Ribbon.tsx:3619-3663）：主按钮按默认粘贴，分体菜单给出
   // 源真实模式；保留源格式/合并格式因富文本无法映射保存协议而禁用并说明。
   const [pasteOpen, setPasteOpen] = useState(false)
@@ -142,9 +144,16 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
   const canPaste = editable && !!onPaste
   const BORDER_MODE_SIDES = { bottom: 'b', top: 't', left: 'l', right: 'r', tblr: 'tblr' } as const
   const borderPenSpec = (mode: keyof typeof BORDER_MODE_SIDES) => safeDocxBorders({ sides: BORDER_MODE_SIDES[mode], color: penBorderColor, szPt: penBorderWidth })
-  const bordersActive = !!borders?.length
-  const bordersTip = '段落边框（单实线）；请选择有唯一来源锚点的非空正文段落'
+  const bordersActive = !tableBorders && !!borders?.length
+  const bordersTip = tableBorders ? tableBorders.reason ?? '单元格边框' : '段落边框（单实线）；请选择有唯一来源锚点的非空正文段落'
+  const currentBorder = tableBorders ? tableBorders.mode === 'all' ? 'tblr' : tableBorders.mode : penBorder
   const applyPenBorders = (mode: keyof typeof BORDER_MODE_SIDES) => {
+    if (tableBorders) {
+      tableBorders.apply(mode === 'tblr' ? 'all' : mode)
+      setBordersOpen(false)
+      return
+    }
+    setPenBorder(mode)
     const spec = borderPenSpec(mode)
     if (JSON.stringify(spec) === JSON.stringify(borders ?? null)) onBorders?.(null)
     else onBorders?.({ sides: BORDER_MODE_SIDES[mode], color: penBorderColor, szPt: penBorderWidth })
@@ -322,35 +331,35 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
         </div>
       </div>
       <div className="rb-split-wrap docx-ribbon-shading" ref={shadingWrap} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault() }}>
-        <button type="button" className={`rb-icon rb-color-btn${shading && shading !== 'none' && shading !== 'auto' ? ' active' : ''}`} data-action="shading" data-editable-action="true" disabled={!canShading} title={shadingTip} aria-label={shadingTip} onClick={() => onShading?.(shading === penShading ? 'none' : penShading)}>
-          <span className="rb-color-glyph rb-color-glyph-svg"><IconShading size={17} /><span className="rb-color-bar" style={{ background: `#${penShading}` }} /></span>
+        <button type="button" className={`rb-icon${shadingColor ? ' active' : ''}`} data-action="shading" data-editable-action="true"
+          disabled={!canShading} title={shadingTip} aria-label={ribbonZh.ribbonParagraphShading}
+          aria-expanded={shadingOpen && canShading} onClick={() => setShadingOpen(open => !open)}>
+          <IconShading size={17} /><span className="rb-caret-inline"><IconCaret /></span>
         </button>
-        <button type="button" className={`rb-caret rb-color-caret${shadingOpen ? ' active' : ''}`} data-action="shading-palette" disabled={!canShading} title={shadingTip} aria-label="段落底纹颜色选择" aria-expanded={shadingOpen && canShading} onClick={() => setShadingOpen(open => !open)}><IconCaret size={10} /></button>
-        {shadingOpen && canShading && <div data-rb-panel="" className="color-palette docx-ribbon-shading-palette">
-          <div className="color-section-title">{ribbonZh.ribbonParagraphShading}</div>
-          <div className="color-highlight-grid">{DOCX_SHADING_COLORS.map(value => <button type="button" key={value} className={`color-swatch color-highlight-swatch${shading === value.toLowerCase() ? ' selected' : ''}`} data-action={`shading-${value}`} aria-label={value} aria-pressed={shading === value.toLowerCase()} title={`#${value}`} style={{ background: `#${value}` }} onClick={() => { setPenShading(value); onShading?.(value.toLowerCase()) }} />)}</div>
-          <button type="button" className={`color-none color-highlight-none${shading == null || shading === 'none' ? ' selected' : ''}`} data-action="shading-none" onClick={() => onShading?.('none')}>{ribbonZh.ribbonNoColor}</button>
-        </div>}
+        {shadingOpen && canShading && <RibbonColorPalette current={shadingColor} noneLabel={ribbonZh.ribbonNoColor} onPick={hex => {
+          setShadingOpen(false)
+          onShading?.(hex ?? 'none')
+        }} />}
       </div>
       <div className="rb-split-wrap docx-ribbon-borders" ref={bordersWrap} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault() }}>
-        <button type="button" className={`rb-icon${bordersActive ? ' active' : ''}`} data-action="para-borders" data-editable-action="true" disabled={!canBorders} title={bordersTip} aria-label={bordersTip} onClick={() => applyPenBorders(penBorder)}>
-          <span className="rb-color-glyph rb-color-glyph-svg"><IconBorderAll size={17} /><span className="rb-color-bar" style={{ background: penBorderColor ? `#${penBorderColor}` : 'transparent' }} /></span>
+        <button type="button" className={`rb-icon${bordersActive ? ' active' : ''}`} data-action="para-borders" data-editable-action="true" disabled={!canBorders} title={bordersTip} aria-label={bordersTip} aria-expanded={tableBorders ? bordersOpen && canBorders : undefined} onClick={() => tableBorders ? setBordersOpen(open => !open) : applyPenBorders(penBorder)}>
+          <span className="rb-color-glyph rb-color-glyph-svg"><IconBorderAll size={17} /><span className="rb-color-bar" style={{ background: (tableBorders?.color ?? penBorderColor) ? `#${tableBorders?.color ?? penBorderColor}` : 'transparent' }} /></span>
         </button>
-        <button type="button" className={`rb-caret rb-color-caret${bordersOpen ? ' active' : ''}`} data-action="para-borders-menu" disabled={!canBorders} title={bordersTip} aria-label="段落边框位置、宽度和颜色" aria-expanded={bordersOpen && canBorders} onClick={() => setBordersOpen(open => !open)}><IconCaret size={10} /></button>
+        <button type="button" className={`rb-caret rb-color-caret${bordersOpen ? ' active' : ''}`} data-action="para-borders-menu" disabled={!canBorders} title={bordersTip} aria-label={tableBorders ? '单元格边框位置' : '段落边框位置、宽度和颜色'} aria-expanded={bordersOpen && canBorders} onClick={() => setBordersOpen(open => !open)}><IconCaret size={10} /></button>
         {bordersOpen && canBorders && <div data-rb-panel="" className="spacing-menu docx-ribbon-borders-menu">
           <div className="rb-row">
-            <button type="button" className={penBorder === 'bottom' ? 'active' : ''} data-action="para-border-bottom" title="下框线" onClick={() => { setPenBorder('bottom'); applyPenBorders('bottom') }}><IconBorderBottom size={16} /></button>
-            <button type="button" className={penBorder === 'top' ? 'active' : ''} data-action="para-border-top" title="上框线" onClick={() => { setPenBorder('top'); applyPenBorders('top') }}><IconBorderTop size={16} /></button>
-            <button type="button" className={penBorder === 'left' ? 'active' : ''} data-action="para-border-left" title="左框线" onClick={() => { setPenBorder('left'); applyPenBorders('left') }}><IconBorderLeft size={16} /></button>
-            <button type="button" className={penBorder === 'right' ? 'active' : ''} data-action="para-border-right" title="右框线" onClick={() => { setPenBorder('right'); applyPenBorders('right') }}><IconBorderRight size={16} /></button>
-            <button type="button" className={penBorder === 'tblr' ? 'active' : ''} data-action="para-border-box" title="所有框线" onClick={() => { setPenBorder('tblr'); applyPenBorders('tblr') }}><IconBorderAll size={16} /></button>
-            <button type="button" data-action="para-border-none" title="无框线" onClick={() => { onBorders?.(null); setBordersOpen(false) }}><IconBorderNone size={16} /></button>
+            <button type="button" className={currentBorder === 'bottom' ? 'active' : ''} data-action="para-border-bottom" title="下框线" onClick={() => applyPenBorders('bottom')}><IconBorderBottom size={16} /></button>
+            <button type="button" className={currentBorder === 'top' ? 'active' : ''} data-action="para-border-top" title="上框线" onClick={() => applyPenBorders('top')}><IconBorderTop size={16} /></button>
+            <button type="button" className={currentBorder === 'left' ? 'active' : ''} data-action="para-border-left" title="左框线" onClick={() => applyPenBorders('left')}><IconBorderLeft size={16} /></button>
+            <button type="button" className={currentBorder === 'right' ? 'active' : ''} data-action="para-border-right" title="右框线" onClick={() => applyPenBorders('right')}><IconBorderRight size={16} /></button>
+            <button type="button" className={currentBorder === 'tblr' ? 'active' : ''} data-action="para-border-box" title="所有框线" onClick={() => applyPenBorders('tblr')}><IconBorderAll size={16} /></button>
+            <button type="button" data-action="para-border-none" title="无框线" onClick={() => { if (tableBorders) tableBorders.apply('none'); else onBorders?.(null); setBordersOpen(false) }}><IconBorderNone size={16} /></button>
           </div>
-          <div className="rb-row">
+          {!tableBorders && <><div className="rb-row">
             {DOCX_BORDER_WIDTHS_PT.map(width => <button type="button" key={width} className={penBorderWidth === width ? 'active' : ''} data-action={`para-border-width-${width}`} title={`边框宽度 ${width}pt`} onClick={() => setPenBorderWidth(width)}>{width}pt</button>)}
           </div>
           <div className="color-highlight-grid">{DOCX_BORDER_COLORS.map(value => <button type="button" key={value} className={`color-swatch color-highlight-swatch${penBorderColor?.toUpperCase() === value ? ' selected' : ''}`} data-action={`para-border-color-${value}`} aria-label={value} aria-pressed={penBorderColor?.toUpperCase() === value} title={`#${value}`} style={{ background: `#${value}` }} onClick={() => setPenBorderColor(value)} />)}</div>
-          <button type="button" className={`color-none color-highlight-none${penBorderColor == null ? ' selected' : ''}`} data-action="para-border-color-auto" onClick={() => setPenBorderColor(null)}>自动颜色</button>
+          <button type="button" className={`color-none color-highlight-none${penBorderColor == null ? ' selected' : ''}`} data-action="para-border-color-auto" onClick={() => setPenBorderColor(null)}>自动颜色</button></>}
         </div>}
       </div>
     </>)}

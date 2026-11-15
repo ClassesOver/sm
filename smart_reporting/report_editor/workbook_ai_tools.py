@@ -161,11 +161,15 @@ def _sparkline_addition(operation: dict[str, Any], sheet_name: str) -> dict[str,
 
 
 class WorkbookAIToolkit(Toolkit):
-    def __init__(self, *, model: dict[str, Any], scope: str, selection: dict[str, Any], preview: Any):
+    def __init__(self, *, model: dict[str, Any], scope: str, selection: dict[str, Any], preview: Any,
+                 navigation_enabled: bool = False):
         self._model, self._scope = deepcopy(model), scope
         self._selection, self._preview = deepcopy(selection), preview
         self.proposal: WorkbookAIProposal | None = None
         self._submitting = False
+        self.navigation_enabled = navigation_enabled
+        self._navigation: dict[str, Any] | None = None
+        self._active_sheet = None
         self._sheets = {sheet['name']: sheet for sheet in self._model['sheets']
                         if scope == 'workbook' or sheet['name'] == selection['sheetName']}
         super().__init__(name='workbook_candidate', tools=[
@@ -173,11 +177,30 @@ class WorkbookAIToolkit(Toolkit):
             self.read_sheet_features, self.find_cells, self.aggregate_range,
             self.trace_precedents, self.trace_dependents, self.load_guide,
             self.propose_operations,
-        ])
+        ] + ([self.select_range] if navigation_enabled else []))
+
+    @property
+    def navigation(self):
+        return deepcopy(self._navigation)
+
+    def select_range(self, range: str, sheetId: str | None = None) -> dict[str, Any]:
+        """仅当用户要求移动视图时请求定位；navigation_requested尚未由浏览器确认，不修改数据。"""
+        if not self.navigation_enabled:
+            raise ValueError("workbook_ai_navigation_unavailable")
+        if self.proposal is not None or self._submitting:
+            raise ValueError("workbook_ai_proposal_already_submitted")
+        sheet = self._sheet(sheetId)
+        bounds = _bounds(range)
+        self._authorized(sheet, bounds)
+        r0, r1, c0, c1 = bounds
+        self._navigation = {"sheetName": sheet["name"], "range": _range_address(range),
+            "startRow": r0, "endRow": r1, "startColumn": c0, "endColumn": c1}
+        self._active_sheet = sheet["name"]
+        return {**self.navigation, "status": "navigation_requested", "mutated": False}
 
     def _sheet(self, sheetId: str | None) -> dict[str, Any]:
         identity = sheetId if sheetId is not None else (
-            self._selection.get('sheetName') or next(iter(self._sheets))
+            self._active_sheet or self._selection.get('sheetName') or next(iter(self._sheets))
         )
         if identity not in self._sheets:
             raise ValueError('workbook_ai_selection_mismatch')
@@ -210,7 +233,9 @@ class WorkbookAIToolkit(Toolkit):
                            'rows': max((area[1] + 1 for area in bounds), default=0),
                            'columns': max((area[3] + 1 for area in bounds), default=0),
                            'knownAddresses': addresses[:200]})
-        return {'scope': self._scope, 'selection': deepcopy(self._selection), 'sheets': sheets}
+        return {'scope': self._scope, 'selection': deepcopy(self._selection), 'sheets': sheets,
+                'activeSheetId': self._sheet(None)['name'],
+                'viewState': 'navigation_requested' if self._navigation else 'captured' if self.navigation_enabled else 'unavailable'}
 
     def read_range(self, range: str, sheetId: str | None = None) -> dict[str, Any]:
         """读取矩形范围的真实值、公式；最多2000格，越过冻结选区会被拒绝。"""

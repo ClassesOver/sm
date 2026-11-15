@@ -16,6 +16,8 @@ import { createDocxTableLayoutMenu } from './docx-table-layout-menu'
 import { DocxTableSizeSource } from './docx-table-size-source'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { createDocxCellBorderUiState, createDocxCellBordersControls } from './docx-cell-borders-controls'
+import { applyDocxCellBorders, docxCellBordersUnavailable } from './docx-cell-borders'
+import { inTableOrSelected } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/table-ops'
 import type { DocxTocControls } from './docx-toc'
 import { docxFontPickAttrs } from '../../../reporting/doc_engine/bridge/docx-font-slots'
 import { DocxNotesSource, type DocxNotesController } from './docx-notes-source'
@@ -1375,6 +1377,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       onBorders: (value: { sides: string; color: string | null; szPt: number } | null) => { if (editable) applyParagraphBorders(editor, anchors, value) },
       borders: selected ? paragraphBorders(selected.toJSON()) : null,
       bordersAvailable: !!paragraphBordersTarget(editor, anchors),
+      tableBorders: inTableOrSelected(editor.state) ? {
+        reason: editable ? docxCellBordersUnavailable(editor, anchors) : '当前文档只读',
+        mode: cellBorderState.lastMode,
+        color: cellBorderState.pen.color,
+        apply: mode => {
+          if (!editable || !inTableOrSelected(editor.state) || docxCellBordersUnavailable(editor, anchors)) return
+          cellBorderState.lastMode = mode
+          try { applyDocxCellBorders(editor, mode, cellBorderState.pen, anchors) } catch (error) { reportError?.(error) }
+        },
+      } : undefined,
       onColor: (color: string) => applyTextStyle({ color }),
       onAlignment: (value: 'left' | 'center' | 'right' | 'justify') => { setSelectionAlign(editor, value) },
       onIndent: adjustIndent,

@@ -5,6 +5,7 @@ import { createWorkbookEditorView } from './workbook-main'
 import { createNativeOfficeTransport } from './native-office-view'
 import { NativeDraft, type NativeDraftIdentity, type NativeSaveRequest } from './native-draft'
 import { createEditorShell } from './shell'
+import type { WorkbookNativeAIClient } from './workbook-native-ai'
 
 const grid = vi.hoisted(() => ({ api: undefined as any, ribbon: undefined as any, apply: vi.fn(() => false), instances: [] as any[] }))
 vi.mock('@univerjs/preset-sheets-core', () => ({ UniverSheetsCorePreset: () => ({}) }))
@@ -79,12 +80,12 @@ async function fixture() {
     { row: 6, column: 6, author: 'Dan', text: 'untouched' },
   ])
 }
-async function open(source: Uint8Array, draft: NativeDraft, save: (request: NativeSaveRequest) => Promise<unknown>) {
+async function open(source: Uint8Array, draft: NativeDraft, save: (request: NativeSaveRequest) => Promise<unknown>, nativeAI?: WorkbookNativeAIClient) {
   document.body.innerHTML = '<main id="app"></main>'
   const shell = createEditorShell(document.querySelector('#app')!, 'full', 'xlsx')
   const context = { context: { ...identity, format: 'xlsx', sourceFile: { sha256: identity.sourceSha256 } }, editingEnabled: true }
   const transport = createNativeOfficeTransport({ api: { save } as never, context: context as never, draft })
-  const view = await createWorkbookEditorView(shell, { native: true, draft, request: transport.workbook,
+  const view = await createWorkbookEditorView(shell, { native: true, draft, nativeAI, request: transport.workbook,
     file: async () => ({ bytes: source.slice().buffer as ArrayBuffer, sha256: identity.sourceSha256 }) })
   if (!view) throw new Error('XLSX editor fixture did not open')
   return { shell, view }
@@ -378,4 +379,21 @@ it('main captures a standalone note cell migration as a move and the save keeps 
   expect(actual.sheets[0].notes!.notes.find(item => item.row === 1 && item.column === 1)).toEqual({ row: 1, column: 1, author: 'Alice', text: 'edit me' })
   expect(actual.sheets[0].notes!.notes.find(item => item.row === 0 && item.column === 0)).toBeUndefined()
   expect(actual.sheets[0].notes!.notes).toHaveLength(4)
+})
+
+it('candidate submission freezes selection before asynchronous context setup', async () => {
+  const source = await fixture(), draft = new NativeDraft(identity, store())
+  const api = {start:vi.fn(async()=>({editId:'unexpected',status:'failed',snapshotSha256:''})),
+    status:vi.fn(), accept:vi.fn(), cancel:vi.fn(async()=>({})), cancelRequest:vi.fn(async()=>({}))}
+  const {view} = await open(source,draft,async()=>({}),api)
+  try {
+    sheet().getRange('A1').activate()
+    const assistant=view.officeEditAssistant!
+    assistant.open()
+    assistant.panel.querySelector('textarea')!.value='修改当前格'
+    assistant.panel.querySelector('form')!.dispatchEvent(new Event('submit',{cancelable:true}))
+    sheet().getRange('B2').activate()
+    await vi.waitFor(()=>expect(assistant.panel.querySelector('.native-ai-status')!.textContent).toContain('草稿或选区已变化'))
+    expect(api.start).not.toHaveBeenCalled()
+  } finally {view.dispose()}
 })

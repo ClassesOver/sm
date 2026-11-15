@@ -25,6 +25,9 @@ class _ReadOnlyWorkbookToolkit(WorkbookAIToolkit):
     """复用既有查询实现，初始化时完全不注册候选写入工具。"""
 
     def __init__(self, model: dict, selection: dict | None):
+        self._navigation = None
+        self.navigation_enabled = False
+        self._active_sheet = None
         self._model = model
         self._scope = 'range' if selection is not None else 'workbook'
         self._selection = deepcopy(selection) if selection is not None else {}
@@ -241,6 +244,7 @@ class AgnoNativeWorkbookReadPlanner:
 
     async def __call__(self, *, reader: NativeWorkbookReadTools, action: str, instruction: str,
                        session_id: str, user_id: str) -> dict[str, Any]:
+        from ..office.settings import native_model
         from ..reporting.agent_events import run_owned_agent_with_events
         from ..reporting.structured_output.policy import (
             REPORTING_STRUCTURED_MODES_MODEL_ATTR,
@@ -248,8 +252,6 @@ class AgnoNativeWorkbookReadPlanner:
             StructuredOutputMode,
             VerifiedModelCapabilityResolver,
         )
-
-        from ..office.settings import native_model
         model = await native_model(self.model)
         modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(

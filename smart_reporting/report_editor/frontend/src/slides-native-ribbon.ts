@@ -23,7 +23,7 @@ import { createNativeChartGallery, type NativeChartGalleryState } from './slides
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 import iconTransparency from './vendor/genoffice-slides/components/icon-transparency.png'
 import iconCrop from './vendor/genoffice-slides/components/icon-crop.png'
-import { IconPageBorders } from './vendor/genoffice-slides/components/icons'
+import { IconFillColor, IconPageBorders } from './vendor/genoffice-slides/components/icons'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import { ShapePreview } from './vendor/genoffice-docs/packages/ui/src/shape-gallery'
 
@@ -59,7 +59,7 @@ type Tab = { id: string; label: string; groups: Group[]; context?: NativeSlidesC
 
 const noWrite = (operation: string) => `${operation} 尚无受支持的 editSlides 写回操作。`
 const PICTURE_TRANSPARENCY_PRESETS = ['0', '15', '30', '50', '65', '80', '95']
-const PICTURE_OUTLINE_WIDTHS = ['0.5', '1', '1.5', '2.25', '3', '4.5', '6']
+const OUTLINE_WIDTHS = ['0.5', '1', '1.5', '2.25', '3', '4.5', '6']
 const desktop = (operation: string) => `${operation} 依赖桌面 IPC 或本机资源；浏览器没有授权的 Web 等价操作。`
 // Kept in sync with the fixed upstream @genoffice/pptx-ops font-size ladder.
 const FONT_SIZE_LADDER = [8, 9, 10, 10.5, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96]
@@ -257,7 +257,7 @@ const tabs: Tab[] = [
   { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id:'removeBackground',label:'去除背景',sourceActionId:'onPictureCutout' }, { id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'pictureOpacity', label: 'Transparency', sourceActionId: 'onPictureOpacity' }] },
     { label: 'Outline', controls: [
       { id: 'pictureOutlineColor', label: '轮廓颜色', caption: '颜色', kind: 'color', sourceActionId: 'onPictureStroke' },
-      { id: 'pictureOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: PICTURE_OUTLINE_WIDTHS, optionLabels: PICTURE_OUTLINE_WIDTHS.map(value => value + ' pt'), sourceActionId: 'onPictureStroke' },
+      { id: 'pictureOutlineWidth', label: 'Outline Weight', options: OUTLINE_WIDTHS, optionLabels: OUTLINE_WIDTHS.map(value => value + ' pt'), sourceActionId: 'onPictureStroke' },
       { id: 'pictureNoOutline', label: 'No Outline', sourceIcon: IconPageBorders, sourceActionId: 'onPictureStroke' },
     ] },
     { label: 'Size', controls: [{ id: 'cropPicture', label: 'Crop', kind: 'toggle', sourceActionId: 'onPictureCrop' }] },
@@ -271,7 +271,15 @@ const tabs: Tab[] = [
   { id: 'shapeFormat', label: 'Shape Format', context: 'shape', groups: [
     { label: 'Shapes', controls: [{ id: 'changeShape', label: 'Change Shape', sourceActionId: 'onChangeShape' }] },
     { label: 'Size', controls: [{ id: 'shapeGeometry', label: 'Position and Size' }] },
-    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', caption: '填充', kind: 'color', sourceActionId: 'onShapeFill' }, { id: 'shapeNoFill', label: 'No Fill', caption: '无填充', sourceActionId: 'onShapeFill' }, { id: 'shapeOutline', label: 'Outline', caption: '轮廓', kind: 'color', sourceActionId: 'onShapeOutline' }, { id: 'shapeOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: ['0.75', '1', '1.5', '2.25', '3', '4.5', '6'], optionLabels: ['0.75 磅', '1 磅', '1.5 磅', '2.25 磅', '3 磅', '4.5 磅', '6 磅'], sourceActionId: 'onShapeOutline' }, { id: 'shapeNoOutline', label: 'No Outline', caption: '无轮廓', sourceActionId: 'onShapeOutline' }] },
+    { label: 'Fill', controls: [
+      { id: 'shapeFill', label: 'Fill', caption: '颜色', kind: 'color', sourceActionId: 'onShapeFill' },
+      { id: 'shapeNoFill', label: 'No Fill', sourceActionId: 'onShapeFill' },
+    ] },
+    { label: 'Outline', controls: [
+      { id: 'shapeOutline', label: 'Outline', caption: '颜色', kind: 'color', sourceActionId: 'onPictureStroke' },
+      { id: 'shapeOutlineWidth', label: 'Outline Weight', options: OUTLINE_WIDTHS, optionLabels: OUTLINE_WIDTHS.map(value => value + ' pt'), sourceActionId: 'onPictureStroke' },
+      { id: 'shapeNoOutline', label: 'No Outline', sourceActionId: 'onPictureStroke' },
+    ] },
   ] },
   { id: 'model3dFormat', label: '3D Model', context: 'model3d', groups: [{ label: 'Views', controls: [{ id: 'model3dView', label: '3D View', unavailable: noWrite('3D 视角') }] }] },
 ]
@@ -353,6 +361,10 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     for (const [tabId, close] of shapeGalleries) if (tabId !== exceptTab) close()
   }
   const closePictureMenus = () => { closePictureOutline?.(); pictureTransparency?.close() }
+  const shapeFormatMenus = new Map<string, () => void>()
+  const closeShapeFormatMenus = (except?: string) => {
+    for (const [id, close] of shapeFormatMenus) if (id !== except) close()
+  }
   let locked = options.locked === true
   let currentAnimationEffect = ''
   let listTargets = { bullets: false, numbers: false, hanging: false }
@@ -394,6 +406,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   const selectTab = (id: string) => {
     if (id !== 'chartDesign') chartGallery?.close()
     if (id !== 'pictureFormat') closePictureMenus()
+    if (id !== 'shapeFormat') closeShapeFormatMenus()
     closeShapeGalleries(id)
     activeTab = id
     for (const tab of tabs) {
@@ -449,21 +462,32 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       heading.textContent = groupLabel
       group.append(heading)
       let controlHost: HTMLElement = group
-      if (tab.id === 'pictureFormat' && groupDefinition.label === 'Outline') {
+      const pictureOutline = tab.id === 'pictureFormat' && groupDefinition.label === 'Outline'
+      const shapeFill = tab.id === 'shapeFormat' && groupDefinition.label === 'Fill'
+      const shapeOutline = tab.id === 'shapeFormat' && groupDefinition.label === 'Outline'
+      if (pictureOutline || shapeFill || shapeOutline) {
         const trigger = document.createElement('button')
         trigger.type = 'button'
-        trigger.disabled = true
-        trigger.dataset.command = 'pictureOutlineMenu'
-        trigger.dataset.sourceAction = 'onPictureStroke'
-        trigger.innerHTML = renderToStaticMarkup(reactElement(IconPageBorders, { size: 15 }))
+        trigger.disabled = locked || pictureOutline
+        const id = pictureOutline ? 'pictureOutlineMenu' : shapeFill ? 'shapeFillMenu' : 'shapeOutlineMenu'
+        trigger.dataset.command = id
+        trigger.dataset.sourceAction = shapeFill ? 'onShapeFill' : 'onPictureStroke'
+        trigger.innerHTML = renderToStaticMarkup(reactElement(shapeFill ? IconFillColor : IconPageBorders, { size: 15 }))
         trigger.append(document.createTextNode(groupLabel + ' ▾'))
-        controls.set('pictureOutlineMenu', [trigger])
-        const { menu, close } = createRibbonPopover(trigger, groupLabel, () => pictureTransparency?.close())
+        controls.set(id, [trigger])
+        const { menu, close } = createRibbonPopover(trigger, groupLabel, () => {
+          if (pictureOutline) pictureTransparency?.close()
+          else {
+            closeShapeFormatMenus(id)
+            closeShapeGalleries()
+          }
+        })
         group.append(trigger, menu)
         controlHost = menu
-        closePictureOutline = close
+        if (pictureOutline) closePictureOutline = close
+        else shapeFormatMenus.set(id, close)
         menu.addEventListener('click', event => {
-          if (event.target instanceof Element && event.target.closest('[data-outline-width], [data-command="pictureNoOutline"]')) close(true)
+          if (event.target instanceof Element && event.target.closest('[data-outline-width], [data-command="pictureNoOutline"], [data-command="shapeNoFill"], [data-command="shapeNoOutline"]')) close(true)
         })
       }
       if (groupDefinition.label === 'AI 助手') {
@@ -531,6 +555,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           trigger.innerHTML = renderToStaticMarkup(reactElement(IconShapes, { size: 18 }))
           trigger.append(localizedLabel + ' ▾')
           const { menu, close } = createRibbonPopover(trigger, localizedLabel, () => {
+            closeShapeFormatMenus()
             if (menu.hasChildNodes()) return
             for (const category of SHAPE_GALLERY_GROUPS) {
               const shapes = control.id === 'insertShape'
@@ -561,7 +586,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           shapeGalleries.set(tab.id, close)
           controlHost.append(trigger, menu)
           element = trigger
-        } else if (control.id === 'pictureOutlineWidth') {
+        } else if (control.id === 'pictureOutlineWidth' || control.id === 'shapeOutlineWidth') {
           const widths = document.createElement('fieldset')
           widths.dataset.command = control.id
           const legend = document.createElement('legend')
@@ -658,7 +683,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = localizedLabel + '：作用于当前对象的全部段落；自定义输入 Enter 提交'
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
         if (control.id === 'pictureOpacity' || control.id === 'changeShape' || control.id === 'insertShape') continue
-        if ((control.caption && control.id !== 'pictureOutlineWidth') || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
+        if (control.caption || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
           const label = document.createElement('label')
           label.htmlFor = controlId
           label.className = 'slides-ribbon-field'
@@ -791,7 +816,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
-      if (value) { closePictureMenus(); closeShapeGalleries() }
+      if (value) { closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus() }
       chartGallery?.setLocked(value)
       for (const elements of controls.values()) for (const element of elements) {
         if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement || element instanceof HTMLFieldSetElement) {
@@ -807,7 +832,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateCommentEdit()
       updateAIEdit()
     },
-    dispose() { chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); disposeScroll(); root.remove() },
+    dispose() { chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

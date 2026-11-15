@@ -141,6 +141,65 @@ it('uses the GenOffice border presets and the chosen color without writing on co
   ribbon.dispose()
 })
 
+it('accepts GenOffice typed font sizes and steps through its Excel size ladder', () => {
+  const command = vi.fn()
+  let fontSize: FormatValue<number> = { kind: 'value', value: 13.5 }, protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0, format: () => ({ ...selectedWorkbookFormat(null), fontSize }),
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const size = document.querySelector<HTMLInputElement>('[data-ribbon-control="font-size"]')!
+  expect(size.tagName).toBe('INPUT')
+  expect(size.value).toBe('13.5')
+  expect(Array.from(size.list!.options, option => option.value)).toEqual(['9', '10', '11', '12', '13.5', '14', '16', '18', '22', '26'])
+  const change = (text: string) => { size.value = text; size.dispatchEvent(new Event('change')) }
+  change('27,5'); expect(command).toHaveBeenLastCalledWith('font-size:27.5')
+  change('409'); expect(command).toHaveBeenLastCalledWith('font-size:409')
+  change('410'); expect(command).toHaveBeenCalledTimes(2)
+  expect(size.value).toBe('13.5')
+  const grow = document.querySelector<HTMLButtonElement>('[data-ribbon-control="font-size-increase"]')!
+  const shrink = document.querySelector<HTMLButtonElement>('[data-ribbon-control="font-size-decrease"]')!
+  grow.click(); expect(command).toHaveBeenLastCalledWith('font-size:14')
+  shrink.click(); expect(command).toHaveBeenLastCalledWith('font-size:12')
+  fontSize = { kind: 'mixed' }; ribbon.refreshState()
+  expect(size.placeholder).toBe('混合')
+  expect(size.disabled).toBe(false)
+  grow.click(); expect(command).toHaveBeenLastCalledWith('font-size:12')
+  const setFontSize = vi.fn()
+  const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => ({ setFontSize }) }) }) } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
+  expect(applyWorkbookRibbonCommand('font-size:409', workbook)).toBe(true)
+  expect(setFontSize).toHaveBeenCalledExactlyOnceWith(409)
+  protectedSheet = true; ribbon.refreshState()
+  expect(size.disabled).toBe(true); expect(grow.disabled).toBe(true); expect(shrink.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('commits a typed font family outside suggestions and reflects workbook protection', () => {
+  const command = vi.fn()
+  let fontFamily: FormatValue<string> = { kind: 'value', value: 'Imported Family' }, protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0, format: () => ({ ...selectedWorkbookFormat(null), fontFamily }),
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const family = document.querySelector<HTMLInputElement>('[data-ribbon-control="font-family"]')!
+  expect(family.tagName).toBe('INPUT')
+  expect(family.value).toBe('Imported Family')
+  expect(Array.from(family.list!.options).map(option => option.value)).toContain('Imported Family')
+  family.value = '  设计师字体  '
+  family.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', cancelable: true }))
+  expect(command).toHaveBeenCalledExactlyOnceWith('font-family:设计师字体')
+  family.value = 'Uncommitted'
+  family.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }))
+  expect(family.value).toBe('Imported Family')
+  family.value = '   '; family.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledTimes(1)
+  fontFamily = { kind: 'mixed' }; ribbon.refreshState()
+  expect(family.placeholder).toBe('混合')
+  expect(family.disabled).toBe(false)
+  protectedSheet = true; ribbon.refreshState(); expect(family.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()
   const open = (editable: boolean) => {
@@ -439,7 +498,7 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
     '文件', '开始', '插入', '页面布局', '公式', '数据', '审阅', '视图', '图表设计',
   ])
   document.querySelector<HTMLButtonElement>('[data-ribbon-command="bold"]')!.click()
-  const font = document.querySelector<HTMLSelectElement>('[data-ribbon-control="font-family"]')!
+  const font = document.querySelector<HTMLInputElement>('[data-ribbon-control="font-family"]')!
   font.value = 'Calibri'
   font.dispatchEvent(new Event('change', { bubbles: true }))
   const increaseDecimal = document.querySelector<HTMLButtonElement>('[data-ribbon-command="decimal-inc"]')!
@@ -1460,8 +1519,8 @@ it('toggles the session formula bar on readonly and protected sheets while refle
 it('offers built-in CJK families separately from system fonts and dispatches actual font names', () => {
   const onCommand = vi.fn(), ribbon = mountWorkbookRibbon(document.body, onCommand)
   try {
-    const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="font-family"]')!
-    const options = new Map([...select.options].map(option => [option.value, option.textContent]))
+    const select = document.querySelector<HTMLInputElement>('[data-ribbon-control="font-family"]')!
+    const options = new Map([...select.list!.options].map(option => [option.value, option.textContent]))
     for (const [family, label] of [
       ['Noto Sans CJK SC', '思源黑体（内置）'], ['Noto Serif CJK SC', '思源宋体（内置）'],
       ['LXGW WenKai', '霞鹜文楷（内置）'], ['Ma Shan Zheng', '马善政毛笔楷书（内置）'], ['ZCOOL XiaoWei', '站酷小薇（内置）'],
@@ -1492,10 +1551,10 @@ it('persists actual CJK font-family menu values through a real Univer range and 
     loadWorkbookData({ univer, univerAPI: api } as any, buildWorkbookData(model, 'cjk-menu', 'cjk-menu'))
     univer.__getInjector().get(IUniverInstanceService).focusUnit('cjk-menu')
     const book = api.getActiveWorkbook()!, sheet = book.getSheets()[0]!
-    const families = ['Noto Sans CJK SC', 'Noto Serif CJK SC', 'LXGW WenKai', 'Ma Shan Zheng', 'ZCOOL XiaoWei', 'SimSun', 'SimHei', 'Microsoft YaHei', 'KaiTi', 'FangSong']
+    const families = ['Noto Sans CJK SC', 'Noto Serif CJK SC', 'LXGW WenKai', 'Ma Shan Zheng', 'ZCOOL XiaoWei', 'SimSun', 'SimHei', 'Microsoft YaHei', 'KaiTi', 'FangSong', '设计师字体']
     let row = 0
     ribbon = mountWorkbookRibbon(document.body, command => applyWorkbookRibbonCommand(command, { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => sheet.getRange(row, 0) }) }) } as any))
-    const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="font-family"]')!
+    const select = document.querySelector<HTMLInputElement>('[data-ribbon-control="font-family"]')!
     families.forEach((family, index) => { row = index;sheet.getRange(row, 0).setValue('中文字体');select.value = family;select.dispatchEvent(new Event('change')) })
     const cells = readBackSnapshot(book.getSnapshot()).sheets[0]!.cells
     const edits = families.map((family, index) => {

@@ -116,7 +116,7 @@ it('shows crop in Picture Format Size and preserves pending picture orientation'
  }finally{app.view.dispose()}
 })
 
-it('changes and deletes an unsaved drawn shape using its insertion identity',async()=>{
+it('changes, formats and deletes an unsaved drawn shape using its insertion identity',async()=>{
  const draft=newDraft(),app=await open(draft)
  try{
   app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-insert')!.click()
@@ -130,15 +130,38 @@ it('changes and deletes an unsaved drawn shape using its insertion identity',asy
   app.shell.editor.querySelector<HTMLButtonElement>('.slides-shape-gallery:not([hidden]) [data-prst="hexagon"]')!.click()
   expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon'}])
   expect(draft.operations[0]?.shapeKinds).toBeUndefined()
+  const fill=app.shell.editor.querySelector<HTMLInputElement>('[data-command="shapeFill"]')!
+  app.command('shapeFillMenu').click()
+  expect(app.command('shapeFillMenu').getAttribute('aria-expanded')).toBe('true')
+  expect(fill.disabled).toBe(false)
+  fill.value='#12ab34'
+  fill.dispatchEvent(new Event('change',{bubbles:true}))
+  await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon',fill:'#12AB34'}]))
+  const outline=app.shell.editor.querySelector<HTMLInputElement>('[data-command="shapeOutline"]')!
+  app.command('shapeOutlineMenu').click()
+  expect(app.command('shapeFillMenu').getAttribute('aria-expanded')).toBe('false')
+  outline.value='#224466'
+  outline.dispatchEvent(new Event('change',{bubbles:true}))
+  await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toContainEqual(expect.objectContaining({stroke:{color:'#224466',widthPt:1}})))
+  app.shell.editor.querySelector<HTMLButtonElement>('[data-command="shapeOutlineWidth"] [data-outline-width="0.5"]')!.click()
+  const styled={...inserted,kind:'hexagon',fill:'#12AB34',stroke:{color:'#224466',widthPt:0.5}}
+  await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([styled]))
+  expect(draft.operations[0]?.shapeStyles).toBeUndefined()
+  app.command('shapeFillMenu').click()
+  app.command('shapeNoFill').click()
+  const transparent={...styled,fill:'none'}
+  await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([transparent]))
+  app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(draft.operations[0]?.shapes).toEqual([styled])
   app.shell.editor.querySelector<HTMLButtonElement>('.object-delete')!.click()
   expect(draft.operations[0]?.shapes ?? []).toEqual([])
   expect(draft.operations[0]?.deletions ?? []).toEqual([])
   app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
-  expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon'}])
+  expect(draft.operations[0]?.shapes).toEqual([styled])
   app.shell.save.click()
   await vi.waitFor(()=>expect(app.request.mock.calls.some(([path])=>path==='save')).toBe(true))
   expect(JSON.parse(app.request.mock.calls.find(([path])=>path==='save')![1]!.body as string).operations[0].shapes)
-   .toEqual([{...inserted,kind:'hexagon'}])
+   .toEqual([styled])
  }finally{app.view.dispose()}
 })
 it('裁切与frame一次撤销重做，刷新恢复并保持源SHA进入保存payload',async()=>{

@@ -146,7 +146,7 @@ it('renders mixed state, actual single-cell state, Chinese tabs, roving focus an
   const f = fixture(), command = vi.fn(); let editable = true
   const host = document.createElement('div'); document.body.append(host)
   const ribbon = mountWorkbookRibbon(host, command, { rotation: () => 0, editable: () => editable, hasSelection: () => true, format: () => selectedWorkbookFormat(f.workbook), captureTarget: () => captureNumberFormatTarget(f.workbook) })
-  expect(host.querySelector<HTMLSelectElement>('[data-ribbon-control="font-family"]')!.value).toBe('Calibri')
+  expect(host.querySelector<HTMLInputElement>('[data-ribbon-control="font-family"]')!.value).toBe('Calibri')
   expect(host.querySelector<HTMLInputElement>('[data-ribbon-control="fill"]')!.value).toBe('#abcdef')
   expect(host.querySelector('[data-ribbon-command="bold"]')!.getAttribute('aria-pressed')).toBe('true')
   const tabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')]

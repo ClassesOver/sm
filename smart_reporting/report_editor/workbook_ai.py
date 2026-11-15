@@ -64,6 +64,14 @@ class WorkbookAIProposal(StrictModel):
         return [{"kind": item.kind, **item.arguments} for item in self.operations]
 
 
+@dataclass(frozen=True)
+class WorkbookAINativePlan:
+    """Trusted native planner outcome; never part of a model output schema."""
+
+    proposal: WorkbookAIProposal | None
+    navigation: dict[str, Any] | None
+
+
 class WorkbookProposalPlanner(Protocol):
     async def __call__(self, prompt: str, *, session_id: str, user_id: str) -> WorkbookAIProposal: ...
 
@@ -89,13 +97,17 @@ class AgnoWorkbookProposalPlanner:
             return WorkbookAIProposal.model_validate(dict(content))
         raise ValueError("workbook_ai_proposal_not_structured")
 
+    async def plan_native_workbook(self, *args, **kwargs) -> WorkbookAINativePlan:
+        return await self.plan_workbook(*args, **kwargs, navigation_enabled=True)
+
     async def plan_workbook(self, prompt: str, *, model: dict[str, Any], scope: str,
                             selection: dict[str, Any], preview: Any,
-                            session_id: str, user_id: str) -> WorkbookAIProposal:
+                            session_id: str, user_id: str, navigation_enabled: bool = False) -> WorkbookAIProposal | WorkbookAINativePlan:
         """使用原生 Agno 工具循环读取工作簿，并通过提案工具运行真实引擎预览。"""
         from .workbook_ai_tools import WorkbookAIToolkit
 
-        toolkit = WorkbookAIToolkit(model=model, scope=scope, selection=selection, preview=preview)
+        toolkit = WorkbookAIToolkit(model=model, scope=scope, selection=selection, preview=preview,
+                                   navigation_enabled=navigation_enabled)
         agent = self.agent.deep_copy(update={
             "output_schema": None, "parse_response": False, "structured_outputs": False,
             "use_json_mode": False, "tools": [toolkit], "tool_choice": "auto",
@@ -115,9 +127,14 @@ class AgnoWorkbookProposalPlanner:
             '"seriesData":[{"index":0,"valuesRange":"B2:B3","categoriesRange":"A2:A3"}]}],'
             '"summary":"按真实范围换绑系列"}。不要将源DSL字段直接放到kind=applyChartSource的arguments中。\n'
         )
+        if navigation_enabled:
+            tool_protocol += ("仅用户要求移动视图时使用select_range。回执navigation_requested仅表示请求，不能声称浏览器已定位。"
+                "仅定位时无需propose_operations；若还需编辑，先请求定位，再一次性提交完整候选。最终正文或JSON不能发起导航。")
         from ..office.settings import configure_office_agent
         await configure_office_agent(agent, update_model=True)
         await run_agent_with_events(agent, tool_protocol + prompt, session_id=session_id, user_id=user_id)
+        if navigation_enabled and (toolkit.proposal is not None or toolkit.navigation is not None):
+            return WorkbookAINativePlan(toolkit.proposal, toolkit.navigation)
         if toolkit.proposal is None:
             raise ValueError("workbook_ai_proposal_not_submitted")
         return toolkit.proposal
