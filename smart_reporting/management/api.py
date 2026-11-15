@@ -241,7 +241,6 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
     @router.get("/management/knowledge", include_in_schema=False)
     @router.get("/management/system-configuration", include_in_schema=False)
     @router.get("/management/preferences", include_in_schema=False)
-    @router.get("/management/report-issues", include_in_schema=False)
     @router.get("/management/account/password", include_in_schema=False)
     async def management_page(request: Request):
         try:
