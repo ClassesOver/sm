@@ -125,3 +125,31 @@ async def test_pdf_preview_rejects_source_changed_during_page_extraction():
     with pytest.raises(PermissionError, match="document_source_changed"):
         await engine.prepare(request)
     assert reads == 3
+
+
+@pytest.mark.anyio
+async def test_pdf_preview_maps_rotated_page_selection_into_text_coordinates():
+    document = fitz.open()
+    page = document.new_page(width=400, height=300)
+    page.insert_text((50, 60), "ROTATED_EVIDENCE")
+    page.set_rotation(90)
+    original = document.tobytes()
+    document.close()
+    scope = DocumentScope(
+        "channel", "grant", "rotated", "1", hashlib.sha256(original).hexdigest(),
+        DocumentFormat.PDF,
+    )
+    selection = ({"page": 0, "rect": [0.76, 0.1, 0.9, 0.25]},)
+
+    async def source(_):
+        return original
+
+    async def propose(_):
+        return ({"page": 0, "rect": [0.76, 0.1, 0.9, 0.25], "note": "Review"},)
+
+    engine = PdfAnnotationPreviewEngine(source, propose)
+    request = DocumentCandidateRequest(scope, "rotated-one", "Annotate", selection)
+    task_id = await engine.prepare(request)
+    preview = await engine.status(scope, task_id)
+    assert preview["accepted"] is False
+    assert "ROTATED_EVIDENCE" in preview["changes"][0]["context"]
