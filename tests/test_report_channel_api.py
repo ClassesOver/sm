@@ -71,6 +71,10 @@ async def test_channel_word_assistant_uses_server_draft_and_reports_private_stat
         assert (await client.get(path + "/task-a")).json() == {
             "taskId": "task-a", "status": "ready", "accepted": False,
         }
+        # A newly issued invitation must not inherit tasks from the revoked grant.
+        repository.member_grant.return_value = "replacement-grant"
+        assert (await client.get(path + "/task-a")).status_code == 404
+        repository.member_grant.return_value = "synthetic-grant"
         authenticate.return_value = ConnectorIdentity("dsh", "account-a", "another-session")
         assert (await client.get(path + "/task-a")).status_code == 404
         repository.has_member.return_value = False
