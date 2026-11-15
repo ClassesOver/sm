@@ -117,6 +117,8 @@ class AgnoWorkbookProposalPlanner:
         )
         from ..office.ai_sources import attach_office_sources
         attach_office_sources(agent)
+        from ..office.ai_skills import attach_office_skills
+        attach_office_skills(agent)
         await run_agent_with_events(agent, tool_protocol + prompt, session_id=session_id, user_id=user_id)
         if toolkit.proposal is None:
             raise ValueError("workbook_ai_proposal_not_submitted")

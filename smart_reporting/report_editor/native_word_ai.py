@@ -427,6 +427,8 @@ class AgnoNativeWordProposalPlanner:
                       instructions=[WORD_AI_INSTRUCTIONS])
         from ..office.ai_sources import attach_office_sources
         attach_office_sources(agent)
+        from ..office.ai_skills import attach_office_skills
+        attach_office_skills(agent)
         output = await run_owned_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
         content = getattr(output, 'content', None)
         proposal = content if isinstance(content, NativeWordAIProposal) else NativeWordAIProposal.model_validate(

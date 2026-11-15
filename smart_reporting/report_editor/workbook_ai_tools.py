@@ -17,6 +17,7 @@ from agno.tools import Toolkit
 from openpyxl.formula import Tokenizer
 from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_boundaries
 
+from ..office.ai_skills import WORKBOOK_GUIDES, source_workbook_guide
 from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
 from .workbook_ai_structure import ROW_COLUMN_SOURCE_OPS, translate_row_column_operation
@@ -371,7 +372,7 @@ class WorkbookAIToolkit(Toolkit):
         return {'sheetName': sheet['name'], 'address': address, 'dependents': dependents, 'truncated': False, 'complete': unsupported == 0 and self._scope == 'workbook', 'scope': self._scope, 'unsupportedFormulaCount': unsupported}
 
     def load_guide(self, guides: list[str]) -> dict[str, Any]:
-        """加载适配器实际支持的操作协议；结构操作仅用于明确授权整簿模式。"""
+        """加载源指南与原生适配说明：writing/formatting/layout/structure/charts/data/financial-formatting/data-attribution/table/pivot/shape-image。"""
         catalog = {
             'writing': 'set_cell(sheetId,address,value,expectedValue可选)、set_formula(sheetId,address,formula以=开头,expectedFormula可选)、clear_cell(sheetId,address)。前置条件精确核对冻结值/公式，纯单元格DSL批次按顺序核对前序写入；混合原生或结构操作之后的条件写入须另起候选，不能按旧快照猜测。原生操作使用{kind,arguments}，applyCellEdits.edits每项sheetName,row,column,writeValue布尔,cell:{value,formula?},style?；行列从0开始。',
             'layout': 'sort_range(sheetId,range,byColumn,order=asc|desc,hasHeader布尔)复用真实引擎排序；有公式或批注时引擎拒绝。merge_cells/unmerge_cells(sheetId,range)保留范围外既有合并。',
@@ -383,7 +384,8 @@ class WorkbookAIToolkit(Toolkit):
             'pivot': '原生addPivot/addition、refreshPivotCaches/空arguments、applyPivotLayoutExpansions/updates、expandPivotOutputs/expansions；复用引擎验证来源和输出。',
             'charts': '仅整簿授权；先read_sheet_features读取冻结草稿中charts的chartPath/title/kind/anchor/series引用。多图须按用户明确目标匹配，不能按数组顺序猜测，不明确时请求澄清而不提交。applyChartEdits.arguments.edits每项含真实唯一chartPath，可改title、chartType(column/bar/line/area/pie/doughnut)、legend、seriesColors、pointColors、dataLabels、dataLabelPosition、dataLabelFormat、axisTitles、grouping、gridlines、valueAxis、gapWidthPct、holeSizePct、explosionPct、pointExplosions；具体值由引擎预览核验。新增使用源DSL {op:add_chart,sheetId,chartType:column|bar|line|area|pie|doughnut|scatter|radar|combo,dataRange,title?,anchorCell?}，先read_range核对最多2000格真实数据。换绑使用{op:edit_chart,chartPath,seriesData:[{index,name?,valuesRange?,categoriesRange?,sheetId?}]}，范围须为单行或单列；支持已有格式字段。引擎从当前草稿生成引用与缓存，禁止传series/seriesSet/values/categories缓存；不与行列或工作表结构操作混批。applyChartDeletions.arguments.deletions每项含所属sheetName和chartPath。只生成候选，显式采纳后仍需保存。',
         }
-        if any(guide not in catalog for guide in guides):
+        if (not isinstance(guides, list) or not guides
+                or any(not isinstance(guide, str) or guide not in WORKBOOK_GUIDES for guide in guides)):
             raise ValueError('workbook_ai_guide_invalid')
         if 'writing' in guides:
             catalog['writing'] += (
@@ -401,6 +403,7 @@ class WorkbookAIToolkit(Toolkit):
             )
         if 'charts' in guides:
             catalog['charts'] += (
+                '源DSL add_chart/edit_chart会映射至原生applyChartSource。'
                 '迷你图新增使用源 DSL {op:add_sparkline,sheetId,type:line|column|stacked,dataRange,targetCell?,color?}。'
                 '每行至少两列，每行一个迷你图，最多取前200行。默认放在来源右侧，也可从同表的单格 targetCell 向下排列。'
                 'color 使用 #RRGGBB；stacked 表示盈亏图。'
@@ -408,7 +411,15 @@ class WorkbookAIToolkit(Toolkit):
                 '新增图表可传 columns，例如 ["C","E","B"]。按顺序指定分类列和各系列列，'
                 '列必须互不重复且位于 dataRange 内，第一行用作表头。'
             )
-        return {guide: catalog[guide] for guide in guides}
+        boundary = (
+            '这是固定源指南，不表示源端全部操作已在此宿主开放。'
+            '仅使用当前注册工具和已支持的源DSL/原生参数；未支持的操作应明确说明。'
+            '保持冻结授权、来源身份和真实引擎验证；所有写入先生成预览候选，等待用户显式采纳后另行保存。'
+            '指南中的自动应用或直接写文件不改变此流程。'
+        )
+        return {guide: source_workbook_guide(guide) + '\n## Native Agno adapter\n' + boundary +
+                '\n' + catalog.get(guide, '本主题尚未逐操作完成原生适配，请按已注册工具及实际引擎能力执行。')
+                for guide in guides}
 
     def _translate(
         self, operation: dict[str, Any], merges: dict[str, list[str]],

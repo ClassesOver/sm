@@ -13,7 +13,7 @@ from fastmcp.utilities.asgi_transport import StreamingASGITransport, run_asgi_li
 
 from ..reporting.agent_events import run_owned_agent_with_events
 from ..reporting.structured_output.policy import REPORTING_STRUCTURED_REQUEST_MODEL_ATTR
-from .native_word_ai import NativeWordAIProposal, WORD_AI_INSTRUCTIONS
+from .native_word_ai import WORD_AI_INSTRUCTIONS, NativeWordAIProposal
 
 
 class AgnoWordTaskTransport:
@@ -41,10 +41,12 @@ class AgnoWordTaskTransport:
                 enable_session_summaries=False, markdown=False, telemetry=False,
                 instructions=[
                     WORD_AI_INSTRUCTIONS,
-                    "每次工具调用都传入给定的 task_id。先读取授权段落，再一次性登记全部候选操作。"
+                    "文档MCP工具调用都传入给定的task_id；Agno技能读取工具按其schema调用，无需task_id。先读取授权段落，再一次性登记全部候选操作。"
                     "最终只输出 propose_operations 返回的 proposal JSON 对象，原样保留字段和值。",
                 ],
             )
+            from ..office.ai_skills import attach_office_skills
+            attach_office_skills(agent)
             output = await run_owned_agent_with_events(
                 agent, f"task_id: {task_id}\n用户要求：{instruction}", session_id=task_id,
             )

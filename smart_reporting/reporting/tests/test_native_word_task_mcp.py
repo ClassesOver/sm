@@ -140,7 +140,8 @@ async def test_actual_http_mcp_authentication_uses_request_bearer_not_server_ass
                 await client.list_tools()
 
 @pytest.mark.anyio
-async def test_agno_word_transport_registers_candidate_through_authenticated_mcp():
+@pytest.mark.parametrize("with_skill", [False, True])
+async def test_agno_word_transport_registers_candidate_through_authenticated_mcp(with_skill):
     import json
 
     from agno.models.response import ModelResponse
@@ -172,7 +173,11 @@ async def test_agno_word_transport_registers_candidate_through_authenticated_mcp
             'name': name, 'arguments': json.dumps({'task_id': 'task', **arguments}),
         }}])
 
-    model = ScriptedModel(id='scripted', expected_tool_text='Source paragraph', responses=[
+    model = ScriptedModel(id='scripted', expected_tool_text=(
+        'Sheet 1 holds the cleaned detail' if with_skill else 'Source paragraph'), responses=[
+        *([ModelResponse(tool_calls=[{'id': 'skill', 'type': 'function', 'function': {
+            'name': 'get_skill_instructions', 'arguments': json.dumps({'skill_name': 'data-analyst'}),
+        }}])] if with_skill else []),
         tool_call('get_document_context', {}),
         tool_call('read_blocks', {'block_ids': ['p1']}),
         tool_call('propose_operations', {'summary': 'Update', 'operations': [operation]}),

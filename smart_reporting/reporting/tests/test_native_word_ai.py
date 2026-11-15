@@ -158,7 +158,10 @@ def test_tools_require_complete_authorized_read_and_freeze_scope(source):
     with pytest.raises(ReportingError):
         tools.read_blocks(['outside'])
     page = tools.read_blocks([table['blockId']])
-    assert page['nextOffset'] is None
+    while page['nextOffset'] is not None:
+        with pytest.raises(ReportingError, match='完整读取'):
+            tools.propose_operations('插入一行', operations)
+        page = tools.read_blocks([table['blockId']], offset=page['nextOffset'])
     receipt = tools.propose_operations('插入一行', operations)
     assert receipt['needsPreview'] is True and receipt['needsAcceptance'] is True
     assert tools.operations[0]['expectedObjectSha256'] == table['expectedObjectSha256']

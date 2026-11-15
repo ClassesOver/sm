@@ -203,6 +203,7 @@ class OfficeKnowledge:
 
     async def plan(self, tools, question, history):
         from agno.agent import Agent
+
         from ..reporting.agent_events import run_owned_agent_with_events
         from ..reporting.structured_output.policy import (
             REPORTING_STRUCTURED_MODES_MODEL_ATTR,
@@ -234,6 +235,8 @@ class OfficeKnowledge:
                 '资料不足时设 insufficientEvidence 为 true 且 citations 为空数组，answer 只说明资料不足。'
                 '有证据支持时设为 false，列出实际读取的引用编号。不得返回伪文件或虚构链接。',
             ])
+        from .ai_skills import attach_office_skills
+        attach_office_skills(agent)
         prompt = {'question': question, 'history': [
             {'question': turn['question'][:2000], 'answer': turn['answer'][:4000]} for turn in history[-6:]]}
         result = await run_owned_agent_with_events(agent, json.dumps(prompt, ensure_ascii=False),

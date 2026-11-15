@@ -230,6 +230,8 @@ class AgnoNativePDFFormPlanner:
             ])
         from ..office.ai_sources import attach_office_sources
         attach_office_sources(agent)
+        from ..office.ai_skills import attach_office_skills
+        attach_office_skills(agent)
         output = await run_owned_agent_with_events(agent, instruction, session_id=session_id, user_id=user_id)
         content = output.content
         answer = content if isinstance(content, NativePDFFormAnswer) else NativePDFFormAnswer.model_validate(
