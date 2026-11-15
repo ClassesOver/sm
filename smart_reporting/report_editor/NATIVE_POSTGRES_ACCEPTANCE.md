@@ -185,6 +185,15 @@ same task and attempt after the new worker started. The recovery window is
 bounded to 45 seconds for an acknowledged Word task. This run passed the
 production build budget and confirmed the downloaded DOCX by independent readback.
 
+A further Edge run used the configured CCTQ `gpt-6-sol` model in the second
+worker. The first worker used the scripted model to stop at a reproducible
+point after reading the authorized paragraph. After a real connection failure,
+the browser resumed the original PostgreSQL task and attempt. The live model
+registered a candidate through authenticated MCP, the user accepted it, and
+revision 2 was saved and downloaded. Independent DOCX readback matched the
+requested replacement and the unchanged adjacent paragraph. The disposable
+database was removed after both processes exited.
+
 The isolated run passed five selected cases on PostgreSQL with Node 24. It
 covered HTTP upload, start, explicit acceptance, save and independent DOCX
 readback, plus completed-receipt replay, stale-worker cancellation after
