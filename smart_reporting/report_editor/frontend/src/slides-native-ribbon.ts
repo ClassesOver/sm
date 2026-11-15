@@ -1172,6 +1172,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (command === 'pictureOutlineWidth') for (const button of element.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
           button.setAttribute('aria-pressed', String(button.dataset.outlineWidth === value))
         }
+        if (command === 'pictureNoOutline') element.setAttribute('aria-pressed', value)
         if (command === 'pictureOpacity') {
           for (const choice of pictureTransparency?.menu.querySelectorAll<HTMLButtonElement>('[data-picture-transparency]') ?? []) {
             choice.setAttribute('aria-pressed', String(choice.dataset.pictureTransparency === value))

@@ -1402,12 +1402,13 @@ export function mountWorkbookRibbon(
       option.disabled = !!reason
       option.title = reason ?? ''
     }
-    const translation = body.querySelector<HTMLSelectElement>('[data-ribbon-control="translate"]')
+    const translation = body.querySelector<HTMLButtonElement>('[data-ribbon-control="translate"]')
     if (translation) {
       const reason = view.translateReason?.() ?? (view.onTranslate ? undefined : '当前会话未开放 AI 翻译')
       translation.disabled = !!reason
       translation.title = reason ?? '用 AI 翻译选区文本'
       translation.setAttribute('aria-description', translation.title)
+      if (translation.disabled && translation.getAttribute('aria-expanded') === 'true') closeLargeViewMenu?.()
     }
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-sheet-option]')) {
       const command = button.dataset.ribbonCommand
@@ -1495,7 +1496,7 @@ export function mountWorkbookRibbon(
     button.addEventListener('click', () => { if (!button.disabled) onCommand(command) })
     return button
   }
-  const largeRibbonMenu = (label: string, iconCommand: string, detail: string, choices: readonly (readonly [RibbonCommand, string])[], symbol?: string) => {
+  const largeRibbonMenu = <Choice extends string>(label: string, iconCommand: string, detail: string, choices: readonly (readonly [Choice, string])[], pick: (value: Choice) => void, symbol?: string) => {
     const wrapper = document.createElement('div')
     wrapper.className = 'workbook-ribbon-chart-menu workbook-ribbon-large-menu'
     const icons = document.createElement('span')
@@ -1576,7 +1577,7 @@ export function mountWorkbookRibbon(
       option.addEventListener('click', () => {
         if (!option.disabled && !trigger.disabled && !menu.hidden) {
           close(true)
-          onCommand(command)
+          pick(command)
         }
       })
       menu.append(option)
@@ -1610,24 +1611,14 @@ export function mountWorkbookRibbon(
       heading.textContent = group.title
       section.append(heading)
       if (active === 'Review' && group.title === '语言') {
-        const wrapper = document.createElement('label')
-        wrapper.className = 'workbook-ribbon-chart-menu'
-        const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
-        icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('translate') ?? ''
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'translate'
-        select.setAttribute('aria-label', '翻译')
-        select.disabled = !view?.onTranslate
-        select.append(new Option('翻译', ''), ...workbookTranslationLanguages.map(language => new Option(language, language)))
-        select.addEventListener('change', () => {
-          const language = workbookTranslationLanguages.find(item => item === select.value)
-          select.value = ''
-          if (language && !select.disabled) view?.onTranslate?.(language)
-        })
-        wrapper.append(icon, select); section.append(wrapper)
+        const { wrapper, trigger } = largeRibbonMenu<WorkbookTranslationLanguage>('翻译', 'translate', '用 AI 翻译选区文本',
+          workbookTranslationLanguages.map(language => [language, language]), language => view?.onTranslate?.(language))
+        trigger.dataset.ribbonControl = 'translate'
+        trigger.disabled = !view?.onTranslate
+        section.append(wrapper)
       }
       if (active === 'Review' && group.title === '注释') {
-        const { wrapper, trigger } = largeRibbonMenu('注释', '', '在所选位置添加或编辑', noteMenuChoices, '🗒')
+        const { wrapper, trigger } = largeRibbonMenu('注释', '', '在所选位置添加或编辑', noteMenuChoices, onCommand, '🗒')
         trigger.dataset.ribbonControl = 'notes'
         trigger.setAttribute('aria-description', '在所选位置添加或编辑')
         section.append(wrapper)
@@ -1758,7 +1749,7 @@ export function mountWorkbookRibbon(
       if (active === 'Page Layout' && group.title === '页面设置') {
         // ExcelShell PageSetup uses the same large MenuSelect as the View tab.
         for (const {id, label, symbol, field, choices} of PAGE_SETUP_MENUS) {
-          const {wrapper, trigger} = largeRibbonMenu(label, id, label, choices, symbol)
+          const {wrapper, trigger} = largeRibbonMenu(label, id, label, choices, onCommand, symbol)
           if (field) trigger.dataset.ribbonControl = id
           else trigger.dataset.ribbonMenu = id
           section.append(wrapper)
@@ -1825,13 +1816,13 @@ export function mountWorkbookRibbon(
         section.append(controls)
       }
       if (active === 'View' && group.title === '窗口') {
-        const { wrapper, trigger } = largeRibbonMenu('冻结窗格', 'freeze-panes', '冻结行和列', FREEZE_CHOICES)
+        const { wrapper, trigger } = largeRibbonMenu('冻结窗格', 'freeze-panes', '冻结行和列', FREEZE_CHOICES, onCommand)
         trigger.dataset.ribbonControl = 'freeze-panes'
         section.append(wrapper)
       }
       if (active === 'View' && group.title === '缩放') {
-        const { wrapper, trigger } = largeRibbonMenu('缩放', 'zoom-open', '缩放工作表',
-          [50, 75, 100, 125, 150, 200].map(percent => [`zoom:${percent}`, percent + '%']))
+        const { wrapper, trigger } = largeRibbonMenu<RibbonCommand>('缩放', 'zoom-open', '缩放工作表',
+          [50, 75, 100, 125, 150, 200].map(percent => [`zoom:${percent}`, percent + '%']), onCommand)
         trigger.dataset.ribbonMenu = 'zoom'
         section.append(wrapper)
       }

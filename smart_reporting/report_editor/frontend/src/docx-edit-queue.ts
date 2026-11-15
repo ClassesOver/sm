@@ -4,45 +4,56 @@ import type { DocxAIReadSelection } from './docx-ai-read-selection'
 import { addQueueAnchor, queueAnchorRange, removeQueueAnchors } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/ai-queue-anchors'
 
 const MAX_ITEMS = 10
-const MAX_INSTRUCTION = 500
+export const MAX_EDIT_QUEUE_INSTRUCTION = 500
 const REQUEST_LIMIT = 2000
 type Target = DocxAIReadSelection[number]
-type Entry = { id: string; instruction: string; target: Target; excerpt: string }
+type Entry = { id: string; instruction: string; targets: Target[]; excerpt: string }
 const sameTarget = (a: Target, b: Target) => a.blockId === b.blockId && a.cellId === b.cellId
+const sameTargets = (a: Target[], b: Target[]) => a.length === b.length && a.every((target, index) => sameTarget(target, b[index]!))
 
 /** GenOffice selection-scoped queue. Decorations track positions; Word edit requests use trusted source IDs. */
 export function createDocxEditQueue(editor: Editor, resolve: (selection: TextSelection) => DocxAIReadSelection) {
   let entries: Entry[] = []
+  const listeners = new Set<() => void>()
+  function targetsFor(selection: Editor['state']['selection']) {
+    const targets = selection instanceof TextSelection && !selection.empty ? resolve(selection) : []
+    return targets.length <= 100 && (targets.length === 1 || targets.every(target => !target.cellId)) ? targets : []
+  }
   function targetOf(id: string) {
     const range = queueAnchorRange(editor.state, id)
     if (!range) return undefined
     const selection = TextSelection.between(editor.state.doc.resolve(range.from), editor.state.doc.resolve(range.to))
-    const targets = selection instanceof TextSelection && !selection.empty ? resolve(selection) : []
-    return targets.length === 1 ? { range, target: targets[0]! } : undefined
+    const targets = targetsFor(selection)
+    return targets.length ? { range, targets } : undefined
   }
   return {
     items: () => entries.map(entry => {
       const current = targetOf(entry.id)
-      return { ...entry, stale: !current || !sameTarget(current.target, entry.target),
-        excerpt: current && sameTarget(current.target, entry.target)
+      return { ...entry, stale: !current || !sameTargets(current.targets, entry.targets),
+        excerpt: current && sameTargets(current.targets, entry.targets)
           ? editor.state.doc.textBetween(current.range.from, current.range.to, ' ').slice(0, 80)
           : entry.excerpt }
     }),
-    add(instruction: string) {
-      const text = instruction.trim(), selection = editor.state.selection
-      if (!text || text.length > MAX_INSTRUCTION) throw new Error('请输入 1–500 字的选区修改要求。')
+    canAnnotate: () => targetsFor(editor.state.selection).length > 0,
+    add(instruction: string, selection = editor.state.selection) {
+      const text = instruction.trim()
+      if (!text || text.length > MAX_EDIT_QUEUE_INSTRUCTION) throw new Error('请输入 1–500 字的选区修改要求。')
       if (entries.length >= MAX_ITEMS) throw new Error('最多可排队 10 项修改。')
-      const targets = selection instanceof TextSelection && !selection.empty ? resolve(selection) : []
-      if (targets.length !== 1) throw new Error('请选择一个可定位到来源的正文段落或表格单元格中的文字。')
-      const target = targets[0]!
-      if (entries.some(entry => sameTarget(entry.target, target))) throw new Error('此段落或单元格已有排队要求，请编辑原有要求。')
+      const targets = targetsFor(selection)
+      if (!targets.length) throw new Error('请选择可定位到来源的正文段落，或单个表格单元格中的文字。')
+      if (entries.some(entry => entry.targets.some(target => targets.some(candidate => sameTarget(target, candidate))))) {
+        throw new Error('此选区包含已有排队要求的段落或单元格，请编辑原有要求。')
+      }
       const id = crypto.randomUUID()
-      entries = [...entries, { id, instruction: text, target, excerpt: editor.state.doc.textBetween(selection.from, selection.to, ' ').slice(0, 80) }]
+      entries = [...entries, { id, instruction: text, targets, excerpt: editor.state.doc.textBetween(selection.from, selection.to, ' ').slice(0, 80) }]
       addQueueAnchor(editor, id, selection.from, selection.to)
     },
     update(id: string, instruction: string) {
       const value = instruction.trim()
-      if (value && value.length <= MAX_INSTRUCTION) entries = entries.map(entry => entry.id === id ? { ...entry, instruction: value } : entry)
+      if (value && value.length <= MAX_EDIT_QUEUE_INSTRUCTION) {
+        entries = entries.map(entry => entry.id === id ? { ...entry, instruction: value } : entry)
+        for (const render of listeners) render()
+      }
     },
     focus(id: string) {
       const current = targetOf(id)
@@ -54,16 +65,21 @@ export function createDocxEditQueue(editor: Editor, resolve: (selection: TextSel
     },
     resolve() {
       const live = entries.map(entry => ({ entry, current: targetOf(entry.id) }))
-      if (live.some(({ entry, current }) => !current || !sameTarget(entry.target, current.target))) {
+      if (live.some(({ entry, current }) => !current || !sameTargets(entry.targets, current.targets))) {
         throw new Error('排队选区已失效。移除失效项后再生成候选。')
       }
       live.sort((a, b) => b.current!.range.from - a.current!.range.from)
       const instruction = ['按以下顺序仅修改列出的段落或单元格，每条要求仅适用于该行目标：',
-        ...live.map(({ entry }, index) => `${index + 1}. blockId=${entry.target.blockId}${entry.target.cellId ? ' cellId=' + entry.target.cellId : ''}：${entry.instruction}`)].join('\n')
+        ...live.map(({ entry }, index) => `${index + 1}. ${entry.targets.map(target => 'blockId=' + target.blockId + (target.cellId ? ' cellId=' + target.cellId : '')).join(', ')}：${entry.instruction}`)].join('\n')
+      const targets = live.flatMap(({ entry }) => entry.targets)
+      if (targets.length > 100) throw new Error('一批最多可提交 100 个段落或单元格。')
       if (instruction.length > REQUEST_LIMIT) throw new Error('排队要求合计超过候选请求上限，请缩短要求或分批提交。')
-      return { instruction, targets: live.map(({ entry }) => entry.target), ids: live.map(({ entry }) => entry.id) }
+      return { instruction, targets, ids: live.map(({ entry }) => entry.id) }
     },
-    listen(render: () => void) { editor.on('transaction', render); return () => { editor.off('transaction', render) } },
+    listen(render: () => void) {
+      listeners.add(render); editor.on('transaction', render)
+      return () => { listeners.delete(render); editor.off('transaction', render) }
+    },
   }
 }
 
@@ -104,7 +120,7 @@ export function mountDocxEditQueue(queue: DocxEditQueue, input: HTMLTextAreaElem
       const label = button(item.stale ? '选区已失效' : item.excerpt, () => queue.focus(item.id))
       label.disabled = item.stale
       const instruction = document.createElement('input')
-      instruction.maxLength = MAX_INSTRUCTION; instruction.value = item.instruction
+      instruction.maxLength = MAX_EDIT_QUEUE_INSTRUCTION; instruction.value = item.instruction
       instruction.setAttribute('aria-label', '排队修改要求')
       instruction.onchange = () => {
         queue.update(item.id, instruction.value)

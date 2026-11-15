@@ -1092,7 +1092,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     cropCanvasGeneration++; cropRenderTask?.cancel(); cropRenderTask = undefined
     cropCanvas?.dispose(); cropCanvas = undefined; cropCanvasHost.replaceChildren(); cropCanvasStatus.textContent = ''
   }
-  cropDialog.addEventListener('close', clearCropCanvas)
+  cropDialog.addEventListener('close', () => {
+    clearCropCanvas()
+    const trigger = pageButtons.get('genoffice.pdf.page.crop')
+    if (trigger && !disposed) focusRibbonEntry(trigger)
+  })
   cropDialog.addEventListener('cancel', clearCropCanvas)
   const cropFields = documentElement('fieldset')
   const cropLegend = documentElement('legend'); cropLegend.textContent = '裁切边距（百分比）'; cropFields.append(cropLegend)
@@ -1144,6 +1148,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
     cropError.textContent = ''; cropAll.checked = false; cropTitle.textContent = '裁切当前页面'; cropDialog.setAttribute('aria-label', cropTitle.textContent); cropAllText.textContent = `裁切全部保留页（${state().length} 页，各按当前显示方向和可见范围）`; cropPageId = page.pageId; cropInputs.forEach(input => { input.value = '0' })
     cropDialog.showModal()
+    cropInputs[0]?.focus()
     cropCanvasStatus.textContent = '正在读取当前页面裁切预览…'
     try {
       const original = await sourcePage(page.index)

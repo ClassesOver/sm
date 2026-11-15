@@ -47,9 +47,9 @@ it('submits the anchored batch as one candidate and writes only after explicit a
   }
   const batch = { instruction:'batch instruction', targets:[{blockId:'b'},{blockId:'a'}], ids:['q2','q1'] }
   const wordEditQueue = { items: () => batch.ids.map((id, index) => ({
-    id, instruction:'polish', target:batch.targets[index]!, excerpt:'text', stale:false,
+    id, instruction:'polish', targets:[batch.targets[index]!], excerpt:'text', stale:false,
   })), listen: () => () => {}, add: vi.fn(), resolve: vi.fn(() => batch), remove: vi.fn(),
-    update: vi.fn(), focus: vi.fn() }
+    update: vi.fn(), focus: vi.fn(), canAnnotate: () => true }
   const root = document.createElement('div'), flushPendingEdits = vi.fn()
   const binding = bindNativeAI(root,{api:api as never,draft,format:'docx',wordEditQueue,view:{refresh:vi.fn(),flushPendingEdits},onDraftChange:vi.fn()})
   try {
@@ -69,4 +69,47 @@ it('submits the anchored batch as one candidate and writes only after explicit a
     accept.click()
     await vi.waitFor(() => expect(draft.operations).toEqual(operations))
   } finally { binding.dispose() }
+})
+
+it('adds a floating cross-paragraph annotation and reopens it for editing', async () => {
+  const { mountDocxAskPopover } = await import('./docx-ask-popover')
+  const { AI_QUEUE_ANCHOR_CLICK } = await import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/ai-queue-anchors')
+  const { InactiveSelectionExtension } = await import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/inactive-selection')
+  const host = document.body.appendChild(document.createElement('div'))
+  const editor = new Editor({element: host, extensions: [
+    Node.create({name:'doc',topNode:true,content:'paragraph+'}),
+    Node.create({name:'paragraph',content:'text*',parseHTML:()=>[{tag:'p'}],renderHTML:()=>['p',0]}),
+    Node.create({name:'text'}), AiQueueAnchorsExtension, InactiveSelectionExtension,
+  ], content:'<p>Alpha</p><p>Beta</p>'})
+  editor.view.coordsAtPos = () => ({left:10,right:20,top:30,bottom:40})
+  let editable = true
+  const queue = createDocxEditQueue(editor, selection => [{blockId:'a'}, {blockId:'b'}].slice(selection.$from.index(0), selection.$to.index(0) + 1))
+  const dispose = mountDocxAskPopover(editor, queue, host, () => editable)
+  try {
+    editor.view.focus()
+    editor.commands.setTextSelection({from:3,to:10})
+    const trigger = host.querySelector<HTMLButtonElement>('[data-action="word-ai-annotation"]')!
+    expect(trigger.hidden).toBe(false)
+    trigger.click()
+    const input = host.querySelector<HTMLInputElement>('[role=dialog] input')!
+    expect(document.activeElement).toBe(input)
+    input.value = 'rewrite both'
+    input.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true,key:'Enter',isComposing:true}))
+    expect(queue.items()).toHaveLength(0)
+    input.dispatchEvent(new KeyboardEvent('keydown', {bubbles:true,key:'Enter'}))
+    const entry = queue.items()[0]!
+    expect(entry.targets).toEqual([{blockId:'a'},{blockId:'b'}])
+    expect(queue.resolve().instruction).toContain('blockId=a, blockId=b：rewrite both')
+    window.dispatchEvent(new CustomEvent(AI_QUEUE_ANCHOR_CLICK, {detail:{qid:entry.id}}))
+    expect(input.value).toBe('rewrite both')
+    input.value = 'update both'
+    document.body.dispatchEvent(new Event('pointerdown',{bubbles:true,composed:true}))
+    expect(queue.resolve().instruction).toContain('update both')
+    editor.view.dispatch(editor.state.tr.insertText('!',1))
+    expect(queue.items()[0]?.stale).toBe(false)
+    editable = false
+    editor.view.dispatch(editor.state.tr.setMeta('saving', true))
+    expect(trigger.hidden).toBe(true)
+    expect(editor.getHTML()).toBe('<p>!Alpha</p><p>Beta</p>')
+  } finally { dispose(); editor.destroy(); host.remove() }
 })

@@ -430,6 +430,19 @@ it.each([false,true])('document properties close restores a visible entry or cur
  const close=panel.querySelector<HTMLButtonElement>('[data-metadata-cancel]');expect(close).not.toBeNull();close!.focus();close!.click()
  expect(panel.open).toBe(false);expect(document.activeElement).toBe(changed?tab:entry);expect(f.draft.operations).toEqual([])
 })
+it('focuses the first crop field and returns to the Page ribbon on cancel', async () => {
+ const f=await fixture({capabilities:{cropPage:true}});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
+ const open=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.crop"]')!
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="裁切当前页面"]')!
+ open.focus();open.click()
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ expect(document.activeElement).toBe(dialog.querySelector('input[type=number]'))
+ dialog.querySelector<HTMLButtonElement>('.pdf-layout-actions > button')!.click()
+ expect(dialog.open).toBe(false)
+ expect(document.activeElement).toBe(open)
+ expect(f.draft.operations).toEqual([])
+})
 it('submits merger settings with Enter and the selected source direction radio', async () => {
  const f=await fixture({pages:3});await f.create()
  f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()

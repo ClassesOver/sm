@@ -1170,19 +1170,26 @@ it('dispatches the source translation language from an editable selected range',
     rotation: () => undefined, editable: () => true, onTranslate, translateReason: () => reason,
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
-  const language = document.querySelector<HTMLSelectElement>('select[aria-label="翻译"]')!
-  expect(Array.from(language.options).slice(1).map(option => option.value)).toEqual([
-    'English', '简体中文', '繁體中文', '日本語', '한국어', 'Español', 'Français', 'Deutsch', 'Português', 'Русский', 'العربية',
-  ])
-  language.value = 'العربية'
-  language.dispatchEvent(new Event('change'))
+  const language = document.querySelector<HTMLButtonElement>('[data-ribbon-control="translate"]')!
+  expect(language.disabled).toBe(true)
+  language.click()
   expect(onTranslate).not.toHaveBeenCalled()
   reason = undefined
-  ribbon.refreshState?.()
-  language.value = 'العربية'
-  language.dispatchEvent(new Event('change'))
+  ribbon.refreshState()
+  language.click()
+  const menu = document.getElementById(language.getAttribute('aria-controls')!)!
+  const choices = [...menu.querySelectorAll<HTMLButtonElement>('[data-menu-command]')]
+  expect(choices.map(option => option.textContent)).toEqual([
+    'English', '简体中文', '繁體中文', '日本語', '한국어', 'Español', 'Français', 'Deutsch', 'Português', 'Русский', 'العربية',
+  ])
+  choices.at(-1)!.click()
   expect(onTranslate).toHaveBeenCalledWith('العربية')
-  expect(language.value).toBe('')
+  expect(document.activeElement).toBe(language)
+  language.click()
+  reason = '当前工作表受保护'
+  ribbon.refreshState()
+  expect(menu.hidden).toBe(true)
+  expect(language.disabled).toBe(true)
   ribbon.dispose()
 })
 

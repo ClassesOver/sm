@@ -699,15 +699,23 @@ function opacityReason(): string | null {
 function pictureOutlineEnabled(element: DeckElement | undefined) {
   return element?.type === 'picture' && element.pictureOutlineEditable === true
 }
-function currentPictureOutline(elementId: string): NonNullable<ShapeStyleEdit['stroke']> {
+function currentPictureOutline(elementId: string): ShapeStroke | null | undefined {
   const pending = shapeStyleEdits.get(editKey(selectedSlide, elementId))
-  if (pending) return pending.stroke ? { ...pending.stroke } : { color: '#000000', widthPt: 1 }
+  if (pending?.stroke !== undefined) return pending.stroke
   const node = renderTree?.slides.find(slide => slide.slideIndex === selectedSlide)?.nodes.find(item => item.sourceId === elementId)
-  const sourceStroke = node?.type === 'picture' ? node.stroke : undefined
+  if (node?.type !== 'picture') return
+  const sourceStroke = node.stroke
+  if (!sourceStroke) return null
   return {
-    color: sourceStroke && /^#[a-f\d]{6}$/i.test(sourceStroke.color) ? sourceStroke.color : '#000000',
-    widthPt: sourceStroke?.widthPt && sourceStroke.widthPt >= 0.01 && sourceStroke.widthPt <= 100 ? sourceStroke.widthPt : 1,
+    color: /^#[a-f\d]{6}$/i.test(sourceStroke.color) ? sourceStroke.color : '#000000',
+    widthPt: sourceStroke.widthPt && sourceStroke.widthPt >= 0.01 && sourceStroke.widthPt <= 100 ? sourceStroke.widthPt : 1,
   }
+}
+function syncPictureOutline() {
+  const stroke = selectedElement && pictureOutlineEnabled(currentElement()) ? currentPictureOutline(selectedElement) : undefined
+  nativeRibbon?.setValue('pictureOutlineColor', stroke?.color ?? '#000000')
+  nativeRibbon?.setValue('pictureOutlineWidth', stroke ? String(stroke.widthPt) : '')
+  nativeRibbon?.setValue('pictureNoOutline', String(stroke === null))
 }
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
   return backgroundImageReuseEdits.some(item=>item.slideIndices.includes(slideIndex)) || backgroundImageEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundGradientEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundResetEdits.has(slideIndex) || backgroundGraphicsEdits.has(slideIndex) || pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
@@ -1148,6 +1156,7 @@ const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
 let canvasSelectionGeneration = 0
 function renderCanvas() {
   syncViewZoomControls()
+  syncPictureOutline()
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   mediaPlayback?.dispose();mediaPlayback=undefined
   animationPreviewOverlay?.dispose()
@@ -2660,11 +2669,6 @@ function renderInspector() {
   nativeRibbon?.setValue('background', backgroundColor.value)
   { const picture = currentElement(), pending = picture ? pictureOpacities.find(item => item.slideIndex === selectedSlide && item.elementId === picture.id) : undefined
     nativeRibbon?.setValue('pictureOpacity', picture?.type === 'picture' ? String(Math.round((1 - (pending?.opacity ?? picture.pictureOpacity ?? 1)) * 100)) : '') }
-  if (selectedElement) {
-    const stroke = currentPictureOutline(selectedElement)
-    nativeRibbon?.setValue('pictureOutlineColor', stroke.color)
-    nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
-  }
   nativeRibbon?.setValue('animationEffect', animationEffect.value)
   const galleryTarget = animationGalleryTarget(element)
   nativeRibbon?.setAnimationGallery(galleryTarget, galleryTarget
@@ -2986,7 +2990,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         if (!target || !pictureOutlineEnabled(target) || selectedObjects.size !== 1 || pendingGroup(selectedSlide)) return
         const key = editKey(selectedSlide, target.id)
         if (deletions.has(key) || (!shapeStyleEdits.has(key) && shapeStyleEdits.size >= 500)) return
-        const stroke = currentPictureOutline(target.id)
+        const stroke = { ...(currentPictureOutline(target.id) ?? { color: '#000000', widthPt: 1 }) }
         if (command === 'pictureOutlineColor') {
           if (typeof value !== 'string' || !/^#[a-f\d]{6}$/i.test(value)) return
           stroke.color = value.toUpperCase()
@@ -2998,10 +3002,6 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         shapeStyleEdits.set(key, { slideIndex: selectedSlide, elementId: target.id, stroke: command === 'pictureNoOutline' ? null : stroke })
         renderStructurePending()
         markDirty()
-        if (command === 'pictureNoOutline') {
-          nativeRibbon?.setValue('pictureOutlineColor', '#000000')
-          nativeRibbon?.setValue('pictureOutlineWidth', '')
-        } else nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
         return
       }
       case 'pictureOpacity': {

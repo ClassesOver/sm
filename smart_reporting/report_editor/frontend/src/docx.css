@@ -440,3 +440,11 @@
 .docx-anchored-queue p { margin: 0 0 6px; color: var(--color-text-muted); }
 .docx-anchored-queue ol { margin: 4px 0; padding-left: 18px; }
 .docx-anchored-queue li > input { width: 100%; box-sizing: border-box; }
+.docx-native [data-action="word-ai-annotation"], .docx-ask-popover { position: fixed; z-index: 40; color: var(--color-ink); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-sm); box-shadow: var(--shadow-popover); }
+.docx-native [data-action="word-ai-annotation"] { padding: 5px 9px; }
+.docx-ask-popover { width: min(340px, calc(100vw - 16px)); box-sizing: border-box; padding: 12px; }
+.docx-ask-popover > input { width: 100%; box-sizing: border-box; margin: 8px 0; }
+.docx-ask-popover > div > button { margin: 2px 2px 2px 0; }
+.docx-ask-popover > [role="status"] { color: var(--color-danger); }
+.docx-native .doc-inactive-selection { background: var(--color-focus-soft, rgba(58, 112, 208, .23)); }
+
