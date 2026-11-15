@@ -859,7 +859,6 @@ def test_slides_bridge_adds_sections_at_final_positions(tmp_path: Path):
 
 def test_slides_bridge_applies_header_footer_to_all_slides(tmp_path: Path):
     """固定源 HeaderFooterDialog：页脚、页码与日期占位符应用到全部页（含新建页），inspect 回读；同批改字不受影响。"""
-    from pptx.util import Inches
     source = tmp_path / "source.pptx"
     output = tmp_path / "hf.pptx"
     presentation = Presentation()

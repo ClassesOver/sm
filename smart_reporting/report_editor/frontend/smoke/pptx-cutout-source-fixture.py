@@ -1,5 +1,5 @@
 """去背景完整源族显式修订夹具，使用实际writer与独立ZIP/python-pptx回读。"""
-import base64,hashlib,json,sys
+import hashlib,json,sys
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZipFile

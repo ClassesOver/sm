@@ -3,7 +3,7 @@ import hashlib,json,sys
 from pathlib import Path
 from zipfile import ZipFile
 from openpyxl import Workbook,load_workbook
-from openpyxl.styles import Font, PatternFill, Protection
+from openpyxl.styles import Font, PatternFill
 from openpyxl.chart import BarChart,Reference
 from lxml import etree
 p=Path(sys.argv[1])

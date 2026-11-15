@@ -9,7 +9,7 @@ from lxml import etree as E
 import pytest
 
 from smart_reporting.reporting.tests.test_docx_comment_http import http_env, import_and_open, anyio_backend  # noqa: F401
-from smart_reporting.reporting.tests.test_docx_comment_reply import modern_source, operation, selected, NS, W, W14, W15
+from smart_reporting.reporting.tests.test_docx_comment_reply import modern_source, operation, selected, NS, W, W14
 
 
 @pytest.mark.anyio

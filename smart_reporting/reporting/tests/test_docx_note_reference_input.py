@@ -62,6 +62,8 @@ def test_marker_inheritance_rejects_missing_deletion_bad_coordinate_or_forged_so
         ([{'sourceFrom': 0, 'sourceTo': 5}, ref, {'text': 'forged', 'inheritFrom': 5, 'rawRPr': '<evil/>'}], []),
     ]:
         with pytest.raises(ValueError): patch_docx(data, [body_plan(data, pieces), *note_ops])
+    # 对照：首例片段带上删除注释操作即可通过，证明其被拒原因正是缺少删除。
+    assert patch_docx(data, [body_plan(data, [{'sourceFrom': 0, 'sourceTo': 5}, {'text': 'forged', 'inheritFrom': 5}]), deletion])
 
 
 @pytest.mark.parametrize('kind', ['footnote', 'endnote'])

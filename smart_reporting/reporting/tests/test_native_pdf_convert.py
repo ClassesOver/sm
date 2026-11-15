@@ -9,7 +9,6 @@ from pptx import Presentation
 from pptx.util import Inches
 
 from smart_reporting.report_editor import native_pdf_convert
-from smart_reporting.report_editor.native_models import NativeArtifacts
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_pdf_extract import extract_fixture
 

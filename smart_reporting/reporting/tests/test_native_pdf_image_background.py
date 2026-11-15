@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from smart_reporting.reporting.delivery import pdf_native
-from smart_reporting.reporting.tests.test_native_pdf_image_pixels import anyio_backend, pixels_http, _target
+from smart_reporting.reporting.tests.test_native_pdf_image_pixels import anyio_backend, pixels_http, _target  # noqa: F401 -- pytest fixtures
 
 
 def _request(content=b'pdf-source'):

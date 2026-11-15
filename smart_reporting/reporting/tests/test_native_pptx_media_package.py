@@ -51,7 +51,6 @@ def test_media_real_writer_and_snapshot_preserve_bytes_and_existing_parts(tmp_pa
         assert {n for n in a.namelist() if not n.endswith('/')} <= set(b.namelist())
         media_parts = [n for n in b.namelist() if n.endswith(('.wav', '.webm'))]
         assert sorted(b.read(n) for n in media_parts) == sorted([wav, video])
-        ns = {'r': 'http://schemas.openxmlformats.org/package/2006/relationships'}
         rels = etree.fromstring(b.read('ppt/slides/_rels/slide1.xml.rels'))
         for ext in ('.wav', '.webm'):
             linked = [r for r in rels if r.get('Target', '').endswith(ext)]

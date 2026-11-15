@@ -1,6 +1,5 @@
 """已有图像裁剪 / 翻转 / 透明度：真实 PDF 服务预览确认、保存签发与 pypdf 独立回读。"""
 from io import BytesIO
-import hashlib
 
 import pytest
 from PIL import Image

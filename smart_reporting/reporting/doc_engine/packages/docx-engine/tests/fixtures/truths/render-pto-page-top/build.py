@@ -1,4 +1,4 @@
-import zipfile, sys, os
+import zipfile, sys
 W='xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
 def p(text, ppr='', rpr='<w:rFonts w:ascii="Arial" w:hAnsi="Arial"/><w:sz w:val="24"/>'):
     r = f'<w:r><w:rPr>{rpr}</w:rPr><w:t xml:space="preserve">{text}</w:t></w:r>' if text is not None else ''

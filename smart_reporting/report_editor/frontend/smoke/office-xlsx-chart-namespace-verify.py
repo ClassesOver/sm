@@ -3,7 +3,6 @@ import argparse
 import hashlib
 import json
 import re
-from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
