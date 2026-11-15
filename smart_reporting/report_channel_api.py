@@ -171,7 +171,8 @@ def create_report_channel_router(
                     raise HTTPException(409, str(error)) from None
                 if str(error) in {
                     "document_request_id_invalid", "document_instruction_invalid",
-                    "document_selection_invalid", "document_task_id_invalid",
+                    "document_selection_invalid", "document_selection_mismatch",
+                    "document_task_id_invalid",
                 }:
                     raise HTTPException(422, "document_task_invalid") from None
                 raise
