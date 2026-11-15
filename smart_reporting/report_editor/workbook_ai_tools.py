@@ -401,6 +401,11 @@ class WorkbookAIToolkit(Toolkit):
                 '用 {op:set_freeze,sheetId,rows,columns} 从工作表左上角冻结行列，'
                 '行数和列数均为 0–100 的整数；同时传 0 取消冻结。'
             )
+        if 'structure' in guides:
+            catalog['structure'] += (
+                '整簿授权下用 {op:move_sheet,sheetId,position} 移动工作表标签。'
+                'position 从 1 开始；同批多个移动按提交顺序执行。'
+            )
         if 'charts' in guides:
             catalog['charts'] += (
                 '源DSL add_chart/edit_chart会映射至原生applyChartSource。'
@@ -424,6 +429,7 @@ class WorkbookAIToolkit(Toolkit):
     def _translate(
         self, operation: dict[str, Any], merges: dict[str, list[str]],
         cell_state: dict[tuple[str, str], dict[str, Any]] | None,
+        sheet_order: list[str],
     ) -> dict[str, Any]:
         op = operation.get('op')
         if ('expectedValue' in operation and op != 'set_cell') or (
@@ -478,6 +484,19 @@ class WorkbookAIToolkit(Toolkit):
             return {'kind': 'applyPageSetups', 'setups': [{
                 'sheetName': self._sheet(sheet_id)['name'], 'frozenRows': rows, 'frozenColumns': columns,
             }]}
+        if op == 'move_sheet':
+            if set(operation) != {'op', 'sheetId', 'position'}:
+                raise ValueError('workbook_ai_sheet_order_invalid')
+            sheet_id, position = operation['sheetId'], operation['position']
+            if (not isinstance(sheet_id, str) or not sheet_id
+                    or type(position) is not int or not 1 <= position <= min(len(sheet_order), 1000)):
+                raise ValueError('workbook_ai_sheet_order_invalid')
+            name = self._sheet(sheet_id)['name']
+            sheet_order.remove(name)
+            sheet_order.insert(position - 1, name)
+            return {'kind': 'applySheetEdits', 'plan': {
+                'additions': [], 'renames': [], 'removals': [], 'order': list(sheet_order),
+            }}
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}
@@ -591,12 +610,17 @@ class WorkbookAIToolkit(Toolkit):
             operation.get('op') not in ROW_COLUMN_SOURCE_OPS or 'kind' in operation for operation in operations
         ):
             raise ValueError('workbook_ai_structure_batch_invalid')
+        if any(operation.get('op') == 'move_sheet' for operation in operations) and any(
+            operation.get('kind') == 'applySheetEdits' for operation in operations
+        ):
+            raise ValueError('workbook_ai_structure_batch_invalid')
         merges: dict[str, list[str]] = {}
         cell_state: dict[tuple[str, str], dict[str, Any]] | None = {}
+        sheet_order = list(self._sheets)
         translated_operations = []
         expanded_cell_edits = 0
         for operation in operations:
-            translated = self._translate(operation, merges, cell_state)
+            translated = self._translate(operation, merges, cell_state, sheet_order)
             if operation.get('op') in _CELL_SOURCE_OPS and translated['kind'] == 'applyCellEdits':
                 expanded_cell_edits += len(translated['edits'])
                 if expanded_cell_edits > _MAX_EXPANDED_CELL_EDITS:

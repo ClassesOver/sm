@@ -5,9 +5,11 @@ import asyncio
 import hashlib
 from io import BytesIO
 from unittest.mock import AsyncMock
+from zipfile import ZipFile
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from openpyxl.workbook.defined_name import DefinedName
 
 from smart_reporting.report_editor.native_office import inspect_office, patch_office
 from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
@@ -41,6 +43,48 @@ async def real_tools(source, *, scope='workbook'):
         scope=scope, selection={'sheetName': 'Source', 'startRow': 0, 'endRow': 0,
             'startColumn': 0, 'endColumn': 0}, preview=preview)
     return tools, previews
+
+
+@pytest.mark.anyio
+async def test_source_move_sheet_keeps_active_sheet_formulas_and_local_names():
+    book = load_workbook(BytesIO(source_book()))
+    book.create_sheet('Third')['A1'] = '保留'
+    book.active = 1
+    book['Other'].defined_names.add(DefinedName('LocalTotal', attr_text="'Other'!$B$1"))
+    stream = BytesIO()
+    book.save(stream)
+    source = stream.getvalue()
+    tools, previews = await real_tools(source)
+    await tools.propose_operations([
+        {'op': 'move_sheet', 'sheetId': 'Other', 'position': 1},
+        {'op': 'move_sheet', 'sheetId': 'Third', 'position': 2},
+    ], '调整工作表顺序')
+    edited = load_workbook(BytesIO(previews[0]))
+    assert edited.sheetnames == ['Other', 'Third', 'Source']
+    assert edited.active.title == 'Other'
+    assert edited['Other'].defined_names['LocalTotal'].attr_text == "'Other'!$B$1"
+    assert edited['Other']['A1'].value == '=Source!B3'
+    with ZipFile(BytesIO(source)) as original, ZipFile(BytesIO(previews[0])) as result:
+        for index in range(1, 4):
+            part = f'xl/worksheets/sheet{index}.xml'
+            assert original.read(part) == result.read(part)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'position', 'error'), [
+    ('workbook', 0, 'sheet_order_invalid'), ('workbook', True, 'sheet_order_invalid'),
+    ('workbook', 3, 'sheet_order_invalid'), ('range', 1, 'selection_mismatch'),
+])
+async def test_source_move_sheet_rejects_invalid_position_or_unauthorized_scope(scope, position, error):
+    preview = AsyncMock()
+    model = {'sheets': [{'name': 'Source'}, {'name': 'Other'}]}
+    tools = WorkbookAIToolkit(model=model, scope=scope, preview=preview,
+        selection={'sheetName': 'Source', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0})
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([
+            {'op': 'move_sheet', 'sheetId': 'Source', 'position': position},
+        ], '移动工作表')
+    preview.assert_not_awaited()
 
 
 @pytest.mark.anyio

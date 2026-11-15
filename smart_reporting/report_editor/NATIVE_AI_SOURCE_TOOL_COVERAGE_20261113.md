@@ -50,6 +50,8 @@ XLSX `set_hyperlink` 接到既有超链接写入器，支持网页地址、工�
 
 XLSX `set_freeze` 在整簿授权下复用原生工作表视图写入器。行列从左上角计数，各支持 0–100，两个零取消冻结。独立回读覆盖仅冻结行、仅冻结列、同时冻结和取消冻结，并确认网格线设置和单元格内容仍在。
 
+XLSX `move_sheet` 接到原生工作表顺序写入器，标签位置从 1 开始。同一候选的多个移动依次应用。回读验证活动工作表、局部名称及跨表公式仍指向原工作表，所有工作表部件保持字节一致。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。
