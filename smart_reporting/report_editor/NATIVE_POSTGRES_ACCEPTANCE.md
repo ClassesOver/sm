@@ -171,6 +171,14 @@ missing task. The server binds the retry to the existing task ID and exact input
 Component tests cover the retry and explicit acceptance. The two-process HTTP
 probe rejects changed instructions and request IDs before resuming the original.
 
+Edge also verified the production Vite build against two independent Uvicorn
+processes with scripted Agno and the same disposable PostgreSQL database. The
+probe held the first status request until the second process was available.
+That process returned the actual missing-task response. The open panel retried
+with the original payload and task ID, then displayed the candidate for explicit
+acceptance. PostgreSQL showed completion on the original attempt, and independent
+readback of the signed revision 2 download confirmed the edit and adjacent text.
+
 The isolated run passed five selected cases on PostgreSQL with Node 24. It
 covered HTTP upload, start, explicit acceptance, save and independent DOCX
 readback, plus completed-receipt replay, stale-worker cancellation after
