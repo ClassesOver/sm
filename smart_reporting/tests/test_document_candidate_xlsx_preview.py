@@ -237,3 +237,30 @@ async def test_xlsx_preview_rejects_protected_worksheet():
     )
     with pytest.raises(ValueError, match="xlsx_preview_protected_sheet"):
         await XlsxLiteralPreviewEngine(source, propose).prepare(request)
+
+
+@pytest.mark.anyio
+async def test_xlsx_preview_rejects_source_changed_during_workbook_inspection():
+    original = workbook_bytes()
+    changed = original + b"new revision"
+    scope = DocumentScope(
+        "channel", "grant", "book", "1", hashlib.sha256(original).hexdigest(),
+        DocumentFormat.XLSX,
+    )
+    reads = 0
+
+    async def source(_):
+        nonlocal reads
+        reads += 1
+        return original if reads < 3 else changed
+
+    async def propose(_):
+        return ({"sheet": "Sheet1", "range": "A1", "value": 15},)
+
+    engine = XlsxLiteralPreviewEngine(source, propose)
+    request = DocumentCandidateRequest(
+        scope, "one", "Edit", ({"sheet": "Sheet1", "range": "A1"},),
+    )
+    with pytest.raises(PermissionError, match="document_source_changed"):
+        await engine.prepare(request)
+    assert reads == 3
