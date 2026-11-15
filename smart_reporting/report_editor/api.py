@@ -20,6 +20,8 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from ..management.report_issue_reviews import IssueSubmission
+from ..office_entry import create_office_entry_router as create_office_entry_router
+from ..office_entry import mount_editor_assets
 from ..reporting.contract import SHA256_PATTERN
 from ..reporting.delivery.report_runtime.theme import REPORT_VISUAL_THEME
 from ..reporting.models import ReportingError
@@ -146,15 +148,7 @@ def create_report_editor_router(
     static_dir: str | Path | None = None,
 ) -> APIRouter:
     router = APIRouter()
-    frontend_static = Path(static_dir) if static_dir else Path(__file__).with_name("static")
-
-    @router.get("/reports/v1/editor/assets/{asset_path:path}", include_in_schema=False)
-    async def read_editor_static(asset_path: str) -> FileResponse:
-        root = frontend_static.resolve()
-        target = (root / asset_path).resolve()
-        if not target.is_relative_to(root) or not target.is_file():
-            raise HTTPException(status_code=404)
-        return FileResponse(target)
+    frontend_static = mount_editor_assets(router, static_dir)
 
     @router.get("/reports/v1/editor/open/{raw_grant}", include_in_schema=False)
     async def open_report_editor(raw_grant: str) -> RedirectResponse:

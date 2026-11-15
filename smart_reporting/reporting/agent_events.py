@@ -12,6 +12,9 @@ from agno.run.agent import (
     ToolCallErrorEvent,
     ToolCallStartedEvent,
 )
+from loguru import logger
+
+from ..async_utils import complete_cleanup
 
 _observer: ContextVar[Callable[[Any], None] | None] = ContextVar('reporting_agent_event_observer', default=None)
 
@@ -49,6 +52,19 @@ async def run_agent_with_events(agent: Any, input: Any, **kwargs: Any) -> RunOut
     if output is None:
         raise ValueError('agent_stream_output_missing')
     return output
+
+
+async def run_owned_agent_with_events(agent: Any, input: Any, **kwargs: Any) -> RunOutput:
+    """Run an agent whose model and provider client belong to the current task."""
+    try:
+        return await run_agent_with_events(agent, input, **kwargs)
+    finally:
+        client = getattr(agent.model, 'async_client', None)
+        if client is not None:
+            try:
+                await complete_cleanup(client.close())
+            except Exception as error:
+                logger.warning('Office model client close failed: {}', type(error).__name__)
 
 
 def agent_event_callback(event: Any) -> None:

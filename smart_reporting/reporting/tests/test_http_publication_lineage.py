@@ -847,6 +847,13 @@ async def _publication_fixture(
     runtime.editor_grants = ReportEditorGrantService(
         InMemoryReportEditorRepository(), secret="s" * 32
     )
+    runtime.native_report_editor = SimpleNamespace(
+        docx_enabled=True, pdf_enabled=True,
+        open_report=AsyncMock(return_value={"editor": {
+            "url": "/reports/v1/native/open/test-native-grant",
+            "expiresAt": "2026-11-15T12:00:00+00:00",
+        }}),
+    )
     runtime.report_public_base_url = "http://reports.test"
     output = {
         "reportId": "report-1",
@@ -881,6 +888,65 @@ async def _publication_fixture(
         output=output,
     )
     return runtime, arguments, scope, durable, artifacts, grants_repository, files, index
+
+
+@pytest.mark.anyio
+async def test_http_report_archive_failure_retains_download_links(tmp_path, monkeypatch):
+    from smart_reporting.reporting.workflow import identity
+
+    runtime, arguments, _, _, _, _, _, _ = await _publication_fixture(tmp_path)
+    verified = SimpleNamespace(
+        database="hospital", company_id="42", user_id=arguments["user_id"], office_space="team",
+        office_session_version=1, office_session_reference="session",
+        require_scope=lambda *_: None,
+    )
+    monkeypatch.setattr(identity, "require_verified_reporting_identity", lambda: verified)
+    runtime.native_report_editor = SimpleNamespace(
+        docx_enabled=True, pdf_enabled=True,
+        open_report=AsyncMock(return_value={"editor": {
+            "url": "/reports/v1/native/open/unscoped", "expiresAt": "2026-11-15T12:00:00+00:00",
+        }}),
+    )
+    runtime.office_documents = SimpleNamespace(
+        archive_report=AsyncMock(side_effect=OSError("injected archive failure")),
+    )
+
+    result = await runtime.issue_http_publication(**arguments)
+
+    runtime.office_documents.archive_report.assert_awaited_once()
+    assert runtime.office_documents.archive_report.await_args.kwargs == {"space": "team"}
+    assert result["word"]["downloadUrl"] and result["pdf"]["downloadUrl"]
+    assert "editor" not in result
+    assert "office_report_archive_failed" in {item["code"] for item in result["publicationIssues"]}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("format", ["xlsx", "pptx"])
+async def test_binary_report_archive_failure_is_a_soft_issue(format, monkeypatch):
+    from smart_reporting.reporting.workflow import identity
+    from smart_reporting.reporting.workflow.runtime.planning import RuntimePlanningMixin
+
+    verified = SimpleNamespace(office_space="team", require_scope=lambda *_: None)
+    monkeypatch.setattr(identity, "require_verified_reporting_identity", lambda: verified)
+    def release(_key):
+        raise OSError("injected workspace cleanup failure")
+
+    runtime = SimpleNamespace(
+        office_documents=SimpleNamespace(archive_report=AsyncMock()),
+        native_report_editor=SimpleNamespace(open_report=AsyncMock(side_effect=OSError("copy unavailable"))),
+        _release_workspace=release,
+    )
+    context = SimpleNamespace(report_id="report", revision=1, workflow_run_id="run",
+                              digest=lambda: "digest")
+    scope = SimpleNamespace(database="db", company_id="1", workspace_key="workspace")
+    issues = []
+    result = await RuntimePlanningMixin._archive_office_report(
+        runtime, None, context, format, "Report", scope, "user", "thread", issues, workspace_only=True,
+    )
+    assert result is None
+    assert issues[0]["code"] == "office_report_archive_failed"
+    runtime.native_report_editor.open_report.assert_awaited_once()
+    runtime.office_documents.archive_report.assert_not_called()
 
 
 @pytest.mark.anyio
@@ -1168,6 +1234,7 @@ async def test_http_publication_relocates_registered_lineage_and_replays(tmp_pat
     assert durable.payload["reportEditorContexts"]["2"] == context_payload
     assert len(artifacts.records) == 2
     assert replay["pdf"]["downloadUrl"] != result["pdf"]["downloadUrl"]
+    assert replay["editor"]["openUrl"] == "http://reports.test/reports/v1/native/open/test-native-grant"
     editor = ReportEditorService(
         state_repository=runtime.state_repository,
         workspace_registry=runtime.workspace_registry,
@@ -1184,7 +1251,10 @@ async def test_http_publication_relocates_registered_lineage_and_replays(tmp_pat
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://reports.test"
     ) as client:
-        opened = await client.get(replay["editor"]["openUrl"], follow_redirects=False)
+        # Independently authenticate the internal legacy test router to verify the
+        # frozen lineage snapshot. Production publishes the native editor URL above.
+        legacy_grant, _ = await runtime.editor_grants.issue(context)
+        opened = await client.get(f"/reports/v1/editor/open/{legacy_grant}", follow_redirects=False)
         assert opened.status_code == 303
         sources = await client.get("/reports/v1/editor/report-1/2/api/sources")
         assert sources.status_code == 200 and sources.json()["available"] is True
@@ -1255,7 +1325,7 @@ async def test_editor_grant_failure_preserves_verified_downloads(tmp_path, monke
     from smart_reporting.reporting_mcp.contracts import ReportingPublishedReport
 
     runtime, arguments, _, _, artifacts, grants, files, _ = await _publication_fixture(tmp_path)
-    monkeypatch.setattr(runtime.editor_grants, "issue", AsyncMock(side_effect=failure))
+    monkeypatch.setattr(runtime.native_report_editor, "open_report", AsyncMock(side_effect=failure))
 
     result = await runtime.issue_http_publication(**arguments)
 
@@ -1562,6 +1632,148 @@ async def test_http_pptx_publication_falls_back_to_verified_editor_download_on_p
     assert output["publicationGate"]["formalReleaseAllowed"] is False
     assert output["publicationIssues"][0]["code"] == "report_pptx_persistence_failed"
     assert {item.get("pptx_download", False) for item in issued_capabilities} == {False, True}
+
+
+@pytest.mark.anyio
+async def test_office_commit_permission_failure_retains_restricted_download(tmp_path, monkeypatch):
+    from smart_reporting.office import native_access
+    from smart_reporting.report_editor.native_models import NativeValidation
+    from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
+
+    # No edit is requested. Preserve the real DOCX fixture and isolate publication
+    # from the Node renderer so this exercises the intended failure stage.
+    monkeypatch.setattr(
+        "smart_reporting.report_editor.native_publication.patch_docx",
+        lambda content, _operations: content,
+    )
+    publication, context, _ = await create_publication(tmp_path)
+    revoked = False
+
+    async def authorize(_session, *, write=False):
+        if revoked and write:
+            raise ReportingError("native_permission_denied", "Office 写权限已撤销。")
+
+    async def validate(*_args, **_kwargs):
+        nonlocal revoked
+        revoked = True
+        return NativeValidation(ok=False)
+
+    publication.validator = validate
+    native_access.bind(
+        SimpleNamespace(report_id=context.document_id, capabilities={"office": {"file": "file"}}),
+        authorize,
+    )
+    try:
+        result = await publication.save_revision(
+            context, operations=[], request_id="office-revoked",
+            expected_sha256=context.source_file.sha256,
+        )
+    finally:
+        native_access.bind(SimpleNamespace(capabilities={}), None)
+
+    assert result["revisionRegistered"] is False
+    assert publication.repository.completions == 0
+    assert "/native/download/" in result["artifacts"]["word"]["downloadUrl"]
+    assert result["validation"]["ok"] is False
+    assert "native_revision_registration_failed" in {
+        issue["code"] for issue in result["validation"]["issues"]
+    }
+
+
+@pytest.mark.anyio
+async def test_office_library_registration_failure_retains_restricted_download(tmp_path, monkeypatch):
+    from smart_reporting.office import native_access
+    from smart_reporting.report_editor import native_publication
+    from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
+
+    # No edit is requested. Preserve the real DOCX fixture and isolate publication
+    # from the Node renderer so this exercises the intended failure stage.
+    monkeypatch.setattr(
+        "smart_reporting.report_editor.native_publication.patch_docx",
+        lambda content, _operations: content,
+    )
+    publication, context, _ = await create_publication(tmp_path)
+    register = AsyncMock(side_effect=OSError("injected Office library failure"))
+    monkeypatch.setattr(native_publication, "publication_capabilities", register)
+    native_access.bind(
+        SimpleNamespace(report_id=context.document_id, capabilities={"office": {"file": "file"}}),
+        AsyncMock(),
+    )
+    try:
+        result = await publication.save_revision(
+            context, operations=[], request_id="office-library-fault",
+            expected_sha256=context.source_file.sha256,
+        )
+    finally:
+        native_access.bind(SimpleNamespace(capabilities={}), None)
+
+    register.assert_awaited_once()
+    assert result["revisionRegistered"] is True
+    assert "/native/download/" in result["artifacts"]["word"]["downloadUrl"]
+    assert "office_library_registration_failed" in {
+        issue["code"] for issue in result["validation"]["issues"]
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("native_mode", ["available", "failed", "missing", "pdf_only"])
+async def test_http_publication_issues_native_editor_or_retains_downloads(
+    tmp_path: Path, native_mode: str,
+) -> None:
+    runtime, arguments, _, _, artifacts, _, files, _ = await _publication_fixture(tmp_path)
+    open_report = AsyncMock(
+        return_value={"editor": {
+            "url": "/reports/v1/native/open/native-grant",
+            "expiresAt": "2026-11-15T12:00:00+00:00",
+        }},
+        side_effect=OSError("injected native editor failure") if native_mode == "failed" else None,
+    )
+    runtime.native_report_editor = None if native_mode == "missing" else SimpleNamespace(
+        open_report=open_report, docx_enabled=native_mode != "pdf_only", pdf_enabled=True)
+    result = await runtime.issue_http_publication(**arguments)
+
+    assert result["pdf"]["downloadUrl"] and result["word"]["downloadUrl"]
+    if native_mode == "missing":
+        open_report.assert_not_called()
+    else:
+        assert open_report.await_args.kwargs["format"] == ("pdf" if native_mode == "pdf_only" else "docx")
+        assert open_report.await_args.args[0].workflow_run_id == "workflow-run"
+    if native_mode in {"failed", "missing"}:
+        assert "editor" not in result
+        assert result["publicationIssues"][-1]["code"] == "report_editor_grant_unavailable"
+    else:
+        assert result["editor"]["openUrl"] == "http://reports.test/reports/v1/native/open/native-grant"
+    app = FastAPI()
+    app.include_router(create_report_download_router(
+        ReportDownloadHttpService(runtime.download_grants, artifacts)
+    ))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://reports.test") as client:
+        for artifact, suffix in (("pdf", "pdf"), ("word", "docx")):
+            response = await client.get(result[artifact]["downloadUrl"])
+            assert response.status_code == 200
+            assert response.content == files[f"reports/report.{suffix}"]
+
+
+@pytest.mark.anyio
+async def test_native_office_save_keeps_download_receipt_on_index_scheduling_fault(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from smart_reporting.office import native_access
+    from smart_reporting.office.documents import OfficeDocuments
+
+    monkeypatch.setattr(native_access, 'capabilities', lambda document: {'office': {
+        'database': 'tenant', 'company': 'company', 'user': 'user', 'version': 1,
+        'file': 'file', 'session': 'session',
+    }})
+    entry = {'id': 'file', 'revision': 2, 'space': 'space', 'format': 'docx'}
+    office = SimpleNamespace(record_revision=AsyncMock(return_value=entry))
+    documents = OfficeDocuments(office, None, None, None)
+    documents.search = SimpleNamespace(schedule=Mock(side_effect=RuntimeError('injected index scheduling fault')))
+    receipt = {'revisionRegistered': True, 'revision': 2, 'downloadUrl': '/reports/v1/download/verified'}
+    await documents.saved(SimpleNamespace(document_id='document'), receipt)
+    documents.search.schedule.assert_called_once()
+    assert receipt == {'revisionRegistered': True, 'revision': 2, 'downloadUrl': '/reports/v1/download/verified'}
 
 
 @pytest.mark.anyio

@@ -10,3 +10,11 @@
 .office-task-dock form{display:block}.office-task-dock textarea{box-sizing:border-box;width:100%;min-height:72px;resize:vertical}.office-task-dock pre{white-space:pre-wrap;overflow-wrap:anywhere}.office-task-dock .native-ai-preview{overflow-wrap:anywhere}
 .office-task-divider{position:absolute;top:0;bottom:0;left:0;width:5px;cursor:ew-resize;touch-action:none;z-index:3}.office-task-divider:focus-visible{outline:2px solid var(--office-accent,#245ecc)}
 @media(max-width:900px){.office-task-dock{position:absolute;top:0;bottom:0;right:0;width:min(var(--office-task-width,360px),92%);max-width:92%;z-index:30;box-shadow:-5px 0 24px #0002}.office-task-divider{display:none}}
+
+.office-task-dock-left{border-left:0;border-right:1px solid var(--office-border,#dbe3ef)}
+.office-task-dock-left>.office-task-divider{left:auto;right:0}
+@media(max-width:900px){.office-task-dock-left{right:auto;left:0;box-shadow:5px 0 24px #0002}}
+
+.office-task-dock[style*="--office-assistant-user-font"] :is(.office-assistant-body, .office-assistant-composer textarea) {
+  font-size:var(--office-assistant-user-font);
+}

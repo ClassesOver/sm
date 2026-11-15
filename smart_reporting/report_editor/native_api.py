@@ -213,19 +213,22 @@ def create_native_editor_router(
     static_dir: str | Path | None = None,
     download_service: Any = None,
     ai_enabled: bool = False,
+    report_channel_enabled: bool = False,
 ) -> APIRouter:
     router = APIRouter()
     root = Path(static_dir) if static_dir else Path(__file__).with_name("static")
 
     async def session_context(
-        request: Request, document_id: str, revision: int, *, write: bool = False
+        request: Request, document_id: str, revision: int, *, write: bool = False, require_csrf: bool = False
     ):
-        if write:
+        if write or require_csrf:
             _csrf(request, grants, NATIVE_SESSION_COOKIE, allowed_origin)
         try:
             session = await grants.lookup_session(request.cookies.get(NATIVE_SESSION_COOKIE, ""))
             if session.report_id != document_id or session.revision != revision:
                 raise ReportingError("native_permission_denied", "原生会话与请求版本不一致。")
+            if write and (session.capabilities or {}).get("office"):
+                await editor.office_authorize(session, write=True)
             return session, await editor.context_for_session(session)
         except ReportingError as error:
             raise _error(error) from None
@@ -345,6 +348,14 @@ def create_native_editor_router(
     async def native_context(document_id: str, revision: int, request: Request):
         session, context = await session_context(request, document_id, revision)
         from .native_xlsx_threads import xlsx_thread_actor
+        editing_enabled = editor.is_enabled(context.format)
+        if editing_enabled and (session.capabilities or {}).get("office"):
+            try:
+                await editor.office_authorize(session, write=True)
+            except ReportingError as error:
+                if error.code != "native_permission_denied":
+                    raise _error(error) from None
+                editing_enabled = False
         return {
             "threadActor": xlsx_thread_actor(context.scope) if context.format == "xlsx" else None,
             "context": context.model_dump(mode="json", by_alias=True),
@@ -352,17 +363,18 @@ def create_native_editor_router(
             "csrfToken": grants.csrf_token(request.cookies.get(NATIVE_SESSION_COOKIE, "")),
             "capabilities": session.capabilities,
             "dataRefresh": await native_refresh_capability(editor, context),
-            "aiEnabled": ai_enabled and (
+            "aiEnabled": ai_enabled and editing_enabled and (
                 context.format == "docx" and editor.docx_enabled
                 or context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled
                 or context.format in {"pptx", "xlsx"} and editor.office_enabled
             ),
             "pdfReadAIEnabled": ai_enabled and context.format == "pdf",
             "wordReadAIEnabled": ai_enabled and context.format == "docx",
+            "reportChannelEnabled": report_channel_enabled and context.format == "docx" and editor.docx_enabled,
             "officeReadAIEnabled": ai_enabled and context.format in {"xlsx", "pptx"},
-            "pdfFormAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled,
-            "pdfReviewAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled,
-            "editingEnabled": editor.is_enabled(context.format),
+            "pdfFormAIEnabled": ai_enabled and editing_enabled and context.format == "pdf" and editor.pdf_enabled,
+            "pdfReviewAIEnabled": ai_enabled and editing_enabled and context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled,
+            "editingEnabled": editing_enabled,
             "pdfTextEnabled": editor.pdf_text_enabled and editor.pdf_enabled and context.format == "pdf",
         }
 
@@ -459,7 +471,9 @@ def create_native_editor_router(
     async def native_preview(
         document_id: str, revision: int, request: Request, payload: NativePreviewPayload
     ):
-        _, context = await session_context(request, document_id, revision, write=True)
+        _, context = await session_context(
+            request, document_id, revision, write=bool(payload.operations), require_csrf=True,
+        )
         try:
             return await editor.preview(
                 context, expected_sha256=payload.expected_sha256, operations=payload.operations
@@ -469,7 +483,9 @@ def create_native_editor_router(
 
     @router.post("/reports/v1/native/{document_id}/{revision}/api/render-tree")
     async def native_render_tree(document_id: str, revision: int, request: Request, payload: NativePreviewPayload):
-        _, context = await session_context(request, document_id, revision, write=True)
+        _, context = await session_context(
+            request, document_id, revision, write=bool(payload.operations), require_csrf=True,
+        )
         try:
             return await editor.render_tree(context, expected_sha256=payload.expected_sha256, operations=payload.operations)
         except ReportingError as error:
@@ -477,7 +493,9 @@ def create_native_editor_router(
 
     @router.post("/reports/v1/native/{document_id}/{revision}/api/preview.pdf")
     async def native_preview_pdf(document_id: str, revision: int, request: Request, payload: NativePreviewPayload):
-        _, context = await session_context(request, document_id, revision, write=True)
+        _, context = await session_context(
+            request, document_id, revision, write=bool(payload.operations), require_csrf=True,
+        )
         try:
             receipt = await editor.preview_file(context, expected_sha256=payload.expected_sha256,
                 operations=payload.operations, expected_preview_digest=payload.expected_preview_digest)

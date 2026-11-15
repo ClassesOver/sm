@@ -223,7 +223,7 @@ _SIGNING_CHAIN = {
     "smart_reporting/reporting/delivery/template_signature_semantics.py": ("inspect_signature_candidates", "bind_semantic_signature_slot"),
     "smart_reporting/reporting/delivery/template_signature_readback.py": ("read_semantic_preparation",),
     "smart_reporting/reporting/workflow/runtime/publication.py": ("_native_claim_presentations", "_verify_claim_fact_bindings", "_render_and_validate", "_render_revision_document", "_render_pptx", "_render_xlsx", "publish_report", "_publish_revision_report", "_write_trace_index"),
-    "smart_reporting/reporting/workflow/runtime/planning.py": ("issue_http_publication", "_issue_http_pptx_publication", "_issue_http_xlsx_publication", "_issue_http_office_publication"),
+    "smart_reporting/reporting/workflow/runtime/planning.py": ("issue_http_publication", "_issue_http_pptx_publication", "_issue_http_xlsx_publication", "_issue_http_office_publication", "_archive_office_report"),
     "smart_reporting/reporting/workspace.py": ("_render_report_pair",),
     "smart_reporting/report_editor/service.py": (
         "recalculation_delivery",

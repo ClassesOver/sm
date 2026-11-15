@@ -55,7 +55,7 @@ export function bindNativeAI(container: HTMLElement, options: {
   const editable = () => !disposed && !options.draft.closed && !options.draft.saving && !options.locked?.()
   function update() {
     start.disabled = !editable() || busy || accepting || !selection.length
-    accept.disabled = !editable() || busy || accepting || job?.status !== 'succeeded'
+    accept.disabled = !editable() || busy || accepting || job?.status !== 'succeeded' || job.accepted === true
     cancel.disabled = disposed || !job && !busy
     options.onStateChange?.()
   }
@@ -115,12 +115,13 @@ export function bindNativeAI(container: HTMLElement, options: {
     finally { if (turn === generation) { busy = false; update() } }
   }
   accept.onclick = async () => {
-    if (!editable() || busy || accepting || job?.status !== 'succeeded') return
+    if (!editable() || busy || accepting || job?.status !== 'succeeded' || job.accepted) return
     if(options.format==='docx' && wordTarget!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}
     const turn = generation
     const target=wordTarget
     accepting = true; busy = true; update()
     try {
+      options.view.flushPendingEdits?.()
       const operations = options.draft.operations
       const candidate = job
       const result = await tasks.accept(signal => options.api.aiAccept(candidate.editId, {expectedSha256:options.draft.identity.sourceSha256, operations, snapshotSha256:candidate.snapshotSha256}, signal))
@@ -166,6 +167,30 @@ export function bindNativeAI(container: HTMLElement, options: {
     update,
     get accepting() { return accepting },
     open() { if(disposed)return;panelView?.beforeOpen();panel.hidden=false;panel.scrollIntoView?.({block:'nearest'}); input.focus({preventScroll:true}) },
+    async followWordTask(taskId: string) {
+      if (options.format !== 'docx' || !editable() || busy || accepting || job) return
+      const turn = ++generation
+      wordTarget = currentWordTarget()
+      busy = true
+      status.textContent = '正在读取频道编辑任务'
+      update()
+      try {
+        const result = await tasks.follow(taskId, (started, signal) => {
+          if (turn !== generation || disposed) return
+          progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, started.editId, signal,
+            () => editable() && turn === generation)
+          show(started)
+        })
+        if (result && turn === generation && !disposed) {
+          show(result)
+          details.open = !!result.proposal
+        }
+      } catch (error) {
+        if (turn === generation && !disposed) status.textContent = error instanceof Error ? error.message : '频道任务读取失败'
+      } finally {
+        if (turn === generation) { busy = false; update() }
+      }
+    },
     close,
     openNotes(value: NativeAINoteSelection, instruction='', beforeText?:string) {
       if(!editable() || options.format==='pdf')return

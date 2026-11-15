@@ -99,21 +99,22 @@ class NativeEditorService:
     ) -> dict[str, Any]:
         started = perf_counter()
         self.require_enabled(format)
-        if format not in {"docx", "pdf"}:
-            raise ReportingError("native_format_invalid", "工作簿和幻灯片报告沿用现有编辑入口。")
         if not EditorCapabilities.of(
             session.capabilities
         ).full or session.workflow_run_id.startswith("native:"):
             raise ReportingError("native_permission_denied", "分享会话不能创建独立原生编辑分支。")
         context = await self.report_editor.context_for_session(session)
-        if context.delivery_format not in {"document", format}:
-            raise ReportingError("native_format_invalid", "只能打开报告已选择的 Word/PDF 交付格式。")
+        if context.delivery_format != format and not (context.delivery_format == "document" and format in {"docx", "pdf"}):
+            raise ReportingError("native_format_invalid", "只能打开报告已选择的交付格式。")
         try:
             scope = NativeScope.model_validate(
                 {key: context.scope[key] for key in ("database", "companyId", "userId", "threadId")}
             )
-            label = "word" if format == "docx" else "pdf"
-            raw = context.job["render"][label]
+            if format in {"xlsx", "pptx"}:
+                raw = {key: getattr(context, f"{format}_{key}") for key in ("path", "size", "sha256")}
+            else:
+                label = "word" if format == "docx" else "pdf"
+                raw = context.job["render"][label]
             identity = ArtifactFile.model_validate({**raw, "mediaType": _MEDIA[format]})
         except (KeyError, TypeError, ValidationError) as error:
             raise ReportingError(
@@ -189,6 +190,13 @@ class NativeEditorService:
         }
 
     async def context_for_session(self, session: ReportEditorSession) -> NativeEditorContext:
+        from ..office.native_access import bind
+        bind(session, getattr(self, "office_authorize", None))
+        authorize = getattr(self, "office_authorize", None)
+        if authorize is not None:
+            await authorize(session)
+        elif (session.capabilities or {}).get("office"):
+            raise ReportingError("native_permission_denied", "Office 授权服务不可用。")
         caps = session.capabilities or {}
         if (
             caps.get("native_editor") is not True
@@ -217,11 +225,13 @@ class NativeEditorService:
         return context
 
     async def read_file(self, context: NativeEditorContext) -> bytes:
+        from ..office.native_access import check
+        await check(context.document_id)
         key = bind_native_workspace(self.workspace, context.scope)
         identity = context.source_file
         if identity.size > _MAX_FILE_BYTES:
             raise ReportingError("native_file_too_large", "文件超过 24 MiB 在线编辑上限。")
-        return await read_verified_file(
+        content = await read_verified_file(
             self.workspace,
             {"threadId": key},
             identity.path,
@@ -230,6 +240,8 @@ class NativeEditorService:
             error_code="native_source_changed",
             format_name=context.format.upper(),
         )
+        await check(context.document_id)
+        return content
 
     async def preview(
         self,
@@ -385,7 +397,9 @@ class NativeEditorService:
         if self.publication is None:
             raise ReportingError("native_engine_unavailable", "原生保存服务尚未部署。")
         try:
-            return await self.publication.save_revision(
+            from ..office.native_access import check
+            await check(context.document_id, write=True)
+            result = await self.publication.save_revision(
                 context,
                 request_id=request_id,
                 expected_sha256=expected_sha256,
@@ -394,6 +408,10 @@ class NativeEditorService:
                 note=note,
                 **({"confirmed_preview_digest": confirmed_preview_digest} if confirmed_preview_digest is not None else {}),
             )
+            synchronize = getattr(self, "office_saved", None)
+            if synchronize is not None:
+                await synchronize(context, result)
+            return result
         except ReportingError:
             raise
         except ValueError as error:
@@ -405,6 +423,12 @@ class NativeEditorService:
 
     async def download(self, session: ReportEditorSession, artifact: str) -> tuple[bytes, str]:
         caps = session.capabilities or {}
+        from ..office.native_access import bind, check
+        bind(session, getattr(self, "office_authorize", None))
+        authorize = getattr(self, "office_authorize", None)
+        if authorize is not None:
+            await authorize(session)
+        await check(session.report_id)
         if (
             caps.get("native_download") is not True
             or session.workflow_run_id != f"native:{session.report_id}"
@@ -439,4 +463,5 @@ class NativeEditorService:
             error_code="native_source_changed",
             format_name=artifact,
         )
+        await check(session.report_id)
         return content, expected_media

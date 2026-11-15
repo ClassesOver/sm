@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass, field
 from time import monotonic
@@ -38,6 +39,9 @@ class _ReadJob:
     result: dict | None = None
     error: dict | None = None
     event_log: AgentEventLog = field(default_factory=AgentEventLog)
+    reading_sha256: str | None = None
+    question: str = ""
+
 
 
 class NativePDFReadService:
@@ -65,6 +69,17 @@ class NativePDFReadService:
         return context
 
     @staticmethod
+    def _job_scope(session, context):
+        capabilities = getattr(session, "capabilities", None) or {}
+        office = capabilities.get("office")
+        if not isinstance(office, dict):
+            return context.digest()
+        return native_digest({
+            "context": context.digest(),
+            "actor": [office.get(key) for key in ("database", "company", "user", "version", "session")],
+        })
+
+    @staticmethod
     def _request_id(value):
         if (
             not isinstance(value, str)
@@ -72,6 +87,18 @@ class NativePDFReadService:
         ):
             raise ReportingError("native_ai_request_invalid", "AI 请求身份无效。")
         return value
+
+    def _previous_reading(self, scope, task_id, reading_sha256):
+        if not task_id:
+            return ""
+        for (owner, _), job in self._jobs.items():
+            if (owner == scope and job.task_id == task_id and job.status == "completed"
+                    and job.reading_sha256 == reading_sha256 and job.result):
+                answer = job.result.get("answer")
+                if isinstance(answer, str):
+                    return ("\n上轮对话仅用于理解指代，请重新核验本轮证据："
+                            + json.dumps({"question": job.question, "answer": answer[:4000]}, ensure_ascii=False))
+        return ""
 
     def _prune(self):
         for key, job in tuple(self._jobs.items()):
@@ -101,6 +128,7 @@ class NativePDFReadService:
         selection: list,
         action: str,
         instruction: str,
+        previous_task_id: str | None = None,
     ):
         context = await self._context(session)
         request_id = self._request_id(client_request_id)
@@ -134,17 +162,12 @@ class NativePDFReadService:
         ):
             raise ReportingError("native_ai_selection_invalid", "PDF 选区身份无效。")
         selected = [dict(item) for item in selection]
-        snapshot = native_digest(
-            {
-                "context": context.digest(),
-                "operations": base,
-                "selection": selected,
-                "action": action,
-                "instruction": instruction,
-            }
-        )
+        reading = native_digest({"context": context.digest(), "operations": base, "selection": selected})
+        snapshot = native_digest({"reading": reading, "action": action, "instruction": instruction,
+                                  "previousTaskId": previous_task_id})
         self._prune()
-        key = (context.digest(), request_id)
+        scope = self._job_scope(session, context)
+        key = (scope, request_id)
         previous = self._jobs.get(key)
         if previous:
             if (
@@ -157,14 +180,16 @@ class NativePDFReadService:
                 )
             return self._serialize(previous)
         self._reserve()
-        job = _ReadJob(uuid4().hex, request_id, context.digest(), monotonic(), snapshot)
+        job = _ReadJob(uuid4().hex, request_id, context.digest(), monotonic(), snapshot,
+                       reading_sha256=reading, question=instruction)
         self._jobs[key] = job
+        history = self._previous_reading(scope, previous_task_id, reading) if action == "ask" else ""
         job.task = asyncio.create_task(
-            self._run(job, session, context, base, selected, action, instruction)
+            self._run(job, session, context, base, selected, action, instruction, history)
         )
         return self._serialize(job)
 
-    async def _run(self, job, session, context, base, selected, action, instruction):
+    async def _run(self, job, session, context, base, selected, action, instruction, history):
         try:
             await job.event_log.emit("phase", label="正在读取 PDF")
             async with asyncio.timeout(self.timeout_seconds):
@@ -197,7 +222,7 @@ class NativePDFReadService:
                         content=content,
                         operations=base,
                         action=action,
-                        instruction=_READ_INSTRUCTIONS[action]
+                        instruction=_READ_INSTRUCTIONS[action] + history
                         + "\n用户要求："
                         + instruction,
                         selection=selected,
@@ -262,12 +287,13 @@ class NativePDFReadService:
 
     async def status(self, session, task_id: str, *, wait_ms: int = 20000):
         context = await self._context(session)
+        scope = self._job_scope(session, context)
         self._prune()
         job = next(
             (
                 job
                 for (digest, _), job in self._jobs.items()
-                if digest == context.digest() and job.task_id == task_id
+                if digest == scope and job.task_id == task_id
             ),
             None,
         )
@@ -288,9 +314,10 @@ class NativePDFReadService:
 
     async def event_stream(self, session, task_id: str, after: int = 0):
         context = await self._context(session)
+        scope = self._job_scope(session, context)
         self._prune()
         job = next((job for (digest, _), job in self._jobs.items()
-                    if digest == context.digest() and job.task_id == task_id), None)
+                    if digest == scope and job.task_id == task_id), None)
         if job is None:
             raise ReportingError("native_ai_job_missing", "PDF AI 任务不存在或已过期。")
         return event_stream_response(job.event_log, after)
@@ -299,7 +326,7 @@ class NativePDFReadService:
         context = await self._context(session)
         request_id = self._request_id(client_request_id)
         self._prune()
-        key = (context.digest(), request_id)
+        key = (self._job_scope(session, context), request_id)
         job = self._jobs.get(key)
         if job is None:
             self._reserve(cancelled=True)

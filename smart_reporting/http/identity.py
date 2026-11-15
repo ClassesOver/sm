@@ -17,7 +17,9 @@ def requires_workspace_capability(path: str, *, has_thread: bool, has_capability
     # Process 由 AgentOS 原生认证保护，不消费 Odoo 的工作区身份。
     if normalized.startswith("/extensions/dingyi/process/v1/"):
         return False
-    protected_resource = normalized.startswith(("/workspace", "/quality-warnings")) or normalized == "/reports/v1/native/import"
+    protected_resource = normalized.startswith(("/workspace", "/quality-warnings")) or normalized in {
+        "/reports/v1/native/import", "/reports/v1/native/office-reopen",
+    }
     # 通用 AgentOS Console 只提供原生 user_id/session_id，不能生成 Odoo capability。
     # 两个扩展头均缺失时允许普通 run；访问受保护资源或任一扩展头已经出现时，
     # 必须进入完整验签流程，禁止用默认身份或部分请求头静默降级。
@@ -45,13 +47,19 @@ def apply_report_identity(
 
 @contextmanager
 def verified_report_request(
-    request: Any, *, user_id: str, thread_id: str, database: str, company_id: str
+    request: Any, *, user_id: str, thread_id: str, database: str, company_id: str,
+    office_space: str | None = None,
+    office_session_version: int | None = None,
+    office_session_reference: str | None = None,
 ):
     """只在 capability 验签成功后调用，同时覆盖 AgentOS 身份与任务上下文。"""
     apply_report_identity(
         request, user_id=user_id, thread_id=thread_id, database=database, company_id=company_id
     )
     with bind_verified_reporting_identity(
-        VerifiedReportingIdentity(database, company_id, user_id, thread_id, "http-capability")
+        VerifiedReportingIdentity(
+            database, company_id, user_id, thread_id, "http-capability",
+            office_space, office_session_version, office_session_reference,
+        )
     ):
         yield

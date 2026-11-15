@@ -65,7 +65,9 @@ _PARAGRAPH_KINDS = set(WORD_AI_OPERATION_FIELDS) - set(_TABLE_CAPABILITIES) - _C
 WORD_AI_INSTRUCTIONS = """
 先get_document_context，再read_blocks读取实际授权内容，需要查找时search_text。
 只允许工具返回的allowedOperations；整表操作需要显式整表授权，单格授权不能扩大至整表。
-所有操作须调用propose_operations提出；最终必须原样返回工具回执proposal（summary与operations）。
+所有操作须调用propose_operations提出；工具输入采用与最终proposal相同的嵌套格式。
+例如{"summary":"替换所选段落","operations":[{"kind":"replaceParagraph","arguments":{"blockId":"工具读取的块ID","text":"新文字"}}]}。
+最终必须原样返回工具回执proposal（summary与operations）。
 最终operations每项必须为{"kind":"操作名","arguments":{操作参数}}，禁止将参数平铺到kind旁。
 回执顶层operations是供引擎预览的扁平格式，不是最终回答格式；最终只使用proposal内的嵌套格式。
 审阅候选登记成功后立即返回回执proposal，不再重复调用propose_operations；重复目标不会再次登记。
@@ -366,6 +368,13 @@ class NativeWordAITools:
         """登记原生编辑候选供服务器preview；不修改文档且不替用户采纳。"""
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 2000:
             raise ValueError('native_ai_summary_invalid')
+        normalized = []
+        for operation in operations:
+            if set(operation) == {'kind', 'arguments'}:
+                item = NativeWordAIOperation.model_validate(operation)
+                operation = {'kind': item.kind, **item.arguments}
+            normalized.append(operation)
+        operations = normalized
         if notes_mode(self.selected):
             checked = word_candidate([*self.operations, *operations], self.selected)
             candidate = checked[len(self.operations):]
@@ -400,20 +409,11 @@ class AgnoNativeWordProposalPlanner:
 
     async def plan_word(self, prompt: str, *, selected: list[dict[str, Any]],
                         session_id: str, user_id: str) -> NativeWordAIProposal:
-        from ..reporting.agent_events import run_agent_with_events
-        from ..reporting.structured_output.policy import (
-            REPORTING_STRUCTURED_MODES_MODEL_ATTR,
-            REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,
-            StructuredOutputMode,
-            VerifiedModelCapabilityResolver,
-        )
+        from ..reporting.agent_events import run_owned_agent_with_events
+        from ..reporting.structured_output.policy import REPORTING_STRUCTURED_REQUEST_MODEL_ATTR
 
         tools = NativeWordAITools(selected)
         model = deepcopy(self.model)
-        modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
-        capabilities = VerifiedModelCapabilityResolver().resolve(
-            model.id, configured_mode=modes.get('standard') if isinstance(modes, dict) else None,
-            endpoint=str(model.base_url) if getattr(model, 'base_url', None) is not None else None)
         setattr(model, REPORTING_STRUCTURED_REQUEST_MODEL_ATTR, True)
         agent = Agent(name='native-word-tools', model=model,
                       tools=[tools.get_document_context, tools.read_blocks,
@@ -421,12 +421,13 @@ class AgnoNativeWordProposalPlanner:
                              tools.notes.read_notes, tools.notes.insert_footnote, tools.notes.insert_endnote,
                              tools.notes.edit_note, tools.notes.delete_note],
                       output_schema=NativeWordAIProposal,
-                      structured_outputs=capabilities.primary is StructuredOutputMode.JSON_SCHEMA,
-                      use_json_mode=capabilities.primary is StructuredOutputMode.JSON_OBJECT,
+                      structured_outputs=False, use_json_mode=True,
                       tool_call_limit=tools.tool_call_budget(), retries=0, add_history_to_context=False,
                       enable_session_summaries=False, markdown=False, telemetry=False,
                       instructions=[WORD_AI_INSTRUCTIONS])
-        output = await run_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
+        from ..office.ai_sources import attach_office_sources
+        attach_office_sources(agent)
+        output = await run_owned_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
         content = getattr(output, 'content', None)
         proposal = content if isinstance(content, NativeWordAIProposal) else NativeWordAIProposal.model_validate(
             dict(content) if isinstance(content, Mapping) else json.loads(content))

@@ -30,6 +30,7 @@ class NativePDFReadPayload(_DraftPayload):
     client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     action: Literal["ask", "summarize", "keyPoints", "reviewSummary"] = "ask"
     instruction: str = Field(default="", max_length=2000)
+    previous_task_id: str | None = Field(default=None, alias="previousTaskId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     selection: list[dict[str, str]] = Field(default_factory=list, max_length=100)
 
 
@@ -48,6 +49,7 @@ class NativeWordReadPayload(_DraftPayload):
     client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     action: Literal["ask", "summarize", "keyPoints"] = "ask"
     instruction: str = Field(default="", max_length=2000)
+    previous_task_id: str | None = Field(default=None, alias="previousTaskId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     selection: list[NativeWordReadSelection] = Field(default_factory=list, max_length=100)
 
 
@@ -70,6 +72,7 @@ class NativeOfficeReadPayload(_DraftPayload):
     client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     action: Literal["ask", "summarize", "keyPoints"] = "ask"
     instruction: str = Field(default="", max_length=2000)
+    previous_task_id: str | None = Field(default=None, alias="previousTaskId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     selection: NativeWorkbookReadSelection | Annotated[list[NativeSlidesReadSelection], Field(min_length=1, max_length=100)] | None = None
 
 
@@ -113,6 +116,9 @@ def create_native_ai_router(
         if session.report_id != document_id or session.revision != revision:
             raise ReportingError("native_permission_denied", "原生会话与请求版本不一致。")
         await editor.context_for_session(session)
+        read_task = any(part in request.url.path for part in ("/office-read/", "/word-read/", "/read/"))
+        if write and not read_task and (session.capabilities or {}).get("office"):
+            await editor.office_authorize(session, write=True)
         return session
 
     def reader():
@@ -135,7 +141,7 @@ def create_native_ai_router(
                                 payload: NativeOfficeReadPayload):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await office_reader().start(session, **payload.model_dump())
+            return await office_reader().start(session, **payload.model_dump(exclude={'previous_task_id'} if payload.previous_task_id is None else set()))
         except ReportingError as error:
             raise _ai_error(error) from None
 
@@ -207,7 +213,7 @@ def create_native_ai_router(
                          payload: NativePDFReadPayload):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await reader().start(session, **payload.model_dump())
+            return await reader().start(session, **payload.model_dump(exclude={'previous_task_id'} if payload.previous_task_id is None else set()))
         except ReportingError as error:
             raise _ai_error(error) from None
 

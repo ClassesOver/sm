@@ -5,6 +5,7 @@ import { bindNativeSession } from './native-session'
 import { createEditorShell } from './shell'
 import { toolbarMode } from './viewport'
 import { bindNativeAI } from './native-ai'
+import { mountReportChannelShare } from './report-channel-share'
 import { bindNativeWordAssistant } from './native-word-assistant'
 import {
   createElement, createIcons, Database, FileDown, FileText, Focus, History, Keyboard, MessageCircle, MoreHorizontal,
@@ -28,7 +29,9 @@ export async function startNativeEditor() {
   root.dataset.nativeEditor = 'true'
   const api = createNativeApi(documentId, revision, response.csrfToken)
   // 读取 Storage 属性也可能被浏览器禁用；延迟到草稿内部的异常兜底中执行。
-  const draft = new NativeDraft({ documentId, revision, sourceSha256: context.sourceFile.sha256, scope: context.scope }, {
+  const officeActor = response.capabilities.office as { user?: string } | undefined
+  const draftScope = officeActor?.user ? { ...context.scope, userId: officeActor.user } : context.scope
+  const draft = new NativeDraft({ documentId, revision, sourceSha256: context.sourceFile.sha256, scope: draftScope }, {
     getItem: key => window.localStorage.getItem(key),
     setItem: (key, value) => window.localStorage.setItem(key, value),
     removeItem: key => window.localStorage.removeItem(key),
@@ -113,6 +116,7 @@ export async function startNativeEditor() {
       api, draft, selection: () => 'getReadSelection' in view ? view.getReadSelection() : [], flushPendingEdits: () => { if ('flushPendingEdits' in view) view.flushPendingEdits?.() },
     })
   }
+  let disposeChannel: (() => void) | undefined
   if (context.format === 'docx' && (wordReader || ai)) {
     const { mountOfficeTaskDock } = await import('./office-task-dock')
     const entries = []
@@ -122,10 +126,13 @@ export async function startNativeEditor() {
     }
     if (ai) {
       const panel = root.querySelector<HTMLElement>('.native-ai:not(.native-word-assistant)')!
+      if (response.reportChannelEnabled) disposeChannel = mountReportChannelShare(panel, api, async taskId => {
+        await ai?.followWordTask(taskId)
+      })
       entries.push({id:'edit', label:'编辑建议', panel, open:()=>ai?.open(), close:()=>ai?.close()})
     }
     const main = shell.editor.querySelector<HTMLElement>('.docx-navigation-layout') ?? shell.editor
-    const dock = mountOfficeTaskDock(main, entries, {label:'Word AI 助手'})
+    const dock = mountOfficeTaskDock(main, entries, {label:'Word AI 助手', officeWorkspace: Boolean(officeActor)})
     wordDock = dock
     for (const entry of entries) {
       const button = document.createElement('button'); button.type = 'button'; button.className = 'office-ai-entry'; button.dataset.action = `word-${entry.id}-ai`
@@ -133,11 +140,18 @@ export async function startNativeEditor() {
       button.onclick = () => dock.open(entry.id)
       root.querySelector('.toolbar-group-edit-view')?.append(button)
     }
+    const channelTask = /^#word-task=([A-Za-z0-9_-]{1,128})$/.exec(window.location.hash)?.[1]
+    if (channelTask && ai) {
+      dock.open('edit')
+      void ai.followWordTask(channelTask)
+    } else {
+      dock.openInitially()
+    }
   }
   if (!response.editingEnabled) {
     shell.save.disabled = true
     shell.exportWord.disabled = true
     shell.exportPdf.disabled = true
   }
-  window.addEventListener('pagehide', () => { wordDock?.dispose(); ai?.dispose(); wordReader?.dispose(); session?.dispose() }, { once: true })
+  window.addEventListener('pagehide', () => { disposeChannel?.(); wordDock?.dispose(); ai?.dispose(); wordReader?.dispose(); session?.dispose() }, { once: true })
 }

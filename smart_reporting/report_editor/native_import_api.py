@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -21,8 +21,36 @@ from .native_models import NativeScope
 MAX_NATIVE_UPLOAD_BYTES = MAX_AGENT_RUN_FILE_BYTES
 
 
+class OfficeReopenRequest(BaseModel):
+    documentId: str = Field(pattern=r"^[\w-]+$", max_length=256)
+    revision: int = Field(ge=1)
+
+
+def _workspace_scope(claims: CapabilityClaims) -> NativeScope:
+    return NativeScope(
+        database=claims.database,
+        companyId=str(claims.company),
+        userId=str(claims.user),
+        threadId=claims.thread,
+    )
+
+
 def create_native_import_router(importer: Any, *, enabled: bool = False) -> APIRouter:
     router = APIRouter()
+
+    @router.post("/reports/v1/native/office-reopen")
+    async def reopen_office_file(request: Request, body: OfficeReopenRequest):
+        claims = getattr(request.state, "capability", None)
+        if not isinstance(claims, CapabilityClaims):
+            raise HTTPException(403, detail={"code": "native_import_identity_required"})
+        if not enabled:
+            raise HTTPException(503, detail={"code": "native_import_disabled"})
+        try:
+            return await importer.open_revision(_workspace_scope(claims), body.documentId, body.revision)
+        except ReportingError as error:
+            raise HTTPException(404, detail={"code": error.code, "message": error.message}) from None
+        except ValidationError:
+            raise HTTPException(403, detail={"code": "native_import_identity_invalid"}) from None
 
     @router.post("/reports/v1/native/import")
     async def import_native_file(request: Request):
@@ -51,14 +79,8 @@ def create_native_import_router(importer: Any, *, enabled: bool = False) -> APIR
                     if len(content) + len(chunk) > MAX_NATIVE_UPLOAD_BYTES:
                         raise HTTPException(413, detail={"code": "native_file_too_large"})
                     content.extend(chunk)
-                scope = NativeScope(
-                    database=claims.database,
-                    companyId=str(claims.company),
-                    userId=str(claims.user),
-                    threadId=claims.thread,
-                )
                 return await importer.import_file(
-                    scope=scope, content=bytes(content), request_id=request_id,
+                    scope=_workspace_scope(claims), content=bytes(content), request_id=request_id,
                     filename=upload.filename or "",
                 )
         except RequestBodyLimitError:

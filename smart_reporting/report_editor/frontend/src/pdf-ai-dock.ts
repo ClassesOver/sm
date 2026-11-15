@@ -1,4 +1,5 @@
 import './pdf-ai-dock.css'
+import {mountOfficeTaskDock} from './office-task-dock'
 import {bindOfficeAssistantFloating} from './office-assistant-floating'
 type Mode='read'|'review'|'forms'
 /** PDF 共用右侧停靠区；面板保留原任务控制器，切换和关闭均走其取消按钮。 */
@@ -26,12 +27,24 @@ export function bindPdfAIDock(layout:HTMLElement,entries:Partial<Record<Mode,{pa
  return {dispose(){floating.dispose();for(const observer of observers)observer.disconnect();workspace.before(layout);workspace.remove()}}
 }
 
-export function mountPdfTaskDock(root:HTMLElement,layout:HTMLElement,controllers:Partial<Record<Mode,{open():void}>>){
+export function mountPdfTaskDock(root:HTMLElement,layout:HTMLElement,controllers:Partial<Record<Mode,{open():void}>>,officeWorkspace=false){
  const entries:Parameters<typeof bindPdfAIDock>[1]={}
  for(const [key,name] of [['read','assistant'],['review','review'],['forms','form-ai']] as const){
   const controller=controllers[key],panel=root.querySelector<HTMLElement>('.native-pdf-'+name)
   const close=panel?.querySelector<HTMLButtonElement>('.office-assistant-close')
   if(controller&&panel&&close)entries[key]={panel,close,open:()=>controller.open()}
+ }
+ if(officeWorkspace){
+  const labels={read:'阅读问答',review:'批注审阅',forms:'填写表单'}
+  const tasks=(Object.keys(entries) as Mode[]).map(id=>{
+   const entry=entries[id]!
+   return {id,label:labels[id],panel:entry.panel,open:entry.open,close:()=>entry.close.click()}
+  })
+  if(tasks.length){
+   const dock=mountOfficeTaskDock(layout,tasks,{label:'PDF AI 助手',officeWorkspace:true})
+   dock.openInitially()
+   return dock
+  }
  }
  return bindPdfAIDock(layout,entries)
 }

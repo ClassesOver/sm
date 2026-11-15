@@ -9,6 +9,12 @@ from loguru import logger as loguru_logger
 from starlette.concurrency import run_in_threadpool
 
 from .context_management import validate_configured_tiktoken_cache
+from .office.api import COOKIE as OFFICE_SESSION_COOKIE, create_office_router, check_office_origin, csrf_token as office_csrf_token
+from .office.repository import OfficeError
+from .office.repository import OfficeRepository
+from .office.documents import OfficeDocuments
+from .office.model import office_model
+from .office.search import OfficeSearch
 from .http.identity import (
     requires_workspace_capability,
     verified_report_request,
@@ -60,7 +66,6 @@ from .report_editor import (
     SqlAlchemyReportEditorRepository,
     create_report_editor_ai_service,
     create_report_editor_chart_ai_service,
-    create_report_editor_router,
     create_report_editor_table_ai_service,
     create_report_slides_ai_service,
     create_report_slides_editor_router,
@@ -68,6 +73,7 @@ from .report_editor import (
     create_report_workbook_editor_router,
 )
 from .report_editor.data_revisions import ReportDataRevisionService
+from .office_entry import create_office_entry_router
 from .report_editor.design_repository import SqlAlchemyDesignTemplateRepository
 from .report_editor.native import NativeEditorService
 from .report_editor.native_ai import create_native_ai_service
@@ -162,6 +168,7 @@ reporting_lsp_process_manager = ReportingLspProcessManager()
 report_download_repository = SqlAlchemyDownloadGrantRepository(agent_database.async_engine)
 report_editor_repository = SqlAlchemyReportEditorRepository(agent_database.async_engine)
 native_document_repository = NativeDocumentRepository(agent_database.async_engine)
+office_repository = OfficeRepository(agent_database.async_engine)
 report_editor_grants = ReportEditorGrantService(
     report_editor_repository,
     secret=settings.workspace_hmac_secret,
@@ -242,6 +249,13 @@ async def require_workspace_capability(request: Request, call_next):
         has_thread=bool(thread),
         has_capability=bool(capability),
     )
+    office_space = request.headers.get("X-Office-Workspace")
+    if office_space is not None and (
+        not 1 <= len(office_space) <= 36
+        or path != "/workflows/enterprise-reporting-workflow-v1/runs"
+        or not is_agentos_run_create(path, request.method)
+    ):
+        return JSONResponse({"error": "office_workspace_header_invalid"}, status_code=400)
     if capability_required:
         if not thread:
             return JSONResponse({"error": "thread_header_required"}, status_code=400)
@@ -254,6 +268,21 @@ async def require_workspace_capability(request: Request, call_next):
             )
         except CapabilityError as error:
             return JSONResponse({"error": str(error)}, status_code=401)
+    actor = None
+    if office_space is not None:
+        from hmac import compare_digest
+        from uuid import uuid4
+
+        try:
+            check_office_origin(request, _application_context(request).settings.report_public_base_url)
+            raw = request.cookies.get(OFFICE_SESSION_COOKIE, "")
+            actor = await office_repository.authenticate(raw)
+            if not compare_digest(request.headers.get("x-csrf-token", ""), office_csrf_token(raw)):
+                raise OfficeError("office_csrf_invalid", "请求校验失败，请刷新。")
+            thread = f"office-report:{uuid4().hex}"
+            await office_repository.space_access(actor, office_space, write=True)
+        except OfficeError as error:
+            return JSONResponse({"code": error.code, "message": error.message}, status_code=error.status)
     limit = _request_limit(path, request.method)
     import_limit = native_import_request_limit(path, request.method)
     if import_limit:
@@ -272,13 +301,16 @@ async def require_workspace_capability(request: Request, call_next):
     # AgentOS 原生 run 表单允许调用方提交 user_id/session_id。这里用已验签的
     # Odoo 身份覆盖它们，避免合法 capability 被用于访问其他用户或 thread。
     identity_context = nullcontext()
-    if capability_required:
+    if capability_required or actor is not None:
         identity_context = verified_report_request(
             request,
-            user_id=str(request.state.capability.user),
+            user_id=actor.user if actor else str(request.state.capability.user),
             thread_id=thread,
-            database=request.state.capability.database,
-            company_id=str(request.state.capability.company),
+            database=actor.database if actor else request.state.capability.database,
+            company_id=actor.company if actor else str(request.state.capability.company),
+            office_space=office_space,
+            office_session_version=actor.session_version if actor else None,
+            office_session_reference=actor.session_reference if actor else None,
         )
     try:
         with identity_context:
@@ -369,38 +401,49 @@ native_editor = NativeEditorService(
     office_enabled=settings.native_upload_enabled,
     pdf_text_enabled=settings.native_pdf_text_enabled,
 )
+genoffice_model = office_model(settings, reporting_agent_template.model)
 native_ai = create_native_ai_service(
-    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+    genoffice_model, native_editor, enabled=settings.native_ai_enabled,
 )
 native_slides_ai = create_native_slides_ai_service(
-    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+    genoffice_model, native_editor, enabled=settings.native_ai_enabled,
 )
 native_workbook_ai = create_native_workbook_ai_service(
-    reporting_agent_template.model, native_editor, enabled=settings.native_ai_enabled,
+    genoffice_model, native_editor, enabled=settings.native_ai_enabled,
 )
 native_pdf_read_ai = NativePDFReadService(
-    native_editor, planner=create_native_pdf_read_planner(reporting_agent_template.model),
+    native_editor, planner=create_native_pdf_read_planner(genoffice_model),
     enabled=settings.native_ai_enabled,
 )
 native_word_read_ai = NativeWordReadService(
-    native_editor, planner=AgnoNativeWordReadPlanner(reporting_agent_template.model),
+    native_editor, planner=AgnoNativeWordReadPlanner(genoffice_model),
     enabled=settings.native_ai_enabled,
 )
 native_office_read_ai = NativeOfficeReadService(
     native_editor, planners={
-        "xlsx": AgnoNativeWorkbookReadPlanner(reporting_agent_template.model),
-        "pptx": AgnoNativeSlidesReadPlanner(reporting_agent_template.model),
+        "xlsx": AgnoNativeWorkbookReadPlanner(genoffice_model),
+        "pptx": AgnoNativeSlidesReadPlanner(genoffice_model),
     }, enabled=settings.native_ai_enabled,
 )
 native_pdf_review_ai = NativePDFReviewService(
-    native_editor, planner=create_native_pdf_review_planner(reporting_agent_template.model),
+    native_editor, planner=create_native_pdf_review_planner(genoffice_model),
     enabled=settings.native_ai_enabled,
 )
 native_pdf_form_ai = NativePDFFormService(
-    native_editor, planner=AgnoNativePDFFormPlanner(reporting_agent_template.model),
+    native_editor, planner=AgnoNativePDFFormPlanner(genoffice_model),
     enabled=settings.native_ai_enabled,
 )
 native_import = NativeImportService(native_workspace, native_document_repository, report_editor_grants)
+office_documents = OfficeDocuments(
+    office_repository, native_import, native_document_repository, report_editor_grants,
+    editor=native_editor,
+)
+office_search = OfficeSearch(office_repository, office_documents, model=genoffice_model if settings.native_ai_enabled else None)
+office_documents.search = office_search
+native_editor.office_authorize = office_documents.authorize
+native_editor.office_saved = office_documents.saved
+report_runtime.native_report_editor = native_editor
+report_runtime.office_documents = office_documents
 report_slides_editor = ReportSlidesEditorService(
     state_repository=report_runtime.state_repository,
     workspace_registry=reporting_workspace_registry,
@@ -492,8 +535,17 @@ router.include_router(
 )
 
 
-def create_base_app(context: ApplicationContext) -> FastAPI:
+def create_base_app(
+    context: ApplicationContext, *, report_channel_router: APIRouter | None = None,
+) -> FastAPI:
     application = FastAPI(title="开发智能体服务")
+    if report_channel_router is not None:
+        from .report_channel_host import mount_report_channel
+
+        origin = context.settings.report_public_base_url
+        if not origin:
+            raise ValueError("report_channel_requires_public_origin")
+        mount_report_channel(application, report_channel_router, origin=origin)
     application.state.agentos_context = context
     management_auth = AdminAuthService(AdminRepository(agent_database.async_engine))
     application.state.management_auth = management_auth
@@ -518,6 +570,11 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
         source_vault = CredentialVault()
     except Exception:
         source_vault = None
+    from .office.source_runtime import OfficeSourceRuntime
+    from .office.knowledge import OfficeKnowledge
+    office_documents.sources = OfficeSourceRuntime(office_repository, source_vault) if source_vault else None
+    office_knowledge = OfficeKnowledge(office_repository, office_documents,
+        genoffice_model if settings.native_ai_enabled else None)
     from .management.scopes import ScopeService
     management_scopes = ScopeService(management_auth)
     business_documents = BusinessDocumentService(management_scopes, BusinessOriginalStore(
@@ -551,23 +608,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
-    application.include_router(
-        create_report_editor_router(
-            report_editor_grants,
-            editor=report_editor,
-            ai=report_editor_ai,
-            chart_ai=report_editor_chart_ai,
-            data_revisions=report_data_revisions,
-            table_ai=report_editor_table_ai,
-            native_editor=native_editor,
-            cookie_secure=bool(
-                settings.report_public_base_url
-                and settings.report_public_base_url.startswith("https://")
-            ),
-            allowed_origin=settings.report_public_base_url,
-            static_dir=settings.report_editor_static_dir,
-        )
-    )
+    application.include_router(create_office_entry_router(static_dir=settings.report_editor_static_dir))
     static_root = Path(
         settings.report_editor_static_dir
         or Path(__file__).with_name("report_editor") / "static"
@@ -575,6 +616,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.include_router(create_native_editor_router(
         report_editor_grants, editor=native_editor, download_service=native_downloads,
         ai_enabled=settings.native_ai_enabled,
+        report_channel_enabled=report_channel_router is not None,
         static_dir=static_root, allowed_origin=settings.report_public_base_url,
         cookie_secure=bool(settings.report_public_base_url and settings.report_public_base_url.startswith("https://")),
     ))
@@ -636,10 +678,24 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     application.router.add_event_handler("startup", report_download_repository.create_schema)
     application.router.add_event_handler("startup", report_editor_repository.create_schema)
     application.router.add_event_handler("startup", native_document_repository.create_schema)
+    application.router.add_event_handler("startup", office_repository.create_schema)
+    application.router.add_event_handler("startup", office_search.start)
+    application.include_router(create_office_router(
+        office_repository,
+        documents=office_documents,
+        knowledge=office_knowledge,
+        report_runtime=report_runtime,
+        report_workflow=report_workflow,
+        source_vault=source_vault,
+        metadata_client=reporting_metadata_client,
+        public_origin=settings.report_public_base_url,
+        cookie_secure=bool(settings.report_public_base_url and settings.report_public_base_url.startswith("https://")),
+    ))
     application.router.add_event_handler("startup", report_design_templates.create_schema)
     application.router.add_event_handler("startup", quality_warning_service.create_schema)
     application.router.add_event_handler("shutdown", report_editor.aclose)
     application.router.add_event_handler("shutdown", business_ingestion_worker.aclose)
+    application.router.add_event_handler("shutdown", office_search.aclose)
     application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
     application.router.add_event_handler("shutdown", native_ai.aclose)
     application.router.add_event_handler("shutdown", native_pdf_read_ai.aclose)

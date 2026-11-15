@@ -44,6 +44,8 @@ def create_native_workbook_ai_router(grants: Any, *, editor: Any, ai: NativeWork
         if session.report_id != document_id or session.revision != revision:
             raise ReportingError("native_permission_denied", "原生会话与请求版本不一致。")
         await editor.context_for_session(session)
+        if write and (session.capabilities or {}).get("office"):
+            await editor.office_authorize(session, write=True)
         return session
 
     @router.post(base + "/start")

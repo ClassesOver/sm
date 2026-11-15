@@ -95,8 +95,8 @@ async def test_normalization_passes_reference_content_and_layout_to_planner() ->
     [
         ("把2025年收入分析做成演示文稿", "pptx"),
         ("请用幻灯片汇报2025年收入趋势", "pptx"),
-        ("生成2025年医院收入报告", "document"),
-        ("生成2025年报告，不需要PPT，重点分析收入", "document"),
+        ("生成2025年医院收入报告", "pdf"),
+        ("生成2025年报告，不需要PPT，重点分析收入", "pdf"),
     ],
 )
 async def test_normalization_freezes_delivery_format_from_request_semantics(
@@ -115,6 +115,28 @@ async def test_normalization_freezes_delivery_format_from_request_semantics(
 
     assert output.content["deliveryFormat"] == delivery_format
     assert context.session_state["report_request_context"]["deliveryFormat"] == delivery_format
+
+
+@pytest.mark.anyio
+async def test_multiple_clarifications_preserve_answers_before_format_is_resolved():
+    runtime: Any = object.__new__(ReportWorkflowRuntime)
+    runtime._request_normalizer = object()
+    runtime._run_planner = AsyncMock(side_effect=[
+        NormalizedReportPrompt(deliveryFormatAmbiguous=True),
+        NormalizedReportPrompt(deliveryFormatAmbiguous=True),
+        NormalizedReportPrompt(reportType='topic', domains=('income',), deliveryFormat='pptx'),
+    ])
+    context = SimpleNamespace(session_state={})
+    for feedback in (None, '分析 2025 年收入', '使用 PowerPoint'):
+        output = await runtime.normalize_report_request(
+            SimpleNamespace(input='经营报告', additional_data={'rejection_feedback': feedback}), context,
+        )
+    supplements = runtime._run_planner.await_args.args[1]['supplement']
+    assert supplements.index('分析 2025 年收入') < supplements.index('使用 PowerPoint')
+    assert output.content['deliveryFormat'] == 'pptx'
+    assert [item['content'] for item in context.session_state['report_request_context']['feedback']] == [
+        '分析 2025 年收入', '使用 PowerPoint',
+    ]
 
 
 @pytest.mark.anyio
@@ -200,7 +222,7 @@ async def test_normalize_multi_domain_topic_without_requesting_clarification() -
         "version": "1",
         "reportGoal": "分析2025年医院收入趋势及成本效率",
         "reportType": "topic",
-        "deliveryFormat": "document",
+        "deliveryFormat": "pdf",
         "domains": ["income", "full_cost"],
         "period": {"start": "2025-01-01", "end": "2025-12-31"},
     }

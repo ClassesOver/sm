@@ -118,7 +118,8 @@ def test_delivery_format_is_a_durable_immutable_decision():
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("anyio_backend", ["asyncio"])
-async def test_resume_uses_durable_format_without_reinterpreting_prompt(anyio_backend, monkeypatch):
+@pytest.mark.parametrize("source_ids", [None, ["sales"]])
+async def test_resume_uses_durable_format_without_reinterpreting_prompt(anyio_backend, monkeypatch, source_ids):
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime._request_normalizer = object()
     runtime._run_planner = AsyncMock(return_value=NormalizedReportPrompt(
@@ -133,10 +134,48 @@ async def test_resume_uses_durable_format_without_reinterpreting_prompt(anyio_ba
         lambda prompt: pytest.fail("恢复不能重新推断交付格式"),
     )
     context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+    prompt = "分析2025年医院收入"
+    if source_ids is not None:
+        from json import dumps
+        prompt = dumps({"prompt": prompt, "sourceIds": source_ids})
     output = await runtime.normalize_delivery_request(
-        StepInput(input="分析2025年医院收入"), context,
+        StepInput(input=prompt), context,
     )
     assert output.content["deliveryFormat"] == "pptx"
+    assert output.content.get("sourceIds") == source_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_office_report_checks_selected_sources_before_registering_basis(revoked):
+    class Registered(Exception):
+        pass
+
+    runtime = object.__new__(ReportWorkflowRuntime)
+    register = AsyncMock(side_effect=Registered)
+    runtime.report_basis_service = SimpleNamespace(register_request_basis=register)
+    runtime.report_build_identity = object()
+    runtime._scope = lambda _: {"database": "db", "companyId": "1", "userId": "user",
+                                "callerThreadId": "office-report:thread"}
+    available = {"other": {"available": True}}
+    if not revoked:
+        available["sales"] = {"available": True}
+    runtime._office_report_sources = AsyncMock(return_value=available)
+    context = RunContext(run_id="run-1", session_id="session-1", session_state={})
+    step = StepInput(input={
+        "reportGoal": "收入报告", "period": {"start": "2026-10-01", "end": "2026-10-31"},
+        "sourceIds": ["sales"], "deliveryFormat": "pptx",
+    })
+
+    if revoked:
+        with pytest.raises(ReportingError) as denied:
+            await runtime.confirm_source(step, context)
+        assert denied.value.code == "office_report_source_denied"
+        register.assert_not_awaited()
+    else:
+        with pytest.raises(Registered):
+            await runtime.confirm_source(step, context)
+        assert register.await_args.kwargs["request"].source_ids == ("sales",)
 
 
 def test_slide_outline_binds_each_finding_to_its_own_frozen_evidence():

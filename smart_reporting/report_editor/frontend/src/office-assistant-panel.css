@@ -43,7 +43,7 @@
 .native-ai-panel button[aria-pressed=true] { background: var(--office-accent-soft); color: var(--office-accent); border-color: var(--office-accent); }
 .native-ai-panel .office-assistant-actions > button:first-child { background: var(--office-accent); border-color: var(--office-accent); color: white; }
 .native-ai-panel .office-assistant-actions > button:first-child:hover:not(:disabled) { background: var(--office-accent-hover); }
-.native-ai-panel button.office-assistant-close { width: 30px; height: 30px; padding: 4px; border-color: transparent; }
+.native-ai-panel button:is(.office-assistant-close,.office-assistant-new-chat) { width: 30px; height: 30px; padding: 4px; border-color: transparent; }
 .native-ai-panel textarea { display: block; box-sizing: border-box; width: 100%; min-height: 68px; max-height: 160px; margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: var(--office-chrome); color: var(--office-ink); font: inherit; line-height: 1.5; resize: vertical; }
 .native-ai-panel :is(button, select, textarea):focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }
 .native-ai-panel :disabled { opacity: var(--office-disabled-opacity); cursor: default; }
@@ -52,7 +52,7 @@
 @media (max-width: 768px) {
   :is(.editor-surface, .native-pdf-editor, .pdf-ai-dock) > .native-ai.native-ai-panel { max-height: 42dvh; padding-inline: 8px; }
   .native-ai-panel :is(button, select) { min-height: 36px; }
-  .native-ai-panel button.office-assistant-close { width: 36px; height: 36px; }
+  .native-ai-panel button:is(.office-assistant-close,.office-assistant-new-chat) { width: 36px; height: 36px; }
 }
 
 .pdf-ai-dock > .native-ai.native-ai-panel { max-height: none; border-top: 0; overflow: visible; }

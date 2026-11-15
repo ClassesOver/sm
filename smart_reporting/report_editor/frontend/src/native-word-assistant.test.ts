@@ -9,11 +9,12 @@ function fixture(api: object) {
  const binding=bindNativeWordAssistant(root,{api:api as never,draft,selection:()=>selected,flushPendingEdits:flush})
  return {root,draft,binding,flush,setSelection:(value:typeof selected)=>{selected=value}}
 }
-const result={answer:'<img src=x>文档总结',readingVersion:'draft',coverage:{scope:'document',totalBlocks:3,fullyReadBlockIds:['b1'],scopeReadComplete:false},citations:[{blockId:'opaque-block-hash',cellId:'opaque-cell-hash',blockNumber:1}],issues:[{code:'incomplete',message:'尚未完整读取'}],toolEvents:[{tool:'read_blocks'}]}
+const result={answer:'<img src=x>文档总结\n\n- **要点**',readingVersion:'draft',coverage:{scope:'document',totalBlocks:3,fullyReadBlockIds:['b1'],scopeReadComplete:false},citations:[{blockId:'opaque-block-hash',cellId:'opaque-cell-hash',blockNumber:1}],issues:[{code:'incomplete',message:'尚未完整读取'}],toolEvents:[{tool:'read_blocks'}]}
 it('默认整篇、同步未保存编辑并只读展示真实覆盖',async()=>{
  const api={wordAIStart:vi.fn().mockResolvedValue({taskId:'t',status:'completed',result}),wordAICancel:vi.fn()}
  const {root,draft,binding,flush}=fixture(api);binding.open('summarize')
  await vi.waitFor(()=>expect(root.textContent).toContain('文档总结'))
+ expect(root.querySelector('.native-ai-answer li strong')?.textContent).toBe('要点')
  expect(flush).toHaveBeenCalled();expect(api.wordAIStart.mock.calls[0][0]).toMatchObject({action:'summarize',selection:[],operations:[]})
  expect(root.textContent).toContain('未保存草稿');expect(root.textContent).toContain('尚未完整读取');expect(root.textContent).toContain('1 / 3');expect(root.textContent).toContain('第 1 个内容块')
  expect(root.textContent).not.toContain('opaque-block-hash');expect(root.textContent).not.toContain('opaque-cell-hash');expect(root.textContent).toContain('（已选单元格）');expect(root.textContent).toContain('已执行工具：读取文档内容块');expect(root.querySelector('img')).toBeNull();expect(root.querySelector('svg')).not.toBeNull();expect(draft.operations).toEqual([]);expect(draft.dirty).toBe(false);binding.dispose()
@@ -28,12 +29,25 @@ it('显式选区提交且选择变化丢弃迟到回答',async()=>{
  setSelection([{blockId:'b2'}]);finish({taskId:'t',status:'completed',result})
  await vi.waitFor(()=>expect(root.textContent).toContain('草稿或选区已变化'));expect(root.textContent).not.toContain('文档总结');binding.dispose()
 })
-it('回执前关闭取消服务端任务并丢弃迟到结果',async()=>{
+it('收起期间保留任务，重开后显示结果并保留输入草稿',async()=>{
  let finish!:(value:object)=>void
- const api={wordAIStart:vi.fn().mockImplementation(()=>new Promise(resolve=>{finish=resolve})),wordAICancel:vi.fn().mockResolvedValue({status:'cancelled'})}
- const {root,binding}=fixture(api);binding.open('keyPoints');const id=api.wordAIStart.mock.calls[0][0].clientRequestId
- root.querySelector<HTMLButtonElement>('[data-word-ai=close]')!.click();expect(api.wordAICancel).toHaveBeenCalledWith(id)
- finish({taskId:'late',status:'completed',result});await Promise.resolve();await Promise.resolve();expect(root.textContent).not.toContain('文档总结');binding.dispose()
+ const api={wordAIStart:vi.fn().mockImplementation(()=>new Promise(resolve=>{finish=resolve})),wordAICancel:vi.fn()}
+ const {root,binding}=fixture(api)
+ binding.open('keyPoints')
+ const panel=root.querySelector<HTMLElement>('.native-word-assistant')!
+ const input=root.querySelector('textarea')!
+ input.value='未发送的输入'
+ root.querySelector<HTMLButtonElement>('[data-word-ai=close]')!.click()
+ expect(panel.hidden).toBe(true)
+ expect(api.wordAICancel).not.toHaveBeenCalled()
+ binding.open()
+ expect(panel.hidden).toBe(false)
+ expect(input.value).toBe('未发送的输入')
+ expect(api.wordAIStart).toHaveBeenCalledOnce()
+ finish({taskId:'t',status:'completed',result})
+ await vi.waitFor(()=>expect(root.textContent).toContain('文档总结'))
+ expect(api.wordAICancel).not.toHaveBeenCalled()
+ binding.dispose()
 })
 it('空选区不回退全文，问答必须输入',()=>{
  const api={wordAIStart:vi.fn(),wordAICancel:vi.fn()};const {root,binding,setSelection}=fixture(api);binding.open()
@@ -85,4 +99,62 @@ it('零项投影即使完成也只声明可读取项，不宣称全部审阅均�
  expect(root.textContent).toContain('修订实际完整读取：0 / 0；修订已读完可读取项')
  expect(root.textContent).toContain('复杂修订不可读取；选区未提供批注锚点。')
  expect(root.textContent).not.toContain('全部审阅已读完');binding.dispose()
+})
+it('新对话清除回答和进度，保留输入，并忽略已取消任务的迟到回执',async()=>{
+ let finish!:(value:object)=>void
+ const api={
+  wordAIStart:vi.fn().mockResolvedValueOnce({taskId:'first',status:'completed',result})
+   .mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve})),
+  wordAICancel:vi.fn().mockResolvedValue({status:'cancelled'}),
+ }
+ const {root,binding}=fixture(api)
+ binding.open('summarize')
+ await vi.waitFor(()=>expect(root.textContent).toContain('文档总结'))
+ const reset=root.querySelector<HTMLButtonElement>('button[aria-label="新对话"]')!
+ const input=root.querySelector('textarea')!
+ input.value='还没发送的问题'
+ reset.click()
+ expect(root.textContent).not.toContain('文档总结')
+ expect(input.value).toBe('还没发送的问题')
+ expect(document.activeElement).toBe(input)
+ expect(reset.hidden).toBe(true)
+ binding.open('keyPoints')
+ const request=api.wordAIStart.mock.calls[1][0].clientRequestId
+ reset.click()
+ expect(api.wordAICancel).toHaveBeenCalledWith(request)
+ finish({taskId:'late',status:'completed',result})
+ await Promise.resolve()
+ await Promise.resolve()
+ expect(root.textContent).not.toContain('文档总结')
+ expect(input.value).toBe('还没发送的问题')
+ binding.dispose()
+})
+
+it('同一文档连续阅读保留各轮问题、回答和引用，新对话清空记录', async () => {
+ const api={
+  wordAIStart:vi.fn()
+   .mockResolvedValueOnce({taskId:'one',status:'completed',result:{...result,answer:'第一轮回答'}})
+   .mockResolvedValueOnce({taskId:'two',status:'completed',result:{...result,answer:'第二轮回答'}}),
+  wordAICancel:vi.fn(),
+ }
+ const {root,binding}=fixture(api)
+ binding.open()
+ const input=root.querySelector('textarea')!
+ const send=root.querySelector<HTMLButtonElement>('[data-word-ai=start]')!
+ for(const question of ['第一轮问题','第二轮问题']){
+  input.value=question
+  input.dispatchEvent(new Event('input'))
+  send.click()
+  await vi.waitFor(()=>expect(send.disabled).toBe(false))
+ }
+ const turns=[...root.querySelectorAll('.native-ai-transcript article')]
+ expect(turns).toHaveLength(2)
+ for(const [index,label] of ['第一轮','第二轮'].entries()){
+  expect(turns[index]!.textContent).toContain(label+'问题')
+  expect(turns[index]!.textContent).toContain(label+'回答')
+  expect(turns[index]!.textContent).toContain('引用：第 1 个内容块')
+ }
+ root.querySelector<HTMLButtonElement>('[aria-label="新对话"]')!.click()
+ expect(root.querySelector('.native-ai-transcript article')).toBeNull()
+ binding.dispose()
 })

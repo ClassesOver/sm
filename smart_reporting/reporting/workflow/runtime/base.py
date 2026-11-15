@@ -1502,6 +1502,37 @@ class _ReportWorkflowRuntimeBase:
     async def _ensure_managed_execution_state(self, run_context: RunContext) -> None:
         await self._basis_execution_context(run_context)
 
+    async def _office_report_sources(self, run_context: RunContext):
+        state = self._state(run_context)
+        try:
+            identity = require_verified_reporting_identity()
+        except ReportingError:
+            if state.get("officeReportSpace"):
+                raise
+            return None
+        space = identity.office_space
+        if state.get("officeReportSpace") and space != state["officeReportSpace"]:
+            raise ReportingError("office_report_scope_mismatch", "报告工作区与原运行不一致。")
+        if space is None:
+            return None
+        scope = self._scope(run_context)
+        identity.require_scope(scope["database"], scope["companyId"], scope["userId"], scope["callerThreadId"])
+        from ....office.repository import Identity, OfficeError
+
+        documents = getattr(self, "office_documents", None)
+        runtime = getattr(documents, "sources", None)
+        if runtime is None:
+            raise ReportingError("office_source_unavailable", "Office 数据源服务未配置。")
+        actor = Identity(identity.database, identity.company_id, identity.user_id,
+                         identity.office_session_version, identity.office_session_reference)
+        try:
+            await runtime.office.space_access(actor, space, write=True)
+            available = await runtime.available(actor, space)
+        except OfficeError as error:
+            raise ReportingError(error.code, error.message) from error
+        state["officeReportSpace"] = space
+        return {item["id"]: item for item in available if item["available"]}
+
     async def _basis_execution_context(self, run_context: RunContext):
         provider = getattr(self, "configuration_provider", None)
         service = getattr(self, "report_basis_service", None)
@@ -1522,6 +1553,11 @@ class _ReportWorkflowRuntimeBase:
                 str(run_context.run_id), ManagementScope(scope["database"], scope["companyId"]),
                 user_id=scope["userId"], thread_id=scope["callerThreadId"], vault=provider.vault,
             )
+            office_sources = await self._office_report_sources(run_context)
+            if office_sources is not None:
+                from ....office.source_runtime import restrict_report_execution
+
+                execution = restrict_report_execution(execution, office_sources)
             if REPORT_SCHEMA_SNAPSHOTS_STATE_KEY in self._state(run_context):
                 envelope = self._envelope(run_context).model_copy(update={"schema_input": None})
                 from ...semantics.request import summarize_report_request
@@ -1733,10 +1769,14 @@ class _ReportWorkflowRuntimeBase:
             user_id=user_id,
             dependencies=dependencies,
         )
+        office_state = {}
         if getattr(self, "configuration_provider", None) is not None:
-            require_verified_reporting_identity().require_scope(
+            identity = require_verified_reporting_identity()
+            identity.require_scope(
                 scope.database, scope.company_id, scope.user_id, scope.caller_thread_id,
             )
+            if identity.office_space:
+                office_state["officeReportSpace"] = identity.office_space
         entrypoint = _validated_entrypoint(
             (dependencies or {}).get(REPORT_WORKFLOW_ENTRYPOINT_DEPENDENCY) or "agentos"
         )
@@ -1744,6 +1784,7 @@ class _ReportWorkflowRuntimeBase:
         return {
             REPORT_WORKFLOW_SCOPE_STATE_KEY: scope.as_state(),
             REPORT_WORKFLOW_ENTRYPOINT_STATE_KEY: entrypoint,
+            **office_state,
         }
 
     async def start_run(self, run_id: str, session_state: dict[str, Any]) -> None:
@@ -1796,6 +1837,7 @@ class _ReportWorkflowRuntimeBase:
             database=scope.database,
             company_id=scope.company_id,
             status="running",
+            office_space_id=session_state.get("officeReportSpace"),
         )
         claimed = await self.state_repository.claim_workflow_thread(
             thread_id=scope.thread_lease_key,

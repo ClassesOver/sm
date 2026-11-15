@@ -726,9 +726,11 @@ class AgnoNativePDFTaskPlanner:
                 "只回答或澄清，不生成编辑操作，不声称已修改、保存或生成新文件。",
             ],
         )
-        from ..reporting.agent_events import run_agent_with_events
+        from ..reporting.agent_events import run_owned_agent_with_events
 
-        output = await run_agent_with_events(
+        from ..office.ai_sources import attach_office_sources
+        attach_office_sources(agent)
+        output = await run_owned_agent_with_events(
             agent,
             json.dumps(
                 {

@@ -8,7 +8,7 @@ vi.mock('./native-word-assistant',()=>({bindNativeWordAssistant:state.word}))
 import {startNativeEditor} from './native-main'
 beforeEach(()=>{
  document.body.innerHTML='<div id="app"></div>';window.history.replaceState({},'', '/reports/v1/native/doc/1');vi.clearAllMocks()
- state.context.mockResolvedValue({context:{documentId:'doc',revision:1,format:'docx',sourceFile:{sha256:'a'.repeat(64),size:10},scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},csrfToken:'csrf',editingEnabled:false,wordReadAIEnabled:true})
+ state.context.mockResolvedValue({context:{documentId:'doc',revision:1,format:'docx',sourceFile:{sha256:'a'.repeat(64),size:10},scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},csrfToken:'csrf',capabilities:{},editingEnabled:false,wordReadAIEnabled:true})
  state.word.mockImplementation((root:HTMLElement)=>{
   const panel=document.createElement('section');panel.className='native-word-assistant';panel.hidden=true;root.append(panel)
   return {open:state.open,dispose:state.dispose}

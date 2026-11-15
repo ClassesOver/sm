@@ -1,0 +1,1 @@
+"""GenOffice browser workspace services."""

@@ -4,7 +4,7 @@ afterEach(()=>document.body.replaceChildren())
 function fixture(){
  const panel=document.body.appendChild(document.createElement('section'));panel.className='native-ai native-ai-panel'
  const title=document.createElement('h3'),help=document.createElement('p'),form=document.createElement('form'),input=document.createElement('textarea'),start=document.createElement('button'),cancel=document.createElement('button'),close=document.createElement('button'),answer=document.createElement('div'),controls=document.createElement('div'),scope=document.createElement('select')
- title.textContent='AI 助手';start.type='submit';cancel.type=close.type='button';form.append(input,start,cancel);panel.append(title,help,controls,scope,form,answer,close)
+ title.textContent='AI 助手';start.type='submit';cancel.disabled=true;cancel.type=close.type='button';form.append(input,start,cancel);panel.append(title,help,controls,scope,form,answer,close)
  const submit=vi.fn((e:Event)=>e.preventDefault());form.addEventListener('submit',submit);const onClose=vi.fn();const view=bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,onClose})
  return{panel,form,input,start,cancel,close,answer,controls,scope,view,submit,onClose}
 }
@@ -34,3 +34,27 @@ it('结果区自身的Home/End直接滚动首尾，不接管组合键或内部�
  expect(key(body,'End').defaultPrevented).toBe(false);expect(body.scrollTop).toBe(0)
 })
 it('Esc在输入法组合期间不关闭，普通Esc走原控制器并隐藏',()=>{const f=fixture();f.input.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',isComposing:true,bubbles:true}));expect(f.onClose).not.toHaveBeenCalled();f.input.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));expect(f.onClose).toHaveBeenCalledOnce();expect(f.panel.hidden).toBe(true);f.view.dispose()})
+
+it('Enter 发送，Shift+Enter 和输入法确认保留，忙碌时 Esc 只停止任务',()=>{
+ const f=fixture()
+ const key=(value:string, options:KeyboardEventInit={})=>{
+  const event=new KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true,...options})
+  f.input.dispatchEvent(event)
+  return event
+ }
+ expect(key('Enter',{isComposing:true}).defaultPrevented).toBe(false)
+ expect(key('Enter',{shiftKey:true}).defaultPrevented).toBe(false)
+ expect(f.submit).not.toHaveBeenCalled()
+ expect(key('Enter').defaultPrevented).toBe(true)
+ expect(f.submit).toHaveBeenCalledOnce()
+ f.start.disabled=true
+ f.cancel.disabled=false
+ const stop=vi.fn()
+ f.cancel.addEventListener('click',stop)
+ key('Enter')
+ expect(f.submit).toHaveBeenCalledOnce()
+ expect(key('Escape').defaultPrevented).toBe(true)
+ expect(stop).toHaveBeenCalledOnce()
+ expect(f.onClose).not.toHaveBeenCalled()
+ f.view.dispose()
+})

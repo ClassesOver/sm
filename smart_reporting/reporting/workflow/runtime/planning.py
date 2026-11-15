@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import PurePosixPath
 from typing import Literal
@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import ConfigDict, Field
 from sqlglot import exp
 
-from ....report_editor.service import ReportEditorContext
+from ....report_editor.service import ReportEditorContext, ReportEditorSession
 from ....workspace import WorkspacePathConflict
 from ...delivery.artifacts_v1 import ArtifactFile, ReportArtifactManifest
 from ...semantics.basis import BasisCalculationReceipt, BasisSelectionReceipt
@@ -222,6 +222,11 @@ class RuntimePlanningMixin:
             )
 
         assert isinstance(request, ReportPromptInput)
+        self._record_request_context(state, request.prompt, feedback, request.delivery_format)
+        request_context = state[REPORT_REQUEST_CONTEXT_STATE_KEY]
+        supplements = [item["content"] for item in request_context["feedback"]
+                       if isinstance(item, dict) and isinstance(item.get("content"), str)
+                       and item.get("stage") == "request_supplement"]
         prompt_payload: dict[str, Any] = {"prompt": request.prompt}
         if reference_materials or reference_issues:
             prompt_payload["referenceMaterials"] = [
@@ -238,8 +243,11 @@ class RuntimePlanningMixin:
             template = state["report_template_input"]
             prompt_payload["templateInput"] = {key: template[key] for key in
                 ("identity", "filename", "content", "layout", "businessFactsAllowed") if key in template}
-        if feedback:
-            prompt_payload["supplement"] = feedback
+        if supplements:
+            prompt_payload["supplement"] = supplements[0] if len(supplements) == 1 else (
+                "按时间顺序处理以下补充说明，保留未被更正的要求；明确的更正以较晚说明为准。\n"
+                + "\n".join(f"{index}. {answer}" for index, answer in enumerate(supplements, 1))
+            )
         basis_service = getattr(self, "report_basis_service", None)
         scenario_candidates = None
         if basis_service is not None:
@@ -255,12 +263,7 @@ class RuntimePlanningMixin:
         normalized = await self._run_planner(self._request_normalizer, prompt_payload, run_context)
         assert isinstance(normalized, NormalizedReportPrompt)
         # 恢复时沿用已冻结的交付格式，不重新解释原始需求。
-        frozen = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
-        frozen_format = (
-            frozen.get("deliveryFormat")
-            if isinstance(frozen, dict) and request.delivery_format is None
-            else None
-        )
+        frozen_format = request_context.get("deliveryFormat")
         if request.delivery_format is None and frozen_format is None and normalized.delivery_format_ambiguous:
             return StepOutput(content={"clarificationQuestion": normalized.clarification_question
                 or "请选择本次交付形式：PDF/Word、演示文稿或 Excel 工作簿。"})
@@ -268,8 +271,8 @@ class RuntimePlanningMixin:
             request.delivery_format or frozen_format or normalized.delivery_format
             or infer_delivery_format(request.prompt)
         )
-        self._record_request_context(state, request.prompt, feedback, delivery_format)
-        period = normalized.period or _single_explicit_period(request.prompt, feedback)
+        self._record_request_context(state, request.prompt, None, delivery_format)
+        period = normalized.period or _single_explicit_period(request.prompt, "\n".join(supplements) or None)
         missing: list[str] = []
         if scenario_candidates is not None and normalized.scenario not in {
             item.scenario for item in scenario_candidates
@@ -294,6 +297,7 @@ class RuntimePlanningMixin:
             {
                 "version": "1",
                 "reportGoal": request.prompt,
+                **({"sourceIds": request.source_ids} if request.source_ids is not None else {}),
                 **({"scenario": normalized.scenario} if normalized.scenario else {}),
                 **({"questions": [item.model_dump(mode="json", by_alias=True) for item in normalized.questions]}
                     if normalized.questions else {}),
@@ -321,7 +325,7 @@ class RuntimePlanningMixin:
         state: dict[str, Any],
         original_goal: str,
         feedback: str | None,
-        delivery_format: str,
+        delivery_format: str | None,
     ) -> None:
         current = state.get(REPORT_REQUEST_CONTEXT_STATE_KEY)
         if not isinstance(current, dict):
@@ -337,11 +341,13 @@ class RuntimePlanningMixin:
             raise ReportingError(
                 "report_context_restart_required", "原始报告目标已变化，必须重新发起。"
             )
-        frozen_format = current.setdefault("deliveryFormat", delivery_format)
-        if frozen_format != delivery_format:
-            raise ReportingError(
-                "report_context_restart_required", "交付格式已冻结，必须重新发起。"
-            )
+        if delivery_format is not None:
+            frozen_format = current.get("deliveryFormat")
+            if frozen_format is not None and frozen_format != delivery_format:
+                raise ReportingError(
+                    "report_context_restart_required", "交付格式已冻结，必须重新发起。"
+                )
+            current["deliveryFormat"] = delivery_format
         values = current.get("feedback")
         if not isinstance(values, list):
             raise ReportingError("report_workflow_state_invalid", "报表请求语境状态无效。")
@@ -461,7 +467,6 @@ class RuntimePlanningMixin:
         output: Any,
     ) -> dict[str, Any]:
         download_grants = self.download_grants
-        editor_grants = self.editor_grants
         artifact_persistence = self.artifact_persistence
         if download_grants is None or artifact_persistence is None:
             raise RuntimeError("HTTP 报表发布依赖配置不完整")
@@ -481,8 +486,6 @@ class RuntimePlanningMixin:
                 content=content,
                 base_url=report_public_base_url,
             )
-        if editor_grants is None:
-            raise RuntimeError("HTTP 报表发布缺少编辑授权服务")
         source_manifest = None
         source_index = None
         manifest_identity = None
@@ -847,11 +850,38 @@ class RuntimePlanningMixin:
             word_size=content.get("wordSize"),
             word_sha256=content.get("wordSha256"),
         )
-        editor_raw: str | None = None
-        editor_expires_at: datetime | None = None
-        if editor_context is not None:
+        editor_link = None
+        if editor_context is not None and ({"word", "pdf"} & saved_labels):
             try:
-                editor_raw, editor_expires_at = await editor_grants.issue(editor_context)
+                native_editor = getattr(self, "native_report_editor", None)
+                if native_editor is None:
+                    raise RuntimeError("native report editor unavailable")
+                format = (
+                    "docx" if "word" in saved_labels and native_editor.docx_enabled
+                    else "pdf" if "pdf" in saved_labels and native_editor.pdf_enabled
+                    else None
+                )
+                if format is None:
+                    raise RuntimeError("native report format unavailable")
+                # The publication scope and durable context were checked before issuing the
+                # download. Use them directly without issuing a Markdown editor grant.
+                context_sha = editor_context.digest()
+                native_open = await native_editor.open_report(
+                    ReportEditorSession(
+                        report_id=editor_context.report_id, revision=editor_context.revision,
+                        workflow_run_id=editor_context.workflow_run_id, context_sha256=context_sha,
+                        expires_at=grant.expires_at,
+                    ),
+                    format=format, request_id=f"publication:{context_sha}:{format}",
+                )
+                native_open = await self._archive_office_report(
+                    native_open, editor_context, format, content.get("reportTitle"),
+                    scope, user_id, caller_thread_id, publication_issues,
+                )
+                editor_link = {
+                    "openUrl": f"{report_public_base_url.rstrip('/')}{native_open['editor']['url']}",
+                    "expiresAt": native_open["editor"]["expiresAt"],
+                } if native_open is not None else None
             except Exception as error:
                 # 编辑入口是附加交付项；下载凭证已签发，不能因编辑授权失败丢弃下载链接。
                 loguru_logger.warning(
@@ -860,19 +890,24 @@ class RuntimePlanningMixin:
                 )
                 publication_issues.append({
                     "code": "report_editor_grant_unavailable",
-                    "message": "编辑链接签发失败，PDF/Word 下载链接已签发；请稍后重新打开报告编辑入口。",
+                    "message": "Office 编辑链接暂不可用，PDF/Word 下载链接已签发。",
                 })
+            finally:
+                # Opening the native branch can rebind the source workspace to copy it.
+                self._release_workspace(thread_id)
         result = publication_result(
             report_id=content["reportId"],
             revision=content["revision"],
             raw_grant=raw,
             grant=grant,
             base_url=report_public_base_url,
-            editor_raw_grant=editor_raw,
-            editor_expires_at=editor_expires_at,
+            editor_raw_grant=None,
+            editor_expires_at=None,
             source_warnings=content["sourceWarnings"],
             task_receipts=content["codingReceipts"],
         )
+        if editor_link is not None:
+            result["editor"] = editor_link
         if publication_issues:
             result["publicationIssues"] = publication_issues
         if isinstance(content.get("validation"), dict):
@@ -885,6 +920,52 @@ class RuntimePlanningMixin:
 
     async def _issue_http_xlsx_publication(self, **values: Any) -> dict[str, Any]:
         return await self._issue_http_office_publication(delivery_format="xlsx", **values)
+
+    async def _archive_office_report(
+        self, native_open, context, format, title, scope, user_id, caller_thread_id, issues,
+        *, workspace_only=False,
+    ):
+        documents = getattr(self, "office_documents", None)
+        if documents is None:
+            return native_open
+        from ....office.repository import Identity
+        from ..identity import require_verified_reporting_identity
+
+        try:
+            identity = require_verified_reporting_identity()
+        except ReportingError:
+            return native_open
+        if workspace_only and identity.office_space is None:
+            return native_open
+        try:
+            identity.require_scope(scope.database, scope.company_id, user_id, caller_thread_id)
+            if native_open is None:
+                digest = context.digest()
+                native_open = await self.native_report_editor.open_report(
+                    ReportEditorSession(report_id=context.report_id, revision=context.revision,
+                        workflow_run_id=context.workflow_run_id, context_sha256=digest,
+                        expires_at=datetime.now(UTC) + timedelta(minutes=5)),
+                    format=format, request_id=f"publication:{digest}:{format}",
+                )
+            archived = await documents.archive_report(
+                Identity(identity.database, identity.company_id, identity.user_id,
+                         identity.office_session_version, identity.office_session_reference),
+                title, format, context.scope, native_open, space=identity.office_space,
+            )
+            return archived if archived is not None else native_open
+        except Exception as error:
+            loguru_logger.warning("office_report_archive_failed report_id={} error_type={}",
+                                  context.report_id, type(error).__name__)
+            issues.append({"code": "office_report_archive_failed",
+                "message": "报告未能完成 Office 文件库登记，原下载链接仍可使用。"})
+            return None
+        finally:
+            if workspace_only:
+                try:
+                    self._release_workspace(scope.workspace_key)
+                except Exception as error:
+                    loguru_logger.warning("office_report_workspace_release_failed report_id={} error_type={}",
+                                          context.report_id, type(error).__name__)
 
     async def _issue_http_office_publication(
         self,
@@ -1036,6 +1117,18 @@ class RuntimePlanningMixin:
         if editor_raw is not None and editor_expires_at is not None:
             result["editor"] = {"openUrl": f"{base_url.rstrip('/')}/reports/v1/{editor_kind}/open/{editor_raw}",
                 "expiresAt": editor_expires_at.isoformat()}
+        if editor_context_persisted and editor_context is not None:
+            archived = await self._archive_office_report(
+                None, editor_context, delivery_format, content.get("reportTitle"),
+                scope, user_id, caller_thread_id, issues, workspace_only=True,
+            )
+            if archived is not None:
+                result["editor"] = {
+                    "openUrl": f"{base_url.rstrip('/')}{archived['editor']['url']}",
+                    "expiresAt": archived["editor"]["expiresAt"],
+                }
+            elif any(item["code"] == "office_report_archive_failed" for item in issues):
+                result.pop("editor", None)
         if issues:
             gate = {**gate, "formalReleaseAllowed": False, "issues": [*gate.get("issues", []), *issues]}
         result.update({"deliveryFormat": delivery_format,
@@ -1096,6 +1189,12 @@ class RuntimePlanningMixin:
         if service is None or build is None:
             raise ReportingError("report_configuration_missing", "尚未配置新报告计算依据及构建身份。")
         scope = self._scope(run_context)
+        office_sources = await self._office_report_sources(run_context)
+        if office_sources is not None:
+            selected = tuple(envelope.source_ids) if envelope.source_ids is not None else tuple(sorted(office_sources))
+            if not selected or not set(selected).issubset(office_sources):
+                raise ReportingError("office_report_source_denied", "当前工作区没有报告所需的数据源授权。")
+            envelope = envelope.model_copy(update={"source_ids": selected})
         try:
             basis = await service.register_request_basis(
                 str(run_context.run_id), ManagementScope(scope["database"], scope["companyId"]),

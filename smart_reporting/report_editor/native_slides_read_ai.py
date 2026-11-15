@@ -162,7 +162,7 @@ class AgnoNativeSlidesReadPlanner:
 
     async def __call__(self, *, reader: NativeSlidesReadTools, action: str, instruction: str,
                        session_id: str, user_id: str) -> dict[str, Any]:
-        from ..reporting.agent_events import run_agent_with_events
+        from ..reporting.agent_events import run_owned_agent_with_events
         from ..reporting.structured_output.policy import (
             REPORTING_STRUCTURED_MODES_MODEL_ATTR,
             REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,
@@ -192,7 +192,9 @@ class AgnoNativeSlidesReadPlanner:
                 '不能编辑、提出操作、保存或导出，不得声称已修改文件。没有依据应明确说明。',
                 '最终仅返回answer和citations（页索引的字符串列表）的JSON，不返回operations。',
             ])
-        output = await run_agent_with_events(agent,
+        from ..office.ai_sources import attach_office_sources
+        attach_office_sources(agent)
+        output = await run_owned_agent_with_events(agent,
             json.dumps({'action': action, 'instruction': instruction, 'scope': reader.scope},
                        ensure_ascii=False), session_id=session_id, user_id=user_id)
         content = output.content

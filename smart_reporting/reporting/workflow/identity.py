@@ -19,6 +19,9 @@ class VerifiedReportingIdentity:
     user_id: str
     thread_id: str
     entrypoint: Literal["http-capability", "mcp", "cli"]
+    office_space: str | None = None
+    office_session_version: int | None = None
+    office_session_reference: str | None = None
 
     def require_scope(self, database: str, company_id: str, user_id: str, thread_id: str) -> None:
         if (database, company_id, user_id, thread_id) != (

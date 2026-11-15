@@ -306,3 +306,19 @@ async def test_pre_cancel_can_reserve_tombstone_when_running_capacity_is_full(
         assert late["status"] == "cancelled"
     finally:
         await ai.aclose()
+
+
+@pytest.mark.anyio
+async def test_pdf_followup_passes_previous_answer_to_planner(pdf_sample):
+    editor, context, session, _, _ = pdf_sample
+    planner = AsyncMock(return_value={"answer": "已核对金额42。"})
+    ai = service(editor, planner)
+    try:
+        first = await ai.start(session, **payload(context, action="ask", instruction="分析金额"))
+        assert (await ai.status(session, first["taskId"]))["status"] == "completed"
+        second = await ai.start(session, **payload(context, client_request_id="followup",
+            action="ask", instruction="刚才的金额是多少", previous_task_id=first["taskId"]))
+        assert (await ai.status(session, second["taskId"]))["status"] == "completed"
+        assert "已核对金额42" in planner.call_args.kwargs["instruction"]
+    finally:
+        await ai.aclose()

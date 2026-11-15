@@ -27,3 +27,7 @@
 @media(max-height:480px){
  :is(.office-task-dock,.pdf-ai-dock):not(.is-office-assistant-floating):not([hidden]){position:fixed;top:8px;right:8px;bottom:8px;width:min(var(--office-task-width,360px),calc(100vw - 16px));max-width:calc(100vw - 16px);height:auto;z-index:70;border:1px solid var(--office-border);box-shadow:var(--shadow-popover)}
 }
+
+@media(max-height:480px){
+ .office-task-dock-left:not(.is-office-assistant-floating):not([hidden]){right:auto;left:8px}
+}

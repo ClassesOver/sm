@@ -92,7 +92,7 @@ class NativeOfficeReadService(NativePDFReadService):
         return context
 
     async def start(self, session, *, client_request_id, expected_sha256, operations,
-                    selection=None, action='ask', instruction=''):
+                    selection=None, action='ask', instruction='', previous_task_id=None):
         context = await self._context(session)
         request_id = self._request_id(client_request_id)
         if expected_sha256 != context.source_file.sha256:
@@ -102,22 +102,26 @@ class NativeOfficeReadService(NativePDFReadService):
             raise ReportingError('native_ai_instruction_invalid', '阅读任务无效，问答需要输入问题。')
         selected = _selection(context.format, selection)
         base = _copy_operations(operations)
-        snapshot = native_digest({'context': context.digest(), 'operations': base,
-            'selection': selected, 'action': action, 'instruction': instruction})
+        reading = native_digest({"context": context.digest(), "operations": base, "selection": selected})
+        snapshot = native_digest({"reading": reading, "action": action, "instruction": instruction,
+                                  "previousTaskId": previous_task_id})
         self._prune()
-        key = (context.digest(), request_id)
+        scope = self._job_scope(session, context)
+        key = (scope, request_id)
         previous = self._jobs.get(key)
         if previous:
             if previous.snapshot_sha256 is not None and previous.snapshot_sha256 != snapshot:
                 raise ReportingError('native_ai_snapshot_changed', '相同 AI 请求内容已变化，请重新发起。')
             return self._serialize(previous)
         self._reserve()
-        job = _ReadJob(uuid4().hex, request_id, context.digest(), monotonic(), snapshot)
+        job = _ReadJob(uuid4().hex, request_id, context.digest(), monotonic(), snapshot,
+                       reading_sha256=reading, question=instruction)
         self._jobs[key] = job
-        job.task = asyncio.create_task(self._run_office(job, session, context, base, selected, action, instruction))
+        history = self._previous_reading(scope, previous_task_id, reading) if action == "ask" else ""
+        job.task = asyncio.create_task(self._run_office(job, session, context, base, selected, action, instruction, history))
         return self._serialize(job)
 
-    async def _run_office(self, job, session, context, base, selection, action, instruction):
+    async def _run_office(self, job, session, context, base, selection, action, instruction, history):
         deadline = monotonic() + self.timeout_seconds
         try:
             async with asyncio.timeout(self.timeout_seconds):
@@ -150,7 +154,7 @@ class NativeOfficeReadService(NativePDFReadService):
                     reader = NativeSlidesReadTools(model, selection=mapped)
                 async with bind_agent_event_log(job.event_log):
                     result = await self.planners[context.format](reader=reader, action=action,
-                        instruction=instruction, session_id=f'native-office-read:{job.task_id}',
+                        instruction=history + "\n用户要求：" + instruction if history else instruction, session_id=f'native-office-read:{job.task_id}',
                         user_id=context.scope.user_id)
                 if job.status != 'running':
                     return

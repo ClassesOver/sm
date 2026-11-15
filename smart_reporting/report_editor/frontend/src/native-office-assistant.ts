@@ -1,5 +1,6 @@
+import { appendOfficeAnswer } from './office-answer'
 import { OfficeAssistantController } from './office-assistant-controller'
-import { bindOfficeAssistantPanel } from './office-assistant-panel'
+import { bindOfficeAssistantPanel, createOfficeNewChatButton } from './office-assistant-panel'
 /** Office 阅读与编辑候选分开；回答不会写入草稿。 */
 import { createElement, MessageCircle, FileText, ListChecks, Sparkles, X, CircleStop } from 'lucide'
 import type { createNativeApi, NativeOfficeReadAction, NativeOfficeReadTask, NativeOfficeReadContext } from './native-api'
@@ -28,21 +29,23 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   const actionButtons=(Object.keys(actions) as NativeOfficeReadAction[]).map(action=>{const [label,icon]=actions[action];const item=button(action,label,icon);item.onclick=()=>open(action);controls.append(item);return item})
   const start=button('start','开始阅读',Sparkles),cancel=button('cancel','取消任务',CircleStop),close=button('close','关闭助手',X)
   const status=document.createElement('p');status.setAttribute('role','status')
-  const output=document.createElement('div');output.style.whiteSpace='pre-wrap'
-  const evidence=document.createElement('div');evidence.className='native-ai-evidence'
-  panel.append(title,help,controls,scope,input,start,cancel,close,status,output,evidence);root.append(panel)
+  const transcript = document.createElement('div')
+  transcript.className = 'native-ai-transcript'
+  panel.append(title,help,controls,scope,input,start,cancel,close,status,transcript);root.append(panel)
   const progress=mountNativeAIProgress(panel)
-  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,onClose:()=>{if(busy)stop()}})
+  const reset = createOfficeNewChatButton()
+  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,headerAction:reset})
   const tasks = new OfficeAssistantController({start:options.api.officeAIStart,status:options.api.officeAIStatus,cancelRequest:options.api.officeAICancel,id:(task: NativeOfficeReadTask)=>task.taskId,running:(task: NativeOfficeReadTask)=>task.status==='running'})
-  let action: NativeOfficeReadAction='ask', generation=0,busy=false,disposed=false
-  function update() {start.disabled=busy || action==='ask' && !input.value.trim();cancel.disabled=!busy;scope.disabled=busy;for(const [index,item] of actionButtons.entries()){item.disabled=busy;item.setAttribute('aria-pressed',String(Object.keys(actions)[index]===action))}}
+  let action: NativeOfficeReadAction='ask', generation=0,busy=false,disposed=false,hasTurn=false
+  let previous: {taskId: string; snapshot: string} | undefined
+  function update() {reset.hidden=!hasTurn;start.disabled=busy || action==='ask' && !input.value.trim();cancel.disabled=!busy;scope.disabled=busy;for(const [index,item] of actionButtons.entries()){item.disabled=busy;item.setAttribute('aria-pressed',String(Object.keys(actions)[index]===action))}}
   function stop(message='任务已取消') {
     const turn=++generation;progress.reset();busy=false
     status.textContent=message;update()
     void tasks.cancel().catch(error=>{if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : '服务端取消失败'})
   }
-  function display(result: NonNullable<NativeOfficeReadTask['result']>) {
-    output.textContent=result.answer;evidence.replaceChildren()
+  function display(result: NonNullable<NativeOfficeReadTask['result']>, question: string) {
+    const evidence=appendOfficeAnswer(transcript,question,result.answer,options.format==='pptx')
     const detail=document.createElement('p');const coverage=result.coverage
     detail.textContent='阅读版本：'+(result.readingVersion==='draft' ? '未保存草稿' : '已核验原件')+'；范围：'+(coverage.scope==='selection' ? '当前选区' : '整篇文档')+'；实际完整读取：'+coverage.fullyReadBlockIds.length+' / '+coverage.totalBlocks+' 个内容块；'+(coverage.scopeReadComplete ? '范围已读完' : '范围尚未读完');evidence.append(detail)
     for(const issue of result.issues ?? []){const note=document.createElement('p');note.textContent=issue.message;evidence.append(note)}
@@ -52,8 +55,10 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   }
   async function run() {
     if(disposed || busy || action==='ask' && !input.value.trim())return
+    const instruction = input.value.trim()
+    const question = action === 'ask' ? instruction : [(actions[action][0]), instruction].filter(Boolean).join(' · ')
     const turn=++generation
-    busy=true;update()
+    busy=true;hasTurn=true;update()
     let captured: NativeOfficeReadContext
     try {
       captured=await options.context(scope.value==='selection' ? 'selection' : 'document')
@@ -62,20 +67,41 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
     }catch(error){if(turn===generation && !disposed){busy=false;status.textContent=error instanceof Error ? error.message : '未保存编辑同步失败';update()}return}
     const {operations,selection:selected}=structuredClone(captured)
     const snapshot=JSON.stringify({operations,selection:selected}),requestId=crypto.randomUUID()
-    busy=true;progress.reset();output.textContent='';evidence.replaceChildren();status.textContent='正在读取 '+formatLabel+' 文档';update()
+    busy=true;progress.reset();status.textContent='正在读取 '+formatLabel+' 文档';update()
     try {
-      const task=await tasks.run({clientRequestId:requestId,action,instruction:input.value.trim(),expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected},requestId,(started,signal)=>progress.start(options.api.officeAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
+      const task=await tasks.run({clientRequestId:requestId,action,instruction,previousTaskId:action==='ask' && previous?.snapshot===snapshot ? previous.taskId : undefined,expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected},requestId,(started,signal)=>progress.start(options.api.officeAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
       if(!task || turn!==generation || disposed)return
       const current=await options.context(scope.value==='selection' ? 'selection' : 'document')
       if(turn!==generation || disposed)return
       if(snapshot!==JSON.stringify(current)){progress.reset();status.textContent='草稿或选区已变化，请重新阅读。';return}
-      if(task.status==='completed' && task.result){display(task.result);status.textContent='阅读完成，文档与草稿未修改。'}
+      if(task.status==='completed' && task.result){previous={taskId:task.taskId,snapshot};display(task.result,question);status.textContent='阅读完成，文档与草稿未修改。'}
       else status.textContent=task.error?.message ?? (task.status==='cancelled' ? '任务已取消' : 'Office AI 未返回有效回答')
     }catch(error){if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : 'Office AI 阅读失败'}
     finally{if(turn===generation){busy=false;tasks.release();progress.stop();update()}}
   }
-  function open(preset: NativeOfficeReadAction='ask') {if(disposed)return;panelView.beforeOpen();if(busy)stop();action=preset;panel.hidden=false;update();panel.scrollIntoView?.({block:'nearest'});input.focus({preventScroll:true});if(preset!=='ask')void run()}
-  input.oninput=update;scope.onchange=()=>{output.textContent='';evidence.replaceChildren();status.textContent=scope.value==='selection' ? '将读取编辑器当前真实选区；无效选区不会改为整篇阅读。' : '';update()}
+  function open(preset: NativeOfficeReadAction='ask') {
+    if (disposed) return
+    panelView.beforeOpen()
+    panel.hidden = false
+    panel.scrollIntoView?.({block:'nearest'})
+    input.focus({preventScroll:true})
+    if (busy && preset === 'ask') return
+    if (busy) stop()
+    action = preset
+    update()
+    if (preset !== 'ask') void run()
+  }
+  reset.onclick = () => {
+    stop('')
+    hasTurn = false
+    previous = undefined
+    action = 'ask'
+    title.textContent = 'AI 助手'
+    transcript.replaceChildren()
+    update()
+    input.focus({preventScroll:true})
+  }
+  input.oninput=update;scope.onchange=()=>{status.textContent=scope.value==='selection' ? '将读取编辑器当前真实选区；无效选区不会改为整篇阅读。' : '';update()}
   start.onclick=()=>{void run()};cancel.onclick=()=>stop();update()
   return {open,dispose(){if(disposed)return;panelView.dispose();stop();disposed=true;panel.remove()}}
 }

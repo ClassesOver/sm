@@ -22,6 +22,9 @@ from ..reporting.delivery.office_engine import libreoffice_to_pdf, run_office_en
 from ..reporting.delivery.pdf_native import patch_pdf, patch_pdf_with_receipt
 from ..reporting.delivery.publishing import ReportArtifactSpec, ReportDownloadScope
 from ..reporting.models import ReportingError
+from ..office.native_access import capabilities as office_capabilities
+from ..office.native_access import check as check_office_access
+from ..office.native_access import publication_capabilities
 from ..workspace import WorkspacePathConflict
 from ._file_identity import read_verified_file
 from .native_models import (
@@ -92,6 +95,7 @@ class NativePublicationService:
         confirmed_preview_digest: str | None = None,
     ) -> dict[str, Any]:
         started = monotonic()
+        await check_office_access(context.document_id, write=True)
         if not isinstance(note, str) or len(note) > 200:
             raise ReportingError("native_operations_invalid", "修订说明超过上限。")
         if expected_sha256 != context.source_file.sha256:
@@ -359,6 +363,9 @@ class NativePublicationService:
         verified_primary = getattr(verified, NATIVE_ARTIFACT_KEYS[parent.format])
         if verified_primary == next_context.source_file and not recovery_blocked:
             try:
+                # Long-running conversion/AI work may outlive a membership change.
+                # Do not register a new revision after write authority is revoked.
+                await check_office_access(parent.document_id, write=True)
                 await self.repository.complete_revision(
                     reservation, context=next_context, artifacts=verified, validation=validation
                 )
@@ -485,6 +492,13 @@ class NativePublicationService:
         allow_editor: bool = True,
     ) -> dict[str, Any]:
         verified, issues = await self._verified_artifacts(workspace_key, artifacts)
+        authority = office_capabilities(context.document_id)
+        if authority and registered and getattr(verified, NATIVE_ARTIFACT_KEYS[context.format]) == context.source_file:
+            try:
+                authority = await publication_capabilities(context)
+            except Exception:
+                issues.append(self._issue('office_library_registration_failed',
+                    '文件已生成，文件库登记暂未完成；受工作区权限保护的下载仍保留。'))
         identities = {
             label: getattr(verified, label)
             for label in NATIVE_ARTIFACT_KEYS.values()
@@ -529,7 +543,7 @@ class NativePublicationService:
                         "下载副本保存失败，使用已核验工作区文件。",
                     )
                 )
-        links, link_issues = await self._issue_links(context, identities, download_scope, report_id)
+        links, link_issues = await self._issue_links(context, identities, download_scope, report_id, authority=authority)
         issues.extend(link_issues)
         editor = None
         editable_primary = getattr(verified, NATIVE_ARTIFACT_KEYS[context.format])
@@ -547,6 +561,7 @@ class NativePublicationService:
                         "native_download": True,
                         "format": context.format,
                         "scope": context.scope.model_dump(by_alias=True),
+                        **authority,
                     },
                 )
                 editor = {
@@ -581,25 +596,30 @@ class NativePublicationService:
         identities: dict[str, ArtifactFile],
         download_scope: ReportDownloadScope,
         report_id: str,
+        *, authority: dict | None = None,
     ) -> tuple[dict[str, str], list[NativeIssue]]:
         if not identities:
             return {}, []
         issues: list[NativeIssue] = []
+        authority = office_capabilities(context.document_id) if authority is None else authority
         try:
-            raw, _ = await self.download_grants.issue(
-                scope=download_scope,
-                report_id=report_id,
-                revision=context.revision,
-                **{
-                    f"{label}_{field}": getattr(file, field)
-                    for label, file in identities.items()
-                    for field in ("path", "size", "sha256")
-                },
-            )
-            return {
-                label: f"{self.public_base_url}/reports/v1/native/artifacts/{raw}/{label}"
-                for label in identities
-            }, issues
+            # Office downloads use grants carrying live membership/session checks.
+            # A generic artifact grant cannot express those restrictions.
+            if not authority:
+                raw, _ = await self.download_grants.issue(
+                    scope=download_scope,
+                    report_id=report_id,
+                    revision=context.revision,
+                    **{
+                        f"{label}_{field}": getattr(file, field)
+                        for label, file in identities.items()
+                        for field in ("path", "size", "sha256")
+                    },
+                )
+                return {
+                    label: f"{self.public_base_url}/reports/v1/native/artifacts/{raw}/{label}"
+                    for label in identities
+                }, issues
         except Exception:
             issues.append(
                 self._issue(
@@ -611,6 +631,7 @@ class NativePublicationService:
                 context,
                 capabilities={
                     "native_download": True,
+                    **authority,
                     "format": context.format,
                     "scope": context.scope.model_dump(by_alias=True),
                     "context": context.model_dump(mode="json", by_alias=True),

@@ -309,6 +309,7 @@ class ReportPromptInput(StrictModel):
     delivery_format: DeliveryFormat | None = Field(
         default=None, alias="deliveryFormat"
     )
+    source_ids: tuple[str, ...] | None = Field(default=None, alias="sourceIds", min_length=1, max_length=20)
     file_inputs: tuple[ReportFileInput, ...] = Field(default=(), alias="fileInputs", max_length=20)
     template_input: ReportFileInput | None = Field(default=None, alias="templateInput")
 
@@ -373,7 +374,6 @@ class ReportingWorkflowInput(StrictModel):
                     self.section_count,
                     self.domains,
                     self.period,
-                    self.source_ids,
                     self.schema_input,
                     self.comparison_roles,
                 )

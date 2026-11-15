@@ -11,8 +11,12 @@ from .native_models import NativeScope
 
 
 def xlsx_thread_actor(scope: NativeScope) -> dict[str, str]:
-    identity = json.dumps([scope.database, scope.company_id, scope.user_id], ensure_ascii=False, separators=(',', ':'))
-    return {'personId': '{' + str(uuid5(NAMESPACE_URL, 'smart-reporting:xlsx-person:' + identity)).upper() + '}', 'author': scope.user_id}
+    from ..office.native_access import current
+
+    session, _ = current()
+    user_id = session.capabilities["office"]["user"] if session is not None else scope.user_id
+    identity = json.dumps([scope.database, scope.company_id, user_id], ensure_ascii=False, separators=(',', ':'))
+    return {'personId': '{' + str(uuid5(NAMESPACE_URL, 'smart-reporting:xlsx-person:' + identity)).upper() + '}', 'author': user_id}
 
 
 def validate_xlsx_thread_actors(content: bytes, operations: list[dict], actor: dict[str, str] | None) -> None:

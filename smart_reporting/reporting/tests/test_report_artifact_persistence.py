@@ -674,13 +674,19 @@ async def test_http_publication_persists_before_issuing_grant() -> None:
                 expires_at=datetime.now(UTC) + timedelta(hours=1),
             )
 
-    class EditorGrants:
-        async def issue(self, context: Any):
+    class NativeEditor:
+        docx_enabled = pdf_enabled = True
+
+        async def open_report(self, session: Any, *, format: str, request_id: str):
             events.append("editor-grant")
-            assert context.markdown_path == "reports/revision-1/report.md"
-            assert context.job["jobId"] == "job-1"
-            assert context.scope["database"] == "database-1"
-            return "editor-raw", datetime(2026, 9, 15, 9, tzinfo=UTC)
+            context = durable.payload["reportEditorContexts"]["1"]
+            assert session.report_id == context["reportId"]
+            assert format == "docx" and request_id.endswith(":docx")
+            assert context["markdownPath"] == "reports/revision-1/report.md"
+            assert context["job"]["jobId"] == "job-1"
+            assert context["scope"]["database"] == "database-1"
+            return {"editor": {"url": "/reports/v1/native/open/editor-raw",
+                "expiresAt": datetime(2026, 9, 15, 9, tzinfo=UTC).isoformat()}}
 
     class Workspace:
         async def aread_text(self, thread_id: str, path: str) -> str:
@@ -700,7 +706,7 @@ async def test_http_publication_persists_before_issuing_grant() -> None:
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
-    runtime.editor_grants = EditorGrants()
+    runtime.native_report_editor = NativeEditor()
     runtime.workspace_service = Workspace()
     runtime.report_public_base_url = "http://10.233.32.64:27018"
     durable = SimpleNamespace(
@@ -737,7 +743,7 @@ async def test_http_publication_persists_before_issuing_grant() -> None:
         "http://10.233.32.64:27018/reports/v1/download/raw/word"
     )
     assert result["editor"]["openUrl"] == (
-        "http://10.233.32.64:27018/reports/v1/editor/open/editor-raw"
+        "http://10.233.32.64:27018/reports/v1/native/open/editor-raw"
     )
     assert "html" not in result
 
@@ -793,12 +799,18 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
                 expires_at=datetime.now(UTC) + timedelta(hours=1),
             )
 
-    class EditorGrants:
-        async def issue(self, context: Any):
+    class NativeEditor:
+        docx_enabled = pdf_enabled = True
+
+        async def open_report(self, session: Any, *, format: str, request_id: str):
             events.append("editor-grant")
-            assert context.scope["database"] == "database-1"
-            assert context.scope["callerThreadId"] == "thread"
-            return "editor-raw", datetime(2026, 9, 15, 9, tzinfo=UTC)
+            context = durable.payload["reportEditorContexts"]["1"]
+            assert session.report_id == context["reportId"]
+            assert format == "docx" and request_id.endswith(":docx")
+            assert context["scope"]["database"] == "database-1"
+            assert context["scope"]["callerThreadId"] == "thread"
+            return {"editor": {"url": "/reports/v1/native/open/editor-raw",
+                "expiresAt": datetime(2026, 9, 15, 9, tzinfo=UTC).isoformat()}}
 
     class Workspace:
         async def aread_text(self, thread_id: str, path: str) -> str:
@@ -815,7 +827,7 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
     runtime = object.__new__(ReportWorkflowRuntime)
     runtime.artifact_persistence = Persistence()
     runtime.download_grants = Grants()
-    runtime.editor_grants = EditorGrants()
+    runtime.native_report_editor = NativeEditor()
     runtime.workspace_service = Workspace()
     runtime.report_public_base_url = "http://10.233.32.64:27018"
     # 关键复现条件：durable payload 没有 report_workflow_scope 键（生产行为）。
@@ -829,6 +841,7 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
         async def apply(self, report_run_id: str, command: Any, *, expected_version: int):
             assert report_run_id == "workflow-run"
             events.append("editor-context")
+            durable.payload["reportEditorContexts"] = {"1": command.payload["context"]}
 
     runtime.state_repository = StateRepository()
     dependencies = {
@@ -854,7 +867,7 @@ async def test_http_publication_resolves_caller_thread_from_run_dependencies() -
     # 产物与授权作用域取解析后的租户，与编辑器导出一致，修订撤销才能跨入口生效。
     assert (scopes[0].database, scopes[0].company_id) == ("database-1", "company-1")
     assert result["editor"]["openUrl"] == (
-        "http://10.233.32.64:27018/reports/v1/editor/open/editor-raw"
+        "http://10.233.32.64:27018/reports/v1/native/open/editor-raw"
     )
 
     # 作用域不一致只拒绝使用编辑上下文：dependencies 与 stored 都无法提供 caller thread 时

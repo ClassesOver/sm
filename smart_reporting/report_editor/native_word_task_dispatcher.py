@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from ..external_word_transport import ExternalWordTransport
 from ..reporting.models import ReportingError
 from ..task_execution.models import AttemptOutcome, TaskExecutionScope, TaskState
 from ..task_execution.native_word_contracts import (
@@ -156,6 +157,8 @@ class WordTaskDispatcher:
         task_id = ref.scope.external_run_id
         session_reference = ref.word_input.binding.server_session_reference
         bridge = None
+        ticket = None
+        external = self.transport if isinstance(self.transport, ExternalWordTransport) else None
         try:
             task = await self.repository.get_task_snapshot(task_id)
             if task.state is TaskState.NEW:
@@ -188,6 +191,8 @@ class WordTaskDispatcher:
                     # TaskSession.assert_alive alone is only a local lease snapshot.
                     await self.repository.read_native_word_input(**self._fence(ref, task_session, current))
                     task_session.assert_alive()
+                    if external is not None:
+                        external.assert_authorized(task_id, ticket=ticket)
                     return principal
                 selected = ref.word_input.model_dump(mode='json', by_alias=True)['selectedParagraphs']
                 bridge = WordTaskMcpBridge(selected=selected, principal=principal, authorize=authorize,
@@ -197,11 +202,16 @@ class WordTaskDispatcher:
                 instruction = await self.repository.attempt_instruction(task_id, task.current_attempt_no)
                 if hashlib.sha256(instruction.encode()).hexdigest() != ref.word_input.instruction_sha256:
                     raise _invalid()
-                final = await self.transport.run(server=bridge.server, ticket=ticket,
+                transport_args = dict(server=bridge.server, ticket=ticket,
                     task_id=task_id, instruction=instruction)
+                if external is not None:
+                    transport_args['registered_proposal'] = lambda: bridge.registered_proposal
+                final = await self.transport.run(**transport_args)
                 parsed = await bridge.reconcile(final, ticket=ticket)
                 task_session.assert_alive()
                 await self._current_editor(ref, session_reference)
+                if external is not None:
+                    external.assert_authorized(task_id, ticket=ticket)
                 receipt = await self.repository.commit_native_word_candidate(
                     proposal=parsed.model_dump(mode='json'),
                     registered_proposal=bridge.registered_proposal,
@@ -224,6 +234,9 @@ class WordTaskDispatcher:
                 if owner is not None and owner.cancelling():
                     raise asyncio.CancelledError() from None
             raise
+        finally:
+            if external is not None and ticket is not None:
+                external.revoke(task_id, ticket=ticket)
 
     async def cancel(self, ref):
         return await self.repository.cancel_and_reject(ref.scope)

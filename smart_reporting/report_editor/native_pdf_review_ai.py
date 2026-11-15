@@ -682,9 +682,11 @@ class AgnoNativePDFReviewPlanner:
                 "最终只输出符合 output_schema 的 JSON answer，逐条说明候选、澄清、跳过及未覆盖范围，不用摘要替代工具处理。",
             ],
         )
-        from ..reporting.agent_events import run_agent_with_events
+        from ..reporting.agent_events import run_owned_agent_with_events
 
-        output = await run_agent_with_events(
+        from ..office.ai_sources import attach_office_sources
+        attach_office_sources(agent)
+        output = await run_owned_agent_with_events(
             agent,
             json.dumps(
                 {"instruction": instruction, "pageCount": len(reader.pages)}, ensure_ascii=False

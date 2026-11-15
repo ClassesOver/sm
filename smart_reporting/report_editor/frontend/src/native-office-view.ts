@@ -90,14 +90,45 @@ export async function createNativeOfficeView(shell: EditorShell, options: {
     if(reader&&readPanel)panels.push({id:'read',label:'阅读问答',panel:readPanel,open:()=>reader?.open(),close:()=>readPanel.querySelector<HTMLButtonElement>('.office-assistant-close')?.click()})
     if(view.officeEditAssistant){const edit=view.officeEditAssistant;panels.push({id:'edit',label:'编辑选区',panel:edit.panel,open:()=>edit.open(),close:()=>edit.close()})}
     const main=shell.editor.querySelector<HTMLElement>(format==='xlsx'?'.workbook-grid-frame':'.slides-workspace')??shell.editor
-    const dock=panels.length?mountOfficeTaskDock(main,panels,{label:(format==='xlsx'?'XLSX':'PPTX')+' AI 助手侧栏'}):undefined
+    const dock=panels.length?mountOfficeTaskDock(main,panels,{label:(format==='xlsx'?'XLSX':'PPTX')+' AI 助手侧栏',officeWorkspace:Boolean(options.context.capabilities.office)}):undefined
+    dock?.openInitially()
     openEditAssistant = () => dock?.open('edit')
     const editEntry=view.officeEditAssistant?createOfficeAIEntry(()=>dock?.open('edit')):undefined
     if(editEntry){editEntry.dataset.action='office-edit-ai';editEntry.setAttribute('aria-label','AI 编辑');editEntry.title='AI 编辑';const caption=editEntry.querySelector('span');if(caption)caption.textContent='AI 编辑';else editEntry.append('AI 编辑');(shell.editor.closest('#app')?.querySelector('.toolbar-group-output')??shell.editor.parentElement??shell.editor).append(editEntry)}
     return {dispose(){dock?.dispose();reader?.dispose();entry?.remove();editEntry?.remove();view.dispose()}}
   }
   if (!options.context.editingEnabled) {
-    shell.editor.textContent='可直接阅读已核验原件，或下载原件查看。'
+    if (format === 'pptx') {
+      const preview = document.createElement('iframe')
+      preview.title = '幻灯片只读预览'
+      preview.src = window.location.pathname.replace(/\/$/, '') + '/api/preview.pdf'
+      preview.style.cssText = 'width:100%;height:70vh;border:0'
+      shell.editor.replaceChildren(preview)
+    } else {
+      const { readWorkbook } = await import('@sheets-web/xlsx-engine')
+      const workbook = await readWorkbook(new Uint8Array(await options.api.file()))
+      const sheets = document.createElement('select')
+      sheets.setAttribute('aria-label', '工作表')
+      const values = document.createElement('table')
+      for (const [index, sheet] of workbook.sheets.entries()) {
+        sheets.add(new Option(sheet.name, String(index)))
+      }
+      function renderSheet() {
+        const cells = workbook.sheets[Number(sheets.value)]?.cells ?? {}
+        const body = document.createElement('tbody')
+        for (const [address, cell] of Object.entries(cells).slice(0, 1000)) {
+          const row = body.insertRow()
+          row.insertCell().textContent = address
+          row.insertCell().textContent = String(cell.value ?? '')
+        }
+        values.replaceChildren(body)
+      }
+      sheets.addEventListener('change', renderSheet)
+      renderSheet()
+      const note = document.createElement('p')
+      note.textContent = '每张工作表最多显示 1,000 个单元格，可下载原件查看完整内容。'
+      shell.editor.replaceChildren(sheets, note, values)
+    }
     shell.save.disabled=true
     shell.statusLabel.textContent='原件阅读模式'
     return attach({dispose(){}})

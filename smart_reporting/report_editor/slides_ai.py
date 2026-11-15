@@ -123,6 +123,8 @@ class AgnoSlidesProposalPlanner:
                 '成功登记后立即说明等待用户采纳，不再重复提交；未授权对象或工具拒绝的能力必须明确说明。',
             ],
         })
+        from ..office.ai_sources import attach_office_sources
+        attach_office_sources(agent)
         await run_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
         if toolkit.proposal is None:
             raise ValueError('slides_ai_proposal_not_submitted')

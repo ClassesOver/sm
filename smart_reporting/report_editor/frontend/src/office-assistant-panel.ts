@@ -1,14 +1,24 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { IconAiPanel, IconClose, IconSparkle, IconStop } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconAiPanel, IconClose, IconNewChat, IconSparkle, IconStop } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import './office-assistant-panel.css'
+
+export function createOfficeNewChatButton() {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'office-assistant-new-chat'
+  button.title = '新对话'
+  button.setAttribute('aria-label', button.title)
+  button.innerHTML = renderToStaticMarkup(createElement(IconNewChat, {size:16}))
+  return button
+}
 
 /** 对齐 GenOffice 的 header / ai-chat / composer 三段侧栏；保留已有任务控制器。 */
 export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   title: HTMLElement; help: HTMLElement; input: HTMLTextAreaElement
   start: HTMLButtonElement; cancel: HTMLButtonElement; close: HTMLButtonElement
-  controls?: HTMLElement; scope?: HTMLSelectElement
-  onClose(): void
+  controls?: HTMLElement; scope?: HTMLSelectElement; headerAction?: HTMLButtonElement
+  onClose?(): void
 }) {
   const {title,help,input,start,cancel,close,controls} = parts
   const scope = parts.scope ?? input.form?.querySelector<HTMLSelectElement>('select') ?? undefined
@@ -19,7 +29,9 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   const icon = document.createElement('span'); icon.className = 'office-assistant-icon'; icon.innerHTML = renderToStaticMarkup(createElement(IconAiPanel,{size:20}))
   close.classList.add('office-assistant-close'); close.setAttribute('aria-label','关闭助手'); close.title = '关闭助手（Esc）'
   close.innerHTML = renderToStaticMarkup(createElement(IconClose,{size:18}))
-  header.append(icon,title,close);panel.prepend(header)
+  header.append(icon,title)
+  if (parts.headerAction) header.append(parts.headerAction)
+  header.append(close);panel.prepend(header)
   const details = document.createElement('details');details.className = 'office-assistant-details'
   const summary = document.createElement('summary');summary.textContent = '阅读范围与限制'
   details.append(summary,help)
@@ -55,11 +67,25 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
     const holder = document.createElement('span');holder.innerHTML = renderToStaticMarkup(createElement(component,{size:16}));return holder.firstElementChild!
   }
   function closePanel() {
-    parts.onClose(); panel.hidden = true
+    parts.onClose?.(); panel.hidden = true
     const fallback = panel.parentElement?.querySelector<HTMLButtonElement>('.office-ai-entry:not(:disabled)')
     const target = trigger?.isConnected ? trigger : fallback
     target?.focus({preventScroll:true})
   }
+  const onInputKey = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+    if (event.key === 'Escape' && !cancel.hidden && !cancel.disabled) {
+      event.preventDefault()
+      event.stopPropagation()
+      cancel.click()
+      return
+    }
+    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (!event.repeat && !start.disabled) start.click()
+  }
+  input.addEventListener('keydown', onInputKey)
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return
     event.preventDefault();event.stopPropagation();closePanel()
@@ -70,6 +96,6 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
       const active = document.activeElement
       if (active instanceof HTMLElement && active !== document.body && !panel.contains(active)) trigger = active
     },
-    dispose() {observer.disconnect();close.removeEventListener('click',closePanel);panel.removeEventListener('keydown',onKeyDown);body.removeEventListener('keydown',readKeys)},
+    dispose() {observer.disconnect();close.removeEventListener('click',closePanel);panel.removeEventListener('keydown',onKeyDown);input.removeEventListener('keydown',onInputKey);body.removeEventListener('keydown',readKeys)},
   }
 }

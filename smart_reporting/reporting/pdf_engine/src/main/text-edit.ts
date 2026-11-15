@@ -734,13 +734,14 @@ function utf16Ptr(m: Pdfium, str: string): number {
   return p
 }
 
-/** SetText re-encodes against the object's existing font. Only safe when the replacement
-    is ASCII and every char is provably in the embedded subset (i.e. already drawn somewhere
+/** SetText re-encodes against the object's existing font. Reuse the standard Latin faces
+    for ASCII. For other fonts, every char must be provably in the subset (already drawn somewhere
     with the same font). CJK subset CID fonts fail even for in-subset chars (broken cmaps),
     so anything non-ASCII always goes the rebuild path. Style overrides, alignment offsets
     and multi-line replacements also rebuild: they need new objects (or a new matrix), not
     just re-encoded text. */
 function canReuseFont(
+  m: Pdfium,
   edit: TextEditInput,
   newText: string,
   matches: PageTextObj[],
@@ -762,6 +763,11 @@ function canReuseFont(
   if (edit.newItalic || (edit.newBold && (edit.newFont || !whole))) return false
   if (!/^[\x20-\x7e]*$/.test(newText)) return false
   const font = matches[0]!.font
+  if (font && m._FPDFFont_GetIsEmbedded(font) === 0) {
+    const name = fontString(m, (buffer, length) => m._FPDFFont_GetBaseFontName(font, buffer, length))
+    // Non-Latin Symbol and ZapfDingbats do not share the standard ASCII encoding.
+    if (/^(?:Helvetica|Courier)(?:-Bold|-Oblique|-BoldOblique)?$|^Times-(?:Roman|Bold|Italic|BoldItalic)$/.test(name)) return true
+  }
   const charset = new Set<string>()
   for (const o of all) if (o.font === font) for (const ch of o.text) charset.add(ch)
   return [...newText].every((ch) => ch === ' ' || charset.has(ch))
@@ -2424,7 +2430,7 @@ async function applyPageEdits(
       ? edit
       : { ...edit, origin: undefined, lineLeading: undefined, lineXOffsets: undefined }
     try {
-      if (canReuseFont(eff, newText, matches, objects, whole)) {
+      if (canReuseFont(m, eff, newText, matches, objects, whole)) {
         const obj = matches[0]!.obj
         const textPtr = utf16Ptr(m, newText)
         const ok = m._FPDFText_SetText(obj, textPtr)

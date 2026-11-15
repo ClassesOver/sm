@@ -195,7 +195,7 @@ class AgnoNativePDFFormPlanner:
     async def __call__(self, *, selected: list[dict] | None = None,
                        reader: NativePDFFormAITools | None = None, instruction: str,
                        session_id: str, user_id: str) -> dict:
-        from ..reporting.agent_events import run_agent_with_events
+        from ..reporting.agent_events import run_owned_agent_with_events
         from ..reporting.structured_output.policy import (
             REPORTING_STRUCTURED_MODES_MODEL_ATTR,
             REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,
@@ -228,7 +228,9 @@ class AgnoNativePDFFormPlanner:
                 '工具提交成功后停止重复提交，再以{"answer":"已生成私有填表候选，仍需采纳。"}格式结束。',
                 '不得声称已保存或采纳。最终只返回含answer的JSON，不得在正文中提交operations。',
             ])
-        output = await run_agent_with_events(agent, instruction, session_id=session_id, user_id=user_id)
+        from ..office.ai_sources import attach_office_sources
+        attach_office_sources(agent)
+        output = await run_owned_agent_with_events(agent, instruction, session_id=session_id, user_id=user_id)
         content = output.content
         answer = content if isinstance(content, NativePDFFormAnswer) else NativePDFFormAnswer.model_validate(
             dict(content) if isinstance(content, Mapping) else json.loads(content))

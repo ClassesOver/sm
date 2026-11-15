@@ -21,7 +21,13 @@ if (isNativePath) {
   createIcons({ icons: { Download, Save, Keyboard } })
   await createWorkbookEditorView(shell)
 } else if (!isSlidesPath) {
-  await import('./main')
+  const root = document.querySelector<HTMLElement>('#app')
+  if (root) {
+    const entry = document.createElement('a')
+    entry.href = '/office'
+    entry.textContent = '打开 GenOffice'
+    root.append(entry)
+  }
 } else {
   const { createIcons, Download, FileDown, FileText, Keyboard, MoreHorizontal, PanelLeft, Save, Settings2, X } = await import('lucide')
   await import('./style.css')

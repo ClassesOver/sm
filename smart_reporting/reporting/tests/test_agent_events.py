@@ -1,5 +1,9 @@
 """Agno 原生事件传递保持最终 RunOutput，观察者不能改变执行协议。"""
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 from agno.run.agent import RunContentEvent, RunOutput, ToolCallCompletedEvent, ToolCallStartedEvent
 
@@ -35,6 +39,45 @@ async def test_no_observer_preserves_original_nonstream_call():
     agent = AgentFixture()
     assert await run_agent_with_events(agent, 'input', session_id='session') is agent.output
     assert agent.calls == [('input', {'stream': False, 'session_id': 'session'})]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('failure', [None, RuntimeError('provider error')])
+async def test_owned_agent_closes_its_client_without_changing_the_result(failure):
+    from smart_reporting.reporting.agent_events import run_owned_agent_with_events
+
+    agent = AgentFixture()
+    client = SimpleNamespace(close=AsyncMock())
+    agent.model = SimpleNamespace(async_client=client)
+    if failure:
+        agent.arun = AsyncMock(side_effect=failure)
+        with pytest.raises(RuntimeError, match='provider error'):
+            await run_owned_agent_with_events(agent, 'input')
+    else:
+        assert await run_owned_agent_with_events(agent, 'input') is agent.output
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.anyio
+async def test_owned_agent_releases_client_when_the_user_cancels():
+    from smart_reporting.reporting.agent_events import run_owned_agent_with_events
+
+    agent = AgentFixture()
+    client = SimpleNamespace(close=AsyncMock())
+    running = asyncio.Event()
+
+    async def interrupted_run(*args, **kwargs):
+        agent.model = SimpleNamespace(async_client=client)
+        running.set()
+        await asyncio.Future()
+
+    agent.arun = interrupted_run
+    task = asyncio.create_task(run_owned_agent_with_events(agent, 'input'))
+    await running.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    client.close.assert_awaited_once()
 
 
 @pytest.mark.anyio

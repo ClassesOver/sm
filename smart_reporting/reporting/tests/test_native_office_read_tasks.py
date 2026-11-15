@@ -108,6 +108,46 @@ def selection_and_change(context, model):
         [{'kind': 'editSlides', 'edits': [{'slideIndex': 0, 'elementId': element['id'], 'text': '人工草稿73'}]}])
 
 
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_live_office_edits_only_authorized_sheet_or_slide_objects(office_sample):
+    from openpyxl import load_workbook
+    from smart_reporting.report_editor.native_office import patch_office
+    from smart_reporting.report_editor.slides_native_ai import create_native_slides_ai_service
+    from smart_reporting.report_editor.workbook_native_ai import create_native_workbook_ai_service
+    from smart_reporting.reporting.tests.test_native_ai import real_editor_model
+
+    editor, context, session, model, source = office_sample
+    selection, _ = selection_and_change(context, model)
+    replacement = 'OFFICE EDIT CHECK'
+    if context.format == 'xlsx':
+        ai = create_native_workbook_ai_service(real_editor_model(), editor, enabled=True)
+        instruction = f'只将选区经营!A1的值替换为 {replacement}。保留B1。'
+    else:
+        ai = create_native_slides_ai_service(real_editor_model(), editor, enabled=True)
+        instruction = f'只将所选文本框的全文替换为 {replacement}。保留其他对象和幻灯片顺序。'
+    try:
+        started = await ai.start_edit(session, client_request_id='live-office-edit', instruction=instruction,
+            expected_sha256=context.source_file.sha256, operations=[], selection=selection)
+        async with asyncio.timeout(110):
+            while (ready := await ai.wait_edit_status(session, started['editId']))['status'] == 'running':
+                pass
+        assert ready['status'] == 'succeeded', ready
+        assert ready['accepted'] is False and ready['proposal']['previewSha256']
+        assert await editor.read_file(context) == source
+        accepted = await ai.accept_edit(session, started['editId'], expected_sha256=context.source_file.sha256,
+            operations=[], snapshot_sha256=ready['snapshotSha256'])
+        edited = await asyncio.to_thread(patch_office, context.format, source, accepted['operations'])
+        if context.format == 'xlsx':
+            cells = load_workbook(BytesIO(edited)).active
+            assert [cells['A1'].value, cells['B1'].value] == [replacement, '未授权秘密']
+        else:
+            assert [shape.text for shape in Presentation(BytesIO(edited)).slides[0].shapes] == [replacement, '未授权秘密']
+        assert await editor.read_file(context) == source
+    finally:
+        await ai.aclose()
+
+
 @pytest.mark.anyio
 async def test_office_reads_source_without_editing_and_never_proposes(office_sample):
     from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
@@ -277,3 +317,34 @@ async def test_office_read_rejects_write_proposal_and_changed_source_after_plann
 async def job_task(service, task_id):
     job = next(item for item in service._jobs.values() if item.task_id == task_id)
     await asyncio.wait_for(asyncio.shield(job.task), 30)
+
+
+@pytest.mark.anyio
+async def test_office_followup_uses_prior_answer_for_unchanged_scope(office_sample):
+    from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
+
+    editor, context, session, model, _ = office_sample
+    instructions = []
+
+    async def planner(*, instruction, **kwargs):
+        instructions.append(instruction)
+        return await read_all(**kwargs)
+
+    service = NativeOfficeReadService(editor, planners={context.format: planner}, enabled=True)
+    previous = None
+    try:
+        for request_id, question, selection in (
+            ("first", "分析本期收入", None), ("followup", "刚才的数值是多少", None),
+            ("selection", "核对所选内容", selection_and_change(context, model)[0]),
+        ):
+            started = await service.start(session, **request_for(
+                context, client_request_id=request_id, instruction=question, action="ask",
+                previous_task_id=previous, selection=selection,
+            ))
+            result = await service.status(session, started["taskId"])
+            assert result["status"] == "completed", result
+            previous = started["taskId"]
+        assert "分析本期收入" in instructions[1]
+        assert "刚才的数值是多少" not in instructions[2]
+    finally:
+        await service.aclose()

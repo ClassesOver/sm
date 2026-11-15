@@ -135,9 +135,12 @@ class NativeImportService:
             sha256=identity.sha256, error_code='native_import_source_changed', format_name=format.upper())
         source = NativeSource(format=format, origin='upload', sourceFile=identity)
         document = await self.repository.create_from_source(source, scope=scope, request_id=request_id)
-        revision = await self.repository.get_revision(document.document_id, 1, scope=scope)
+        return await self.open_revision(scope, document.document_id, 1)
+
+    async def open_revision(self, scope: NativeScope, document_id: str, number: int) -> dict[str, Any]:
+        revision = await self.repository.get_revision(document_id, number, scope=scope)
         if revision is None or revision.context is None:
-            raise ReportingError('native_document_not_found', '上传文档修订尚未登记。')
+            raise ReportingError('native_document_not_found', '此工作区中找不到对应文档修订。')
         grant, expires = await self.grants.issue(revision.context, capabilities=NativeEditorService.capabilities(revision.context))
-        return {'documentId': document.document_id, 'revision': 1, 'parentRevision': None,
-            'format': format, 'editor': {'url': f'/reports/v1/native/open/{grant}', 'expiresAt': expires.isoformat()}}
+        return {'documentId': document_id, 'revision': number, 'parentRevision': revision.parent_revision,
+            'format': revision.context.format, 'editor': {'url': f'/reports/v1/native/open/{grant}', 'expiresAt': expires.isoformat()}}

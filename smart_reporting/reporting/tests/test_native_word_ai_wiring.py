@@ -45,7 +45,9 @@ async def test_production_factory_word_tools_preview_accept_and_preserve_source(
     scripted = ScriptedModel(id='scripted-word-wiring', responses=[
         call('get_document_context', {}, 'context'),
         call('read_blocks', {'block_ids': [target['blockId']]}, 'read'),
-        call('propose_operations', {'summary': '调整选段间距', 'operations': [operation]}, 'propose'),
+        call('propose_operations', {'summary': '调整选段间距', 'operations': [{
+            'kind': operation['kind'], 'arguments': {key: value for key, value in operation.items() if key != 'kind'},
+        }]}, 'propose'),
         ModelResponse(content=json.dumps({'summary': '调整选段间距', 'operations': [{
             'kind': final_operation['kind'], 'arguments': {
                 key: value for key, value in final_operation.items() if key != 'kind'}}]})),

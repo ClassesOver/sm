@@ -1,0 +1,8 @@
+:is(.kb-answer, .native-ai-answer) .ai-md { white-space: normal; overflow-wrap: anywhere; }
+:is(.kb-answer, .native-ai-answer) .ai-md > :first-child { margin-top: 0; }
+:is(.kb-answer, .native-ai-answer) .ai-md > :last-child { margin-bottom: 0; }
+:is(.kb-answer, .native-ai-answer) .ai-md pre, :is(.kb-answer, .native-ai-answer) .ai-md-table-wrap { overflow: auto; }
+:is(.kb-answer, .native-ai-answer) .ai-md td, :is(.kb-answer, .native-ai-answer) .ai-md th { border: 1px solid var(--line, var(--office-border, #ddd)); padding: 3px 8px; }
+
+.native-ai-transcript article + article { margin-top: 12px; border-top: 1px solid var(--office-border-soft); }
+.native-ai-question { font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }

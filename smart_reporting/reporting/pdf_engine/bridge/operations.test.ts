@@ -4,8 +4,32 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { PDFDocument } from 'pdf-lib'
-import { inspectPdf } from './operations'
+import { PDFDocument, StandardFonts } from 'pdf-lib'
+import { inspectPdf, patchPdfWithReceipt } from './operations'
+
+test('unembedded Helvetica keeps the original metrics for ASCII replacement', async () => {
+  const document = await PDFDocument.create()
+  const page = document.addPage([595, 842])
+  const font = await document.embedFont(StandardFonts.Helvetica)
+  page.drawText('Original amount 500', { x: 40, y: 700, size: 12, font })
+  page.drawText('Preserved content', { x: 40, y: 630, size: 12, font })
+  const source = await document.save()
+  const model = await inspectPdf(source, true)
+  const sourcePage = model.pages[0]!
+  const target = sourcePage.textObjects![0]!
+  const op = { kind: 'replaceText', pageId: sourcePage.pageId, objectId: target.objectId,
+    expectedTextSha256: target.expectedTextSha256, newText: 'Original amount 700' }
+  const result = await patchPdfWithReceipt(source, [op], model.sourceSha256)
+  assert.deepEqual(result.appliedOperationIndices, [0])
+  assert.deepEqual(result.skippedOperations, [])
+  const output = (await inspectPdf(result.bytes, true)).pages[0]!.textObjects!
+  assert.deepEqual(output.map(item => [item.text, item.fontName]), [
+    ['Original amount 700', 'Helvetica'], ['Preserved content', 'Helvetica'],
+  ])
+  const overflow = await patchPdfWithReceipt(source, [{ ...op, newText: op.newText.repeat(25) }], model.sourceSha256)
+  assert.deepEqual(overflow.appliedOperationIndices, [])
+  assert.notEqual(overflow.skippedOperations.length, 0)
+})
 
 test('an invalid later operation never creates or replaces the output', async () => {
   const document = await PDFDocument.create()

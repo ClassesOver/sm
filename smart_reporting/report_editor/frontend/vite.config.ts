@@ -79,7 +79,7 @@ export default defineConfig({
     outDir: '../static',
     rollupOptions: {
       preserveEntrySignatures: 'exports-only',
-      input: { index: 'index.html', native: 'native.html', upload: 'src/native-upload.ts' },
+      input: { index: 'index.html', native: 'native.html', office: 'office.html', upload: 'src/native-upload.ts' },
       output: {
         entryFileNames: chunk => chunk.name === 'upload' ? 'native-upload.js' : 'assets/[name]-[hash].js',
         onlyExplicitManualChunks: true,

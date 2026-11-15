@@ -198,3 +198,37 @@ async def test_word_full_draft_summary_reads_insertions_but_stale_selection_is_n
         assert await editor.read_file(context) == source
     finally:
         await service.aclose()
+
+
+@pytest.mark.anyio
+async def test_word_followup_only_reuses_previous_answer_for_same_reading_scope(sample):
+    from smart_reporting.report_editor.native_word_read_tasks import NativeWordReadService
+
+    editor, context, session, model, _ = sample
+    instructions = []
+
+    async def planner(*, instruction, **kwargs):
+        instructions.append(instruction)
+        return await reading_planner(**kwargs)
+
+    service = NativeWordReadService(editor, planner=planner, enabled=True)
+
+    async def ask(request_id, instruction, previous=None, selection=None):
+        started = await service.start(
+            session, client_request_id=request_id, action="ask", instruction=instruction,
+            expected_sha256=context.source_file.sha256, operations=[],
+            selection=selection or [], previous_task_id=previous,
+        )
+        result = await service.status(session, started["taskId"])
+        assert result["status"] == "completed", result
+        return started["taskId"]
+
+    try:
+        first = await ask("first", "请分析成本结构")
+        await ask("followup", "刚才的第一项是什么", first)
+        assert "请分析成本结构" in instructions[1]
+        assert "请重新核验本轮证据" in instructions[1]
+        await ask("changed", "现在只读这一段", first, [{"blockId": model["blocks"][0]["blockId"]}])
+        assert "请分析成本结构" not in instructions[2]
+    finally:
+        await service.aclose()

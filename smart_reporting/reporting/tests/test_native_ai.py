@@ -737,6 +737,73 @@ def pdf_ai_plan(selection, new_text):
     }
 
 
+def real_editor_model():
+    import os
+    from agno.models.openai import OpenAIChat
+
+    endpoint = os.environ.get('REPORTING_OFFICE_MODEL_TEST_BASE_URL')
+    key = os.environ.get('REPORTING_OFFICE_MODEL_TEST_API_KEY')
+    model_id = os.environ.get('REPORTING_OFFICE_MODEL_TEST_ID')
+    if not all((endpoint, key, model_id)):
+        pytest.skip('requires an explicitly configured Office model acceptance endpoint, key and model ID')
+    return OpenAIChat(id=model_id, api_key=key, base_url=endpoint)
+
+
+async def verify_live_editor_candidate(sample, selection, instruction):
+    from smart_reporting.report_editor.native_ai import create_native_ai_service
+
+    editor, context, session, _, original = sample
+    ai = create_native_ai_service(real_editor_model(), editor, enabled=True)
+    try:
+        start = await ai.start_edit(session, instruction=instruction, expected_sha256=context.source_file.sha256,
+                                    operations=[], selection=[selection])
+        async with asyncio.timeout(110):
+            while (ready := await ai.wait_edit_status(session, start['editId']))['status'] == 'running':
+                pass
+        assert ready['status'] == 'succeeded', ready
+        assert await editor.read_file(context) == original
+        accepted = await ai.accept_edit(session, start['editId'], expected_sha256=context.source_file.sha256,
+                                       operations=[], snapshot_sha256=ready['snapshotSha256'])
+        assert accepted['needsVerification'] is True
+        assert await editor.read_file(context) == original
+        if context.format == 'docx':
+            from smart_reporting.reporting.delivery.docx_native import patch_docx
+
+            content = await asyncio.to_thread(patch_docx, original, accepted['operations'])
+        else:
+            actual = await editor.preview_file(context, expected_sha256=context.source_file.sha256,
+                operations=accepted['operations'], expected_preview_digest=ready['proposal']['previewDigest'])
+            content = actual['content']
+        return content, accepted['operations']
+    finally:
+        await ai.aclose()
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_live_office_word_editor_proposes_a_scoped_change(sample):
+    target = sample[3]['blocks'][0]['blockId']
+    output, operations = await verify_live_editor_candidate(sample, {'blockId': target},
+        '只把所选段落的全文替换为 OFFICE WORD CHECK。执行替换操作，保留其他内容。')
+    assert [operation['blockId'] for operation in operations] == [target]
+    assert [paragraph.text for paragraph in Document(BytesIO(output)).paragraphs] == [
+        'OFFICE WORD CHECK', '未经选择的机密段落',
+    ]
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_live_office_pdf_editor_proposes_a_scoped_change(pdf_sample):
+    from pypdf import PdfReader
+
+    selection = pdf_ai_selection(pdf_sample[3])
+    output, operations = await verify_live_editor_candidate(pdf_sample, selection,
+        '只把选中的文字 Amount due 500 替换为 Amount due 700。不要修改其他内容。')
+    assert [operation['objectId'] for operation in operations] == [selection['objectId']]
+    text = PdfReader(BytesIO(output)).pages[0].extract_text()
+    assert 'Amount due 700' in text and 'UNSELECTED SECRET' in text and 'Amount due 500' not in text
+
+
 @pytest.mark.anyio
 async def test_pdf_ai_uses_only_selected_draft_and_server_rebuilds_identity(pdf_sample):
     from pypdf import PdfReader

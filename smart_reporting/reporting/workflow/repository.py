@@ -84,6 +84,7 @@ class ReportingStateRepository:
             Column("owner_user_id", String(256), nullable=False),
             Column("database", String(256), nullable=False),
             Column("company_id", String(256), nullable=False),
+            Column("office_space_id", String(36)),
             Column("revision", BigInteger, nullable=False),
             Column("status", String(32), nullable=False),
             Column("finalization_pending", Boolean, nullable=False, default=False),
@@ -199,6 +200,15 @@ class ReportingStateRepository:
                     text(f'CREATE SCHEMA IF NOT EXISTS "{REPORTING_DB_SCHEMA}"')
                 )
                 await connection.run_sync(self.metadata.create_all)
+                await connection.execute(text(
+                    f'ALTER TABLE "{REPORTING_DB_SCHEMA}"."reporting_runs" '
+                    'ADD COLUMN IF NOT EXISTS office_space_id VARCHAR(36)'
+                ))
+                await connection.execute(text(
+                    f'CREATE INDEX IF NOT EXISTS ix_reporting_office_pause ON "{REPORTING_DB_SCHEMA}"."reporting_runs" '
+                    '(database, company_id, owner_user_id, office_space_id, updated_at DESC) '
+                    "WHERE office_space_id IS NOT NULL AND status = 'paused'"
+                ))
                 for table_name in ("reporting_mcp_requests", "reporting_workflow_thread_owners"):
                     await connection.execute(
                         text(
@@ -342,6 +352,7 @@ class ReportingStateRepository:
             "owner_user_id": str(values["owner_user_id"]),
             "database": str(values.get("database") or "default"),
             "company_id": str(values.get("company_id") or "default"),
+            "office_space_id": values.get("office_space_id"),
             "revision": int(values.get("revision") or 1),
             "status": str(values.get("status") or "running"),
             "finalization_pending": bool(values.get("finalization_pending")),
@@ -587,6 +598,16 @@ class ReportingStateRepository:
     async def get_run_by_external(self, external_run_id: str) -> dict[str, Any] | None:
         row = await self._read_dependency_row(self.runs, self.runs.c.external_run_id == external_run_id)
         return dict(row._mapping) if row is not None else None
+
+    async def paused_office_runs(self, database: str, company: str, user: str, space: str, offset: int = 0):
+        await self.initialize()
+        runs = self.runs.c
+        async with self.db.db_engine.connect() as connection:
+            rows = await connection.execute(select(self.runs).where(
+                runs.database == database, runs.company_id == company, runs.owner_user_id == user,
+                runs.office_space_id == space, runs.status == 'paused',
+            ).order_by(runs.updated_at.desc(), runs.report_run_id).offset(offset).limit(20))
+            return [dict(row) for row in rows.mappings()]
 
     async def claim_workflow_thread(
         self, *, thread_id: str, external_run_id: str, owner_user_id: str

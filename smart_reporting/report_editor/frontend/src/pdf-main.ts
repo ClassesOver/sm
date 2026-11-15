@@ -2995,7 +2995,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     })
   }
   const {mountPdfTaskDock}=await import('./pdf-ai-dock')
-  const pdfAIDock=mountPdfTaskDock(root,layout,{read:pdfAssistant,review:pdfReview,forms:pdfFormAI})
+  const pdfAIDock=mountPdfTaskDock(root,layout,{read:pdfAssistant,review:pdfReview,forms:pdfFormAI},Boolean(response.capabilities.office))
   locked = false
   await refresh()
   return { refresh, prepareSave, flushPendingEdits, get mutationPending() { return pendingMutations > 0 }, setSaving(saving) { locked = saving; if (saving) linkNavigationGeneration++; updateControls() }, dispose() {

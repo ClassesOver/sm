@@ -288,3 +288,75 @@ async def test_ribbon_operations_use_real_http_save_download_and_reopen(tmp_path
         reopened = await client.get(result["editor"]["openUrl"], follow_redirects=True)
         assert reopened.status_code == 200, reopened.text
         assert (await client.get(reopened.url.path + "/api/file")).content == downloaded.content
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("format", ["docx", "pdf", "xlsx", "pptx"])
+async def test_office_library_upload_save_and_reopen(tmp_path, format):
+    pytest.importorskip("aiosqlite")
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from smart_reporting.office.api import create_office_router, csrf_token, COOKIE
+    from smart_reporting.office.documents import OfficeDocuments
+    from smart_reporting.office.repository import Identity, OfficeRepository
+
+    publication, _, downloads = await create_publication(tmp_path)
+    publication.repository = Repository()
+    publication.validator = AsyncMock(side_effect=RuntimeError("test acceptance"))
+    editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
+                                 report_editor=None, docx_enabled=True, pdf_enabled=True,
+                                 office_enabled=True, publication=publication)
+    importer = NativeImportService(publication.workspace, publication.repository, publication.editor_grants)
+    engine = create_async_engine("sqlite+aiosqlite://")
+    office = OfficeRepository(engine)
+    try:
+        await office.create_schema()
+        user = Identity("db", "1", "publisher")
+        await office.bootstrap(user, "Publisher")
+        space = (await office.spaces(user))[0]["id"]
+        token = await office.create_session(user)
+        documents = OfficeDocuments(office, importer, publication.repository, publication.editor_grants, editor=editor)
+        editor.office_authorize = documents.authorize
+        editor.office_saved = documents.saved
+        app = FastAPI()
+        app.include_router(create_office_router(office, public_origin="http://test", cookie_secure=False,
+                                               documents=documents))
+        app.include_router(create_native_editor_router(publication.editor_grants, editor=editor,
+                                                       download_service=downloads, cookie_secure=False))
+        original = source_file(format)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.cookies.set(COOKIE, token)
+            headers = {"Origin": "http://test", "X-CSRF-Token": csrf_token(token)}
+            uploaded = await client.post(f"/office/api/workspaces/{space}/files", headers=headers,
+                                         data={"requestId": f"office-import-{format}"},
+                                         files={"file": (f"source.{format}", original)})
+            assert uploaded.status_code == 201, uploaded.text
+            opened = await client.get(uploaded.json()["editor"]["url"], follow_redirects=True)
+            assert opened.status_code == 200, opened.text
+            base = opened.url.path + "/api"
+            response = await client.get(base + "/context")
+            assert response.status_code == 200, response.text
+            context = response.json()
+            assert context["editingEnabled"]
+            native_headers = {**headers, "X-CSRF-Token": context["csrfToken"]}
+            payload = {"expectedSha256": hashlib.sha256(original).hexdigest(), "operations": []}
+            preview = await client.post(base + "/preview", headers=native_headers, json=payload)
+            assert preview.status_code == 200, preview.text
+            payload.update(operations=ribbon_operations(format, preview.json()["model"]),
+                           requestId=f"office-save-{format}")
+            saved = await client.post(base + "/save", headers=native_headers, json=payload)
+            assert saved.status_code == 200, saved.text
+            result = saved.json()
+            assert result["revisionRegistered"] and result["revision"] == 2
+            library = await client.get(f"/office/api/workspaces/{space}/library")
+            assert [(item["id"], item["revision"]) for item in library.json()["files"]] == [
+                (uploaded.json()["fileId"], 2),
+            ]
+            reopened = await client.post(f"/office/api/files/{uploaded.json()['fileId']}/open", headers=headers)
+            assert reopened.status_code == 200, reopened.text
+            view = await client.get(reopened.json()["editor"]["url"], follow_redirects=True)
+            assert view.status_code == 200, view.text
+            final = await client.get(view.url.path + "/api/file")
+            assert final.status_code == 200
+            assert_file_readback(format, final.content)
+    finally:
+        await engine.dispose()
