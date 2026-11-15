@@ -1,4 +1,4 @@
-import { officeRequest, type OfficeSpace } from './office-client'
+import { officeRequest, OfficeRequestError, type OfficeSpace } from './office-client'
 
 type Draft = { source_id: string; name: string; database: string; version: number; metadata_version_id: string | null }
 type Source = Draft & { publishedRevision: number | null; enabled: boolean }
@@ -38,6 +38,7 @@ function choices(values: string[], selected: string[]) {
 }
 
 export async function showOfficeSources(host: HTMLElement, options: { admin: boolean; space?: OfficeSpace }) {
+  const queryDrafts = new Map<string, string>()
   const panel = node('dialog')
   panel.className = 'office-administration office-sources'
   const heading = node('h2', options.admin ? '公司数据源管理' : '工作区数据源')
@@ -52,7 +53,7 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
   async function run(action: () => Promise<void>) {
     if (panel.getAttribute('aria-busy') === 'true') return
     panel.setAttribute('aria-busy', 'true')
-    const controls = [...panel.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button:enabled, select:enabled')]
+    const controls = [...panel.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement>('button:enabled, select:enabled, textarea:enabled')]
     controls.forEach(control => { control.disabled = true })
     status.textContent = '正在处理…'
     try { await action(); status.textContent = '' }
@@ -212,11 +213,19 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
         section.append(node('p', `可访问表：${source.tables!.join('、')}`))
         const sql = node('textarea'); sql.rows = 4; sql.setAttribute('aria-label', `${source.name}只读 SQL`)
         sql.placeholder = '输入只读 SELECT 查询'
+        sql.value = queryDrafts.get(source.id) ?? ''
+        sql.oninput = () => queryDrafts.set(source.id, sql.value)
         const output = node('div'); output.className = 'source-query-result'
         section.append(sql, button('执行查询', async () => {
           output.replaceChildren()
+          queryDrafts.set(source.id, sql.value)
           const result = await officeRequest<{ columns: string[]; rows: unknown[][]; source: { queryId: string } }>(
-            `${base}/${enc(source.id)}/query`, 'POST', { sql: sql.value })
+            `${base}/${enc(source.id)}/query`, 'POST', { sql: sql.value }).catch(async error => {
+              if (panel.open && error instanceof OfficeRequestError && [403, 409].includes(error.status)) {
+                await list().catch(() => { /* Keep the refresh button and report the original query error. */ })
+              }
+              throw error
+            })
           const table = node('table'), head = node('tr')
           result.columns.forEach(column => head.append(node('th', column))); table.append(head)
           for (const row of result.rows.slice(0, 200)) {
