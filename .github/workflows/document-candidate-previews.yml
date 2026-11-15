@@ -1,6 +1,13 @@
 name: Document candidate previews (isolated)
 
 on:
+  push:
+    branches:
+      - review/report-channel-acp
+    paths:
+      - "smart_reporting/document_candidate_*.py"
+      - "smart_reporting/tests/test_document_candidate_*.py"
+      - ".github/workflows/document-candidate-previews.yml"
   pull_request:
     paths:
       - "smart_reporting/document_candidate_*.py"
