@@ -6,7 +6,7 @@ import { PROTECTED_SHEET_REASON, PROTECTED_SHEET_RIBBON } from './workbook-prote
 import { ROTATION_VALUES, univerRotationToOoxml, type RotationValue } from './workbook-rotation'
 import { BorderStyleTypes, BorderType } from '@univerjs/core'
 import { workbookCommandIcon } from './workbook-ribbon-command-icons'
-import { selectedWorkbookFormat, NUMBER_FORMAT_PRESETS, numberFormatPresetLabel, type NumberFormatPreset, type WorkbookFormatState, type FormatValue, type NumberFormatTarget } from './workbook-format'
+import { selectedWorkbookFormat, NUMBER_FORMAT_PRESETS, RIBBON_NUMBER_FORMAT_SHORTCUTS, type RibbonNumberFormatShortcut, numberFormatPresetLabel, type NumberFormatPreset, type WorkbookFormatState, type FormatValue, type NumberFormatTarget } from './workbook-format'
 import { applyWorkbookFontDecoration, type FontDecorationRange } from './workbook-font'
 import { indentToUniverPadding, univerPaddingToIndent, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboard'
@@ -88,7 +88,7 @@ type RibbonCommand =
   | `fill:#${string}`
   | 'border:all'
   | 'format:0.00'
-  | 'format:0%'
+  | RibbonNumberFormatShortcut
   | 'format:#,##0.00'
   | 'format:custom-open'
   | `number-format:${NumberFormatPreset}`
@@ -448,7 +448,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('增加缩进', 'indent-step:increase', 'indent-step:increase'), action('减少缩进', 'indent-step:decrease', 'indent-step:decrease'),
     ] },
     { title: '数字', actions: [
-      action('小数', 'format:0.00', 'format:0.00'), action('百分比', 'format:0%', 'format:0%'), action('千位分隔', 'format:#,##0.00', 'format:#,##0.00'),
+      ...RIBBON_NUMBER_FORMAT_SHORTCUTS.map(({ command, label }) => action(label, command, command)),
       action('增加小数位', 'decimal-inc', 'decimal-inc'), action('减少小数位', 'decimal-dec', 'decimal-dec'),
       action('自定义数字格式', 'format:custom-open', 'format:custom-open'),
     ] },

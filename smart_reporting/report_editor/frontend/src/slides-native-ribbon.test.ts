@@ -832,12 +832,18 @@ it('enables the Shape Format fill and outline controls with their source actions
   host.querySelector<HTMLButtonElement>('[data-command="shapeNoOutline"]')!.click()
   expect(onAction).toHaveBeenCalledWith('shapeFill', '#2e7d32')
   expect(onAction).toHaveBeenCalledWith('shapeNoOutline')
-  const change = host.querySelector<HTMLSelectElement>('select[data-command="changeShape"]')!
+  const change = host.querySelector<HTMLButtonElement>('button[data-command="changeShape"]')!
   expect(change.disabled).toBe(false)
-  expect([...change.querySelectorAll('optgroup option')].map(option => (option as HTMLOptionElement).value)).not.toContain('lineArrow')
-  change.value = 'hexagon'; change.dispatchEvent(new Event('change'))
+  host.querySelector<HTMLButtonElement>('#slides-native-tab-shapeFormat')!.click()
+  change.click()
+  expect(change.getAttribute('aria-expanded')).toBe('true')
+  expect(host.querySelector('[data-prst="lineArrow"]')).toBeNull()
+  const hexagon = host.querySelector<HTMLButtonElement>('[data-prst="hexagon"]')!
+  expect(hexagon.querySelector('svg')).not.toBeNull()
+  expect(hexagon.getAttribute('aria-label')).toBe('六边形')
+  hexagon.click()
   expect(onAction).toHaveBeenCalledWith('changeShape', 'hexagon')
-  expect(change.value).toBe('')
+  expect(change.getAttribute('aria-expanded')).toBe('false')
   ribbon.dispose()
 })
 

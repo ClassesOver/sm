@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import {
-  NUMBER_FORMAT_PRESETS, numberFormatPresetPattern, selectedWorkbookFormat, validateNumberFormat, captureNumberFormatTarget, applyCapturedNumberFormat,
+  NUMBER_FORMAT_PRESETS, RIBBON_NUMBER_FORMAT_SHORTCUTS, numberFormatPresetPattern, selectedWorkbookFormat, validateNumberFormat, captureNumberFormatTarget, applyCapturedNumberFormat,
   validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook, type FormatRange,
 } from './workbook-format'
 import { mountWorkbookRibbon, applyWorkbookRibbonCommand, type RibbonWorkbook } from './workbook-ribbon'
@@ -74,6 +74,18 @@ it('builds the GenOffice presets through the existing writable number-format pat
       'dd.mm.yyyy', 'dddd, mmmm dd, yyyy', 'h:mm:ss AM/PM', '0.00%', '# ?/?', '0.00E+00', '@',
     ])
   } finally { setSystemShortDate(previous) }
+})
+
+it('writes the source accounting, percent and comma shortcut patterns unchanged', () => {
+  const f = fixture(), target = captureNumberFormatTarget(f.workbook)
+  for (const { pattern } of RIBBON_NUMBER_FORMAT_SHORTCUTS) {
+    applyCapturedNumberFormat(target, f.workbook, pattern, true)
+  }
+  const [accounting, percentage, comma] = f.setNumberFormat.mock.calls.map(([pattern]) => pattern)
+  expect(accounting).toContain('("$"* #,##0.00')
+  expect(accounting).toContain(String.fromCharCode(92) + '(#,##0.00' + String.fromCharCode(92) + ')')
+  expect(percentage).toBe('0%')
+  expect(comma).toBe(accounting.replaceAll('"$"', ''))
 })
 
 it('validates with the pinned number-format parser and preserves significant literal spaces', () => {

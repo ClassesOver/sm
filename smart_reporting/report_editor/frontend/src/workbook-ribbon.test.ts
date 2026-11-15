@@ -35,6 +35,22 @@ it('offers all GenOffice number format categories and echoes the current selecti
   ribbon.dispose()
 })
 
+it('dispatches the three GenOffice Number shortcuts in their source order', () => {
+  const command = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => true, rotation: () => 0 })
+  const group = document.querySelector('[data-ribbon-control="number-format"]')!.closest('.workbook-ribbon-group')!
+  const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
+  expect(buttons.slice(0, 5).map(button => [button.dataset.ribbonCommand, button.getAttribute('aria-label')])).toEqual([
+    ['format:accounting', '货币'], ['format:0%', '百分比'], ['format:comma', '千位分隔'],
+    ['decimal-inc', '增加小数位'], ['decimal-dec', '减少小数位'],
+  ])
+  for (const button of buttons.slice(0, 3)) {
+    button.click()
+    expect(command).toHaveBeenLastCalledWith(button.dataset.ribbonCommand)
+  }
+  ribbon.dispose()
+})
+
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()
   const open = (editable: boolean) => {

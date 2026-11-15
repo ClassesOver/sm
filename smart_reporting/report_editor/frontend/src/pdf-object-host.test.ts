@@ -8,11 +8,11 @@ import type {createNativeApi,NativeContextResponse,NativeSaveResponse} from './n
 import {pdfReadingKey} from './pdf-reading-state'
 import {saveViewState} from './genoffice-pdf-reading-state'
 type TestAnnotation = { id:string;annotationType:number;subtype:string;contentsObj:{str:string};inReplyTo?:string;fieldType?:string;fieldName?:string;fieldValue?:string;required?:boolean;readOnly?:boolean;rect?:number[] }
-const pdfMock=vi.hoisted(()=>({pages:1,detach:false,text:'',annotations:[] as TestAnnotation[],printed:[] as number[]}))
+const pdfMock=vi.hoisted(()=>({pages:1,detach:false,text:'',annotations:[] as TestAnnotation[],printed:[] as number[],widgetPages:undefined as TestAnnotation[][]|undefined}))
 vi.mock('./source-validation',()=>({bytesSha256:async(bytes:Uint8Array)=>bytes[0]===91?'b'.repeat(64):'a'.repeat(64)}))
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs',()=>{
  const page={view:[0,0,300,400],rotate:0,userUnit:1,getViewport:({scale}:{scale:number})=>({width:300*scale,height:400*scale,viewBox:[0,0,300,400],convertToPdfPoint:(x:number,y:number)=>[x,y],convertToViewportPoint:(x:number,y:number)=>[x,y]}),getTextContent:async()=>({items:pdfMock.text ? [{str:pdfMock.text,transform:[10,0,0,10,30,100],width:pdfMock.text.length*5,height:10}] : []}),streamTextContent:()=>({}),getAnnotations:async()=>pdfMock.annotations,render:()=>({promise:Promise.resolve(),cancel:vi.fn()})}
- const pdf={get numPages(){return pdfMock.pages},getPage:async()=>page,getMetadata:async()=>({info:{}}),getOutline:async()=>[{title:'章节',dest:[{num:1}],items:[]}],getPageIndex:async()=>0,getAttachments:async()=>new Map([['stored',{filename:'keep.txt',description:'保留附件'}]]),getAttachmentContent:async()=>new Uint8Array([1,2,3]),destroy:async()=>{}}
+ const pdf={get numPages(){return pdfMock.pages},getPage:async(index:number)=>pdfMock.widgetPages?{...page,getAnnotations:async()=>pdfMock.widgetPages?.[index-1]??[]}:page,getMetadata:async()=>({info:{}}),getOutline:async()=>[{title:'章节',dest:[{num:1}],items:[]}],getPageIndex:async()=>0,getAttachments:async()=>new Map([['stored',{filename:'keep.txt',description:'保留附件'}]]),getAttachmentContent:async()=>new Uint8Array([1,2,3]),destroy:async()=>{}}
  return {AnnotationMode:{ENABLE:1},GlobalWorkerOptions:{},TextLayer:class{render(){return Promise.resolve()}},getDocument:({data}:{data:Uint8Array<ArrayBuffer>})=>{const fresh=data[0]===91; if(pdfMock.detach)structuredClone(data.buffer,{transfer:[data.buffer]});return {promise:Promise.resolve(fresh?{...pdf,numPages:2,getPage:async(index:number)=>({...page,rotate:index===1?90:0,render:()=>{pdfMock.printed.push(index);return {promise:Promise.resolve(),cancel:vi.fn()}}})}:pdf),destroy:async()=>{}}}}
 })
 const dialogDescriptors={showModal:Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype,'showModal'),close:Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype,'close')}
@@ -26,7 +26,7 @@ function operation(kind:string):NativeOperation{
 }
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
-async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
+async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
  pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??'';pdfMock.printed=[]
  const notes=options.savedThread?[
   { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
@@ -34,6 +34,8 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
  ]:[]
  pdfMock.annotations=notes.map(note=>({ id:note.sourceRef, annotationType:1, subtype:'Text', contentsObj:{str:note.contents}, ...(note.parentAnnotationId?{inReplyTo:'10R'}:{}) }))
  if(options.requiredField)pdfMock.annotations.push({id:'20R',annotationType:20,subtype:'Widget',contentsObj:{str:''},fieldType:'Tx',fieldName:'existing',fieldValue:'',required:true,rect:[20,20,120,44]})
+ const widgetAnnotation=(id:string,fieldName:string):TestAnnotation=>({id,annotationType:20,subtype:'Widget',contentsObj:{str:''},fieldType:'Tx',fieldName,rect:[20,20,110,44]})
+ pdfMock.widgetPages=options.widgetNavigation?[[widgetAnnotation('30R','existing')],[widgetAnnotation('31R','secondary')],[widgetAnnotation('32R','existing')]]:undefined
  const root=document.createElement('div');document.body.append(root)
  const identity={documentId:'pdf-object-host',revision:1,sourceSha256,scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}
  const seed=new NativeDraft(identity,localStorage);if(options.restored)seed.setOperations([options.restored]);const draft=new NativeDraft(identity,localStorage)
@@ -784,22 +786,42 @@ it('steps through editable PDF fields after navigation button focus and after a 
  f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
  const next=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-navigation="next"]')!
  const previous=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-navigation="previous"]')!
- function step(button:HTMLButtonElement,name:string){
+ async function step(button:HTMLButtonElement,name:string){
   button.focus();expect(document.activeElement).toBe(button);button.click()
-  expect(document.activeElement?.getAttribute('aria-label')).toBe(name)
+  await vi.waitFor(()=>expect(document.activeElement?.getAttribute('aria-label')).toBe(name))
  }
  const progress=f.root.querySelector('[aria-label="表单字段位置"]')!
  expect(progress.textContent).toBe('0 / 2')
- step(next,'existing');expect(progress.textContent).toBe('1 / 2')
- step(next,'secondary');expect(progress.textContent).toBe('2 / 2')
+ await step(next,'existing');expect(progress.textContent).toBe('1 / 2')
+ await step(next,'secondary');expect(progress.textContent).toBe('2 / 2')
  const second=document.activeElement as HTMLInputElement
  second.value='Changed';second.dispatchEvent(new Event('change'))
  await vi.waitFor(()=>expect(f.root.querySelector('.pdf-form-controls input[aria-label="secondary"]')).not.toBe(second))
  expect(progress.textContent).toBe('2 / 2')
- step(next,'existing');expect(progress.textContent).toBe('1 / 2')
- step(previous,'secondary')
- step(previous,'existing')
+ await step(next,'existing');expect(progress.textContent).toBe('1 / 2')
+ await step(previous,'secondary')
+ await step(previous,'existing')
  expect(f.draft.operations).toEqual([expect.objectContaining({kind:'setFormValue',name:'secondary',value:'Changed'})])
+})
+it('navigates actual repeated form widgets in visible page order and skips a deleted page', async () => {
+ const f=await fixture({exportPages:3,navigationFields:true,widgetNavigation:true})
+ const [first,second,third]=[0,1,2].map(page=>pageId.replace(/:0$/,':'+page))
+ f.draft.setOperations([{kind:'deletePage',pageId:second},{kind:'reorderPages',pageIds:[third,first]}])
+ await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
+ const next=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-navigation="next"]')!
+ const progress=f.root.querySelector('[aria-label="表单字段位置"]')!
+ const card=(id:string)=>f.root.querySelector<HTMLElement>('.pdf-page[data-page-id="'+id+'"]')!
+ card(first).scrollIntoView=vi.fn();card(third).scrollIntoView=vi.fn()
+ next.focus();next.click()
+ await vi.waitFor(()=>expect(progress.textContent).toBe('1 / 2'))
+ expect(card(third).classList.contains('is-active')).toBe(true)
+ expect(document.activeElement?.getAttribute('aria-label')).toBe('existing')
+ next.focus();next.click()
+ await vi.waitFor(()=>expect(progress.textContent).toBe('2 / 2'))
+ expect(card(first).scrollIntoView).toHaveBeenCalled()
+ expect(card(first).classList.contains('is-active')).toBe(true)
+ expect(document.activeElement?.getAttribute('aria-label')).toBe('existing')
 })
 it('checks required form fields, focuses the missing value and exits after a staged fill', async () => {
  const f=await fixture({requiredField:true});await f.create()

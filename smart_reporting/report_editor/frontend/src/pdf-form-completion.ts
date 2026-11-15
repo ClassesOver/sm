@@ -1,22 +1,27 @@
 import type { NativeOperation } from './native-draft'
 
-interface PdfCompletionWidget {
+export interface PdfReadableFormWidget {
   id?: string; subtype?: string; hidden?: boolean; fieldType?: string; fieldName?: string; fieldValue?: unknown
   required?: boolean; readOnly?: boolean; pushButton?: boolean; checkBox?: boolean; radioButton?: boolean; rect?: number[]
 }
 
+/** GenOffice form-catalog.ts normalizes each visible page's Widgets by top then left. */
+export function orderedPdfFormWidgets(annotations: readonly PdfReadableFormWidget[], removed: ReadonlySet<unknown>) {
+  return annotations.filter(widget => widget.subtype === 'Widget' && !widget.readOnly && !widget.hidden
+    && !widget.pushButton && widget.fieldName && widget.rect?.length === 4 && !removed.has(widget.id))
+    .sort((a,b) => b.rect![3] - a.rect![3] || a.rect![0] - b.rect![0])
+}
+
 /** GenOffice form-catalog.ts and App.tsx check visible, editable required fields using staged values. */
 export function missingRequiredPdfFields(
-  pages: readonly {pageId: string; annotations: readonly PdfCompletionWidget[]}[],
+  pages: readonly {pageId: string; annotations: readonly PdfReadableFormWidget[]}[],
   operations: readonly NativeOperation[],
 ) {
   const values = new Map(operations.filter(op => op.kind === 'setFormValue').map(op => [op.name, op]))
   const removed = new Set(operations.filter(op => op.kind === 'removeFormWidget').map(op => op.widgetId))
   const fields = new Map<string, {name: string; pageId: string; filled: boolean}>()
   for (const page of pages) {
-    const widgets = page.annotations.filter(widget => widget.subtype === 'Widget' && widget.required
-      && !widget.readOnly && !widget.hidden && !widget.pushButton && widget.fieldName && widget.rect?.length === 4 && !removed.has(widget.id))
-    widgets.sort((a,b) => b.rect![3] - a.rect![3] || a.rect![0] - b.rect![0])
+    const widgets = orderedPdfFormWidgets(page.annotations, removed).filter(widget => widget.required)
     for (const widget of widgets) {
       const name = widget.fieldName!
       const type = widget.fieldType

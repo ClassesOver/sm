@@ -65,6 +65,27 @@ def _crop(target, *, rect=None, geometry=None):
             'geometry': geometry or {'x': 120, 'y': 300, 'width': 160, 'height': 100}}
 
 
+def test_change_shape_gallery_preset_preserves_text_and_frame():
+    content, _ = _presentation(connected=True)
+    source = Presentation(BytesIO(content))
+    shape = next(item for item in source.slides[0].shapes if item.name == '左形状')
+    shape.text = '保留文字'
+    fixture = BytesIO()
+    source.save(fixture)
+    content = fixture.getvalue()
+    target = _target(content, '左形状')
+    modified = patch_office('pptx', content, [{
+        'kind': 'editSlides',
+        'shapeKinds': [{'slideIndex': 0, 'elementId': target['id'], 'kind': 'hexagon'}],
+    }])
+    reopened = Presentation(BytesIO(modified))
+    result = next(item for item in reopened.slides[0].shapes if item.name == '左形状')
+    assert result.auto_shape_type == MSO_SHAPE.HEXAGON
+    assert result.text == shape.text
+    assert (result.left, result.top, result.width, result.height) == (shape.left, shape.top, shape.width, shape.height)
+    assert next(item for item in reopened.slides[0].shapes if item.name == '右形状').auto_shape_type == MSO_SHAPE.RECTANGLE
+
+
 def _patch(content, **operation):
     return patch_office('pptx', content, [{'kind': 'editSlides', **operation}])
 

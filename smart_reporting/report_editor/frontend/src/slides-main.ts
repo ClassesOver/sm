@@ -987,7 +987,7 @@ function sendCanvasPreview() {
   const sequence = previewSequence
   void request<{ slides: (RenderSlide & { slideIndex: number;mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] }>('render-tree', {
     method: 'POST', body: JSON.stringify(native
-      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', ...(masterElementEdits.length ? { masterElementEdits: structuredClone(masterElementEdits) } : {}), ...(masterTextEdits.length ? { masterTextEdits: structuredClone(masterTextEdits) } : {}), edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()], tableCells: [...tableCellEdits.values()], tableStyles: [...tableStyleEdits.values()], ...(modelInsertions.length?{modelInsertions:structuredClone(modelInsertions)}:{}),...(modelViews.length?{modelViews:structuredClone(modelViews)}:{}),...(mediaInsertions.length?{mediaInsertions:structuredClone(mediaInsertions)}:{}),...(zoomInsertions.length?{zoomInsertions:structuredClone(zoomInsertions)}:{}), backgrounds:slideChanges().backgrounds,backgroundImages:slideChanges().backgroundImages,backgroundImageReuses:slideChanges().backgroundImageReuses,backgroundGradients:slideChanges().backgroundGradients,backgroundResets:slideChanges().backgroundResets,backgroundGraphics:slideChanges().backgroundGraphics,customShows:slideChanges().customShows }] }
+      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', ...(masterElementEdits.length ? { masterElementEdits: structuredClone(masterElementEdits) } : {}), ...(masterTextEdits.length ? { masterTextEdits: structuredClone(masterTextEdits) } : {}), edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()], tableCells: [...tableCellEdits.values()], tableStyles: [...tableStyleEdits.values()], shapeKinds: [...shapeKindEdits.values()], ...(modelInsertions.length?{modelInsertions:structuredClone(modelInsertions)}:{}),...(modelViews.length?{modelViews:structuredClone(modelViews)}:{}),...(mediaInsertions.length?{mediaInsertions:structuredClone(mediaInsertions)}:{}),...(zoomInsertions.length?{zoomInsertions:structuredClone(zoomInsertions)}:{}), backgrounds:slideChanges().backgrounds,backgroundImages:slideChanges().backgroundImages,backgroundImageReuses:slideChanges().backgroundImageReuses,backgroundGradients:slideChanges().backgroundGradients,backgroundResets:slideChanges().backgroundResets,backgroundGraphics:slideChanges().backgroundGraphics,customShows:slideChanges().customShows }] }
       : { expectedSha256: deck.sha256, edits: [...edits.values()] }),
   }).then(tree => {
     if (sequence !== previewSequence || locked()) return
@@ -2555,6 +2555,7 @@ function renderInspector() {
   for(const [command,enabled,reason] of [
     ['removeBackground',!cutoutReason(),cutoutReason()??''],
     ['cropPicture',!cropReason(),cropReason()??''],
+    ['changeShape',selectedObjects.size===1 && element?.type==='shape' && element.orderEditable!==false && !pendingGroup(selectedSlide), '请选择可更改类型的来源形状'],
     ['pictureOpacity', !opacityReason(), opacityReason() ?? '图片透明度（0–100%）：0 为不透明'],
     ...(['pictureOutlineMenu', 'pictureOutlineColor', 'pictureOutlineWidth', 'pictureNoOutline'].map(command =>
       [command, selectedObjects.size === 1 && pictureOutlineEnabled(element) && !pendingGroup(selectedSlide), '请选择支持轮廓编辑的来源图片'] as const)),
@@ -2860,13 +2861,17 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         openSectionDialog(); break
       case 'changeShape': {
         const kind = String(value ?? ''), element = currentElement()
-        if (!kind) break
-        if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
-        if (!element || element.type !== 'shape' || deletions.has(editKey(selectedSlide, element.id))) { statusMessage.textContent = '更改形状仅适用于形状（不含文本框与线条）'; break }
-        if (!SHAPE_PRESETS.includes(kind) || LINE_SHAPE_KINDS.includes(kind)) break
-        shapeKindEdits.set(editKey(selectedSlide, element.id), { slideIndex: selectedSlide, elementId: element.id, kind })
-        canvasStatus.textContent = '形状类型修改将在保存并打开新修订后显示在画布中。'
-        renderStructurePending(); markDirty(); break
+        if (!SHAPE_PRESETS.includes(kind) || LINE_SHAPE_KINDS.includes(kind)) return
+        if (!element || selectedObjects.size !== 1 || element.type !== 'shape' || element.orderEditable === false ||
+            isNewSlide(selectedSlide) || pendingGroup(selectedSlide) || deletions.has(editKey(selectedSlide, element.id))) return
+        const key = editKey(selectedSlide, element.id)
+        if (shapeKindEdits.get(key)?.kind === kind) return
+        const changes = slideChanges()
+        changes.shapeKinds = [...[...shapeKindEdits].filter(([id]) => id !== key).map(([, edit]) => edit),
+          { slideIndex: selectedSlide, elementId: element.id, kind }]
+        try { commitNativeChanges(changes) }
+        catch (error) { statusMessage.textContent = error instanceof Error ? error.message : '形状类型未更改' }
+        return
       }
       case 'tableStyle':
       case 'tableFirstRow':
@@ -3432,7 +3437,7 @@ function renderStructurePending() {
   for (const [index, section] of sectionEdits.entries()) row(`第 ${order.indexOf(section.slideIndex) + 1} 页前 · 新增节「${section.name}」`, () => { sectionEdits.splice(index, 1); renderSlides() })
   for (const [key, item] of shapeKindEdits) {
     const name = deck.slides[item.slideIndex]?.elements.find(element => element.id === item.elementId)?.name || item.elementId
-    row(`第 ${order.indexOf(item.slideIndex) + 1} 页 · ${name} · 更改为${SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes).find(shape => shape.prst === item.kind)?.label ?? item.kind}`, () => shapeKindEdits.delete(key))
+    row(`第 ${order.indexOf(item.slideIndex) + 1} 页 · ${name} · 更改为${SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes).find(shape => shape.prst === item.kind)?.label ?? item.kind}`, () => { shapeKindEdits.delete(key); refreshCanvasPreview() })
   }
   for (const [key, style] of shapeStyleEdits) {
     const name = deck.slides[style.slideIndex]?.elements.find(element => element.id === style.elementId)?.name || style.elementId

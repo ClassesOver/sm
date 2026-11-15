@@ -29,7 +29,7 @@ import { mountPdfCropCanvas } from './pdf-crop-canvas'
 import { bindPdfExtractDialog } from './pdf-extract-dialog'
 import { authorizeSavedPdfSource, type PdfFileOperation } from './pdf-file-source'
 import { bindPdfPrintDialog } from './pdf-print-dialog'
-import { missingRequiredPdfFields } from './pdf-form-completion'
+import { missingRequiredPdfFields, orderedPdfFormWidgets, type PdfReadableFormWidget } from './pdf-form-completion'
 import { bindPdfRedactionConfirm } from './pdf-redaction-confirm'
 import {bindPdfSplitHost} from './pdf-split-host'
 import {bindPdfMergeHost} from './pdf-merge-host'
@@ -737,19 +737,21 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }, { passive: false, signal: abort.signal })
   const formGroup = ribbon.group('fillForm', '填写可填写域')
   const formControls = documentElement('div', 'pdf-form-controls')
-  let formControlsKey = '', activeFormFieldId = ''
+  let formControlsKey = '', activeFormFieldId = '', activeFormWidgetKey = ''
+  let formWidgetPages: Map<number, PdfReadableFormWidget[]> | undefined
+  let formWidgetsLoading: Promise<void> | undefined
   formGroup.append(formControls)
   const formNavigation = documentElement('div', 'pdf-form-navigation')
   const previousField = documentElement('button', 'pdf-tool')
   previousField.type = 'button'; previousField.append(createPdfRibbonIcon('previousField', 18), window.document.createTextNode(pdfRibbonLabel('上一个字段'))); previousField.dataset.pdfFormNavigation = 'previous'
   sourceCommand(previousField, 'fillForm.previousField')
   previousField.setAttribute('aria-label', '上一个可编辑表单字段')
-  previousField.addEventListener('click', () => focusFormField(-1))
+  previousField.addEventListener('click', () => { void focusFormField(-1).catch(showError) })
   const nextField = documentElement('button', 'pdf-tool')
   nextField.type = 'button'; nextField.append(createPdfRibbonIcon('nextField', 18), window.document.createTextNode(pdfRibbonLabel('下一个字段'))); nextField.dataset.pdfFormNavigation = 'next'
   sourceCommand(nextField, 'fillForm.nextField')
   nextField.setAttribute('aria-label', '下一个可编辑表单字段')
-  nextField.addEventListener('click', () => focusFormField(1))
+  nextField.addEventListener('click', () => { void focusFormField(1).catch(showError) })
   const formProgress = documentElement('span', 'pdf-form-navigation-progress')
   formProgress.setAttribute('role', 'status'); formProgress.setAttribute('aria-label', '表单字段位置')
   formNavigation.append(previousField, nextField, formProgress)
@@ -2075,6 +2077,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     textMove?.update()
     replacementStyle.setDisabled(stageText.disabled||!textEnabled||!response.editingEnabled)
     for (const control of formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')) control.disabled = formDesignPreview || exclusiveDraft || control.dataset.pdfEditable !== 'true' || locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
+    syncFormProgress()
     homeTextEdit.disabled ||= !textEnabled || !textLoaded
     if (!textEnabled) homeTextEdit.title = '当前服务未启用 PDF 原位改字。'
     if (textEditButton) textEditButton.disabled ||= !textLoaded
@@ -2580,7 +2583,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       control.disabled = formDesignPreview || !field.editable || locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
       control.dataset.pdfEditable = String(field.editable)
       control.dataset.pdfFormFieldId = field.fieldId
-      if (field.editable) control.addEventListener('focus', () => { activeFormFieldId = field.fieldId; syncFormProgress() })
+      if (field.editable) control.addEventListener('focus', () => {
+        if (activeFormFieldId !== field.fieldId) activeFormWidgetKey = ''
+        activeFormFieldId = field.fieldId
+        syncFormProgress()
+      })
       control.dataset.pdfInitialValue = control.value
       control.dataset.pdfInitialChecked = String(field.kind === 'checkbox' && (control as HTMLInputElement).checked)
       control.setAttribute('aria-label', field.name)
@@ -2595,6 +2602,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       label.append(control); formControls.append(label)
     }
     syncFormProgress()
+    if (editableFields.length && sourceDocument && !formWidgetsLoading) formWidgetsLoading = readFormNavigationWidgets(sourceDocument)
     ribbon.setHasForms(fields.length > 0,model.capabilities?.createFormField===true,model.capabilities?.staticFill===true)
     if (!editableFields.length && fields.length) { const note = documentElement('p'); note.textContent = '检测到表单字段，但当前字段均为只读或暂不支持。'; formControls.append(note) }
   }
@@ -2629,18 +2637,59 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   function formNavigationFields() {
     return [...formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-pdf-editable="true"]')]
   }
+  async function readFormNavigationWidgets(source: PDFDocumentProxy) {
+    const pages = new Map<number, PdfReadableFormWidget[]>()
+    try {
+      for (const page of model.pages) {
+        const annotations = await annotationCache.get(source, page.index)
+        if (disposed || source !== sourceDocument) return
+        if (annotations.some(item => item.subtype === 'Widget')) pages.set(page.index, annotations)
+      }
+    } catch { return }
+    if (!pages.size) return
+    formWidgetPages = pages
+    syncFormProgress()
+  }
+  function formNavigationTargets() {
+    const fields = formNavigationFields()
+    if (!formWidgetPages) return fields.map(control => ({control, key:'', pageId:''}))
+    const names = new Map(fields.map(control => [control.getAttribute('aria-label'),control]))
+    const removed = new Set(draft.operations.filter(op => op.kind === 'removeFormWidget').map(op => op.widgetId))
+    return state().flatMap(page => {
+      if (page.blank) return []
+      return orderedPdfFormWidgets(formWidgetPages?.get(page.index) ?? [], removed).flatMap((widget,index) => {
+        const control = names.get(widget.fieldName!)
+        return control ? [{control, key:page.pageId + ':' + (widget.id ?? index), pageId:page.pageId}] : []
+      })
+    })
+  }
+  function focusedFormIndex(targets: ReturnType<typeof formNavigationTargets>) {
+    if (activeFormWidgetKey) return targets.findIndex(target => target.key === activeFormWidgetKey)
+    const same = (target: (typeof targets)[number]) => target.control.dataset.pdfFormFieldId === activeFormFieldId
+    const onPage = targets.findIndex(target => target.pageId === activeId && same(target))
+    return onPage >= 0 ? onPage : targets.findIndex(same)
+  }
   function syncFormProgress() {
     const fields = formNavigationFields()
-    const current = fields.findIndex(field => field.dataset.pdfFormFieldId === activeFormFieldId)
-    formProgress.hidden = fields.length === 0
-    formProgress.textContent = String(current + 1) + ' / ' + fields.length
+    const targets = formNavigationTargets()
+    const current = focusedFormIndex(targets)
+    formProgress.hidden = targets.length === 0
+    formProgress.textContent = String(current + 1) + ' / ' + targets.length
+    previousField.disabled = nextField.disabled = !targets.some(target => !target.control.disabled) || !fields.length
   }
-  function focusFormField(direction: -1 | 1) {
-    const fields = formNavigationFields().filter(field => !field.disabled)
-    if (!fields.length) return
-    const current = fields.findIndex(field => field.dataset.pdfFormFieldId === activeFormFieldId)
-    const next = current < 0 ? (direction > 0 ? 0 : fields.length - 1) : (current + direction + fields.length) % fields.length
-    fields[next]?.focus()
+  async function focusFormField(direction: -1 | 1) {
+    await formWidgetsLoading
+    if (disposed || root.querySelector('[data-pdf-ribbon-tab="fillForm"]')?.getAttribute('aria-selected') !== 'true') return
+    const targets = formNavigationTargets().filter(target => !target.control.disabled)
+    if (!targets.length) return
+    const current = focusedFormIndex(targets)
+    const next = current < 0 ? (direction > 0 ? 0 : targets.length - 1) : (current + direction + targets.length) % targets.length
+    const target = targets[next]
+    activeFormFieldId = target.control.dataset.pdfFormFieldId ?? ''
+    activeFormWidgetKey = target.key
+    if (target.pageId && target.pageId !== activeId) jumpToPageForIdentity(target.pageId)
+    target.control.focus()
+    syncFormProgress()
   }
   function renderTextPanel(force = false) {
     textPanel.hidden = !textEnabled || mode !== 'text' || !!previewDocument

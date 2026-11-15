@@ -2,7 +2,7 @@ import { createElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { RIBBON_GLYPH_ICONS } from './workbook-vendor/ui/ribbon-icons'
 import { IconSuperscript, IconSubscript, IconRotateLeft, IconRotateRight, IconClearFormat, IconIndentInc, IconIndentDec, IconPrintLayout, IconUndo, IconRedo, IconTableProperties, IconAutoFit, IconTextBox, IconEquation, IconSymbol, IconTheme, IconThemeFonts, IconThemeColors, IconHeader, IconZoomIn, IconZoomOut, IconZoom100, IconZoom, IconPageWidth, IconTranslate } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
-import { Bold, Italic, Underline, Strikethrough, Percent, Hash, Baseline, AlignVerticalSpaceAround, createElement as lucideElement } from 'lucide'
+import { Bold, Italic, Underline, Strikethrough, DollarSign, Percent, Hash, Baseline, AlignVerticalSpaceAround, createElement as lucideElement } from 'lucide'
 
 // 固定 GenOffice 图形优先；源字体按钮本身为 B/I/U 文本时才用现有 Lucide 轮廓补齐。
 const source: Record<string, ComponentType<{size?: number}>> = {
@@ -38,7 +38,7 @@ const glyphs: Record<string,string> = {
 }
 const fallback: Record<string, Parameters<typeof lucideElement>[0]> = {
   bold: Bold, italic: Italic, underline: Underline, 'underline:double': Underline, strike: Strikethrough,
-  'format:0%': Percent, 'format:0.00': Hash, 'format:#,##0.00': Hash,
+  'format:accounting': DollarSign, 'format:comma': Hash, 'format:0%': Percent, 'format:0.00': Hash, 'format:#,##0.00': Hash,
   'decimal-inc': Baseline, 'decimal-dec': Baseline, 'valign:middle': AlignVerticalSpaceAround,
 }
 export function workbookCommandIcon(command: string, existingGlyph?: string): string | undefined {

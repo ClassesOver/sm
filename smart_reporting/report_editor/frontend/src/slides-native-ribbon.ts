@@ -25,6 +25,7 @@ import iconTransparency from './vendor/genoffice-slides/components/icon-transpar
 import iconCrop from './vendor/genoffice-slides/components/icon-crop.png'
 import { IconPageBorders } from './vendor/genoffice-slides/components/icons'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
+import { ShapePreview } from './vendor/genoffice-docs/packages/ui/src/shape-gallery'
 
 /**
  * Native web subset of GenOffice Slides Ribbon at f8c17004fb730df11f0f743164ffd8b4281bb38c.
@@ -268,15 +269,16 @@ const tabs: Tab[] = [
     ] },
   ] },
   { id: 'shapeFormat', label: 'Shape Format', context: 'shape', groups: [
+    { label: 'Shapes', controls: [{ id: 'changeShape', label: 'Change Shape', sourceActionId: 'onChangeShape' }] },
     { label: 'Size', controls: [{ id: 'shapeGeometry', label: 'Position and Size' }] },
-    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', caption: '填充', kind: 'color', sourceActionId: 'onShapeFill' }, { id: 'shapeNoFill', label: 'No Fill', caption: '无填充', sourceActionId: 'onShapeFill' }, { id: 'shapeOutline', label: 'Outline', caption: '轮廓', kind: 'color', sourceActionId: 'onShapeOutline' }, { id: 'shapeOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: ['0.75', '1', '1.5', '2.25', '3', '4.5', '6'], optionLabels: ['0.75 磅', '1 磅', '1.5 磅', '2.25 磅', '3 磅', '4.5 磅', '6 磅'], sourceActionId: 'onShapeOutline' }, { id: 'shapeNoOutline', label: 'No Outline', caption: '无轮廓', sourceActionId: 'onShapeOutline' }, { id: 'changeShape', label: 'Change Shape', caption: '更改形状', kind: 'select', sourceActionId: 'onChangeShape' }] },
+    { label: 'Shape Styles', controls: [{ id: 'shapeFill', label: 'Fill', caption: '填充', kind: 'color', sourceActionId: 'onShapeFill' }, { id: 'shapeNoFill', label: 'No Fill', caption: '无填充', sourceActionId: 'onShapeFill' }, { id: 'shapeOutline', label: 'Outline', caption: '轮廓', kind: 'color', sourceActionId: 'onShapeOutline' }, { id: 'shapeOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: ['0.75', '1', '1.5', '2.25', '3', '4.5', '6'], optionLabels: ['0.75 磅', '1 磅', '1.5 磅', '2.25 磅', '3 磅', '4.5 磅', '6 磅'], sourceActionId: 'onShapeOutline' }, { id: 'shapeNoOutline', label: 'No Outline', caption: '无轮廓', sourceActionId: 'onShapeOutline' }] },
   ] },
   { id: 'model3dFormat', label: '3D Model', context: 'model3d', groups: [{ label: 'Views', controls: [{ id: 'model3dView', label: '3D View', unavailable: noWrite('3D 视角') }] }] },
 ]
 
-function createPictureRibbonMenu(trigger: HTMLButtonElement, label: string, closeSibling: () => void) {
+function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOpen: () => void) {
   const menu = document.createElement('div')
-  menu.className = 'slides-picture-ribbon-menu'
+  menu.className = 'slides-ribbon-popover'
   menu.setAttribute('popover', 'manual')
   menu.setAttribute('role', 'dialog')
   menu.setAttribute('aria-label', label)
@@ -295,7 +297,7 @@ function createPictureRibbonMenu(trigger: HTMLButtonElement, label: string, clos
   }
   const open = () => {
     if (trigger.disabled || !menu.hidden) return
-    closeSibling()
+    beforeOpen()
     menu.hidden = false
     menu.showPopover?.()
     trigger.setAttribute('aria-expanded', 'true')
@@ -345,7 +347,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let activeContext: NativeSlidesContext = null
   let chartGallery: ReturnType<typeof createNativeChartGallery> | undefined
   let closePictureOutline: (() => void) | undefined
-  let pictureTransparency: ReturnType<typeof createPictureRibbonMenu> | undefined
+  let pictureTransparency: ReturnType<typeof createRibbonPopover> | undefined
+  let closeShapeGallery: (() => void) | undefined
   const closePictureMenus = () => { closePictureOutline?.(); pictureTransparency?.close() }
   let locked = options.locked === true
   let currentAnimationEffect = ''
@@ -388,6 +391,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   const selectTab = (id: string) => {
     if (id !== 'chartDesign') chartGallery?.close()
     if (id !== 'pictureFormat') closePictureMenus()
+    if (id !== 'shapeFormat') closeShapeGallery?.()
     activeTab = id
     for (const tab of tabs) {
       const selected = tab.id === id
@@ -451,7 +455,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         trigger.innerHTML = renderToStaticMarkup(reactElement(IconPageBorders, { size: 15 }))
         trigger.append(document.createTextNode(groupLabel + ' ▾'))
         controls.set('pictureOutlineMenu', [trigger])
-        const { menu, close } = createPictureRibbonMenu(trigger, groupLabel, () => pictureTransparency?.close())
+        const { menu, close } = createRibbonPopover(trigger, groupLabel, () => pictureTransparency?.close())
         group.append(trigger, menu)
         controlHost = menu
         closePictureOutline = close
@@ -500,7 +504,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           icon.src = iconTransparency
           icon.alt = ''
           trigger.append(icon, localizedLabel + ' ▾')
-          const { menu, close } = createPictureRibbonMenu(trigger, localizedLabel, () => closePictureOutline?.())
+          const { menu, close } = createRibbonPopover(trigger, localizedLabel, () => closePictureOutline?.())
           pictureTransparency = { menu, close }
           for (const value of PICTURE_TRANSPARENCY_PRESETS) {
             const choice = document.createElement('button')
@@ -515,6 +519,41 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
             }
             menu.append(choice)
           }
+          controlHost.append(trigger, menu)
+          element = trigger
+        } else if (control.id === 'changeShape') {
+          const trigger = document.createElement('button')
+          trigger.type = 'button'
+          trigger.dataset.command = control.id
+          trigger.innerHTML = renderToStaticMarkup(reactElement(IconShapes, { size: 18 }))
+          trigger.append(localizedLabel + ' ▾')
+          const { menu, close } = createRibbonPopover(trigger, localizedLabel, () => {
+            if (menu.hasChildNodes()) return
+            for (const category of SHAPE_GALLERY_GROUPS) {
+              const shapes = category.shapes.filter(shape => !LINE_SHAPE_KINDS.includes(shape.prst))
+              if (!shapes.length) continue
+              const title = document.createElement('div'), grid = document.createElement('div')
+              title.textContent = category.group
+              grid.className = 'slides-shape-gallery-grid'
+              for (const shape of shapes) {
+                const choice = document.createElement('button')
+                choice.type = 'button'
+                choice.dataset.prst = shape.prst
+                choice.title = shape.label
+                choice.setAttribute('aria-label', shape.label)
+                choice.innerHTML = renderToStaticMarkup(reactElement(ShapePreview, { prst: shape.prst, size: 18 }))
+                choice.onclick = () => {
+                  if (trigger.disabled || menu.hidden) return
+                  close(true)
+                  options.onAction(control.id, shape.prst)
+                }
+                grid.append(choice)
+              }
+              menu.append(title, grid)
+            }
+          })
+          menu.classList.add('slides-shape-gallery')
+          closeShapeGallery = close
           controlHost.append(trigger, menu)
           element = trigger
         } else if (control.id === 'pictureOutlineWidth') {
@@ -551,13 +590,12 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
             // 固定源共享艺术字库：12 个预设，顺序与名称同固定源。
             select.add(new Option('插入艺术字…', ''))
             for (const preset of WORDART_PRESETS) select.add(new Option(WORDART_PRESET_LABELS[preset.id] ?? preset.id, preset.id))
-          } else if (control.id === 'insertShape' || control.id === 'changeShape') {
+          } else if (control.id === 'insertShape') {
             // 固定源形状库：分组与顺序同 SHAPE_GALLERY_GROUPS，选后复位。
-            select.add(new Option(control.id === 'insertShape' ? '插入形状…' : '更改形状…', ''))
-            // 更改形状与固定源一致：线条不在可选范围内。
-            for (const group of SHAPE_GALLERY_GROUPS.filter(item => control.id === 'insertShape' || item.shapes.some(shape => !LINE_SHAPE_KINDS.includes(shape.prst)))) {
+            select.add(new Option('插入形状…', ''))
+            for (const group of SHAPE_GALLERY_GROUPS) {
               const optgroup = document.createElement('optgroup'); optgroup.label = group.group
-              for (const shape of group.shapes.filter(item => control.id === 'insertShape' || !LINE_SHAPE_KINDS.includes(item.prst))) optgroup.append(new Option(shape.label, shape.prst))
+              for (const shape of group.shapes) optgroup.append(new Option(shape.label, shape.prst))
               select.append(optgroup)
             }
           } else if (control.id === 'layout' || control.id === 'addSlideWithLayout') {
@@ -566,7 +604,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           } else {
             for (const [index, value] of (control.options ?? []).entries()) select.add(new Option(localize(control.optionLabels?.[index] ?? (control.id === 'lineSpacingPct' ? `${Number(value) / 100} 倍` : value)), value))
           }
-          select.addEventListener('change', () => { if (control.id === 'translate' && (!aiEditReady || locked || !select.value)) return; options.onAction(control.id, select.value); if (['translate', 'addSlideWithLayout', 'insertShape', 'changeShape', 'insertWordArt', 'insertChart', 'insertSmartArt'].includes(control.id)) select.value = '' })
+          select.addEventListener('change', () => { if (control.id === 'translate' && (!aiEditReady || locked || !select.value)) return; options.onAction(control.id, select.value); if (['translate', 'addSlideWithLayout', 'insertShape', 'insertWordArt', 'insertChart', 'insertSmartArt'].includes(control.id)) select.value = '' })
           element = select
         } else if (control.kind === 'font' || control.kind === 'number' || control.kind === 'color' || control.kind === 'spacing') {
           const input = document.createElement('input')
@@ -622,7 +660,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (control.id === 'print') element.setAttribute('aria-keyshortcuts', 'Control+P Meta+P')
         if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = localizedLabel + '：作用于当前对象的全部段落；自定义输入 Enter 提交'
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
-        if (control.id === 'pictureOpacity') continue
+        if (control.id === 'pictureOpacity' || control.id === 'changeShape') continue
         if ((control.caption && control.id !== 'pictureOutlineWidth') || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
           const label = document.createElement('label')
           label.htmlFor = controlId
@@ -756,7 +794,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
-      if (value) closePictureMenus()
+      if (value) { closePictureMenus(); closeShapeGallery?.() }
       chartGallery?.setLocked(value)
       for (const elements of controls.values()) for (const element of elements) {
         if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement || element instanceof HTMLFieldSetElement) {
@@ -772,7 +810,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateCommentEdit()
       updateAIEdit()
     },
-    dispose() { chartGallery?.dispose(); closePictureMenus(); disposeScroll(); root.remove() },
+    dispose() { chartGallery?.dispose(); closePictureMenus(); closeShapeGallery?.(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

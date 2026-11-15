@@ -9,6 +9,15 @@ import { readBackSnapshot } from './workbook-vendor/grid/sync'
 import { diffToEdits } from './workbook-vendor/core/session-core'
 import type { WorkbookOperation } from './workbook-draft'
 
+// Representative formats from the fixed GenOffice excel-format-shortcuts.ts.
+export const RIBBON_NUMBER_FORMAT_SHORTCUTS = [
+  { command: 'format:accounting', label: '货币', pattern: "_(\"$\"* #,##0.00_);_(\"$\"* \\(#,##0.00\\);_(\"$\"* \"-\"??_);_(@_)" },
+  { command: 'format:0%', label: '百分比', pattern: '0%' },
+  { command: 'format:comma', label: '千位分隔', pattern: "_(* #,##0.00_);_(* \\(#,##0.00\\);_(* \"-\"??_);_(@_)" },
+] as const
+
+export type RibbonNumberFormatShortcut = typeof RIBBON_NUMBER_FORMAT_SHORTCUTS[number]['command']
+
 // GenOffice NumberFormatSelect category order and representative formats.
 export const NUMBER_FORMAT_PRESETS = [
   { id: 'general', sourceLabel: 'General', label: '常规' },

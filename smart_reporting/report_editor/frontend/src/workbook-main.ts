@@ -163,7 +163,7 @@ import {
   type RibbonWorkbook,
   type WorkbookPageSetupState,
 } from './workbook-ribbon'
-import { selectedWorkbookFormat, NUMBER_FORMAT_PRESETS, numberFormatPresetPattern, captureNumberFormatTarget, applyCapturedNumberFormat, validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook } from './workbook-format'
+import { selectedWorkbookFormat, RIBBON_NUMBER_FORMAT_SHORTCUTS, NUMBER_FORMAT_PRESETS, numberFormatPresetPattern, captureNumberFormatTarget, applyCapturedNumberFormat, validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook } from './workbook-format'
 import {
   absoluteRangeRef, applyDefinedNameAction, createNameManagerDialog, definedNamesPlanOperation,
   liveDefinedNames, type DefinedNameWorkbook,
@@ -2597,10 +2597,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           formatCellsDialog.open()
           return
         }
-        if (command.startsWith('number-format:')) {
+        const shortcutFormat = RIBBON_NUMBER_FORMAT_SHORTCUTS.find(shortcut => shortcut.command === command)
+        if (shortcutFormat || command.startsWith('number-format:')) {
           const preset = NUMBER_FORMAT_PRESETS.find(({ id }) => command === `number-format:${id}`)
-          if (!preset) throw new Error('未知数字格式')
-          applyNumberFormat(captureNumberFormatTarget(formatWorkbook()), numberFormatPresetPattern(preset.id))
+          const pattern = shortcutFormat?.pattern ?? (preset && numberFormatPresetPattern(preset.id))
+          if (!pattern) throw new Error('未知数字格式')
+          applyNumberFormat(captureNumberFormatTarget(formatWorkbook()), pattern)
           return
         }
         if (command === 'format:custom-open') {

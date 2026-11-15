@@ -109,6 +109,30 @@ it('分布需至少三项，切换页面后不沿用上页选择', async () => {
   app.view.dispose()
 })
 
+it('previews a shape picked from the gallery and undoes the same geometry change', async () => {
+  const app = await open()
+  try {
+    const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    object.value = 'two'
+    object.dispatchEvent(new Event('change', { bubbles: true }))
+    app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-shapeFormat')!.click()
+    app.command('changeShape').click()
+    app.shell.editor.querySelector<HTMLButtonElement>('[data-prst="hexagon"]')!.click()
+    const shapeKind = { slideIndex: 0, elementId: 'two', kind: 'hexagon' }
+    expect(app.draft.operations[0]?.shapeKinds).toEqual([shapeKind])
+    const preview = () => {
+      const call = app.request.mock.calls.filter(([path, init]) => path === 'render-tree' && init?.method === 'POST').at(-1)
+      return call && JSON.parse(call[1]!.body as string).operations[0].shapeKinds
+    }
+    await vi.waitFor(() => expect(preview()).toEqual([shapeKind]), { timeout: 5000 })
+    app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+    expect(app.draft.operations).toEqual([])
+    await vi.waitFor(() => expect(preview()).toEqual([]), { timeout: 5000 })
+  } finally {
+    app.view.dispose()
+  }
+})
+
 it('stages picture rotation and flips from the ribbon with one undo step per command', async () => {
   const app = await open()
   try {
