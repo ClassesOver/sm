@@ -23,6 +23,53 @@ from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('target', ['example.com/sales', 'Sheet!B2', None])
+async def test_source_hyperlink_replays_without_overwriting_cell_content(target):
+    book = Workbook()
+    book.active['A1'] = '=B2'
+    book.active['A1'].hyperlink = 'https://example.org/original'
+    book.active['A1'].font = Font(bold=True, color='FF112233', underline='single')
+    original = BytesIO()
+    book.save(original)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', original.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_hyperlink', 'sheetId': 'Sheet', 'address': '$a$1', 'target': target},
+    ], '更新链接')
+    cell = load_workbook(BytesIO(written)).active['A1']
+    assert cell.value == '=B2' and cell.font.bold
+    if target is None:
+        assert cell.hyperlink is None and cell.font.underline is None and cell.font.color is None
+    else:
+        assert cell.font.underline == 'single' and cell.font.color.rgb[-6:] == '0563C1'
+        if target.startswith('Sheet!'):
+            assert cell.hyperlink.location == target and cell.hyperlink.target is None
+        else:
+            assert cell.hyperlink.target == 'https://' + target
+
+
+@pytest.mark.anyio
+async def test_source_hyperlink_requires_workbook_scope():
+    async def preview(_):
+        pytest.fail('Hyperlink proposal in range scope reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0},
+        preview=preview)
+    with pytest.raises(ValueError, match='selection_mismatch'):
+        await tools.propose_operations([
+            {'op': 'set_hyperlink', 'sheetId': 'Sheet', 'address': 'A1', 'target': 'https://example.com'},
+        ], '插入链接')
+
+
+@pytest.mark.anyio
 async def test_source_add_table_uses_replayed_headers_and_keeps_cell_styles():
     book = Workbook()
     book.active['A1'] = '旧表头'

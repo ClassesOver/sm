@@ -17,6 +17,9 @@ import { applyChartAnchors } from '../packages/xlsx-engine/src/chart-anchor'
 import { applyChartSource } from './chart-sources'
 import { applyTableSource } from './table-source'
 import { clearCellRange } from '../packages/xlsx-engine/src/workbook-write'
+import { parseAddress } from '../packages/xlsx-engine/src/cell-address'
+import { normalizeLinkTarget } from '../packages/xlsx-engine/src/hyperlink-target'
+import { cellHyperlinkState, readPackageSheetHyperlinks } from '../packages/xlsx-engine/src/hyperlink-write'
 import { validateExternalSourceBinding } from '../packages/xlsx-engine/src/external-links-source'
 import { applyExternalLinkCaches } from '../packages/xlsx-engine/src/external-links-update'
 import { applyExternalLinkOperation } from '../packages/xlsx-engine/src/external-links'
@@ -245,6 +248,24 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
           edits: z.array(z.object({ ref: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}$/), expectedTarget: target, target }).strict()).min(1).max(HYPERLINK_EDIT_LIMIT),
         }).strict().parse(op)
         bytes = await applySheetHyperlinks(bytes, parsed.sheetName, parsed.edits); break
+      }
+      case 'applyHyperlinkSource': {
+        const parsed = z.object({kind: z.literal('applyHyperlinkSource'), sheetName: z.string().min(1).max(31),
+          ref: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}$/), target: z.string().max(HYPERLINK_TARGET_LIMIT).nullable(),
+        }).strict().parse(op)
+        const {row, column} = parseAddress(parsed.ref)
+        if (row >= 1048576 || column >= 16384) throw new Error('workbook_ai_hyperlink_invalid')
+        const target = parsed.target === null ? null : normalizeLinkTarget(parsed.target)
+        if (target === null && parsed.target !== null) throw new Error('workbook_ai_hyperlink_invalid')
+        const expectedTarget = cellHyperlinkState(await readPackageSheetHyperlinks(bytes, parsed.sheetName), row, column)
+        if (expectedTarget === target) break
+        bytes = await applySheetHyperlinks(bytes, parsed.sheetName, [{ref: parsed.ref, expectedTarget, target}])
+        bytes = await applyCellEdits(bytes, [{
+          sheetName: parsed.sheetName, row, column, writeValue: false, cell: {value: null},
+          style: target === null ? {underline: false, fontColor: null}
+            : {underline: true, underlineStyle: 'single', fontColor: '#0563C1'},
+        }])
+        break
       }
       case 'removeSheetSplitPane': bytes = await removeSheetSplitPane(bytes, op); break
       case 'setThemePart': { const valid = setThemePartSchema.parse(op); bytes = await setThemePart(bytes, valid.themePath, valid.state); break }

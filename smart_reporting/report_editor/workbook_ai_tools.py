@@ -392,6 +392,11 @@ class WorkbookAIToolkit(Toolkit):
                 '用 {op:clear_range,sheetId,range} 清空值和公式，保留格式。'
                 '大范围清空每项最多 200000 格；其余单元格操作每批最多展开 2000 格。'
             )
+        if 'layout' in guides:
+            catalog['layout'] += (
+                '整簿授权下用 {op:set_hyperlink,sheetId,address,target} 设置链接。'
+                'target 是网址或同工作簿工作表引用；传 null 移除。'
+            )
         if 'charts' in guides:
             catalog['charts'] += (
                 '迷你图新增使用源 DSL {op:add_sparkline,sheetId,type:line|column|stacked,dataRange,targetCell?,color?}。'
@@ -441,6 +446,15 @@ class WorkbookAIToolkit(Toolkit):
             end = f'{get_column_letter(c1 + 1)}{r1 + 1}'
             return {'kind': 'applyTableSource', 'sheetName': sheet['name'], 'range': f'{start}:{end}',
                     **{key: operation[key] for key in ('name', 'style', 'bandedRows') if key in operation}}
+        if op == 'set_hyperlink':
+            if set(operation) != {'op', 'sheetId', 'address', 'target'}:
+                raise ValueError('workbook_ai_hyperlink_invalid')
+            sheet_id, target = operation['sheetId'], operation['target']
+            if (not isinstance(sheet_id, str) or not sheet_id
+                    or (target is not None and (not isinstance(target, str) or not 1 <= len(target) <= 2048))):
+                raise ValueError('workbook_ai_hyperlink_invalid')
+            return {'kind': 'applyHyperlinkSource', 'sheetName': self._sheet(sheet_id)['name'],
+                    'ref': _cell_address(operation['address']), 'target': target}
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}
