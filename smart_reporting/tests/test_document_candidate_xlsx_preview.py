@@ -2,7 +2,7 @@ import hashlib
 import io
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from smart_reporting.document_candidate_contract import (
     DocumentCandidateRequest, DocumentFormat, DocumentScope,
@@ -45,7 +45,15 @@ async def test_xlsx_preview_diff_does_not_modify_original_or_accept():
     assert preview["formulaCount"] == 1
     assert preview["requiresFormulaRecalculation"] is True
     assert preview["changes"] == [{"sheet": "Sheet1", "cell": "A1", "before": 12, "after": 15}]
-    assert original == workbook_bytes()
+    # Rebuilding XLSX archives is not byte-for-byte deterministic (ZIP metadata).
+    # Reopen the *same* source bytes to verify the preview never modified cells.
+    unchanged = load_workbook(io.BytesIO(original), data_only=False)
+    try:
+        assert unchanged['Sheet1']['A1'].value == 12
+        assert unchanged['Sheet1']['B1'].value == '=A1*2'
+    finally:
+        unchanged.close()
+    assert hashlib.sha256(original).hexdigest() == digest
     assert await engine.prepare(request) == task_id
     with pytest.raises(PermissionError):
         await engine.status(
