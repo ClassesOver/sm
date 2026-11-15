@@ -503,7 +503,7 @@ function renderEntries() {
     const folderLabel = escape(location(item.folder))
     return `<div class="file-row" ${canWrite() ? `draggable="true" data-drag-file="${escape(item.id)}"` : ''}>
     <input type="checkbox" data-select-file="${escape(item.id)}" aria-label="选择 ${escape(item.name)}" ${selectedFiles.has(item.id) ? 'checked' : ''}>
-    <button data-open="${escape(item.path)}">${badge(item.format, 24)} <span>${escape(item.name)}${match(item)?.snippet ? `<small class="file-search-snippet">${escape(match(item)!.snippet)}</small>` : ''}</span></button>
+    <button data-open="${escape(item.path)}">${badge(item.format, 24)} <span class="file-entry-text"><span class="file-name" title="${escape(item.name)}">${escape(item.name)}</span>${match(item)?.snippet ? `<small class="file-search-snippet">${escape(match(item)!.snippet)}</small>` : ''}</span></button>
     <span class="file-location" title="${folderLabel}">${folderLabel}</span>
     <button data-star="${escape(item.path)}" aria-label="${item.starred ? '取消收藏' : '收藏'} ${escape(item.name)}" aria-pressed="${item.starred}">${icon('star')}</button>
     ${canWrite() ? `<button data-file-actions="${escape(item.id)}" aria-label="管理文件 ${escape(item.name)}">${icon('more')}</button>` : ''}

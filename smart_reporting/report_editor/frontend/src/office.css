@@ -89,6 +89,9 @@ h1 span { display: block; font-weight: 500; }
 .file-row:hover { background: white; }
 .file-row button:first-child, .file-row button[data-open] { flex: 1; display: flex; align-items: center; gap: 10px; text-align: left; min-height: 40px; }
 .office-file-selection:not([hidden]) { display: flex; gap: 12px; align-items: center; padding: 4px 8px; }
+.file-row button[data-open], .file-entry-text { min-width: 0; }
+.file-row button[data-open] img, .file-row button[data-star], .file-row button[data-file-actions] { flex-shrink: 0; }
+.file-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-location { flex: 0 1 28%; min-width: 0; padding-inline: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
 .file-search-snippet { display: block; opacity: .75; overflow-wrap: anywhere; }
 .file-row button[aria-pressed=true] svg { fill: #f6bd33; stroke: #ad7900; }
