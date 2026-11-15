@@ -19,6 +19,7 @@ from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_bounda
 
 from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import validate_chart_candidates
+from .workbook_search import find_cell_indexes
 
 
 def _bounds(address: str) -> tuple[int, int, int, int]:
@@ -180,24 +181,26 @@ class WorkbookAIToolkit(Toolkit):
         return {'sheetId': sheet['name'], 'features': deepcopy({key: value for key, value in sheet.items() if key not in {'cells', 'path', 'name'}}),
                 'definedNames': deepcopy(self._model.get('definedNames', []))}
 
-    def find_cells(self, query: str = '', sheetId: str | None = None, look_in: str = 'both', errors_only: bool = False, max_results: int = 50) -> dict[str, Any]:
-        """在授权内容内查找值、公式或错误；不执行正则表达式，最多200条。"""
-        if look_in not in {'values', 'formulas', 'both'} or not 1 <= max_results <= 200 or not query and not errors_only:
+    def find_cells(self, query: str = '', sheetId: str | None = None, look_in: str = 'both', errors_only: bool = False, max_results: int = 50, regex: bool = False) -> dict[str, Any]:
+        """在冻结授权内容中搜索；regex 使用大小写不敏感的 JavaScript 正则，最多200条。"""
+        if (not isinstance(query, str) or look_in not in {'values', 'formulas', 'both'}
+                or type(max_results) is not int
+                or type(regex) is not bool or type(errors_only) is not bool):
             raise ValueError('workbook_ai_search_invalid')
-        matches = []
-        errors = {'#REF!', '#DIV/0!', '#VALUE!', '#NAME?', '#N/A', '#NUM!', '#NULL!'}
-        sheets = [self._sheet(sheetId)] if sheetId else self._sheets.values()
+        query = query.strip()
+        if not query and not errors_only:
+            raise ValueError('workbook_ai_search_invalid')
+        max_results = min(max_results, 200) if max_results >= 1 else 50
+        entries = []
+        sheets = [self._sheet(sheetId)] if sheetId is not None else self._sheets.values()
         for sheet in sheets:
             for address, cell in self._visible_cells(sheet):
-                fields = [str(cell.get(key, '')) for key in ('value', 'formula') if look_in == 'both' or key == ('value' if look_in == 'values' else 'formula')]
-                if errors_only and str(cell.get('value')) not in errors:
-                    continue
-                if query.casefold() not in ' '.join(fields).casefold():
-                    continue
-                if len(matches) == max_results:
-                    return {'matches': matches, 'truncated': True}
-                matches.append({'sheetName': sheet['name'], 'address': address, **deepcopy(cell)})
-        return {'matches': matches, 'truncated': False}
+                entries.append({'sheetName': sheet['name'], 'address': address, **deepcopy(cell)})
+        result = find_cell_indexes(
+            [{key: cell[key] for key in ('value', 'formula') if key in cell} for cell in entries],
+            query=query, regex=regex, look_in=look_in, errors_only=errors_only, max_results=max_results,
+        )
+        return {'matches': [entries[index] for index in result['indexes']], 'truncated': result['truncated']}
 
     def aggregate_range(self, range: str, sheetId: str | None = None, topValues: int = 10) -> dict[str, Any]:
         """统计授权范围内非空数、不同值数、数值合计/均值/极值；最多100万格。"""

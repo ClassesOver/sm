@@ -147,9 +147,9 @@ class NativeWorkbookReadTools:
 
     def find_cells(self, query: str = '', sheetId: str | None = None,
                    look_in: str = 'both', errors_only: bool = False,
-                   max_results: int = 50) -> dict[str, Any]:
-        """仅在授权值/公式中查找；搜索片段不计为完整阅读。"""
-        result = self._tools.find_cells(query, sheetId, look_in, errors_only, max_results)
+                   max_results: int = 50, regex: bool = False) -> dict[str, Any]:
+        """仅查授权值/公式；regex 使用 JavaScript 正则，搜索片段不计为完整阅读。"""
+        result = self._tools.find_cells(query, sheetId, look_in, errors_only, max_results, regex)
         self.tool_events.append({'tool': 'find_cells'})
         return result
 
