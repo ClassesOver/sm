@@ -62,6 +62,8 @@ async def test_channel_word_assistant_uses_server_draft_and_reports_private_stat
         assert await kwargs["authorization_check"]()
         repository.grant_active.return_value = False
         assert not await kwargs["authorization_check"]()
+        assert (await client.get(path + "/task-a")).status_code == 403
+        ai.wait_edit_status.assert_not_awaited()
         ai.wait_edit_status.return_value = {
             "editId": "task-a", "status": "ready", "accepted": False,
             "proposal": {"text": "synthetic candidate"}, "clientRequestId": kwargs["client_request_id"],
