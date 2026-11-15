@@ -17,6 +17,7 @@ import { applyChartAnchors } from '../packages/xlsx-engine/src/chart-anchor'
 import { applyChartSource } from './chart-sources'
 import { applyTableSource } from './table-source'
 import { applyNoteSource } from '../packages/xlsx-engine/src/notes'
+import { pivotTablePathsOnSheet } from '../packages/xlsx-engine/src/pivot-refresh'
 import { clearCellRange } from '../packages/xlsx-engine/src/workbook-write'
 import { parseAddress } from '../packages/xlsx-engine/src/cell-address'
 import { normalizeLinkTarget } from '../packages/xlsx-engine/src/hyperlink-target'
@@ -219,9 +220,12 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await applyTableEdits(bytes, parsed.edits); break
       }
       case 'refreshPivotCaches': {
+        const parsed = z.object({kind: z.literal('refreshPivotCaches'),
+          sheetName: z.string().min(1).max(31).optional()}).strict().parse(op)
         const before = bytes
-        bytes = await refreshPivotCaches(bytes)
-        bytes = await syncOwnedPivotControls(before, bytes)
+        const tablePaths = parsed.sheetName === undefined ? undefined : await pivotTablePathsOnSheet(bytes, parsed.sheetName)
+        bytes = await refreshPivotCaches(bytes, tablePaths)
+        bytes = await syncOwnedPivotControls(before, bytes, tablePaths)
         break
       }
       case 'applyPivotLayoutExpansions': {

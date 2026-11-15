@@ -58,6 +58,8 @@ XLSX `set_page_setup` 接到原生打印设置写入器，支持纸张、方向�
 
 XLSX `set_note` 在整簿授权下更新 Excel 旧式单元格备注，`null` 删除。每步从当前重放文件核对备注身份，替换文字时保留原作者，模型参数只提供地址和文字。沿用写入器对线程批注与带图备注的限制。
 
+XLSX `refresh_pivot` 接到按工作表限定的原生刷新。透视表从操作重放时的源数据更新，其他工作表的独立缓存和输出保留。跨表共享缓存会拒绝单表刷新。现有全簿刷新继续可用；无法在编辑器内重建输出的外部透视表仍沿用 Excel 打开时重算的缓存路径。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

@@ -246,14 +246,15 @@ async function applyTimelineNative(bytes:Uint8Array,meta:Metadata,ctx:Context,re
  else xml=xml.replace(/<extLst\b|<\/pivotTableDefinition>/,match=>`<filters count="1">${filter}</filters>`+match)
  replaced.set(meta.request.tablePath,xml)
 }
-export async function syncOwnedPivotControls(beforeBytes:Uint8Array,afterBytes:Uint8Array,tablePath?:string,controlRequest?:PivotControlRequest):Promise<Uint8Array>{
+export async function syncOwnedPivotControls(beforeBytes:Uint8Array,afterBytes:Uint8Array,tablePath?:string|readonly string[],controlRequest?:PivotControlRequest):Promise<Uint8Array>{
  const before=await metas(beforeBytes)
  if(!before.length)return afterBytes
  const after=await metas(afterBytes,false)
  if(after.length!==before.length||before.some(meta=>!after.some(candidate=>JSON.stringify(candidate)===JSON.stringify(meta))))fail('透视重建改变了控件身份')
  let bytes=afterBytes
  const updates: {previous:Metadata;current:Metadata}[]=[]
- for(const meta of before.filter(meta=>!tablePath||meta.request.tablePath===tablePath)){
+ const paths=typeof tablePath==='string'?[tablePath]:tablePath
+ for(const meta of before.filter(meta=>!paths||paths.includes(meta.request.tablePath))){
   const ctx=await context(bytes,meta.request)
   let current=meta
   if(meta.request.kind==='timeline'){

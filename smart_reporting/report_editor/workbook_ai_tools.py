@@ -388,7 +388,8 @@ class WorkbookAIToolkit(Toolkit):
             '范围首行是表头，至少再有一行数据；实际草稿生成表头与默认表名，不提供模型自填列名。'
             '原生applyTableEdits/edits每项worksheetSheetName,tableName，可含name,area,columnNames,style,totalsRow,bandedRows,headerRow,remove等；先read_sheet_features核对既有表格。',
             'structure': '仅整簿授权。源DSL insert_rows/delete_rows(sheetId,row,count)：row从1开始，count必填1–500；insert_cols/delete_cols(sheetId,column,count)：column为A到XFD大写列名，count必填1–100。结构DSL必须单独成批，不能与单元格、布局或原生操作混合；先预览、显式采纳并保存，再以新修订继续内容修改。原生applySheetEdits/plan、applyRowColumnOps/sheetName/ops、applyCellShift/sheetName/range/shift继续兼容。',
-            'pivot': '原生addPivot/addition、refreshPivotCaches/空arguments、applyPivotLayoutExpansions/updates、expandPivotOutputs/expansions；复用引擎验证来源和输出。',
+            'pivot': '整簿授权下用 {op:refresh_pivot,sheetId} 刷新指定表上的透视表。'
+            '原生addPivot/addition、applyPivotLayoutExpansions/updates、expandPivotOutputs/expansions；复用引擎验证来源和输出。',
             'charts': '仅整簿授权；先read_sheet_features读取冻结草稿中charts的chartPath/title/kind/anchor/series引用。多图须按用户明确目标匹配，不能按数组顺序猜测，不明确时请求澄清而不提交。applyChartEdits.arguments.edits每项含真实唯一chartPath，可改title、chartType(column/bar/line/area/pie/doughnut)、legend、seriesColors、pointColors、dataLabels、dataLabelPosition、dataLabelFormat、axisTitles、grouping、gridlines、valueAxis、gapWidthPct、holeSizePct、explosionPct、pointExplosions；具体值由引擎预览核验。新增使用源DSL {op:add_chart,sheetId,chartType:column|bar|line|area|pie|doughnut|scatter|radar|combo,dataRange,title?,anchorCell?}，先read_range核对最多2000格真实数据。换绑使用{op:edit_chart,chartPath,seriesData:[{index,name?,valuesRange?,categoriesRange?,sheetId?}]}，范围须为单行或单列；支持已有格式字段。引擎从当前草稿生成引用与缓存，禁止传series/seriesSet/values/categories缓存；不与行列或工作表结构操作混批。applyChartDeletions.arguments.deletions每项含所属sheetName和chartPath。只生成候选，显式采纳后仍需保存。',
         }
         if (not isinstance(guides, list) or not guides
@@ -499,6 +500,11 @@ class WorkbookAIToolkit(Toolkit):
             row, _, column, _ = _bounds(_cell_address(operation['address']))
             return {'kind': 'applyNoteSource', 'sheetName': self._sheet(sheet_id)['name'],
                     'row': row, 'column': column, 'text': text}
+        if op == 'refresh_pivot':
+            sheet_id = operation.get('sheetId')
+            if set(operation) != {'op', 'sheetId'} or not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError('workbook_ai_pivot_refresh_invalid')
+            return {'kind': 'refreshPivotCaches', 'sheetName': self._sheet(sheet_id)['name']}
         if op == 'set_freeze':
             if set(operation) != {'op', 'sheetId', 'rows', 'columns'}:
                 raise ValueError('workbook_ai_freeze_invalid')

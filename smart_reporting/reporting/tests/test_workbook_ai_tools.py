@@ -24,6 +24,42 @@ from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
 @pytest.mark.anyio
+async def test_source_refresh_pivot_uses_current_data_for_the_named_host():
+    book = Workbook()
+    book.active.title = 'Data'
+    book.active.append(['Region', 'Sales'])
+    book.active.append(['East', 10])
+    book.active.append(['West', 20])
+    book.create_sheet('Pivot')
+    source = BytesIO()
+    book.save(source)
+    content = patch_office('xlsx', source.getvalue(), [{'kind': 'addPivot', 'addition': {
+        'worksheetSheetName': 'Pivot', 'sourceSheetName': 'Data',
+        'sourceArea': {'startRow': 0, 'startColumn': 0, 'endRow': 2, 'endColumn': 1},
+        'location': {'startRow': 0, 'startColumn': 0, 'endRow': 3, 'endColumn': 1}, 'name': 'Sales',
+        'fieldNames': ['Region', 'Sales'], 'rowFieldIndices': [0],
+        'rowLevelItems': [['East', 'West']], 'rowLines': [{'t': 'data', 'members': [0]}, {'t': 'data', 'members': [1]}],
+        'values': [{'fieldIndex': 1, 'agg': 'sum'}],
+    }}])
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', content, operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Data'}, {'name': 'Pivot'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_cell', 'sheetId': 'Data', 'address': 'B2', 'value': 123},
+        {'op': 'refresh_pivot', 'sheetId': 'Pivot'},
+    ], '刷新销售透视表')
+    assert tools.proposal.engine_operations()[-1] == {'kind': 'refreshPivotCaches', 'sheetName': 'Pivot'}
+    sheet = load_workbook(BytesIO(written))['Pivot']
+    assert sheet['A2'].value == 'East' and sheet['B2'].value == 123
+
+
+@pytest.mark.anyio
 async def test_source_set_note_replays_added_replaced_and_removed_notes():
     book = Workbook()
     book.active['A1'] = '=2+3'

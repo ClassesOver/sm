@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import JSZip from 'jszip'
 
-import { applyCellEdits, createBlankWorkbook, type PivotAddition } from '../src'
+import { applyCellEdits, applySheetEdits, createBlankWorkbook, type PivotAddition } from '../src'
 import { addPivotTable } from '../src/pivot-add'
-import { refreshPivotCaches } from '../src/pivot-refresh'
+import { pivotTablePathsOnSheet, refreshPivotCaches } from '../src/pivot-refresh'
 import { createBufferEntrySource } from '../src/zip'
 
 async function partOf(bytes: Uint8Array, path: string): Promise<string> {
@@ -71,6 +72,33 @@ function datePivot(): PivotAddition {
 }
 
 describe('pivot cache refresh', () => {
+  it('refreshes only caches owned by the requested worksheet', async () => {
+    const workbook = await applySheetEdits(
+      await buildSourceWorkbook([['East', 'A', 10], ['West', 'B', 20], ['East', 'A', 30]]),
+      {additions: [{name: 'Other'}], renames: [], removals: [], order: ['Sheet1', 'Other']},
+    )
+    const first = await addPivotTable(workbook, singleLevelPivot())
+    const both = await addPivotTable(first, {...singleLevelPivot(), worksheetSheetName: 'Other', name: 'OtherPivot'})
+    const changed = await applyCellEdits(both, [{
+      sheetName: 'Sheet1', row: 1, column: 2, writeValue: true, cell: {value: 123},
+    }])
+    const selected = await pivotTablePathsOnSheet(changed, 'Sheet1')
+    expect(selected).toHaveLength(1)
+    const refreshed = await refreshPivotCaches(changed, selected)
+    expect(await partOf(refreshed, 'xl/pivotCache/pivotCacheRecords1.xml')).toContain('123')
+    expect(await partOf(refreshed, 'xl/pivotCache/pivotCacheRecords2.xml'))
+      .toBe(await partOf(changed, 'xl/pivotCache/pivotCacheRecords2.xml'))
+    expect(await partOf(refreshed, 'xl/worksheets/sheet2.xml'))
+      .toBe(await partOf(changed, 'xl/worksheets/sheet2.xml'))
+
+    const [other] = await pivotTablePathsOnSheet(changed, 'Other')
+    const cacheId = (await partOf(changed, selected[0]!)).match(/\bcacheId="(\d+)"/)![1]
+    const zip = await JSZip.loadAsync(changed)
+    zip.file(other!, (await partOf(changed, other!)).replace(/\bcacheId="\d+"/, `cacheId="${cacheId}"`))
+    const shared = await zip.generateAsync({type: 'uint8array'})
+    await expect(refreshPivotCaches(shared, selected)).rejects.toThrow('其他工作表共享')
+  })
+
   it('refuses a workbook without pivot caches', async () => {
     const bytes = await createBlankWorkbook()
     await expect(refreshPivotCaches(bytes)).rejects.toThrow(/没有可刷新的数据透视表/)

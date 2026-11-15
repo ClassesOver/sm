@@ -55,7 +55,7 @@ _XLSX_FIELDS = {
     'addPivot': {'addition'}, 'applyColumnWidths': {'sheetName', 'entries'},
     'applySheetOutline': {'sheetName', 'rows', 'columns', 'summaryBelow', 'summaryRight'},
     'applyRowHeights': {'sheetName', 'entries'}, 'applyPageSetups': {'setups'},
-    'applyTableAdditions': {'additions'}, 'applyTableEdits': {'edits'}, 'refreshPivotCaches': set(),
+    'applyTableAdditions': {'additions'}, 'applyTableEdits': {'edits'}, 'refreshPivotCaches': {'sheetName'},
     'applyPivotLayoutExpansions': {'updates', 'controlRequest'}, 'expandPivotOutputs': {'expansions'},
     'upsertPivotControl': {'request'}, 'removePivotControl': {'request'},
     'applyDefinedNames': {'plan'}, 'protectSheet': {'sheetName', 'protect'},
@@ -818,6 +818,9 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], 
                         raise ValueError('native_office_operations_invalid')
                 elif kind == 'applyTableSource':
                     if not {'kind', 'sheetName', 'range'} <= set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
+                elif kind == 'refreshPivotCaches':
+                    if not set(operation) <= allowed:
                         raise ValueError('native_office_operations_invalid')
                 elif kind == 'applyPivotLayoutExpansions':
                     if not {'kind', 'updates'} <= set(operation) <= allowed:
