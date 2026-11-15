@@ -40,5 +40,28 @@ describe('图片格式控制器',()=>{
   expect(editor.state.doc.firstChild!.attrs.imagePosH).toBe('right')
   expect(errors).toEqual([])
  })
+ it('环绕文字按 GenOffice 顺序排列，可在同一次保存保留位置预设',()=>{
+  const {editor,controls,host,errors}=setup()
+  const baseline=editor.getJSON()
+  const wrapper=host.appendChild(document.createElement('div'))
+  const trigger=wrapper.appendChild(document.createElement('button'))
+  controls.open('position',trigger)
+  wrapper.querySelector<HTMLButtonElement>('.ph-right.pv-bottom')!.click()
+  controls.open('wrap',trigger)
+  const options=Array.from(wrapper.querySelectorAll<HTMLButtonElement>('.layout-menu button'))
+  expect(options.map(option=>option.textContent)).toEqual([
+   '嵌入型','四周型环绕 · 图片靠左','四周型环绕 · 图片靠右','上下型环绕','衬于文字下方','浮于文字上方',
+  ])
+  expect(options[2].getAttribute('aria-pressed')).toBe('true')
+  options[4].click()
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  expect(normalizeDocxPictureFormats(baseline,editor.getJSON(),[anchor]).operations).toMatchObject([
+   {wrap:'behind',posH:'right',posV:'bottom'},
+  ])
+  controls.open('wrap',trigger)
+  wrapper.querySelector<HTMLButtonElement>('[data-wrap="square-left"]')!.click()
+  expect(editor.state.doc.firstChild!.attrs).toMatchObject({imageWrap:'square-left',imagePosH:'left',imagePosV:'bottom'})
+  expect(errors).toEqual([])
+ })
  it('异步自然尺寸返回时文档改变，不写入迟到结果',()=>{let image:any;vi.stubGlobal('Image',class{naturalWidth=1200;naturalHeight=800;onload?:()=>void;src='';constructor(){image=this}});const {editor,controls,errors}=setup();controls.open('resetSize');controls.open('rotateRight');image.onload();expect(editor.state.doc.firstChild!.attrs.imageWidthPx).toBe(192);expect(errors).toHaveLength(1)})
 })

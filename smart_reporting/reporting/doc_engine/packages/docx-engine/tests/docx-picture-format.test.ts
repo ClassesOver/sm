@@ -37,6 +37,14 @@ describe('图片格式原生保存及源保全',()=>{
  it('组合和外链来源不提供格式身份',async()=>{
   for(const xml of [picture.replace('r:embed="rId10"','r:link="rId10"'),picture.replace('</w:p>','<w:object/></w:p>')])expect(await inspectDocxPictureFormats(await buildDocx({bodyXml:xml,withImage:true}))).toEqual([])
  })
+ it('环绕文字可与九宫格位置一起保存并重开',async()=>{
+  const bytes=await buildDocx({bodyXml:picture,withImage:true}),[target]=await inspectDocxPictureFormats(bytes)
+  const output=await patchDocxPictureFormat(bytes,{kind:'formatImage',...target,wrap:'behind',posH:'right',posV:'bottom'})
+  const block=(await parseDocx(output)).blocks[0]
+  expect(block).toMatchObject({imageWrap:'behind',imagePosH:'right',imagePosV:'bottom'})
+  expect(block.originalXml).toContain('behindDoc="1"')
+  expect(block.originalXml).toContain('<wp:wrapNone/>')
+ })
  it('拒绝身份篡改、未知属性与超界值',async()=>{
   const bytes=await buildDocx({bodyXml:picture,withImage:true}),[target]=await inspectDocxPictureFormats(bytes)
   await expect(patchDocxPictureFormat(bytes,{kind:'formatImage',...target,expectedImageSha256:'0'.repeat(64),rotDeg:90})).rejects.toThrow()

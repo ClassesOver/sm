@@ -526,8 +526,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '数据透视表', actions: ['pivot-open', 'pivot-edit'].map(id => action(id, id, id as RibbonCommand)) },
     { title: '获取数据', actions: [action('import-csv', 'import-csv', 'import-csv'), action('queries-open', 'queries-open', 'queries-open'), action('merge-workbooks', 'merge-workbooks', 'merge-workbooks'), action('refresh-all', 'refresh-all', 'refresh-all')] },
     { title: '排序和筛选', actions: [
-      action('升序', 'sort:asc', 'sort:asc'), action('降序', 'sort:desc', 'sort:desc'),
-      action('自定义排序…', 'sort-custom-open', 'sort-custom-open'), action('筛选', 'filter-toggle', 'filter-toggle'), action('清除筛选条件', 'filter-clear', 'filter-clear'),
+      action('筛选', 'filter-toggle', 'filter-toggle'), action('清除筛选条件', 'filter-clear', 'filter-clear'),
       action('重新应用筛选', 'filter-reapply', 'filter-reapply'), action('高级筛选', 'filter-advanced', 'filter-advanced'),
     ] },
     { title: '数据工具', actions: [
@@ -607,6 +606,14 @@ const DATA_COMMAND_MENUS: ReadonlyArray<{
   detail: string
   choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
 }> = [
+  {
+    id: 'sort', label: '排序', group: '排序和筛选', icon: '⇅', detail: '对所选内容排序',
+    choices: [
+      { command: 'sort:asc', label: '升序' },
+      { command: 'sort:desc', label: '降序' },
+      { command: 'sort-custom-open', label: '自定义排序…' },
+    ],
+  },
   {
     id: 'text-to-columns', label: '分列', group: '数据工具', icon: '⇶', detail: '拆分单列文本（需完整加载的工作簿）',
     choices: [

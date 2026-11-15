@@ -33,7 +33,7 @@ export function markupRemovalIdentity(sourceSha256: string, pageIndex: number, i
     : ['IRT', 'Parent', 'Popup', 'StructParent'].some(key => annotation.has(PDFName.of(key))) || links.linked.has(raw.toString()) ? '此标注有关联回复、弹窗或结构信息，暂不支持移除' : null
   return { annotationId: markupSourceId(sourceSha256, pageIndex, index), expectedAnnotationSha256: markupDictionaryHash(annotation), removable: reason === null, removalReason: reason }
 }
-export interface MarkupRemoval { pageIndex: number; annotationId: string; expectedAnnotationSha256: string; subtype?: 'Text' | 'Square' | 'Circle' | 'Line' | 'Ink' | 'Polygon' | 'Caret'; unlinkObject?: boolean; unlinkDrawing?: boolean }
+export interface MarkupRemoval { pageIndex: number; annotationId: string; expectedAnnotationSha256: string; subtype?: 'Text' | 'Square' | 'Circle' | 'Line' | 'Ink' | 'Polygon' | 'Caret'; unlinkObject?: boolean; unlinkThreadRoot?: boolean; unlinkDrawing?: boolean }
 export interface NoteContentEdit extends MarkupRemoval { contents: string; modifiedAt: string }
 export async function removeSourceMarkups(content: Uint8Array, sourceSha256: string, removals: MarkupRemoval[], edits: NoteContentEdit[] = []) {
   if (!removals.length && !edits.length) return content
@@ -67,6 +67,11 @@ export async function removeSourceMarkups(content: Uint8Array, sourceSha256: str
         if (!(raw instanceof PDFRef) || String(annotation.get(PDFName.of('RT')))!=='/R' || !(annotation.get(PDFName.of('IRT')) instanceof PDFRef)) throw Error('pdf_reply_unlink_identity_invalid')
         document.context.delete(raw)
       }
+      if (removal.unlinkThreadRoot) {
+        const raw = annotations.get(index)
+        if (!(raw instanceof PDFRef) || removal.subtype !== 'Text' || annotation.has(PDFName.of('IRT')) || annotation.has(PDFName.of('RT'))) throw Error('pdf_note_thread_root_unlink_identity_invalid')
+        document.context.delete(raw)
+      }
       if (removal.unlinkDrawing) {
         const raw=annotations.get(index)
         if (!(raw instanceof PDFRef) || !['Square','Circle','Line','Ink','Polygon','Caret'].includes(removal.subtype??'')) throw Error('pdf_drawing_identity_invalid')
@@ -74,8 +79,12 @@ export async function removeSourceMarkups(content: Uint8Array, sourceSha256: str
       }
       removed.add(index)
     }
-    // Copy this page's array: a source can share an indirect Annots array with another page.
-    page.node.set(PDFName.of('Annots'), document.context.obj(annotations.asArray().filter((_, index) => !removed.has(index))))
+    const annotationArrayKey = PDFName.of('Annots')
+    const annotationArrayRef = page.node.get(annotationArrayKey)
+    const retained = document.context.obj(annotations.asArray().filter((_, index) => !removed.has(index)))
+    // Verified whole-thread roots have an exclusive page annotation array.
+    if (annotationArrayRef instanceof PDFRef && list.some(removal => removal.unlinkThreadRoot)) document.context.assign(annotationArrayRef, retained)
+    else page.node.set(annotationArrayKey, retained)
   }
   const result=await document.save({ useObjectStreams:false,updateFieldAppearances:false })
   const output=await PDFDocument.load(result,{updateMetadata:false})

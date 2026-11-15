@@ -5,10 +5,10 @@ import { SLIDE_TRANSITIONS } from './slides-transitions'
 import type { SlidesShowOptions } from './slides-show'
 import type { LinkTargetOp } from './vendor/genoffice/renderer/show-types'
 
-type ModelSlide = { transition?: string; animations?: SourceAnimation[]; elements: Array<{ id: string; name: string; elementLink?: { kind: 'url'; url: string } | { kind: 'slide'; slideIndex: number } | { kind: 'action'; action: string } | null }> }
+type ModelSlide = { transition?: string; advanceMs?: number | null; animations?: SourceAnimation[]; elements: Array<{ id: string; name: string; elementLink?: { kind: 'url'; url: string } | { kind: 'slide'; slideIndex: number } | { kind: 'action'; action: string } | null }> }
 
 /** 两个现有只读接口读取同一完整NativeDraft；用实际输出模型的身份/顺序绑定渲染节点。 */
-export function slidesShowSnapshot(slides: RenderSlide[], pages: ModelSlide[]): Pick<SlidesShowOptions, 'animations' | 'transitions' | 'shapeKeys' | 'links' | 'warnings'> {
+export function slidesShowSnapshot(slides: RenderSlide[], pages: ModelSlide[]): Pick<SlidesShowOptions, 'animations' | 'transitions' | 'advanceTimes' | 'shapeKeys' | 'links' | 'warnings'> {
   if (pages.length !== slides.length || pages.some(page => !Array.isArray(page.elements))) throw new Error('放映模型与渲染页面不一致')
   const warnings = new Set<string>()
   const animations = pages.map((page, index) => {
@@ -39,6 +39,8 @@ export function slidesShowSnapshot(slides: RenderSlide[], pages: ModelSlide[]): 
     if (!allowed) { warnings.add('不支持或无效的来源链接不执行；文件中的链接保留。'); return [] }
     return [{ sourceId: element.id, target: target as LinkTargetOp }]
   }))
-  warnings.add('屏幕录制、演讲者视图、自动换页和文字内链接尚未验收。')
-  return { animations, transitions, shapeKeys, links, warnings: [...warnings] }
+  warnings.add('屏幕录制、演讲者视图和文字内链接尚未验收。')
+  const advanceTimes = pages.map(({ advanceMs }) => typeof advanceMs === 'number' && Number.isInteger(advanceMs)
+    && advanceMs >= 0 && advanceMs <= 4294967295 ? advanceMs : null)
+  return { animations, transitions, advanceTimes, shapeKeys, links, warnings: [...warnings] }
 }

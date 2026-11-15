@@ -220,7 +220,7 @@ const tabs: Tab[] = [
   ] },
   { id: 'slideShow', label: 'Slide Show', groups: [
     { label: 'Start Slide Show', controls: [{ id: 'startShow', label: 'From Beginning', sourceIcon: IconPlayFromStart, sourceActionId: 'onSlideShow' }, { id: 'startShowCurrent', label: 'From Current Slide', sourceActionId: 'onSlideShow' }, { id: 'presenter', label: 'Presenter View', unavailable: desktop('演讲者视图') }] },
-    { label: 'Set Up', controls: [{ id:'customShows',label:'自定义放映',sourceActionId:'onCustomShows' }, { id: 'rehearse', label: 'Rehearse Timings', unavailable: noWrite('排练计时') }, { id: 'record', label: 'Record', unavailable: desktop('屏幕/旁白录制') }, { id: 'hideSlide', label: 'Hide Slide', kind: 'toggle' }] },
+    { label: 'Set Up', controls: [{ id:'customShows',label:'自定义放映',sourceActionId:'onCustomShows' }, { id: 'rehearse', label: 'Rehearse Timings', sourceActionId: 'onRehearse' }, { id: 'record', label: 'Record', unavailable: desktop('屏幕/旁白录制') }, { id: 'hideSlide', label: 'Hide Slide', kind: 'toggle' }] },
   ] },
   { id: 'review', label: 'Review', groups: [
     { label: 'Comments', controls: [

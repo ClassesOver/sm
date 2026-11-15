@@ -21,7 +21,7 @@ export function readDocxPictureFormat(value:unknown):DocxPictureFormatOperation 
  for(const k of ['flipH','flipV'] as const)if(op[k]!==undefined&&typeof op[k]!=='boolean')throw new Error('docx_picture_format_flip')
  if(op.align!==undefined&&op.align!==null&&!['left','center','right'].includes(op.align))throw new Error('docx_picture_format_align')
  if(op.wrap!==undefined&&op.wrap!==null&&!DOCX_PICTURE_WRAPS.includes(op.wrap))throw new Error('docx_picture_format_wrap')
- if((op.posH===undefined)!==(op.posV===undefined)||op.posH!==undefined&&(!['left','center','right'].includes(op.posH)||!['top','center','bottom'].includes(op.posV!)||op.wrap!==(op.posH==='right'?'square-right':'square-left')))throw new Error('docx_picture_format_position')
+ if((op.posH===undefined)!==(op.posV===undefined)||op.posH!==undefined&&(!['left','center','right'].includes(op.posH)||!['top','center','bottom'].includes(op.posV!)||!op.wrap||op.wrap.endsWith('-right')&&op.posH!=='right'||op.wrap.endsWith('-left')&&op.posH==='right'))throw new Error('docx_picture_format_position')
  return op
 }
 export async function inspectDocxPictureFormats(bytes:Uint8Array,parsed?:Awaited<ReturnType<typeof parseDocx>>){

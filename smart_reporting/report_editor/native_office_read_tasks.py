@@ -24,7 +24,7 @@ _ACTIONS = {'ask', 'summarize', 'keyPoints', 'fileName'}
 _RANGE_KEYS = {'sheetName', 'startRow', 'endRow', 'startColumn', 'endColumn'}
 _SLIDES_IDENTITY_PRESERVING = {
     'kind', 'edits', 'textFormatting', 'paragraphFormatting', 'order', 'theme', 'slideSize',
-    'hiddenSlides', 'transitions', 'animations', 'animationSequences', 'backgrounds',
+    'hiddenSlides', 'transitions', 'advanceTimes', 'animations', 'animationSequences', 'backgrounds',
     'sections', 'commentEdits',
 }
 

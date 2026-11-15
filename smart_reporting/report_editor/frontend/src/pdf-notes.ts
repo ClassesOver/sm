@@ -1,10 +1,17 @@
 import type { NativeOperation } from './native-draft'
 import type { PdfPageIdentity } from './pdf-operations'
 export interface SavedPdfNote { sourceRef?: string | null; replyable?: boolean; parentAnnotationId?: string; annotationId: string; expectedAnnotationSha256: string; contents: string; editable: boolean; removable: boolean; removalReason: string | null }
-export function validatePdfNoteOperation(operation: NativeOperation, page: PdfPageIdentity): SavedPdfNote {
+function savedThreadReplies(page: PdfPageIdentity, root: SavedPdfNote) {
+  if (!root.replyable || root.parentAnnotationId !== undefined) return []
+  return page.notes?.filter(note => note.parentAnnotationId === root.annotationId) ?? []
+}
+export function validatePdfNoteOperation(operation: NativeOperation, page: PdfPageIdentity, batch: NativeOperation[] = []): SavedPdfNote {
   const allowed = ['kind', 'pageId', 'annotationId', 'expectedAnnotationSha256', 'sourceSha256', ...(operation.kind === 'editNote' ? ['contents', 'modifiedAt'] : [])]
   const note = page.notes?.find(note => note.annotationId === operation.annotationId)
-  if (!['editNote', 'removeNote'].includes(operation.kind) || Object.keys(operation).some(key => !allowed.includes(key)) || !page.notesReadSafe || !note || !(operation.kind === 'editNote' ? note.editable : note.removable) || !/^[a-f0-9]{64}$/.test(String(operation.annotationId)) || note.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || operation.pageId !== page.pageId || (operation.sourceSha256 !== undefined && page.pageId !== `sha256:${operation.sourceSha256}:page:${page.index}`)) throw new Error(note?.removalReason || '便签身份已过期或当前来源只读；原草稿已保留')
+  const replies = note && operation.kind === 'removeNote' && !note.removable ? savedThreadReplies(page, note) : []
+  const removesWholeThread = replies.length > 0 && replies.every(reply => reply.removable && batch.some(op =>
+    op.kind === 'removeNote' && op.pageId === page.pageId && op.annotationId === reply.annotationId && op.expectedAnnotationSha256 === reply.expectedAnnotationSha256))
+  if (!['editNote', 'removeNote'].includes(operation.kind) || Object.keys(operation).some(key => !allowed.includes(key)) || !page.notesReadSafe || !note || !(operation.kind === 'editNote' ? note.editable : note.removable || removesWholeThread) || !/^[a-f0-9]{64}$/.test(String(operation.annotationId)) || note.expectedAnnotationSha256 !== operation.expectedAnnotationSha256 || operation.pageId !== page.pageId || (operation.sourceSha256 !== undefined && page.pageId !== `sha256:${operation.sourceSha256}:page:${page.index}`)) throw new Error(note?.removalReason || '便签身份已过期或当前来源只读；原草稿已保留')
   if (note.parentAnnotationId !== undefined && (!/^[a-f0-9]{64}$/.test(note.parentAnnotationId) || page.notes?.filter(parent => parent.annotationId === note.parentAnnotationId && parent.replyable === true && parent.parentAnnotationId === undefined).length !== 1)) throw new Error('回复根便签身份未完整确认')
   if (operation.kind === 'editNote') {
     if (typeof operation.contents !== 'string' || !operation.contents.trim() || operation.contents.length > 10000 || operation.contents !== operation.contents.trim()) throw new Error('便签正文须为 1–10000 个字符')
@@ -22,6 +29,26 @@ export function stagePdfNote(pages: PdfPageIdentity[], operations: NativeOperati
   const next = structuredClone(operations).filter(op => !(op.pageId === pageId && op.annotationId === annotationId && ['editNote', 'removeNote'].includes(op.kind)))
   if (contents === null || contents.trim() !== note.contents) next.push(operation)
   if (next.length > 500) throw new Error('便签修改将超过 500 条操作，请先保存')
+  return next
+}
+
+export function stagePdfThreadRemoval(pages: PdfPageIdentity[], operations: NativeOperation[], pageId: string, rootId: string): NativeOperation[] {
+  const page = pages.find(item => item.pageId === pageId)
+  const root = page?.notes?.find(note => note.annotationId === rootId)
+  if (!page?.notesReadSafe || !root?.replyable || root.parentAnnotationId !== undefined || operations.some(op => op.kind === 'deletePage' && op.pageId === pageId)) throw new Error('批注线程已变化或只读')
+  const replies = savedThreadReplies(page, root)
+  const members = [...replies, root]
+  const ids = new Set(members.map(note => note.annotationId))
+  const next = operations.filter(op => !(op.pageId === pageId && (
+    (op.kind === 'replyNote' && op.annotationId === rootId)
+    || (['editNote', 'removeNote'].includes(op.kind) && typeof op.annotationId === 'string' && ids.has(op.annotationId))
+  )))
+  const removals = members.map(note => ({
+    kind: 'removeNote', pageId, annotationId: note.annotationId, expectedAnnotationSha256: note.expectedAnnotationSha256,
+  }))
+  next.push(...removals)
+  if (next.length > 500) throw new Error('删除批注线程将超过 500 条修改，请先保存')
+  for (const removal of removals) validatePdfNoteOperation(removal, page, next)
   return next
 }
 

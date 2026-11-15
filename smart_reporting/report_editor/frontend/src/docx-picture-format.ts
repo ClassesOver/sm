@@ -14,7 +14,7 @@ function patchOf(op:NativeOperation):PictureFormatPatch{
  for(const k of ['flipH','flipV'] as const)if(patch[k]!==undefined&&typeof patch[k]!=='boolean')throw new Error('图片翻转无效')
  if(patch.align!==undefined&&patch.align!==null&&!['left','center','right'].includes(patch.align))throw new Error('图片对齐无效')
  if(patch.wrap!==undefined&&patch.wrap!==null&&!PICTURE_WRAPS.includes(patch.wrap))throw new Error('图片环绕无效')
- if((patch.posH===undefined)!==(patch.posV===undefined)||patch.posH!==undefined&&(!['left','center','right'].includes(patch.posH)||!['top','center','bottom'].includes(patch.posV!)||patch.wrap!==(patch.posH==='right'?'square-right':'square-left')))throw new Error('图片位置无效')
+ if((patch.posH===undefined)!==(patch.posV===undefined)||patch.posH!==undefined&&(!['left','center','right'].includes(patch.posH)||!['top','center','bottom'].includes(patch.posV!)||!patch.wrap||patch.wrap.endsWith('-right')&&patch.posH!=='right'||patch.wrap.endsWith('-left')&&patch.posH==='right'))throw new Error('图片位置无效')
  return patch
 }
 export function projectDocxPictureFormat(source:DocxPmNode,anchor:PictureFormatAnchor,op:NativeOperation):DocxPmNode{

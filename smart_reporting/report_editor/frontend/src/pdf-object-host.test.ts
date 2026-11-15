@@ -6,10 +6,11 @@ import type {EditorShell} from './shell'
 import type {createNativeApi,NativeContextResponse} from './native-api'
 import {pdfReadingKey} from './pdf-reading-state'
 import {saveViewState} from './genoffice-pdf-reading-state'
-const pdfMock=vi.hoisted(()=>({pages:1,detach:false,text:''}))
+type TestAnnotation = { id:string;annotationType:number;subtype:string;contentsObj:{str:string};inReplyTo?:string }
+const pdfMock=vi.hoisted(()=>({pages:1,detach:false,text:'',annotations:[] as TestAnnotation[]}))
 vi.mock('./source-validation',()=>({bytesSha256:async()=>'a'.repeat(64)}))
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs',()=>{
- const page={view:[0,0,300,400],rotate:0,userUnit:1,getViewport:({scale}:{scale:number})=>({width:300*scale,height:400*scale,viewBox:[0,0,300,400],convertToPdfPoint:(x:number,y:number)=>[x,y],convertToViewportPoint:(x:number,y:number)=>[x,y]}),getTextContent:async()=>({items:pdfMock.text ? [{str:pdfMock.text,transform:[10,0,0,10,30,100],width:pdfMock.text.length*5,height:10}] : []}),streamTextContent:()=>({}),getAnnotations:async()=>[],render:()=>({promise:Promise.resolve(),cancel:vi.fn()})}
+ const page={view:[0,0,300,400],rotate:0,userUnit:1,getViewport:({scale}:{scale:number})=>({width:300*scale,height:400*scale,viewBox:[0,0,300,400],convertToPdfPoint:(x:number,y:number)=>[x,y],convertToViewportPoint:(x:number,y:number)=>[x,y]}),getTextContent:async()=>({items:pdfMock.text ? [{str:pdfMock.text,transform:[10,0,0,10,30,100],width:pdfMock.text.length*5,height:10}] : []}),streamTextContent:()=>({}),getAnnotations:async()=>pdfMock.annotations,render:()=>({promise:Promise.resolve(),cancel:vi.fn()})}
  const pdf={get numPages(){return pdfMock.pages},getPage:async()=>page,getMetadata:async()=>({info:{}}),getOutline:async()=>[{title:'章节',dest:[{num:1}],items:[]}],getPageIndex:async()=>0,getAttachments:async()=>new Map([['stored',{filename:'keep.txt',description:'保留附件'}]]),getAttachmentContent:async()=>new Uint8Array([1,2,3]),destroy:async()=>{}}
  return {AnnotationMode:{ENABLE:1},GlobalWorkerOptions:{},TextLayer:class{render(){return Promise.resolve()}},getDocument:({data}:{data:Uint8Array<ArrayBuffer>})=>{if(pdfMock.detach)structuredClone(data.buffer,{transfer:[data.buffer]});return {promise:Promise.resolve(pdf),destroy:async()=>{}}}}
 })
@@ -24,12 +25,17 @@ function operation(kind:string):NativeOperation{
 }
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
-async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string}={}){
+async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean}={}){
  pdfMock.pages=options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??''
+ const notes=options.savedThread?[
+  { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
+  { annotationId:'6'.repeat(64), expectedAnnotationSha256:'7'.repeat(64), sourceRef:'11R', contents:'reply', editable:true, removable:true, parentAnnotationId:'4'.repeat(64), removalReason:null },
+ ]:[]
+ pdfMock.annotations=notes.map(note=>({ id:note.sourceRef, annotationType:1, subtype:'Text', contentsObj:{str:note.contents}, ...(note.parentAnnotationId?{inReplyTo:'10R'}:{}) }))
  const root=document.createElement('div');document.body.append(root)
  const identity={documentId:'pdf-object-host',revision:1,sourceSha256,scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}
  const seed=new NativeDraft(identity,localStorage);if(options.restored)seed.setOperations([options.restored]);const draft=new NativeDraft(identity,localStorage)
- const model={sourceSha256,pages:[{pageId,index:0,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true}],formFields:[{name:'existing',kind:'text',value:'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)}],formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
+ const model={sourceSha256,pages:[{pageId,index:0,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes}],formFields:[{name:'existing',kind:'text',value:'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)}],formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
  const staticModel=options.staticFills?{staticFormFills:[{id:'saved-fill',kind:'text',pageIndex:0,rect:[30,100,150,124],text:'已保存填写',fontSize:14,color:'#111111',align:'left',editable:true,expectedImageSha256:'9'.repeat(64)}]}:{}
  const attachmentModel=options.attachments?{attachmentsEditable:true,attachments:[{key:'stored',name:'keep.txt',description:'保留附件',size:3,contentSha256:'b'.repeat(64),attachmentId:'c'.repeat(64),expectedAttachmentSha256:'d'.repeat(64)}]}:{}
  const api={file:async()=>new Uint8Array(options.sourceSize??2).buffer,preview:vi.fn(async()=>({sourceSha256,model:{...model,...attachmentModel,...staticModel,...(options.digitalSignatures?{digitalSignatures:[],signatureVerification:{scope:"basic-integrity-only",trustPolicy:"none",readable:true,issues:[],revocationChecked:false,timestampsVerified:false}}:{})}})),previewFile:vi.fn(async()=>new Uint8Array([3,4]).buffer)} as unknown as ReturnType<typeof createNativeApi>
@@ -57,6 +63,17 @@ it('stages detected email from the Annotate ribbon and clears it through the nor
  expect(f.root.textContent).not.toContain('sample@example.com')
  f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.annotate.drawTools.clearRedaction"]')!.click()
  await vi.waitFor(()=>expect(f.draft.operations).toEqual([]))
+})
+it('deletes a saved thread from its ribbon sidebar in one undo step', async () => {
+ const f=await fixture({savedThread:true,capabilities:{notes:true,noteReplies:true,savedReplyEdits:true,savedNoteThreadRemoval:true}});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="view"]')!.click()
+ f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.navigation.comments"]')!.click()
+ const findDelete=()=>[...f.root.querySelectorAll<HTMLButtonElement>('.pdf-comments-sidebar button')].find(button=>button.textContent==='删除批注线程')
+ await vi.waitFor(()=>expect(findDelete()?.disabled).toBe(false))
+ findDelete()!.click()
+ await vi.waitFor(()=>expect(f.draft.operations.map(op=>op.annotationId)).toEqual(['6'.repeat(64),'4'.repeat(64)]))
+ f.draft.undo()
+ expect(f.draft.operations).toEqual([])
 })
 it('watermark settings expose both source tabs and current slider values without changing the draft',async()=>{
  const f=await fixture();await f.create()

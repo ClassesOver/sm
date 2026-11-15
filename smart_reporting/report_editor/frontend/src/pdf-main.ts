@@ -92,7 +92,7 @@ import { PdfAttachmentCache, humanBytes, attachmentDownloadName, type PdfAttachm
 
 import { PdfAnnotationCache, projectPageComments, filterComments, flattenComments, type CommentNode, type CommentTarget } from './pdf-comments'
 
-import { stagePdfNote, stagePendingPdfNote, type PendingPdfNoteReference, type SavedPdfNote } from './pdf-notes'
+import { stagePdfNote, stagePdfThreadRemoval, stagePendingPdfNote, type PendingPdfNoteReference, type SavedPdfNote } from './pdf-notes'
 
 import { createPdfSidebarSizing } from './pdf-sidebar'
 
@@ -1562,6 +1562,21 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   function canReply() { return !disposed && !!document && !locked && !previewing && !printing && !previewDocument && response.editingEnabled && !draft.closed && model.capabilities?.noteReplies === true }
   function canChangeSavedReply() { return canReply() && model.capabilities?.savedReplyEdits === true }
+  function savedThreadHasReplies(pageId: string, rootId: string) {
+    const page = model.pages.find(item => item.pageId === pageId)
+    const root = page?.notes?.find(note => note.annotationId === rootId)
+    return page?.notesReadSafe && root?.replyable && (
+      page.notes?.some(note => note.parentAnnotationId === rootId)
+      || draft.operations.some(op => op.kind === 'replyNote' && op.pageId === pageId && op.annotationId === rootId)
+    )
+  }
+  async function deleteSavedThread(pageId: string, rootId: string) {
+    if (!canChangeSavedReply() || mutationBlocked?.() || model.capabilities?.savedNoteThreadRemoval !== true || !savedThreadHasReplies(pageId, rootId)) return
+    const next = stagePdfThreadRemoval(model.pages, draft.operations, pageId, rootId)
+    pdfPageState(model.pages, next)
+    draft.setOperations(next); await refresh()
+    status.textContent = '已暂存删除批注线程，可撤销或保存。'
+  }
   async function changePendingReply(reference: PendingPdfNoteReference, contents: string | null) {
     if (!canReply()) return
     const next = stagePendingPdfReply(model.pages, draft.operations, reference, contents)
@@ -1608,6 +1623,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           }).catch(showError)
         })
         item.append(edit)
+      }
+      if (model.capabilities?.savedNoteThreadRemoval === true && root.cardId && root.replyAnnotationId === root.cardId && savedThreadHasReplies(root.pageId, root.cardId)) {
+        const snapshot = commentsSnapshot, doc = commentsDocument, epoch = commentsGeneration, rootId = root.cardId
+        const remove = documentElement('button', buttonClasses('danger'))
+        remove.type = 'button'; remove.textContent = '删除批注线程'; remove.dataset.pdfSavedReplyEditable = 'true'
+        remove.disabled = !canChangeSavedReply()
+        remove.addEventListener('click', () => {
+          if (sidebar !== 'comments' || doc !== document || epoch !== commentsGeneration || snapshot !== JSON.stringify(draft.operations)) return
+          void deleteSavedThread(root.pageId, rootId).catch(showError)
+        })
+        item.append(remove)
       }
       if (replies.length) {
         const details = documentElement('details'), summary = documentElement('summary'); summary.textContent = `${replies.length} 条回复`; details.append(summary)
@@ -2782,9 +2808,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           const actions = documentElement('div', 'pdf-object-actions'); article.append(actions)
           const pendingReply = draft.operations.some(op => op.kind === 'replyNote' && op.annotationId === comment.annotationId)
           const noteActionsAvailable = model.capabilities?.notes === true && page.notesReadSafe === true && !pendingReply && (comment.parentAnnotationId === undefined || model.capabilities?.savedReplyEdits === true)
-          for (const [label, action] of [['编辑便签', () => editSavedNote(page.pageId, comment)], ['删除便签', () => changeSavedNote(page.pageId, comment.annotationId, null)]] as const) {
-            const removing = label === '删除便签'
-            const supported = noteActionsAvailable && (removing ? comment.removable : comment.editable)
+          const thread = model.capabilities?.savedNoteThreadRemoval === true && model.capabilities?.savedReplyEdits === true && model.capabilities?.noteReplies === true && savedThreadHasReplies(page.pageId, comment.annotationId)
+          const removeLabel = thread ? '删除批注线程' : '删除便签'
+          for (const [label, action] of [['编辑便签', () => editSavedNote(page.pageId, comment)], [removeLabel, () => thread ? deleteSavedThread(page.pageId, comment.annotationId) : changeSavedNote(page.pageId, comment.annotationId, null)]] as const) {
+            const removing = label === removeLabel
+            const supported = removing && thread ? true : noteActionsAvailable && (removing ? comment.removable : comment.editable)
             const control = documentElement('button', 'pdf-tool ' + buttonClasses(removing ? 'danger' : 'secondary'))
             control.type = 'button'; control.textContent = label; control.disabled = !supported || !response.editingEnabled || draft.closed || locked || printing || previewing || !!previewDocument; control.dataset.pdfNoteEditable = String(supported)
             control.title = !control.disabled ? label : pendingReply ? '请先保存或取消此便签的回复' : comment.removalReason || '当前修订、预览或引擎不支持编辑已有便签'
@@ -3089,6 +3117,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }else if(operation.kind==='editFormWidgetRects')stagePdfFormWidgetRects(model,[],operation.changes as Parameters<typeof stagePdfFormWidgetRects>[2])
     else stagePdfFormWidgetArrangement(model,[],operation.targets as Parameters<typeof stagePdfFormWidgetArrangement>[2],operation.alignment as Parameters<typeof stagePdfFormWidgetArrangement>[3])
   }
+  if (model.capabilities?.savedNoteThreadRemoval !== true && draft.operations.some(op => op.kind === 'removeNote' && model.pages.some(page => page.notes?.some(note => note.annotationId === op.annotationId && note.replyable && !note.removable)))) throw new Error('当前引擎未确认批注线程删除能力；原草稿已保留')
   if (model.capabilities?.savedReplyEdits !== true && draft.operations.some(op => ['editNote','removeNote'].includes(op.kind) && model.pages.some(page => page.notes?.some(note => note.annotationId === op.annotationId && note.parentAnnotationId !== undefined)))) throw new Error('当前引擎未确认已保存回复修改能力；原草稿已保留')
   if (draft.operations.some(op => op.kind === 'replyPendingNote') && model.capabilities?.pendingNoteReplies !== true) throw new Error('当前来源或引擎未确认草稿回复写回能力；原草稿已保留')
   if (draft.operations.some(op => op.kind === 'replyNote') && model.capabilities?.noteReplies !== true) throw new Error('当前引擎未确认回复写回能力；原草稿已保留')

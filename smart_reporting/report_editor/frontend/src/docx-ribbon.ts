@@ -449,7 +449,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     button.disabled = reason !== null
     button.title = reason ?? label
     button.onmousedown = event => event.preventDefault()
-    if (action === 'position') {
+    if (action === 'position' || action === 'wrap') {
       const wrapper = document.createElement('div')
       wrapper.className = 'rb-split-wrap'
       button.setAttribute('aria-expanded','false')
@@ -862,7 +862,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
-    tools?.pictureFormat?.closePositionGallery()
+    tools?.pictureFormat?.closeArrangeMenu()
     if (active === 'headerFooter' && id !== active) {
       headerFooter?.flushPendingEdits?.()
       headerFooterTarget = undefined
@@ -1305,7 +1305,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
-    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closePositionGallery(); numberingValueControl.destroy()
+    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)

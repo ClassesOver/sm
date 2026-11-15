@@ -504,33 +504,41 @@ it('rejects AutoSum for a single-row selection', () => {
   expect(() => applyWorkbookRibbonCommand('autofn:SUM', workbook)).toThrow('请至少选择两行')
 })
 
-it('renders source-localized sort actions and dispatches their upstream command ids', () => {
-  document.body.innerHTML = '<main></main>'
-  const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
-  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  const ascending = document.querySelector<HTMLButtonElement>('[data-ribbon-command="sort:asc"]')!
-  const descending = document.querySelector<HTMLButtonElement>('[data-ribbon-command="sort:desc"]')!
-  expect(ascending.textContent).toBe('升序')
-  expect(descending.textContent).toBe('降序')
-  expect(ascending.disabled).toBe(false)
-  expect(descending.disabled).toBe(false)
-  ascending.click()
-  descending.click()
-  expect(onCommand.mock.calls).toEqual([['sort:asc'], ['sort:desc']])
-})
-
-it('dispatches the source sort and filter actions including advanced filter', () => {
+it('dispatches the GenOffice Sort menu and keeps the filter controls in source order', () => {
   document.body.innerHTML = '<main></main>'
   const command = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, command)
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  for (const id of ['filter-toggle', 'filter-clear', 'filter-reapply', 'sort-custom-open', 'filter-advanced']) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button?.disabled, id).toBe(false)
-    button!.click()
-    expect(command).toHaveBeenLastCalledWith(id)
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="sort"]')
+  expect(select).not.toBeNull()
+  expect(select!.disabled).toBe(false)
+  expect(select!.title).toBe('对所选内容排序')
+  expect(Array.from(select!.options, option => [option.value, option.text])).toEqual([
+    ['', '排序'], ['sort:asc', '升序'], ['sort:desc', '降序'], ['sort-custom-open', '自定义排序…'],
+  ])
+  for (const option of Array.from(select!.options).slice(1)) {
+    select!.value = option.value
+    select!.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(select!.value).toBe('')
   }
+  const group = select!.closest('.workbook-ribbon-group')!
+  const filters = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
+  expect(filters.map(button => button.dataset.ribbonCommand)).toEqual([
+    'filter-toggle', 'filter-clear', 'filter-reapply', 'filter-advanced',
+  ])
+  for (const button of filters) {
+    expect(button.disabled).toBe(false)
+    button.click()
+    expect(command).toHaveBeenLastCalledWith(button.dataset.ribbonCommand)
+  }
+  protectedSheet = true; ribbon.refreshState()
+  expect(select!.disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('dispatches clear formats/all through the official selection commands and refuses without the wiring', () => {

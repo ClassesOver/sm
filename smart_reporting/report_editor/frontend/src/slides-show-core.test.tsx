@@ -107,3 +107,22 @@ it('控制栏退出也返回最后查看的完整数组页号，用于退出后�
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="退出放映"]')!.click())
   expect(onClose).toHaveBeenCalledExactlyOnceWith(2)
 })
+
+it('advances from saved timings and records dwell times only during rehearsal', async () => {
+  const advanceTimes = [1000, 1000, 1000]
+  await act(async () => { show = openSlidesShow(document.body, { slides, advanceTimes, onClose() {} }) })
+  await tick(1000)
+  expect(counter()).toBe('2 / 2')
+  await tick(1000)
+  expect(document.querySelector('.ss-end')).not.toBeNull()
+  await act(async () => show?.dispose())
+  const onRehearseDone = vi.fn()
+  await act(async () => { show = openSlidesShow(document.body, { slides, advanceTimes, onClose() {}, onRehearseDone }) })
+  await tick(3000)
+  expect(counter()).toBe('1 / 2')
+  await key('ArrowRight')
+  await tick(5000)
+  expect(counter()).toBe('2 / 2')
+  await key('Escape')
+  expect(onRehearseDone).toHaveBeenCalledWith([3, 0, 5])
+})

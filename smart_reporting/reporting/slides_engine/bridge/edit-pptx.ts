@@ -26,7 +26,7 @@ import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAdvanceTime, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAdvanceTime, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -134,6 +134,7 @@ type Input = {
   chartEdits?: NativeChartEdit[]
   hiddenSlides?: { slideIndex: number; hidden: boolean }[]
   transitions?: { slideIndex: number; kind: SlideTransitionKind }[]
+  advanceTimes?: { slideIndex: number; ms: number }[]
   animations?: {
     slideIndex: number
     elementId: string
@@ -371,6 +372,7 @@ if (request.action === 'inspect') {
       ...inspectBackgroundState(opened, slideIndex),
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
+      advanceMs: getSlideAdvanceTime(slide),
       ...transitionApplyAllState(slide),
       ...transitionEditAvailability(slide.bodySuffix),
       animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, direction, presetXml, preset, motionPath, paragraph }) => ({
@@ -589,7 +591,7 @@ if (request.action === 'inspect') {
     hiddenTargets.add(item.slideIndex)
   }
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.mediaInsertions, request.modelInsertions, request.modelViews, request.pictureReplacements, request.pictureCrops, request.pictureOpacities, request.chartEdits, request.hiddenSlides, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.mediaInsertions, request.modelInsertions, request.modelViews, request.pictureReplacements, request.pictureCrops, request.pictureOpacities, request.chartEdits, request.hiddenSlides, request.transitions, request.advanceTimes, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   const zoomInsertions = request.zoomInsertions ?? []
   if (!Array.isArray(zoomInsertions) || zoomInsertions.length > 50) throw new Error('zoom_insertions_invalid')
   const identityIndex = new Map<string, number>()
@@ -858,6 +860,16 @@ if (request.action === 'inspect') {
       setSlideTransition(slide, transition.kind)
       slide.bodySuffix = preserved
     }
+  }
+  const advanceTargets = new Set<number>()
+  for (const item of request.advanceTimes ?? []) {
+    if (!item || Object.keys(item).sort().join() !== 'ms,slideIndex' ||
+        !validSlideIndex(item.slideIndex, slideCount) || !Number.isInteger(item.ms) ||
+        item.ms < 1 || item.ms > 4294967295 || advanceTargets.has(item.slideIndex)) {
+      throw new Error('advance_time_invalid')
+    }
+    advanceTargets.add(item.slideIndex)
+    setSlideAdvanceTime(originalSlides[item.slideIndex]!, item.ms)
   }
   for (const animation of request.animations ?? []) {
     const durationMs = animation.durationMs ?? 500

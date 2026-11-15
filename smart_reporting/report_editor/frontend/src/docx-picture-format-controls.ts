@@ -1,12 +1,18 @@
 import type {Editor} from '@tiptap/core'
 import {NodeSelection} from '@tiptap/pm/state'
 import {closeHistory} from '@tiptap/pm/history'
-import {PICTURE_WRAPS,projectDocxPictureFormat,pictureSizeForSide,resetPictureDimensions,type PictureFormatAnchor,type PictureFormatPatch} from './docx-picture-format'
+import {projectDocxPictureFormat,pictureSizeForSide,resetPictureDimensions,type PictureFormatAnchor,type PictureFormatPatch} from './docx-picture-format'
+import {zh} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/app/zh'
 export type DocxPictureFormatAction='rotateRight'|'rotateLeft'|'flipH'|'flipV'|'size'|'wrap'|'align'|'resetSize'|'position'
+// GenOffice ContextMenu.tsx WRAP_OPTIONS, shared by the Layout and Picture Format ribbons.
+const wrapOptions=[
+ [null,zh.appWrapInline],['square-left',zh.appWrapSquareLeft],['square-right',zh.appWrapSquareRight],
+ ['topBottom',zh.appWrapTopBottom],['behind',zh.appWrapBehind],['front',zh.appWrapFront],
+] as const
 /** Host provides actual section content width, in CSS px, for GenOffice Reset Size. */
 export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFormatAnchor[],host:HTMLElement,locked:()=>string|null,reportError:(error:unknown)=>void,contentWidth:()=>number=()=>624){
  let active=true,generation=0,modal:HTMLElement|undefined
- let positionGallery: { trigger: HTMLButtonElement; dispose: () => void } | undefined
+ let arrangeMenu: { trigger: HTMLButtonElement; dispose: () => void } | undefined
  const selected=()=>{
   const s=editor.state.selection
   if(!(s instanceof NodeSelection)||s.node.type.name!=='docProtected'||s.node.attrs.blockType!=='image')return null
@@ -14,16 +20,17 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
   return anchor?{node:s.node,pos:s.from,anchor}:null
  }
  const reason=()=>locked()??(!editor.isEditable?'当前文档不可编辑':null)??(selected()?.node.attrs.imageReplace?'图片替换与格式修改需分别保存':null)??(selected()?.anchor.imageFormatEditable?null:'请选择支持原生格式保存的整块图片')
- const closePositionGallery=()=>{
-  const gallery=positionGallery
-  if(!gallery)return
-  positionGallery=undefined
-  gallery.dispose()
+ const closeArrangeMenu=()=>{
+  const menu=arrangeMenu
+  if(!menu)return
+  arrangeMenu=undefined
+  menu.dispose()
  }
- const close=()=>{generation++;closePositionGallery();modal?.remove();modal=undefined}
+ const close=()=>{generation++;closeArrangeMenu();modal?.remove();modal=undefined}
  const open=(action:DocxPictureFormatAction,trigger?:HTMLButtonElement)=>{
   try{
-   if(action==='position'&&positionGallery&&positionGallery.trigger===trigger){close();return}
+   const arrange=action==='position'||action==='wrap'
+   if(arrange&&arrangeMenu&&arrangeMenu.trigger===trigger){close();return}
    const unavailable=reason();if(unavailable)throw new Error(unavailable)
    close();const target=selected()!,snapshot=editor.state.doc,ticket=generation
    const current=()=>active&&ticket===generation&&!editor.isDestroyed&&!reason()&&editor.state.doc===snapshot&&selected()?.node===target.node&&selected()?.pos===target.pos
@@ -31,19 +38,27 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
     if(!current())throw new Error('文档或图片选择已变化，请重新打开图片格式工具')
     const pending:PictureFormatPatch={...target.node.attrs.imageFormat,...patch}
     if(patch.wrap===null){delete pending.posH;delete pending.posV}
+    const {imagePosH,imagePosV,imageRelH,imageRelV}=target.node.attrs
+    if(action==='wrap'&&patch.wrap&&!pending.posH&&imageRelH==='margin'&&imageRelV==='margin'&&imagePosH&&imagePosV){
+     pending.posH=imagePosH
+     pending.posV=imagePosV
+    }
+    // The two square choices move the object to the named side. Keep the vertical preset.
+    if(pending.posH&&patch.wrap==='square-left'&&pending.posH==='right')pending.posH='left'
+    if(pending.posH&&patch.wrap==='square-right')pending.posH='right'
     const op={kind:'formatImage',blockId:target.anchor.blockId,expectedObjectSha256:target.anchor.expectedObjectSha256,expectedImageSha256:target.anchor.imageSha256,...pending}
     const projected=projectDocxPictureFormat(target.node.toJSON(),target.anchor,op)
     const tr=closeHistory(editor.state.tr).setNodeMarkup(target.pos,undefined,projected.attrs)
     close();editor.view.dispatch(tr.setSelection(NodeSelection.create(tr.doc,target.pos)));editor.view.focus()
    }
-   if(action==='position'){
+   if(arrange){
     const wrapper=trigger?.parentElement
     if(!trigger||!wrapper)return
     const panel=document.createElement('div'),grid=document.createElement('div')
     panel.className='layout-menu'
     panel.dataset.rbPanel=''
     panel.setAttribute('role','group')
-    panel.setAttribute('aria-label','位置')
+    panel.setAttribute('aria-label',action==='position'?'位置':'环绕文字')
     grid.className='pos-grid'
     const button=(label:string,pressed:boolean,patch:PictureFormatPatch)=>{
      const item=document.createElement('button')
@@ -56,25 +71,37 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
      return item
     }
     const {imageWrap,imagePosH,imagePosV}=target.node.attrs
-    const inline=button('嵌入型',!imageWrap,{wrap:null})
-    inline.dataset.position='inline'
-    const caption=document.createElement('b')
-    caption.textContent='嵌入型'
-    inline.append(caption)
-    panel.append(inline,grid)
-    for(const [v,vertical] of [['top','顶部'],['center','中部'],['bottom','底部']] as const){
-     for(const [h,horizontal] of [['left','左侧'],['center','居中'],['right','右侧']] as const){
-      const item=button(vertical+horizontal,!!imageWrap&&imagePosH===h&&imagePosV===v,{posH:h,posV:v,wrap:h==='right'?'square-right':'square-left'})
-      item.classList.add('pos-cell',`ph-${h}`,`pv-${v}`)
-      const dot=document.createElement('span')
-      dot.className='pos-dot'
-      item.append(dot);grid.append(item)
+    const wrapButton=(wrap:typeof wrapOptions[number][0],label:string)=>{
+     const item=button(label,(imageWrap??null)===wrap,{wrap})
+     const caption=document.createElement('b')
+     caption.textContent=label
+     item.append(caption)
+     return item
+    }
+    if(action==='position'){
+     const inline=wrapButton(null,zh.appWrapInline)
+     inline.dataset.position='inline'
+     panel.append(inline,grid)
+     for(const [v,vertical] of [['top','顶部'],['center','中部'],['bottom','底部']] as const){
+      for(const [h,horizontal] of [['left','左侧'],['center','居中'],['right','右侧']] as const){
+       const item=button(vertical+horizontal,!!imageWrap&&imagePosH===h&&imagePosV===v,{posH:h,posV:v,wrap:h==='right'?'square-right':'square-left'})
+       item.classList.add('pos-cell',`ph-${h}`,`pv-${v}`)
+       const dot=document.createElement('span')
+       dot.className='pos-dot'
+       item.append(dot);grid.append(item)
+      }
+     }
+    }else{
+     for(const [wrap,label] of wrapOptions){
+      const item=wrapButton(wrap,label)
+      item.dataset.wrap=wrap??'inline'
+      panel.append(item)
      }
     }
     const doc=trigger.ownerDocument
-    const onOutside=(event:Event)=>{if(!wrapper.contains(event.target as Node))closePositionGallery()}
-    const onTransaction=()=>{if(!current())closePositionGallery()}
-    positionGallery={trigger,dispose:()=>{
+    const onOutside=(event:Event)=>{if(!wrapper.contains(event.target as Node))closeArrangeMenu()}
+    const onTransaction=()=>{if(!current())closeArrangeMenu()}
+    arrangeMenu={trigger,dispose:()=>{
      doc.removeEventListener('pointerdown',onOutside,true)
      doc.removeEventListener('focusin',onOutside)
      editor.off('transaction',onTransaction)
@@ -85,7 +112,7 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
      if(event.key!=='Escape')return
      event.preventDefault()
      event.stopPropagation()
-     closePositionGallery()
+     closeArrangeMenu()
      trigger.focus()
     }
     trigger.setAttribute('aria-expanded','true')
@@ -93,8 +120,8 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
     doc.addEventListener('pointerdown',onOutside,true)
     doc.addEventListener('focusin',onOutside)
     editor.on('transaction',onTransaction)
-    const selectedItem=panel.querySelector<HTMLButtonElement>('[aria-pressed="true"]')??inline
-    selectedItem.focus({preventScroll:true})
+    const selectedItem=panel.querySelector<HTMLButtonElement>('[aria-pressed="true"]')??panel.querySelector<HTMLButtonElement>('button')
+    selectedItem?.focus({preventScroll:true})
     return
    }
    if(action==='rotateRight'||action==='rotateLeft'){apply({rotDeg:((Number(target.node.attrs.imageRotDeg)||0)+(action==='rotateRight'?90:270))%360});return}
@@ -111,15 +138,14 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    width.onchange=()=>{if(lock.checked)height.value=String(Math.max(1,Math.round(Number(width.value)/ratio)))}
    height.onchange=()=>{if(lock.checked)width.value=String(Math.max(1,Math.round(Number(height.value)*ratio)))}
    const select=(label:string,options:readonly (readonly [string,string])[],value:string)=>{const row=document.createElement('label'),field=document.createElement('select');row.textContent=label;for(const [key,name] of options){const option=document.createElement('option');option.value=key;option.textContent=name;field.append(option)}field.value=value;row.append(field);form.append(row);return field}
-   const wrap=select('文字环绕',[['','嵌入型'],...PICTURE_WRAPS.map((v,i)=>[v,['四周型（左）','四周型（右）','紧密型（左）','紧密型（右）','穿越型（左）','穿越型（右）','上下型','衬于文字下方','浮于文字上方'][i]!] as const)],String(target.node.attrs.imageWrap??''))
    const align=select('对齐',[['left','左对齐'],['center','居中'],['right','右对齐']],String(target.node.attrs.imageAlign??'left'))
    const submit=document.createElement('button');submit.type='submit';submit.textContent='应用';const cancel=document.createElement('button');cancel.type='button';cancel.textContent='取消';cancel.onclick=close;form.append(submit,cancel)
    // Only the requested group is written: size and alignment changes preserve source anchor geometry.
-   form.onsubmit=e=>{e.preventDefault();try{if(action==='size')apply(pictureSizeForSide(Number(width.value),Number(height.value),'w',Number(width.value),false));else if(action==='wrap')apply({wrap:(wrap.value||null) as PictureFormatPatch['wrap']});else apply({align:align.value as PictureFormatPatch['align']})}catch(error){reportError(error)}}
-   const visible:(HTMLInputElement|HTMLSelectElement)[]=action==='size'?[width,height,lock]:action==='wrap'?[wrap]:[align]
-   for(const field of [width,height,lock,wrap,align])field.closest('label')!.hidden=!visible.includes(field)
-   modal.append(form);host.append(modal);(action==='size'?width:action==='wrap'?wrap:align).focus()
+   form.onsubmit=e=>{e.preventDefault();try{if(action==='size')apply(pictureSizeForSide(Number(width.value),Number(height.value),'w',Number(width.value),false));else apply({align:align.value as PictureFormatPatch['align']})}catch(error){reportError(error)}}
+   const visible:(HTMLInputElement|HTMLSelectElement)[]=action==='size'?[width,height,lock]:[align]
+   for(const field of [width,height,lock,align])field.closest('label')!.hidden=!visible.includes(field)
+   modal.append(form);host.append(modal);(action==='size'?width:align).focus()
   }catch(error){reportError(error)}
  }
- return {reason,open,closePositionGallery,dispose(){active=false;close()}}
+ return {reason,open,closeArrangeMenu,dispose(){active=false;close()}}
 }

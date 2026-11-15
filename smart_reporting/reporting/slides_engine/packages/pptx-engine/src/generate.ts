@@ -1601,8 +1601,8 @@ export function readSlideTransitionXml(bodySuffix: string): SlideTransitionKind 
 
 /** Set/remove advTm on every <p:transition> open tag in the block (both Choice/Fallback in morph's AC wrapper). */
 function patchAdvTmAttr(block: string, ms: number | null): string {
-  return block.replace(/<p:transition\b[^>]*>/g, (tag) => {
-    const cleaned = tag.replace(/\s+advTm="[^"]*"/, '')
+  return block.replace(/<p:transition\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/g, (tag) => {
+    const cleaned = tag.replace(/\s+advTm\s*=\s*(?:"[^"]*"|'[^']*')/, '')
     if (ms == null) return cleaned
     return cleaned.replace(
       /(\s*\/)?>$/,
@@ -1637,8 +1637,8 @@ export function patchSlideAdvanceTimeXml(bodySuffix: string, ms: number | null):
 /** Read the auto-advance time from the bodySuffix (ms; null when unset). */
 export function readSlideAdvanceTimeXml(bodySuffix: string): number | null {
   const m = AC_TRANSITION_RE.exec(bodySuffix) ?? TRANSITION_RE.exec(bodySuffix)
-  const adv = m && /\badvTm="(\d+)"/.exec(m[0])
-  return adv ? Number(adv[1]) : null
+  const adv = m && /\sadvTm\s*=\s*(['"])(\d+)\1/.exec(m[0])
+  return adv ? Number(adv[2]) : null
 }
 
 // ── Hidden slide patch (<p:sld show="0">, skipped during slideshow) ─────

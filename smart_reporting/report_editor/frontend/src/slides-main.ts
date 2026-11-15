@@ -51,6 +51,7 @@ import { openSlidesSizeDialog } from './slides-size-dialog'
 import { mountSlidesRuler } from './slides-ruler'
 import { mountSlidesGuides } from './slides-guides'
 import { showSlidesSettingsDialog } from './slides-settings-dialog'
+import { formatClock } from './vendor/genoffice/renderer/slideshow-utils'
 import { equationTextBox, openSlidesEquationDialog } from './slides-equation'
 import { EFFECT_LABELS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
@@ -139,6 +140,7 @@ type SlideChanges = {
   backgroundGraphics?: { slideIndex: number; hidden: boolean }[]
   chartEdits?: ({ slideIndex: number; elementId: string } & NativeChartPatch)[]
   hiddenSlides?: { slideIndex: number; hidden: boolean }[]
+  advanceTimes?: { slideIndex: number; ms: number }[];
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]; animationSequences?: { slideIndex: number; items: SequenceItem[] }[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
   textBoxes?: Omit<TextBoxEdit, 'watermark'>[]; deletions?: { slideIndex: number; elementId: string }[]
@@ -288,6 +290,7 @@ let brush: ReturnType<typeof captureSlidesBrush>['brush'] = null
 let brushMode: 'once' | 'continuous' | undefined
 let linkDialog: ReturnType<typeof openSlidesLink> | undefined
 let showOverlay: { dispose(): void } | undefined
+let rehearsalDialog: HTMLDialogElement | undefined
 let showOpening = false
 let animationPreviewOverlay: { dispose(): void } | undefined
 let animationPreviewGeneration = 0
@@ -741,6 +744,7 @@ const commentEdits: CommentEdit[] = []
 let commentsPaneOpen = false
 const hiddenSlideEdits = new Map<number, boolean>()
 const transitionEdits = new Map<number, SlideTransition>()
+const advanceTimeEdits = new Map<number, number>()
 const layoutEdits = new Map<number, string>()
 let slideSizeEdit: { cx: number; cy: number } | undefined
 let animationDirection: AnimationDirection = 'bottom'
@@ -1479,8 +1483,36 @@ async function openPrint() {
   }catch(error){if(!disposed)statusMessage.textContent=error instanceof Error?error.message:'打印预览未打开'}
   finally{printOpening=false}
 }
-async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow) {
-  if (!nativeDraft || disposed || saving || mutationPending || showOpening || showOverlay) return
+function confirmRehearsal(times: {slideIndex: number; ms: number}[], current: () => boolean) {
+  if (!current() || !times.length) return
+  const dialog = document.createElement('dialog')
+  rehearsalDialog = dialog
+  dialog.className = 'slides-table-dialog'
+  dialog.setAttribute('aria-label', '排练计时')
+  dialog.innerHTML = '<h3>排练计时</h3><p></p><footer class="slides-table-actions"><button value="cancel">不保存</button><button data-confirm-rehearsal>保存</button></footer>'
+  const duration = formatClock(times.reduce((total, time) => total + time.ms, 0))
+  dialog.querySelector('p')!.textContent = `本次放映总时长 ${duration}。是否保存每页停留时间作为自动换片时间？`
+  dialog.querySelector('[value=cancel]')!.addEventListener('click', () => dialog.close())
+  dialog.querySelector('[data-confirm-rehearsal]')!.addEventListener('click', () => {
+    try {
+      if (!current()) throw new Error('草稿已变化，请重新排练。')
+      const merged = new Map(advanceTimeEdits)
+      for (const { slideIndex, ms } of times) merged.set(slideIndex, ms)
+      commitNativeChanges({ ...slideChanges(), advanceTimes: Array.from(merged, ([slideIndex, ms]) => ({ slideIndex, ms })) })
+      dialog.close()
+    } catch (error) {
+      dialog.querySelector('p')!.textContent = error instanceof Error ? error.message : '排练计时未保存。'
+    }
+  })
+  dialog.addEventListener('close', () => { rehearsalDialog = undefined; dialog.remove() }, { once: true })
+  root.append(dialog)
+  showSlidesSettingsDialog(dialog)
+}
+
+async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow, rehearse = false) {
+  if (!nativeDraft || disposed || saving || mutationPending || showOpening || showOverlay || rehearsalDialog) return
+  if (rehearse && newSlides.length) { statusMessage.textContent = '请先保存新建页面，再开始排练计时。'; return }
+  if (rehearse && !flushSlideOutputInputs('请先确认或取消当前编辑，再排练计时。')) return
   if (cropOverlay || structureDialog || order.some(index=>commentPane.hasDraft(index))) { statusMessage.textContent='请先确认或取消当前编辑，再打开放映'; return }
   const sourceSha=deck.sha256, slideIndex=selectedSlide, snapshot=JSON.stringify(nativeDraft.operations)
   const requestedPosition=fromCurrent?order.indexOf(slideIndex):0
@@ -1501,7 +1533,13 @@ async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow) {
     if(customShow&&!customOrder?.length)throw Error('该自定义放映没有可放映页面')
     const first=tree.slides.findIndex(slide=>!slide.hidden), startIndex=fromCurrent?Math.max(0,requestedPosition):Math.max(0,first)
     const playback=slidesShowSnapshot(tree.slides,preview.model.slides)
-    showOverlay=openSlidesShow(root,{slides:tree.slides,mediaSources:tree.slides.map(slide=>(slide as RenderSlide & {mediaSources?:SlideMediaSource[];modelSources?:ModelSource[]}).mediaSources??[]),startIndex:customOrder?.[0]??startIndex,customOrder,...playback,onClose:(lastIndex)=>{
+    const sourceOrder = [...order]
+    const onRehearseDone = rehearse ? (seconds: number[]) => confirmRehearsal(
+      seconds.flatMap((sec, index) => sec > 0 && sourceOrder[index] !== undefined
+        ? [{ slideIndex: sourceOrder[index]!, ms: sec * 1000 }] : []),
+      () => !locked() && !mutationPending && deck.sha256 === sourceSha && JSON.stringify(nativeDraft.operations) === snapshot,
+    ) : undefined
+    showOverlay=openSlidesShow(root,{slides:tree.slides,mediaSources:tree.slides.map(slide=>(slide as RenderSlide & {mediaSources?:SlideMediaSource[];modelSources?:ModelSource[]}).mediaSources??[]),startIndex:customOrder?.[0]??startIndex,customOrder,...playback,onRehearseDone,onClose:(lastIndex)=>{
       showOverlay=undefined
       if(!disposed){const id=order[lastIndex??startIndex];root.querySelector<HTMLButtonElement>('.slide-open[data-slide-index="'+id+'"]')?.click();statusMessage.textContent='放映已结束；草稿未改动'}
     }})
@@ -1821,6 +1859,7 @@ function slideChanges(): SlideChanges {
     ...(nativeChartEdits.length ? { chartEdits: structuredClone(nativeChartEdits) } : {}),
     ...(commentEdits.length ? { commentEdits: commentEdits.map(edit => ({ ...edit })) } : {}),
     ...(hiddenSlideEdits.size ? { hiddenSlides: [...hiddenSlideEdits].map(([slideIndex, hidden]) => ({ slideIndex, hidden })) } : {}),
+    ...(advanceTimeEdits.size ? { advanceTimes: Array.from(advanceTimeEdits, ([slideIndex, ms]) => ({ slideIndex, ms })).filter(item => !deletedSlides.has(item.slideIndex)) } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     ...(animationSequences.size ? { animationSequences: [...animationSequences].map(([slideIndex, items]) => ({ slideIndex, items: items.map(item => ({ ...item })) })) } : {}),
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
@@ -1837,7 +1876,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false) {
   if (!nativeDraft) return
   const operations = candidate ?? nativeDraft.operations
-  const supported = new Set(['zoomInsertions','modelInsertions','modelViews','customShows', 'mediaInsertions', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundImageReuses', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['zoomInsertions','modelInsertions','modelViews','customShows', 'mediaInsertions', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundImageReuses', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'advanceTimes', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -1854,6 +1893,14 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   const restoredLinks = validateSlidesLinkDraft(changes, deck.slides)
   const restoredPastes = validateSlidesClipboardDraft(changes, deck.slides)
   const transitions = restoredTransitions(changes.transitions, deck.slides.length)
+  const advanceTimes = changes.advanceTimes ?? []
+  if (!Array.isArray(advanceTimes) || advanceTimes.length > 500 ||
+      advanceTimes.some(time => !time || Object.keys(time).sort().join() !== 'ms,slideIndex' ||
+        !Number.isInteger(time.slideIndex) || time.slideIndex < 0 || time.slideIndex >= deck.slides.length ||
+        (changes.deletedSlides ?? []).includes(time.slideIndex) || !Number.isInteger(time.ms) || time.ms < 1 || time.ms > 4294967295) ||
+      new Set(advanceTimes.map(time => time.slideIndex)).size !== advanceTimes.length) {
+    throw new Error('排练计时草稿无效。')
+  }
   if (native && transitions.some(item => !transitionEditingAllowed(deck.slides[item.slideIndex]))) throw new Error('来源含尚不能安全修改的转场兼容性内容；原草稿已保留')
   const restoredBackgroundImages = changes.backgroundImages ?? []
   {
@@ -1990,6 +2037,8 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   // Older drafts already stored an array: retain every record, including noncommuting list commands.
   paragraphFormattingEdits.push(...(changes.paragraphFormatting ?? []).map(format => ({ ...format })))
   for (const transition of transitions) transitionEdits.set(transition.slideIndex, transition.kind)
+  advanceTimeEdits.clear()
+  for (const time of advanceTimes) advanceTimeEdits.set(time.slideIndex, time.ms)
   for (const layout of changes.slideLayouts ?? []) layoutEdits.set(layout.slideIndex, layout.layoutPath)
   for (const background of changes.backgrounds ?? []) backgroundEdits.set(background.slideIndex, background.color)
   customShowEdits=restoredShows===undefined?undefined:structuredClone(restoredShows)
@@ -2537,6 +2586,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       openExportImagesDialog(command === 'exportImages' ? 'png' : 'jpg')
       return
     }
+    if (command === 'rehearse') { stopBrush(); void startSlidesShow(false, undefined, true); return }
     if (command === 'startShow' || command === 'startShowCurrent') { stopBrush(); void startSlidesShow(command === 'startShowCurrent'); return }
     if (command === 'animationPreview') { stopBrush(); void startAnimationPreview(); return }
     if (command === 'groupObjects' || command === 'ungroupObjects') { changeGroup(command === 'ungroupObjects'); return }
@@ -3496,6 +3546,7 @@ const save = async () => {
     commentEdits.splice(0); commentPane.clearDrafts()
     hiddenSlideEdits.clear()
     transitionEdits.clear()
+    advanceTimeEdits.clear()
     layoutEdits.clear()
     slideSizeEdit = undefined
     groupEdits.splice(0)
@@ -3634,7 +3685,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; void namingController?.cancel().catch(() => {}); pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; void namingController?.cancel().catch(() => {}); pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); rehearsalDialog?.remove(); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

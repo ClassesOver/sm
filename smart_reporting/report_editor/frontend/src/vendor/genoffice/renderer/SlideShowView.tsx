@@ -52,11 +52,12 @@ const GRID_THUMB_W = 200
 export interface ShowViewState { pos: number; slideIndex: number; count: number; ended: boolean; pending: boolean; grid: boolean }
 
 /** Pinned show core; desktop IPC/fullscreen/media/recording are supplied or bounded by the native host. */
-export function SlideShowView({ slides, images, startAt, onExit, customOrder, animations = [], transitions = [], shapeKeys = [], links = [], viewport, onState, mediaSources = [] }: {
+export function SlideShowView({ slides, images, startAt, onExit, customOrder, animations = [], transitions = [], shapeKeys = [], links = [], viewport, onState, mediaSources = [], advanceTimes = [] }: {
   slides: RenderSlide[]; images: Map<string, HTMLImageElement>; startAt: number; onExit(lastIndex: number): void; customOrder?: number[];
   animations: AnimationItem[][]; transitions: TransitionKind[]; shapeKeys: ShapeKey[][];
   links: Array<Array<{ sourceId: string; target: LinkTargetOp }>>;
   mediaSources?: readonly (readonly SlideMediaSource[])[];
+  advanceTimes?: (number | null)[];
   viewport: { w: number; h: number }; onState?(state: ShowViewState): void;
 }) {
   // Playback sequence (original indexes): hidden pages skipped (except the start page); custom shows use the given order
@@ -167,6 +168,21 @@ export function SlideShowView({ slides, images, startAt, onExit, customOrder, an
     if (pos >= order.length - 1) setEnded(true)
     else goTo(pos + 1, true)
   }, [ended, pos, order.length, goTo, player.advance]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Source slideshow auto-advances the page outright, including pages with click animations.
+  const advanceMs = advanceTimes[order[pos] ?? startAt]
+  const turnPage = useCallback(() => {
+    if (ended) return
+    if (pos >= order.length - 1) setEnded(true)
+    else goTo(pos + 1, true)
+  }, [ended, pos, order.length, goTo])
+  const turnPageRef = useRef(turnPage)
+  turnPageRef.current = turnPage
+  useEffect(() => {
+    if (ended || advanceMs == null) return
+    const timer = window.setTimeout(() => turnPageRef.current(), Math.min(advanceMs, 2147483647))
+    return () => window.clearTimeout(timer)
+  }, [pos, advanceMs, ended])
 
   const prev = useCallback(() => {
     if (ended) {

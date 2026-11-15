@@ -27,7 +27,7 @@ from .pptx_master_elements import native_master_element_edits
 from .pptx_media import native_media_insertions
 from .pptx_model3d import native_model_edits
 
-_ALLOWED_KEYS = {'customShows', 'backgroundImageReuses', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'zoomInsertions', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'customShows', 'backgroundImageReuses', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'zoomInsertions', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'advanceTimes', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
     'insertPicture': {'sheetName', 'sourceIdentity', 'imageId', 'row', 'column', 'widthPx', 'heightPx', 'picture'},
@@ -702,6 +702,11 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             comment_deletes.add(identity)
         else:
             raise ValueError('native_office_operations_invalid')
+    advance_times = _records(operation, 'advanceTimes', {'slideIndex', 'ms'})
+    if (any(type(item['ms']) is not int or not 1 <= item['ms'] <= 4294967295
+            or item['slideIndex'] in deleted_slides for item in advance_times)
+        or len({item['slideIndex'] for item in advance_times}) != len(advance_times)):
+        raise ValueError('native_office_operations_invalid')
     transitions = _records(operation, 'transitions', {'slideIndex', 'kind'})
     if any(not isinstance(item['kind'], str) or item['kind'] not in _TRANSITIONS for item in transitions):
         raise ValueError('native_office_operations_invalid')
@@ -765,7 +770,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'master_element_edits': native_master_element_edits(operation.get('masterElementEdits', [])), 'master_text_edits': _native_master_text_edits(operation), 'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'table_structures': table_structures, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'hidden_slides': hidden_slides, 'comment_edits': comment_edits, 'transitions': transitions, 'animations': animations,
+    return {'master_element_edits': native_master_element_edits(operation.get('masterElementEdits', [])), 'master_text_edits': _native_master_text_edits(operation), 'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'table_structures': table_structures, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'hidden_slides': hidden_slides, 'comment_edits': comment_edits, 'transitions': transitions, 'advance_times': advance_times, 'animations': animations,
         'custom_shows': _native_custom_shows(operation), 'slide_layouts': layouts, 'backgrounds': backgrounds, 'background_images': _native_background_images(operation), 'background_image_reuses': _native_background_reuses(operation), **_native_background_ops(operation), 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting, 'native_images': native_images, 'media_insertions': native_media_insertions(operation), **native_model_edits(operation),
         'picture_replacements': picture_replacements, 'picture_crops': picture_crops, 'picture_opacities': picture_opacities, 'chart_edits': chart_edits,

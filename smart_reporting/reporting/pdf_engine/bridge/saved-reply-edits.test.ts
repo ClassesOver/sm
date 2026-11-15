@@ -33,6 +33,41 @@ test('editing a flat root preserves every reply and its parent identity', async 
   ])
 })
 
+test('removes only the whole exact saved thread and releases its PDF objects', async () => {
+  const source = await fixture()
+  const model = await inspectPdf(source)
+  const current = model.pages[0].notes
+  const old = await PDFDocument.load(source)
+  const before = old.getPage(0).node.lookup(PDFName.of('Annots'), PDFArray)
+  await assert.rejects(() => patchPdfWithReceipt(source, [remove(model, 0), remove(model, 1)], model.sourceSha256))
+  await assert.rejects(() => patchPdfWithReceipt(source, [remove(model, 0), remove(model, 1), { ...remove(model, 2), expectedAnnotationSha256: 'f'.repeat(64) }], model.sourceSha256))
+  const result = await patchPdfWithReceipt(source, [remove(model, 1), remove(model, 2), remove(model, 0)], model.sourceSha256)
+  const output = await PDFDocument.load(result.bytes)
+  assert.equal(output.getPage(0).node.lookup(PDFName.of('Annots'), PDFArray).size(), 0)
+  for(const ref of before.asArray()) assert.equal(output.context.lookup(ref), undefined)
+  assert.equal((await inspectPdf(result.bytes)).pages[0].notes.length, 0)
+  assert.equal((await inspectPdf(source)).pages[0].notes.length, current.length)
+  assert.equal(output.getForm().getTextField('control').getText(), 'unchanged')
+})
+
+test('removes objects through an exclusive indirect annotation array and refuses an aliased array', async () => {
+  const annotsKey = PDFName.of('Annots')
+  const doc = await PDFDocument.load(await fixture())
+  const page = doc.getPage(0)
+  const annotsRef = doc.context.register(page.node.lookup(annotsKey, PDFArray))
+  page.node.set(annotsKey, annotsRef)
+  const source = await doc.save()
+  const model = await inspectPdf(source)
+  const result = await patchPdfWithReceipt(source, [remove(model, 0), remove(model, 1), remove(model, 2)], model.sourceSha256)
+  const saved = await PDFDocument.load(result.bytes)
+  assert.equal(saved.context.lookup(annotsRef, PDFArray).size(), 0)
+  doc.catalog.set(PDFName.of('ExternalAnnotationArray'), annotsRef)
+  const shared = await doc.save()
+  const sharedModel = await inspectPdf(shared)
+  assert.equal(sharedModel.pages[0].notes[0].replyable, false)
+  await assert.rejects(() => patchPdfWithReceipt(shared, [remove(sharedModel, 0), remove(sharedModel, 1), remove(sharedModel, 2)], sharedModel.sourceSha256))
+})
+
 test('stale/foreign identities, duplicate leaf mutations and root deletion refuse',async()=>{
  const source=await fixture(),m=await inspectPdf(source)
  for(const ops of [[{...edit(m),expectedAnnotationSha256:'0'.repeat(64)}],[{...edit(m),pageId:m.pages[1].pageId}],[edit(m),remove(m,1)],[remove(m,0)],[edit(m),{kind:'cropPage',pageId:m.pages[0].pageId,rect:[0,0,200,300]}],[edit(m),{kind:'setPageSize',preset:'A4'}],[{...edit(m),parentAnnotationId:m.pages[0].notes[0].annotationId}]])await assert.rejects(()=>patchPdfWithReceipt(source,ops,m.sourceSha256))

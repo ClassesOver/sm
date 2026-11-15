@@ -39,7 +39,7 @@ it.each([false,true])('routes Layout Arrange through existing picture controls w
   const open = vi.fn()
   let unavailable: string | null = '请选择图片'
   const section = withSection ? { settings: {} as NonNullable<Parameters<typeof createDocxRibbon>[4]>['settings'], onChange: vi.fn() } : undefined
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, closePositionGallery: vi.fn(), dispose: vi.fn() } }, section)
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
   try {
     f.tab('layout').click()
     const arrange = () => f.ribbon.querySelector('section[aria-label="排列"]')!
@@ -51,7 +51,7 @@ it.each([false,true])('routes Layout Arrange through existing picture controls w
     expect(action('position').disabled).toBe(false)
     action('position').click()
     action('wrap').click()
-    expect(open.mock.calls).toEqual([['position', action('position')], ['wrap']])
+    expect(open.mock.calls).toEqual([['position', action('position')], ['wrap', action('wrap')]])
   } finally { f.editor.destroy() }
 })
 
