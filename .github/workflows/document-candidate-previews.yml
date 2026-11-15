@@ -1,0 +1,32 @@
+name: Document candidate previews (isolated)
+
+on:
+  pull_request:
+    paths:
+      - "smart_reporting/document_candidate_*.py"
+      - "smart_reporting/tests/test_document_candidate_*.py"
+      - ".github/workflows/document-candidate-previews.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install isolated preview test dependencies
+        run: python -m pip install "pytest>=8,<10" "anyio>=4,<5" "openpyxl>=3.1,<4" "python-pptx>=1,<2" "pymupdf>=1.26,<2" "ruff>=0.12,<1"
+      - name: Ruff focused preview modules
+        run: |
+          python -m ruff check smart_reporting/document_candidate_contract.py smart_reporting/document_candidate_xlsx_targets.py smart_reporting/document_candidate_xlsx_operations.py smart_reporting/document_candidate_xlsx_preview.py smart_reporting/document_candidate_pptx_targets.py smart_reporting/document_candidate_pptx_preview.py smart_reporting/document_candidate_pdf_targets.py smart_reporting/document_candidate_pdf_preview.py
+      - name: Run isolated real-file preview tests
+        run: |
+          python -m pytest -q -o addopts=""             smart_reporting/tests/test_document_candidate_contract.py             smart_reporting/tests/test_document_candidate_xlsx_targets.py             smart_reporting/tests/test_document_candidate_xlsx_operations.py             smart_reporting/tests/test_document_candidate_xlsx_preview.py             smart_reporting/tests/test_document_candidate_pptx_targets.py             smart_reporting/tests/test_document_candidate_pptx_preview.py             smart_reporting/tests/test_document_candidate_pdf_preview.py
+      - name: Whitespace check
+        run: git diff --check HEAD~1 HEAD
