@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException
@@ -38,14 +39,18 @@ class ReportChannelWordAssistant:
         draft = await self.resolve_draft(channel)
         if draft is None:
             raise HTTPException(409, "report_channel_word_draft_unavailable")
+        draft = ChannelWordDraft(
+            draft.session, draft.source_sha256, deepcopy(draft.operations),
+            deepcopy(draft.selection), draft.session_reference,
+        )
         context = await self.ai.editor.context_for_session(draft.session)
         if context.format != "docx":
             raise HTTPException(409, "report_channel_word_draft_unavailable")
         return draft
 
     @staticmethod
-    def _prefix(channel: str, identity: ConnectorIdentity) -> str:
-        scope = json.dumps([channel, identity.connector, identity.subject, identity.session])
+    def _prefix(channel: str, identity: ConnectorIdentity, grant: str) -> str:
+        scope = json.dumps([channel, identity.connector, identity.subject, identity.session, grant])
         return hashlib.sha256(scope.encode()).hexdigest() + "_"
 
     @staticmethod
@@ -63,26 +68,37 @@ class ReportChannelWordAssistant:
         request_hash = hashlib.sha256(f"{grant}:{payload.request_id}".encode()).hexdigest()[:63]
         try:
             draft = await self._draft(channel)
+            if not await authorized():
+                raise HTTPException(403, "report_channel_membership_required")
             job = await self.ai.start_edit(
                 draft.session,
                 instruction=payload.instruction,
                 expected_sha256=draft.source_sha256,
                 operations=draft.operations,
                 selection=draft.selection,
-                client_request_id=self._prefix(channel, identity) + request_hash,
+                client_request_id=self._prefix(channel, identity, grant) + request_hash,
                 server_session_reference=draft.session_reference,
                 authorization_check=authorized,
             )
         except ReportingError as error:
             raise HTTPException(409, error.code) from None
+        if not await authorized():
+            raise HTTPException(403, "report_channel_membership_required")
         return self._status(job)
 
     async def status(self, channel: str, identity: ConnectorIdentity, task_id: str) -> dict:
+        grant = await self.repository.member_grant(channel, identity)
+        if grant is None or not await self.repository.grant_active(grant):
+            raise HTTPException(403, "report_channel_membership_required")
         try:
             draft = await self._draft(channel)
+            if not await self.repository.grant_active(grant):
+                raise HTTPException(403, "report_channel_membership_required")
             job = await self.ai.wait_edit_status(draft.session, task_id, wait_ms=0)
         except ReportingError:
             raise HTTPException(404, "report_channel_word_task_missing") from None
-        if not job.get("clientRequestId", "").startswith(self._prefix(channel, identity)):
+        if not await self.repository.grant_active(grant):
+            raise HTTPException(403, "report_channel_membership_required")
+        if not job.get("clientRequestId", "").startswith(self._prefix(channel, identity, grant)):
             raise HTTPException(404, "report_channel_word_task_missing")
         return self._status(job)

@@ -2,10 +2,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+from smart_reporting.report_channel_api import ConnectorIdentity, DelegateRequest, create_report_channel_router
 from smart_reporting.report_channel_invitation import ChannelMember, parse_channel_invitation
 from smart_reporting.report_channel_word import ChannelWordDraft, ReportChannelWordAssistant
 
@@ -66,13 +66,36 @@ async def test_channel_word_assistant_uses_server_draft_and_reports_private_stat
             "editId": "task-a", "status": "ready", "accepted": False,
             "proposal": {"text": "synthetic candidate"}, "clientRequestId": kwargs["client_request_id"],
         }
+        assert (await client.get(path + "/task-a")).status_code == 403
+        ai.wait_edit_status.assert_not_awaited()
+        repository.grant_active.return_value = True
         assert (await client.get(path + "/task-a")).json() == {
             "taskId": "task-a", "status": "ready", "accepted": False,
         }
+        repository.member_grant.return_value = "replacement-grant"
+        assert (await client.get(path + "/task-a")).status_code == 404
+        repository.member_grant.return_value = "synthetic-grant"
+        repository.grant_active.side_effect = [True, True, False]
+        assert (await client.get(path + "/task-a")).status_code == 403
+        repository.grant_active.side_effect = None
         authenticate.return_value = ConnectorIdentity("dsh", "account-a", "another-session")
         assert (await client.get(path + "/task-a")).status_code == 404
         repository.has_member.return_value = False
         assert (await client.get(path + "/task-a")).status_code == 403
+
+
+@pytest.mark.anyio
+async def test_channel_word_rechecks_grant_after_resolving_draft():
+    identity = ConnectorIdentity("dsh", "account-a", "session-a")
+    repository = SimpleNamespace(member_grant=AsyncMock(return_value="grant"), grant_active=AsyncMock(return_value=False))
+    draft = ChannelWordDraft(object(), "source-hash", [], [{"blockId": "synthetic"}], "session-reference")
+    ai = SimpleNamespace(editor=SimpleNamespace(context_for_session=AsyncMock(return_value=SimpleNamespace(format="docx"))),
+                         start_edit=AsyncMock())
+    assistant = ReportChannelWordAssistant(ai, AsyncMock(return_value=draft), repository)
+    with pytest.raises(HTTPException) as error:
+        await assistant.start("channel-a", identity, DelegateRequest(request_id="one", instruction="Revise the report"))
+    assert error.value.status_code == 403
+    ai.start_edit.assert_not_awaited()
 
 
 @pytest.mark.anyio
