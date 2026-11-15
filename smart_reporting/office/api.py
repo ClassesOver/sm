@@ -81,8 +81,9 @@ class SearchRerank(Input):
 
 
 class BulkFiles(Input):
-    action: Literal['star', 'unstar', 'delete', 'move', 'hide_recent']
+    action: Literal['star', 'unstar', 'delete', 'move', 'hide_recent', 'group']
     versions: dict[str, int] = Field(min_length=1, max_length=500)
+    group: str | None = Field(default=None, max_length=80)
     destination: str | None = Field(default=None, min_length=1, max_length=36)
     folder: str | None = Field(default=None, min_length=1, max_length=36)
 
@@ -285,7 +286,7 @@ def create_office_router(
         if any(not 1 <= len(file_id) <= 36 or version < 1 for file_id, version in body.versions.items()):
             raise OfficeError('office_input_invalid', '批量文件身份无效。', 422)
         return await office.bulk_files(identity, space, body.versions, body.action,
-                                       destination=body.destination, folder=body.folder)
+                                       destination=body.destination, folder=body.folder, group=body.group)
 
     if documents is not None:
         from .search import OfficeSearch

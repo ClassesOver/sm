@@ -99,6 +99,7 @@ file_preferences = Table(
     Column("file", ForeignKey("office_files.id"), primary_key=True),
     Column("user", String(256), primary_key=True),
     Column("starred", Boolean, nullable=False),
+    Column("favorite_group", String(80)),
     Column("seen", BigInteger, nullable=False),
 )
 
@@ -136,6 +137,8 @@ def initialize_schema(connection):
     if connection.dialect.name != "postgresql":
         metadata.create_all(connection)
         if connection.dialect.name == "sqlite":
+            if not any(column["name"] == "favorite_group" for column in inspect(connection).get_columns(file_preferences.name)):
+                connection.execute(text("ALTER TABLE office_file_preferences ADD COLUMN favorite_group VARCHAR(80)"))
             columns = inspect(connection).get_columns(knowledge_turns.name)
             if not any(column["name"] == "conversation" for column in columns):
                 connection.execute(text(
@@ -156,6 +159,9 @@ def initialize_schema(connection):
                             if column["name"] == field)
         if isinstance(current_type, Integer) and not isinstance(current_type, BigInteger):
             operations.alter_column(table.name, field, type_=BigInteger(), schema=schema)
+
+    if not any(column["name"] == "favorite_group" for column in inspector.get_columns(file_preferences.name, schema=schema)):
+        operations.add_column(file_preferences.name, Column("favorite_group", String(80)), schema=schema)
 
     columns = inspector.get_columns(knowledge_turns.name, schema=schema)
     if not any(column["name"] == "conversation" for column in columns):

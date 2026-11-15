@@ -7,7 +7,7 @@ export type OfficeFile = {
   space: string
   id: string; name: string; format: 'docx' | 'xlsx' | 'pptx' | 'pdf'
   folder: string | null; document: string; revision: number; version: number
-  starred: boolean; seen: number; recentHidden?: boolean
+  starred: boolean; seen: number; recentHidden?: boolean; favoriteGroup?: string | null
 }
 export type OfficeLibrary = {
   folders: { id: string; parent: string | null; name: string }[]

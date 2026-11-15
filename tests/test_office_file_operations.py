@@ -218,3 +218,36 @@ async def test_report_archive_retry_respects_current_file_location_and_deletion(
         assert (await office.library(owner, personal))['files'] == []
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_favorite_groups_are_personal_and_only_change_current_starred_files():
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        owner, viewer = Identity('db', '1', 'owner'), Identity('db', '1', 'viewer')
+        await office.bootstrap(owner, 'Owner')
+        await office.provision(owner, viewer.user, 'Viewer')
+        space = (await office.create_space(owner, 'Team', owner.user))['id']
+        await office.set_member(owner, space, viewer.user, 'viewer')
+        scope = {'database': 'db', 'companyId': '1'}
+        first = await office.register_file(owner, space, None, 'One.docx', 'docx', 'one', 1, scope)
+        second = await office.register_file(owner, space, None, 'Two.pdf', 'pdf', 'two', 1, scope)
+        await office.favorite(viewer, first['id'], True)
+        selected = {first['id']: 1, second['id']: 1}
+        with pytest.raises(OfficeError) as unstarred:
+            await office.bulk_files(viewer, space, selected, 'group', group='客户')
+        assert unstarred.value.status == 409
+        assert all(item['favoriteGroup'] is None for item in (await office.library(viewer, space))['files'])
+
+        await office.favorite(viewer, second['id'], True)
+        assert await office.bulk_files(viewer, space, selected, 'group', group=' 客户 ') == {'count': 2}
+        assert {item['favoriteGroup'] for item in (await office.library(viewer, space))['files']} == {'客户'}
+        assert all(item['favoriteGroup'] is None for item in (await office.library(owner, space))['files'])
+        await office.bulk_files(viewer, space, {first['id']: 1}, 'group', group=None)
+        await office.favorite(viewer, second['id'], False)
+        await office.favorite(viewer, second['id'], True)
+        assert all(item['favoriteGroup'] is None for item in (await office.library(viewer, space))['files'])
+    finally:
+        await engine.dispose()

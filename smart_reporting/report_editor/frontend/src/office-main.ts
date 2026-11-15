@@ -17,7 +17,7 @@ const formats = {
 } as const
 type Format = keyof typeof formats
 type Folder = { id: string; parent: string; name: string }
-type Entry = { id: string; space: string; version: number; revision: number; name: string; format: Format; folder: string; path: string; seen: number; starred: boolean; recentHidden?: boolean }
+type Entry = { id: string; space: string; version: number; revision: number; name: string; format: Format; folder: string; path: string; seen: number; starred: boolean; recentHidden?: boolean; favoriteGroup?: string | null }
 type Workspace = { folders: Folder[]; entries: Entry[] }
 type View = 'recent' | 'starred' | 'ask' | 'folder'
 type KnowledgeTurn = { id: string; question: string; answer: string; citations: { fileId: string; name: string; revision: number }[] }
@@ -34,6 +34,7 @@ const closedTabs: Entry[] = []
 let view: View = 'recent'
 let folder = rootFolder
 let filter: Format | '' = ''
+let favoriteGroup = ''
 let sortByName = false
 let selectedTab = ''
 let sidebarHidden = false
@@ -144,6 +145,7 @@ function clearAccount() {
   knowledgePending.clear(); knowledgeGeneration.clear(); activeKnowledgeConversation.clear(); knowledgeConversations.clear()
   currentUser = undefined; spaces = []; currentSpace = ''; selectedTab = ''
   library = { folders: [], entries: [] }
+  favoriteGroup = ''
   folderTreeKey = ''
   collapsed.clear()
   selectedFiles.clear()
@@ -355,6 +357,7 @@ function home() {
       <button type="button" data-action="rerank-search" title="将查询和当前文件结果的短片段提交给已配置的 AI 模型" hidden>AI 重排</button>
       <span class="file-count"></span>
     </div>
+    <div class="filters" aria-label="收藏分组" data-favorite-groups hidden></div>
     <div class="office-file-selection" hidden></div><div class="file-list"></div></section>`
 }
 
@@ -370,9 +373,65 @@ type SearchResult = {
 }
 let searchResult: SearchResult | undefined
 
+function favoriteGroups(): string[] {
+  return [...new Set(library.entries.flatMap(item => item.starred && item.favoriteGroup ? [item.favoriteGroup] : []))]
+}
+
+function showFavoriteGroups(entries: Entry[]) {
+  const space = currentSpace, account = accountGeneration
+  const dialog = document.createElement('dialog')
+  dialog.className = 'office-administration'
+  dialog.setAttribute('aria-label', '收藏分组')
+  dialog.innerHTML = `<h2>收藏分组</h2><form><label>分组名称<input name="group" list="office-favorite-group-options" maxlength="80" required></label>
+    <datalist id="office-favorite-group-options">${favoriteGroups().map(name => `<option value="${escape(name)}"></option>`).join('')}</datalist>
+    <button type="submit">保存分组</button><button type="button" data-clear>移出分组</button><button type="button" data-close>取消</button></form><p role="status"></p>`
+  dialog.addEventListener('click', event => event.stopPropagation())
+  dialog.onclose = () => dialog.remove()
+  const form = dialog.querySelector('form')!
+  const input = form.querySelector('input')!
+  if (entries.every(item => item.favoriteGroup === entries[0].favoriteGroup)) input.value = entries[0].favoriteGroup ?? ''
+  let submitting = false
+  async function save(group: string | null) {
+    if (submitting || account !== accountGeneration || space !== currentSpace) return
+    submitting = true
+    for (const button of form.querySelectorAll('button')) button.disabled = true
+    try {
+      await officeRequest(`/workspaces/${encodeURIComponent(space)}/files/bulk`, 'POST', {
+        action: 'group', group, versions: Object.fromEntries(entries.map(item => [item.id, item.version])),
+      })
+      if (account !== accountGeneration || space !== currentSpace) return
+      for (const item of entries) selectedFiles.delete(item.id)
+      await refreshLibrary()
+      if (account !== accountGeneration || space !== currentSpace) return
+      dialog.close()
+      render()
+    } catch (error) {
+      dialog.querySelector('p')!.textContent = error instanceof Error ? error.message : '收藏分组保存失败。'
+    } finally {
+      submitting = false
+      for (const button of form.querySelectorAll('button')) button.disabled = false
+    }
+  }
+  form.onsubmit = event => {
+    event.preventDefault()
+    const name = input.value.trim()
+    if (name) void save(name)
+  }
+  form.querySelector<HTMLButtonElement>('[data-clear]')!.onclick = () => { void save(null) }
+  form.querySelector<HTMLButtonElement>('[data-close]')!.onclick = () => dialog.close()
+  root.append(dialog)
+  dialog.showModal()
+  input.select()
+}
+
 function renderEntries() {
   const list = root.querySelector('.file-list')
   if (!list) return
+  const groupBar = root.querySelector<HTMLElement>('[data-favorite-groups]')!
+  const groups = view === 'starred' ? favoriteGroups() : []
+  if (!groups.includes(favoriteGroup)) favoriteGroup = ''
+  groupBar.hidden = groups.length === 0
+  groupBar.innerHTML = groups.length ? ['', ...groups].map(group => `<button data-favorite-group="${escape(group)}" class="${group === favoriteGroup ? 'active' : ''}" aria-pressed="${group === favoriteGroup}">${escape(group || '全部')}</button>`).join('') : ''
   const input = root.querySelector<HTMLInputElement>('input[type=search]')
   const query = input?.value.trim().toLowerCase() ?? ''
   const result = searchResult?.input === input ? searchResult : undefined
@@ -385,7 +444,7 @@ function renderEntries() {
   const folderResults = !filter && (view === 'folder' || (view === 'recent' && query)) ? library.folders.filter(item =>
     (view !== 'folder' || item.parent === folder) && item.name.toLowerCase().includes(query)) : []
   const eligible = library.entries.filter(item =>
-    (view !== 'folder' || item.folder === folder) && (view !== 'starred' || item.starred) &&
+    (view !== 'folder' || item.folder === folder) && (view !== 'starred' || (item.starred && (!favoriteGroup || item.favoriteGroup === favoriteGroup))) &&
     (view !== 'recent' || query || !item.recentHidden) &&
     (!filter || item.format === filter) && (!query || match(item)))
   const complete = query ? eligible.filter(item => match(item)?.complete) : eligible
@@ -410,6 +469,7 @@ function renderEntries() {
   controls.hidden = !entries.length
   controls.innerHTML = entries.length ? `<label><input type="checkbox" data-select-files aria-label="全选文件" ${selected.length === entries.length ? 'checked' : ''} ${entries.length > 500 ? 'disabled' : ''}>全选</label>
     ${selected.length ? `<span>已选 ${selected.length} 项</span><button data-bulk-files="${view === 'starred' ? 'unstar' : 'star'}">${view === 'starred' ? '取消收藏' : '收藏所选'}</button>
+      ${view === 'starred' ? '<button data-bulk-files="group">收藏分组</button>' : ''}
       ${view === 'recent' && !query ? '<button data-bulk-files="hide_recent">从最近使用移除</button>' : ''}
       ${canWrite() ? '<button data-bulk-files="move">移动所选</button><button data-bulk-files="delete">删除所选</button>' : ''}` : ''}` : ''
   const all = controls.querySelector<HTMLInputElement>('[data-select-files]')
@@ -889,6 +949,7 @@ root.addEventListener('contextmenu', event => {
     }
     const entry = library.entries.find(item => item.id === action.dataset.fileActions)
     if (entry) add('复制文件', () => void withImport(() => duplicateOfficeEntry(entry)))
+    if (entry?.starred) add('收藏分组', () => showFavoriteGroups([entry]))
   }
   menu.addEventListener('toggle', () => { if (!menu.matches(':popover-open')) menu.remove() })
   menu.addEventListener('keydown', event => {
@@ -917,12 +978,19 @@ root.addEventListener('click', event => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button')
   if (!button) return
   const data = button.dataset
+  if (data.favoriteGroup !== undefined) {
+    favoriteGroup = data.favoriteGroup
+    renderEntries()
+    root.querySelector<HTMLButtonElement>(`[data-favorite-group="${CSS.escape(favoriteGroup)}"]`)?.focus()
+    return
+  }
   if (data.bulkFiles) {
     const action = data.bulkFiles
     const chosen = [...root.querySelectorAll<HTMLInputElement>('[data-select-file]:checked')]
       .flatMap(input => library.entries.find(item => item.id === input.dataset.selectFile) ?? [])
     if (!chosen.length || busy) return
     const space = currentSpace
+    if (action === 'group') { showFavoriteGroups(chosen); return }
     if (action === 'move') {
       void showOfficeFileActions(root, {space, spaces, files: chosen, mode: 'move', async onChanged() {
         invalidateKnowledge(space)
@@ -1204,6 +1272,7 @@ root.addEventListener('change', event => {
   if (!select.matches('.space-selector')) return
   if (busy) { select.value = currentSpace; return }
   currentSpace = select.value
+  favoriteGroup = ''
   selectedFiles.clear()
   folder = rootFolder; view = 'recent'; filter = ''
   void withImport(refreshLibrary)
