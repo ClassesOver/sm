@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..reporting.models import ReportingError
-from .native_ai_api import NativeAIAcceptPayload, _ai_error, _DraftPayload
+from .native_ai_api import NativeAIAcceptPayload, _ai_error, _DraftPayload, _revalidate_write_session
 from .native_api import NATIVE_SESSION_COOKIE, _csrf
 from .slides_native_ai import NativeSlidesAIService
 
@@ -91,7 +91,7 @@ def create_native_slides_ai_router(grants: Any, *, editor: Any, ai: NativeSlides
     async def accept(document_id: str, revision: int, edit_id: str, request: Request, payload: NativeAIAcceptPayload):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await ai.accept_edit(session, edit_id, expected_sha256=payload.expected_sha256, operations=payload.operations, snapshot_sha256=payload.snapshot_sha256, revalidate_session=lambda: grants.lookup_session(request.cookies.get(NATIVE_SESSION_COOKIE, "")))
+            return await ai.accept_edit(session, edit_id, expected_sha256=payload.expected_sha256, operations=payload.operations, snapshot_sha256=payload.snapshot_sha256, revalidate_session=lambda: _revalidate_write_session(grants, editor, request.cookies.get(NATIVE_SESSION_COOKIE, "")))
         except ReportingError as error:
             raise _ai_error(error) from None
 

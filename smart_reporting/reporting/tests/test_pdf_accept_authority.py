@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
+from smart_reporting.reporting.models import ReportingError
 
 from smart_reporting.report_editor._file_identity import read_verified_file
 from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
@@ -39,7 +40,7 @@ def anyio_backend():
 @pytest.mark.anyio
 @pytest.mark.parametrize("kind", ["forms", "review"])
 @pytest.mark.parametrize(
-    "fault", ["none", "revoke", "expiry", "context", "snapshot", "source", "capability"]
+    "fault", ["none", "revoke", "expiry", "context", "snapshot", "source", "capability", "readonly"]
 )
 @pytest.mark.parametrize("window", ["preview", "context"])
 async def test_pdf_accept_rechecks_authority_after_preview(kind, fault, window, tmp_path):
@@ -67,7 +68,12 @@ async def test_pdf_accept_rechecks_authority_after_preview(kind, fault, window, 
         skippedOperations=[],
     )
 
+    can_write = True
+
     class Editor:
+        async def office_authorize(self, _session, *, write=False):
+            if write and not can_write:
+                raise ReportingError("native_permission_denied", "工作区写权限已撤销。")
         save_calls = 0
         context_calls = 0
 
@@ -112,6 +118,7 @@ async def test_pdf_accept_rechecks_authority_after_preview(kind, fault, window, 
         "run",
         context_digest,
         datetime.now(UTC) + timedelta(seconds=0.3 if fault == "expiry" else 30),
+        capabilities={"office": True},
     )
     await repository.put_session(token_hash(raw), session)
     cls = NativePDFFormService if kind == "forms" else NativePDFReviewService
@@ -162,6 +169,8 @@ async def test_pdf_accept_rechecks_authority_after_preview(kind, fault, window, 
                 repository.sessions[token_hash(raw)] = replace(
                     session, capabilities={"native_editor": False}
                 )
+            elif fault == "readonly":
+                can_write = False
             elif fault == "source":
                 await workspace.awrite_bytes(
                     key, "native/source.pdf", b"external change", overwrite=True
@@ -185,9 +194,10 @@ async def test_pdf_accept_rechecks_authority_after_preview(kind, fault, window, 
             snapshot="native_ai_snapshot_changed",
             source="native_source_changed",
             capability="native_permission_denied",
+            readonly="native_permission_denied",
         )[fault]
         assert response.status_code == (
-            403 if fault in {"revoke", "expiry", "capability"} else 409
+            403 if fault in {"revoke", "expiry", "capability", "readonly"} else 409
         ), response.text
         assert response.json()["detail"]["code"] == code
         assert "operations" not in response.json()

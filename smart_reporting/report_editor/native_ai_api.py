@@ -94,6 +94,15 @@ def _ai_error(error: ReportingError) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": error.code, "message": error.message})
 
 
+async def _revalidate_write_session(grants, editor, cookie):
+    session = await grants.lookup_session(cookie)
+    if (session.capabilities or {}).get("office"):
+        await editor.office_authorize(session, write=True)
+        if await grants.lookup_session(cookie) != session:
+            raise ReportingError("native_permission_denied", "编辑会话身份已变化。")
+    return session
+
+
 def create_native_ai_router(
     grants: ReportEditorGrantService,
     *,
@@ -311,7 +320,7 @@ def create_native_ai_router(
                 expected_sha256=payload.expected_sha256,
                 operations=payload.operations,
                 snapshot_sha256=payload.snapshot_sha256,
-                revalidate_session=lambda: grants.lookup_session(request.cookies.get(NATIVE_SESSION_COOKIE, "")),
+                revalidate_session=lambda: _revalidate_write_session(grants, editor, request.cookies.get(NATIVE_SESSION_COOKIE, "")),
                 **({'server_session_reference': token_hash(request.cookies.get(NATIVE_SESSION_COOKIE, ''))}
                    if getattr(ai, 'word_task_dispatcher', None) is not None and ai.word_task_dispatcher.enabled else {}),
             )

@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.report_editor.native import NativeEditorService, bind_native_workspace
 from smart_reporting.report_editor.native_ai import NativeAIService, _NativeAIJob
 from smart_reporting.report_editor.native_ai_api import create_native_ai_router
@@ -34,7 +35,7 @@ from smart_reporting.reporting.host_workspace import (
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("format", ["docx", "pdf", "xlsx", "pptx"])
-@pytest.mark.parametrize("fault", ["none", "revoke", "expiry", "context", "source", "snapshot", "proposal"])
+@pytest.mark.parametrize("fault", ["none", "revoke", "expiry", "context", "source", "snapshot", "proposal", "readonly"])
 async def test_regular_accept_rechecks_authority_after_preview(tmp_path, format, fault):
     workspace = ReportingWorkspaceRouter(ReportingWorkspaceRegistry(tmp_path, secret="w" * 32))
     scope = NativeScope(database="db", companyId="company", userId="user", threadId="thread")
@@ -76,7 +77,14 @@ async def test_regular_accept_rechecks_authority_after_preview(tmp_path, format,
         office_enabled=True,
         pdf_text_enabled=True,
     )
-    raw, _ = await grants.issue(context, capabilities=editor.capabilities(context))
+    can_write = True
+
+    async def authorize(_session, *, write=False):
+        if write and not can_write:
+            raise ReportingError("native_permission_denied", "工作区写权限已撤销。")
+
+    editor.office_authorize = authorize
+    raw, _ = await grants.issue(context, capabilities={**editor.capabilities(context), "office": True})
     cookie, session = await grants.exchange(raw)
     cls, router, route = {
         "docx": (NativeAIService, create_native_ai_router, "ai"),
@@ -134,6 +142,8 @@ async def test_regular_accept_rechecks_authority_after_preview(tmp_path, format,
                     await asyncio.sleep(0.005)
             elif fault == "context":
                 row.context = context.model_copy(update={"origin": "upload"})
+            if fault == "readonly":
+                can_write = False
             if fault == "source":
                 await workspace.awrite_bytes(key, path, b"external change", overwrite=True)
             elif fault == "snapshot":
@@ -147,6 +157,7 @@ async def test_regular_accept_rechecks_authority_after_preview(tmp_path, format,
                 "revoke": (403, "report_editor_session_invalid"),
                 "expiry": (403, "report_editor_session_expired"),
                 "context": (403, "native_permission_denied"),
+                "readonly": (403, "native_permission_denied"),
                 "source": (409, "native_source_changed"),
                 "snapshot": (409, "native_ai_snapshot_changed"),
                 "proposal": (422, "native_ai_not_ready"),
