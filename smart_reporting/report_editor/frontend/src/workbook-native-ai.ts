@@ -1,3 +1,4 @@
+import { mountOfficeReadQueue } from './office-read-queue'
 import { OfficeAssistantController } from './office-assistant-controller'
 import type { NativeOperation } from './native-draft'
 import { nativeAIProgressListener, mountNativeAIProgress, type NativeAIProgressListener } from './native-ai-progress'
@@ -69,14 +70,33 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
   const submit = panel.querySelector<HTMLButtonElement>('[type=submit]')!, cancel = panel.querySelector<HTMLButtonElement>('.native-ai-cancel')!
   const status = panel.querySelector<HTMLElement>('.native-ai-status')!, preview = panel.querySelector<HTMLElement>('.native-ai-preview')!, accept = panel.querySelector<HTMLButtonElement>('.native-ai-accept')!
   const help = [...panel.children].findLast(element => element.tagName === 'P') as HTMLElement
-  const panelView = bindOfficeAssistantPanel(panel,{title,help,input:instruction,start:submit,cancel,close:closeButton,scope,onClose:()=>{void discard()}})
+  const queue = mountOfficeReadQueue(instruction, submitQueued)
+  const panelView = bindOfficeAssistantPanel(panel,{title,help,input:instruction,start:submit,cancel,close:closeButton,scope,
+    queue:queue.host,onQueue:enqueue,onClose:()=>{ queue.hold(); void discard() }})
   let disposed = false, busy = false, accepting = false, generation = 0, activeRequestId = '', pending: Job | undefined, snapshot = '', quoted: Context | undefined
   const tasks = new OfficeAssistantController({ ...options.api, id:(job: Job)=>job.editId, running:(job: Job)=>job.status==='running' })
-  let requestInput = ''
-  const inputIdentity = () => JSON.stringify({instruction:instruction.value.trim(),scope:scope.value})
+  let requestScope: Scope
+  type QueueTarget = { scope: Scope; identity: Promise<string | undefined> }
+  const targetIdentity = (context: Context) => JSON.stringify([context.expectedSha256, context.scope, context.selection])
   const current = () => options.context(scope.value as Scope)
   const identity = (context: Context) => JSON.stringify({ expectedSha256: context.expectedSha256, operations: context.operations })
   const message = (error: unknown) => error instanceof Error ? error.message : 'AI 请求失败，人工草稿已保留'
+  function refreshQueue() {
+    const active = busy || accepting || !!pending
+    submit.disabled = active
+    scope.disabled = active
+    queue.setBusy(active)
+  }
+  function enqueue() {
+    const selectedScope = scope.value as Scope
+    const identity = options.context(selectedScope).then(targetIdentity, () => undefined)
+    queue.enqueue({ scope: selectedScope, identity })
+  }
+  function submitQueued(text: string, target: QueueTarget) {
+    if (disposed || busy || accepting || pending || options.locked()) return false
+    void start(text, false, target)
+    return true
+  }
   let refreshGeneration = 0
   async function refresh() {
     const turn = ++refreshGeneration
@@ -118,21 +138,28 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
     }
     preview.hidden = false; accept.disabled = false
   }
-  async function start(translation = false) {
-    if (disposed || busy || accepting || options.locked() || !instruction.value.trim()) return
+  async function start(text: string, translation = false, target?: QueueTarget) {
+    if (disposed || busy || accepting || pending || options.locked() || !text) return
     panelView.beforeTask()
     if (activeRequestId) void tasks.cancel().catch(() => {})
     const turn = ++generation
-    requestInput = inputIdentity()
+    requestScope = scope.value as Scope
     activeRequestId = crypto.randomUUID()
-    busy = true; scope.disabled = true; submit.disabled = true; cancel.hidden = false; preview.hidden = true; pending = undefined; status.textContent = '正在规划并核验 XLSX 候选…'
+    busy = true; cancel.hidden = false; preview.hidden = true; pending = undefined; status.textContent = '正在规划并核验 XLSX 候选…'
+    refreshQueue()
     try {
-      quoted = structuredClone(await current())
+      const queuedIdentity = target ? await target.identity : undefined
       if (disposed || turn !== generation) return
+      quoted = structuredClone(await options.context(requestScope))
+      if (disposed || turn !== generation || options.locked()) return
+      if (target && (target.scope !== requestScope || queuedIdentity !== targetIdentity(quoted))) {
+        status.textContent = '排队指令的授权范围或目标已变化，请选中目标后重新发送。'
+        return
+      }
       snapshot = identity(quoted)
       panel.querySelector<HTMLElement>('.native-ai-context')!.textContent = '本次冻结范围：' + quoted.label
       const payload = { expectedSha256: quoted.expectedSha256, operations: structuredClone(quoted.operations),
-        selection: structuredClone(quoted.selection), scope: quoted.scope, ...(options.navigate ? {navigationEnabled:true} : {}), instruction: instruction.value.trim(), clientRequestId: activeRequestId }
+        selection: structuredClone(quoted.selection), scope: quoted.scope, ...(options.navigate ? {navigationEnabled:true} : {}), instruction: text, clientRequestId: activeRequestId }
       const job = await tasks.run(payload, activeRequestId, (started, signal) => {
         cancel.hidden = false
         progress.start(options.api.events, started.editId, signal, () => !disposed && turn === generation && !options.locked())
@@ -158,7 +185,7 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
             if (identity(latest) !== snapshot) throw new Error('完整草稿已变化，定位未执行')
             if (JSON.stringify(latest.selection) !== JSON.stringify(quoted.selection)) throw new Error('当前视图已变化，定位未执行')
             const target = job.proposal.navigation
-            await options.navigate(target, () => !disposed && turn === generation && !options.locked() && inputIdentity() === requestInput)
+            await options.navigate(target, () => !disposed && turn === generation && !options.locked() && scope.value === requestScope)
             if (disposed || turn !== generation || options.locked()) return
             navigationStatus = `已定位到 ${target.sheetName}!${target.range}。`
           } catch (error) {
@@ -172,29 +199,30 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
       }
       else status.textContent = job.error?.message ?? 'AI 任务已取消，人工草稿已保留。'
     } catch (error) { if (!disposed && turn === generation) status.textContent = message(error) }
-    finally { if (!disposed && turn === generation) { busy = false; scope.disabled = false; submit.disabled = false; cancel.hidden = true } }
+    finally { if (!disposed && turn === generation) { busy = false; cancel.hidden = true; refreshQueue() } }
   }
-  form.addEventListener('submit', event => { event.preventDefault(); void start() })
+  form.addEventListener('submit', event => { event.preventDefault(); void start(instruction.value.trim()) })
   async function discard() {
     progress.stop()
-    const turn = ++generation; busy = false; pending = undefined; activeRequestId = ''; preview.hidden = true; cancel.hidden = true; scope.disabled = false; submit.disabled = false
+    const turn = ++generation; busy = false; pending = undefined; activeRequestId = ''; preview.hidden = true; cancel.hidden = true
+    refreshQueue()
     status.textContent = 'AI 候选已放弃，人工草稿已保留。'
     const results = await Promise.allSettled([tasks.cancel()])
     const failure = results.find(result => result.status === 'rejected')
     if (failure?.status === 'rejected' && !disposed && turn === generation) status.textContent = message(failure.reason)
   }
-  cancel.addEventListener('click', () => { void discard() })
+  cancel.addEventListener('click', () => { queue.hold(); void discard() })
   panel.querySelector('.native-ai-discard')!.addEventListener('click', () => { if (!accepting) void discard() })
   accept.addEventListener('click', async () => {
     if (!pending || accepting || disposed || options.locked()) return
-    if (inputIdentity() !== requestInput) { void discard(); return }
+    if (scope.value !== requestScope) { void discard(); return }
     const turn = generation
     accepting = true; accept.disabled = true; options.accepting?.(true)
     try {
       const context = await current()
       if (disposed || turn !== generation || options.locked()) return
       if (identity(context) !== snapshot) throw new Error('完整草稿已变化，请重新生成候选。')
-      if (inputIdentity() !== requestInput) throw new Error('填写要求已变化，请重新生成候选。')
+      if (scope.value !== requestScope) throw new Error('授权范围已变化，请重新生成候选。')
       const candidate = pending
       const accepted = await tasks.accept(signal => options.api.accept(candidate.editId, { expectedSha256: context.expectedSha256, operations: context.operations, snapshotSha256: candidate.snapshotSha256 }, signal))
       if (!accepted) return
@@ -202,27 +230,26 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
       const latest = await current()
       if (disposed || turn !== generation || options.locked()) return
       if (identity(latest) !== snapshot) throw new Error('完整草稿已变化，请重新生成候选。')
-      if (inputIdentity() !== requestInput) throw new Error('填写要求已变化，请重新生成候选。')
+      if (scope.value !== requestScope) throw new Error('授权范围已变化，请重新生成候选。')
       await options.apply(accepted.operations); tasks.release(); pending = undefined; activeRequestId = ''; preview.hidden = true; status.textContent = '候选已加入草稿，可撤销或保存为新修订；业务事实仍需人工复核。'; refresh()
     } catch (error) { if (!disposed && turn === generation) { status.textContent = message(error); accept.disabled = false } }
-    finally { accepting = false; options.accepting?.(false) }
+    finally { accepting = false; options.accepting?.(false); if (!disposed) refreshQueue() }
   })
   for (const direction of ['undo', 'redo'] as const) panel.querySelector('.native-ai-' + direction)!.addEventListener('click', () => {
     if (!busy && !accepting && !options.locked()) void options.history?.(direction).then(() => refresh()).catch(error => { status.textContent = message(error) })
   })
-  const invalidate = () => { if (busy || pending || accepting) void discard() }
-  instruction.addEventListener('input', invalidate)
+  const invalidate = () => { if (busy || pending || accepting) { queue.hold(); void discard() } }
   scope.addEventListener('change', () => { invalidate(); void refresh() })
   function close() { if (!disposed) closeButton.click() }
   function open() { if (disposed) return; panelView.beforeOpen(); panel.hidden = false; instruction.focus({preventScroll:true}) }
   function translate(language: WorkbookTranslationLanguage) {
-    if (disposed || busy || accepting || options.locked()) return false
+    if (disposed || busy || accepting || pending || options.locked()) return false
     open()
     scope.value = 'range'
     instruction.value = workbookTranslationPrompt(language)
-    void start(true)
+    void start(instruction.value.trim(), true)
     return true
   }
   refresh()
-  return { panel, close, open, translate, refresh, dispose() { disposed = true; ++generation; panelView.dispose(); progress.stop(); void tasks.cancel().catch(() => {}); panel.remove() } }
+  return { panel, close, open, translate, refresh, dispose() { disposed = true; ++generation; panelView.dispose(); progress.stop(); void tasks.cancel().catch(() => {}); queue.dispose(); panel.remove() } }
 }

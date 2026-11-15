@@ -6,7 +6,7 @@ afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.unst
 function setup(navigate?: (target: NativeWorkbookNavigation, current: () => boolean) => Promise<void>) {
   const host = document.createElement('div'); document.body.append(host)
   let operations: NativeOperation[] = []
-  const selection = { sheetName: 'Sheet', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }
+  let selection = { sheetName: 'Sheet', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }
   const candidate = { editId: 'id', status: 'succeeded', snapshotSha256: 'b'.repeat(64), proposal: { summary: '修改选区', operations: [{ kind: 'applyCellEdits', edits: [{ sheetName: 'Sheet', row: 0, column: 0, writeValue: true, cell: { value: '候选值' } }] }] as NativeOperation[] } }
   const navigationCandidate = (operations: NativeOperation[] = []) => ({ ...candidate, proposal: { summary: '已请求定位', operations, navigation: { sheetName: 'Sheet', range: 'B2', startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 } } })
   const api = { start: vi.fn(async (_payload: Parameters<ReturnType<typeof createWorkbookNativeAIClient>['start']>[0]) => candidate), status: vi.fn(async () => candidate), accept: vi.fn(async () => ({ operations: candidate.proposal.operations })), cancel: vi.fn(async () => ({})), cancelRequest: vi.fn(async () => ({})) }
@@ -14,7 +14,7 @@ function setup(navigate?: (target: NativeWorkbookNavigation, current: () => bool
   const context = vi.fn(async (scope: 'range' | 'workbook') => ({ expectedSha256: 'a'.repeat(64), operations, scope, selection, label: 'Sheet!A1', cells: { A1: { value: '人工值' } } }))
   const view = mountWorkbookNativeAI(host, { api, locked: () => false, context, apply, navigate })
   const submit = () => { host.querySelector('textarea')!.value = '改成候选值'; host.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })) }
-  return { host, api, apply, view, submit, context, candidate, selection, navigationCandidate, change: () => { operations = [{ kind: 'applyColumnWidths', sheetName: 'Sheet', entries: [] }] } }
+  return { host, api, apply, view, submit, context, candidate, selection, navigationCandidate, selectAnother: () => { selection = { ...selection, startRow: 1, endRow: 1 } }, change: () => { operations = [{ kind: 'applyColumnWidths', sheetName: 'Sheet', entries: [] }] } }
 }
 it('resumes the same XLSX task after connection loss and a missing in-memory job', async () => {
   const { host, api, apply, view, submit, candidate } = setup()
@@ -163,4 +163,40 @@ it('changed draft blocks navigation and subsequent adoption', async () => {
     await vi.waitFor(() => expect(host.querySelector('.native-ai-status')!.textContent).toContain('草稿已变化'))
     expect(api.accept).not.toHaveBeenCalled()
   } finally { view.dispose() }
+})
+
+it('holds queued edits until an existing XLSX candidate is explicitly accepted', async () => {
+ const { host, api, apply, view, submit } = setup()
+ try {
+  submit()
+  await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
+  const input=host.querySelector<HTMLTextAreaElement>('textarea')!
+  input.value='下一条编辑'
+  input.dispatchEvent(new Event('input',{bubbles:true}))
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+  await vi.waitFor(()=>expect(host.querySelector('.ai-queue-toggle')?.textContent).toContain('1 条排队中'))
+  expect(api.start).toHaveBeenCalledOnce()
+  expect(apply).not.toHaveBeenCalled()
+  host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()
+  await vi.waitFor(()=>expect(api.start).toHaveBeenCalledTimes(2))
+  expect(apply).toHaveBeenCalledOnce()
+  expect(api.start).toHaveBeenNthCalledWith(2,expect.objectContaining({instruction:'下一条编辑',operations:apply.mock.calls[0]?.[0]}),expect.any(AbortSignal))
+ } finally { view.dispose() }
+})
+
+it('discards a queued edit whose authorized XLSX range changed before dispatch', async () => {
+ const { host, api, apply, view, submit, selectAnother } = setup()
+ try {
+  submit()
+  await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
+  const input=host.querySelector<HTMLTextAreaElement>('textarea')!
+  input.value='仅修改当前标题'
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+  await vi.waitFor(()=>expect(host.querySelector('.ai-queue-toggle')?.textContent).toContain('1 条排队中'))
+  selectAnother()
+  host.querySelector<HTMLButtonElement>('.native-ai-discard')!.click()
+  await vi.waitFor(()=>expect(host.textContent).toContain('排队指令的授权范围或目标已变化'))
+  expect(api.start).toHaveBeenCalledOnce()
+  expect(apply).not.toHaveBeenCalled()
+ } finally { view.dispose() }
 })
