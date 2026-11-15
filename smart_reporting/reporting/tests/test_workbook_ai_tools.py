@@ -10,14 +10,82 @@ import pytest
 from agno.agent import Agent
 from agno.models.response import ModelResponse
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font
 from openpyxl.worksheet.table import Table
 
 from smart_reporting.report_editor.native_models import NativeEditorContext
 from smart_reporting.report_editor.native_office import inspect_office, patch_office
 from smart_reporting.report_editor.workbook_ai import AgnoWorkbookProposalPlanner
+from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
+
+
+@pytest.mark.anyio
+async def test_source_range_writes_formulas_and_clears_content_within_selection():
+    book = Workbook()
+    book.active['B3'] = '=1+2'
+    book.active['B3'].font = Font(bold=True)
+    book.active['C3'] = 'outside selection'
+    original = BytesIO()
+    book.save(original)
+    source = original.getvalue()
+    content = None
+
+    async def preview(operations):
+        nonlocal content
+        content = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
+        return {'draftSha256': hashlib.sha256(content).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet', 'cells': {}}]}, scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 1, 'endRow': 2, 'startColumn': 0, 'endColumn': 1},
+        preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_range', 'sheetId': 'Sheet', 'start': 'a2', 'range': 'A2:B3',
+         'values': [[5, '=A2*2'], [True, None]]},
+        {'op': 'clear_range', 'sheetId': 'Sheet', 'range': '$B$3'},
+        {'op': 'set_formula', 'sheetId': 'Sheet', 'address': 'B2',
+         'expectedFormula': '=A2*2', 'formula': '=A2*3'},
+    ], '更新选区')
+    sheet = load_workbook(BytesIO(content)).active
+    assert [sheet[addr].value for addr in ('A2', 'B2', 'A3', 'B3', 'C3')] == [
+        5, '=A2*3', True, None, 'outside selection',
+    ]
+    assert sheet['B3'].font.bold
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('operation', 'error'), [
+    ({'op': 'set_range', 'start': 'A1', 'values': [[1, 2], [3]]}, 'range_invalid'),
+    ({'op': 'set_range', 'start': 'B1', 'range': 'A1:B1', 'values': [[1, 2]]}, 'range_invalid'),
+    ({'op': 'set_range', 'range': 'A1:A2', 'values': [[1, 2]]}, 'range_invalid'),
+    ({'op': 'set_range', 'start': 'A1', 'values': [[1, 2, 3]]}, 'selection_mismatch'),
+    ({'op': 'clear_range', 'range': 'A1:C2'}, 'selection_mismatch'),
+])
+async def test_source_range_rejects_invalid_geometry_before_preview(operation, error):
+    async def preview(_):
+        pytest.fail('Invalid range reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1, 'startColumn': 0, 'endColumn': 1},
+        preview=preview)
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([{**operation, 'sheetId': 'Sheet'}], '更新选区')
+
+
+@pytest.mark.anyio
+async def test_source_range_expansion_limit_covers_the_batch():
+    async def preview(_):
+        pytest.fail('Oversized range batch reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    with pytest.raises(ValueError, match='range_too_large'):
+        await tools.propose_operations([
+            {'op': 'clear_range', 'sheetId': 'Sheet', 'range': 'A1:B1000'},
+            {'op': 'set_range', 'sheetId': 'Sheet', 'start': 'D1', 'values': [[42]]},
+        ], '清空旧数据并登记合计')
 
 
 def test_workbook_formula_trace_reports_precedents_and_rejects_unsupported_syntax():

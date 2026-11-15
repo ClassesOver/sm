@@ -38,6 +38,8 @@
 
 XLSX 图表删除也接受源 DSL `delete_visual(visualId)`。目标使用冻结草稿中的唯一 `chartPath`，所属工作表由草稿解析。与原生图表删除共用候选及保存链路，尚未覆盖形状和图片的 `visualId`。
 
+XLSX 编辑工具接入 `set_range` 和 `clear_range`。矩形写入可使用起始格或同尺寸范围，支持公式和空值；清空只移除内容并保留样式。范围内每个单元格都受选区授权约束，后续条件写入按同批之前的内容变更核对。这一批支持每次候选最多展开 2000 个源单元格操作，GenOffice 的大块清空执行路径仍待接入。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。
