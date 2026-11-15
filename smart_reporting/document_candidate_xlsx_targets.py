@@ -29,9 +29,18 @@ def _cell(value: Any) -> tuple[int, int]:
     return row, col
 
 
+def canonical_xlsx_target(target: dict[str, Any]) -> tuple[str, tuple[int, int], tuple[int, int]]:
+    """Identify a target by physical coordinates, ignoring Excel $ markers."""
+    cells = target["range"].split(":")
+    first = _cell(cells[0])
+    last = _cell(cells[-1])
+    return target["sheet"], first, last
+
+
 def validate_xlsx_selection(selection: tuple[dict[str, Any], ...]) -> None:
     if not selection:
         raise ValueError("xlsx_selection_required")
+    seen: set[tuple[str, tuple[int, int], tuple[int, int]]] = set()
     for target in selection:
         if not isinstance(target, dict) or set(target) != {"sheet", "range"}:
             raise ValueError("xlsx_target_invalid")
@@ -51,3 +60,7 @@ def validate_xlsx_selection(selection: tuple[dict[str, Any], ...]) -> None:
             end = _cell(parts[1])
             if start[0] > end[0] or start[1] > end[1]:
                 raise ValueError("xlsx_range_reversed")
+        key = canonical_xlsx_target(target)
+        if key in seen:
+            raise ValueError("xlsx_target_duplicate")
+        seen.add(key)
