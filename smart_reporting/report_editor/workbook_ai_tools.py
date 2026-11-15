@@ -20,6 +20,7 @@ from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_bounda
 from ..office.ai_skills import WORKBOOK_GUIDES, source_workbook_guide
 from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
+from .workbook_ai_page_setup import page_setup_patch
 from .workbook_ai_structure import (
     ROW_COLUMN_SOURCE_OPS,
     SHEET_LIFECYCLE_OPS,
@@ -406,6 +407,9 @@ class WorkbookAIToolkit(Toolkit):
                 'target 是网址或同工作簿工作表引用；传 null 移除。'
                 '用 {op:set_freeze,sheetId,rows,columns} 从工作表左上角冻结行列，'
                 '行数和列数均为 0–100 的整数；同时传 0 取消冻结。'
+                '用 set_page_setup(sheetId,orientation?,paperSize?,scale?,fitToWidth?,fitToHeight?,margins?,'
+                'printGridlines?,printHeadings?,printArea?,printTitles?,header?,footer?,rowBreaks?,colBreaks?)。'
+                '缩放百分比与按页适配互斥，printTitles 可写 "1:2,A:B"，null 清除打印范围、标题或页眉页脚。'
             )
         if 'structure' in guides:
             catalog['structure'] += (
@@ -439,6 +443,7 @@ class WorkbookAIToolkit(Toolkit):
         self, operation: dict[str, Any], merges: dict[str, list[str]],
         cell_state: dict[tuple[str, str], dict[str, Any]] | None,
         sheet_order: list[str],
+        page_setups: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
         op = operation.get('op')
         if ('expectedValue' in operation and op != 'set_cell') or (
@@ -493,6 +498,19 @@ class WorkbookAIToolkit(Toolkit):
             return {'kind': 'applyPageSetups', 'setups': [{
                 'sheetName': self._sheet(sheet_id)['name'], 'frozenRows': rows, 'frozenColumns': columns,
             }]}
+        if op == 'set_page_setup':
+            sheet_id = operation.get('sheetId')
+            if not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError('workbook_ai_page_setup_invalid')
+            sheet = self._sheet(sheet_id)
+            prior = page_setups.get(sheet['name'], sheet.get('pageSetup') or {})
+            patch = page_setup_patch(operation, prior)
+            if patch.get('printArea') is not None:
+                r0, r1, c0, c1 = _bounds(patch['printArea'])
+                start = f'{get_column_letter(c0 + 1)}{r0 + 1}'
+                end = f'{get_column_letter(c1 + 1)}{r1 + 1}'
+                patch['printArea'] = start if start == end else f'{start}:{end}'
+            return {'kind': 'applyPageSetups', 'setups': [{'sheetName': sheet['name'], **patch}]}
         if op in SHEET_SOURCE_OPS:
             return translate_sheet_operation(operation, sheet_order)
         if op in {'add_defined_name', 'delete_defined_name'}:
@@ -619,10 +637,15 @@ class WorkbookAIToolkit(Toolkit):
         merges: dict[str, list[str]] = {}
         cell_state: dict[tuple[str, str], dict[str, Any]] | None = {}
         sheet_order = list(self._sheets)
+        page_setups: dict[str, dict[str, Any]] = {}
         translated_operations = []
         expanded_cell_edits = 0
         for operation in operations:
-            translated = self._translate(operation, merges, cell_state, sheet_order)
+            translated = self._translate(operation, merges, cell_state, sheet_order, page_setups)
+            if translated['kind'] == 'applyPageSetups' and isinstance(translated.get('setups'), list):
+                for setup in translated['setups']:
+                    if isinstance(setup, dict) and isinstance(name := setup.get('sheetName'), str) and name in self._sheets:
+                        page_setups.setdefault(name, dict(self._sheets[name].get('pageSetup') or {})).update(setup)
             if operation.get('op') in _CELL_SOURCE_OPS and translated['kind'] == 'applyCellEdits':
                 expanded_cell_edits += len(translated['edits'])
                 if expanded_cell_edits > _MAX_EXPANDED_CELL_EDITS:

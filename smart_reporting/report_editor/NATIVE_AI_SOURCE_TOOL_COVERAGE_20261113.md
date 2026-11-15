@@ -54,6 +54,8 @@ XLSX `move_sheet` 接到原生工作表顺序写入器，标签位置从 1 开�
 
 XLSX `add_sheet`、`rename_sheet` 和 `delete_sheet` 接到原生结构写入器，可与 `move_sheet` 在同一工作表结构候选中顺序执行。按当前工作表名寻址；重命名更新跨表引用，仍被引用的表由引擎拒绝删除。新建使用 Excel 空白工作表，桌面临时网格的 rows／columns 参数未接入。
 
+XLSX `set_page_setup` 接到原生打印设置写入器，支持纸张、方向、缩放或按页适配、边距、打印网格线和标题、打印区域、重复行列、页眉页脚及手动分页。只改某一适配轴时保留另一轴的已知设置。Excel 重复标题保存为带工作表限定的行列引用。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

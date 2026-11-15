@@ -23,6 +23,59 @@ from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
 @pytest.mark.anyio
+async def test_source_print_setup_writes_repeated_rows_columns_and_manual_breaks():
+    book = Workbook()
+    book.active['A1'] = 'Printed'
+    book.active.freeze_panes = 'A2'
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_page_setup', 'sheetId': 'Sheet', 'orientation': 'landscape',
+         'paperSize': 9, 'fitToWidth': 2, 'fitToHeight': 3, 'margins': 'narrow',
+         'printGridlines': True, 'printTitles': '1:2,A:B', 'printArea': 'A1:D10',
+         'footer': {'center': 'Page &P/&N'}, 'rowBreaks': [5], 'colBreaks': [2]},
+        {'op': 'set_page_setup', 'sheetId': 'Sheet', 'fitToWidth': 4},
+    ], '调整打印设置')
+    sheet = load_workbook(BytesIO(written)).active
+    assert sheet.page_setup.orientation == 'landscape' and sheet.page_setup.paperSize == 9
+    assert (sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight) == (4, 3)
+    assert sheet.sheet_properties.pageSetUpPr.fitToPage is True
+    assert (sheet.print_title_rows, sheet.print_title_cols) == ('$1:$2', '$A:$B')
+    assert '$A$1:$D$10' in sheet.print_area
+    assert sheet.oddFooter.center.text == 'Page &P/&N'
+    assert [item.id for item in sheet.row_breaks.brk] == [5]
+    assert [item.id for item in sheet.col_breaks.brk] == [2]
+    assert sheet.page_margins.left == 0.25 and sheet.print_options.gridLines is True
+    assert sheet.freeze_panes == 'A2' and sheet['A1'].value == 'Printed'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('invalid', [
+    {}, {'scale': 100, 'fitToWidth': 1}, {'printTitles': 'A:C,B:D'},
+    {'printArea': 'XFE1:XFE4'}, {'rowBreaks': [0]}, {'printHeadings': 1},
+])
+async def test_source_print_setup_rejects_invalid_settings_before_preview(invalid):
+    async def preview(_):
+        pytest.fail('Invalid page settings reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    with pytest.raises(ValueError, match='range_invalid|page_setup_invalid'):
+        await tools.propose_operations([
+            {'op': 'set_page_setup', 'sheetId': 'Sheet', **invalid},
+        ], '调整打印设置')
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(('rows', 'columns', 'expected'), [(2, 1, 'B3'), (1, 0, 'A2'), (0, 2, 'C1'), (0, 0, None)])
 async def test_source_set_freeze_updates_native_sheet_view(rows, columns, expected):
     book = Workbook()
