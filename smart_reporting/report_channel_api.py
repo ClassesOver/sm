@@ -95,19 +95,18 @@ def create_report_channel_router(
     acp_restore_lock = asyncio.Lock()
 
     async def acp_turn(channel: str, identity: ConnectorIdentity, text: str, message_id: str) -> str:
-        bound = acp_conversations.get((channel, identity))
-        if bound is None and acp is not None:
-            async with acp_restore_lock:
-                # Two requests may arrive before the first restore completes.
-                # Reuse the same conversation instance within this worker.
-                bound = acp_conversations.get((channel, identity))
-                if bound is None:
-                    bound = await acp.restore(channel, identity)
-                    if bound is not None:
-                        acp_conversations[(channel, identity)] = bound
-        if bound is None:
-            raise HTTPException(403, "report_channel_membership_required")
         try:
+            bound = acp_conversations.get((channel, identity))
+            if bound is None and acp is not None:
+                async with acp_restore_lock:
+                    # Concurrent requests must share the same restored instance.
+                    bound = acp_conversations.get((channel, identity))
+                    if bound is None:
+                        bound = await acp.restore(channel, identity)
+                        if bound is not None:
+                            acp_conversations[(channel, identity)] = bound
+            if bound is None:
+                raise ReportChannelAcpDenied("Report channel membership required")
             return await bound.prompt(identity, text, message_id=message_id)
         except ReportChannelAcpDenied:
             raise HTTPException(403, "report_channel_membership_required") from None
