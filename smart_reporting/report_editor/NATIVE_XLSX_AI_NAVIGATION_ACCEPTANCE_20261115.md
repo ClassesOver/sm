@@ -30,4 +30,4 @@ WORKBOOK_AI_NAVIGATION_PORT=4368 \
 node smart_reporting/report_editor/frontend/smoke/workbook-ai-navigation-smoke.mjs
 ```
 
-合并远端至 81789080 并推送功能提交 68ef86c3 后，补验导航后端 16 项、前端相关 31 项全部通过；生产构建及资源预算再次通过。合并后浏览器重跑同样通过，证据位于 /workspace/scratch/pr245-navigation-synced；目标选区 K2000:L2001、无页面错误、保存为零，307 个加载资源 SHA 校验通过。
+合并远端至 81789080 并推送功能提交 68ef86c3 后，补验导航后端 16 项、前端相关 31 项全部通过；生产构建及资源预算再次通过。合并后浏览器重跑同样通过，证据位于 /workspace/scratch/pr245-navigation-synced；目标选区 K2000:L2001、无页面错误、保存为零，311 个加载资源 SHA 校验通过。
