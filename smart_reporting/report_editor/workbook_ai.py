@@ -113,7 +113,7 @@ class AgnoWorkbookProposalPlanner:
             "use_json_mode": False, "tools": [toolkit], "tool_choice": "auto",
             "retries": 0, "exponential_backoff": False, "markdown": False,
         })
-        from ..reporting.agent_events import run_agent_with_events
+        from ..reporting.agent_events import run_owned_agent_with_events
 
         tool_protocol = (
             "工具调用协议：propose_operations 的 operations 每项可以直接使用指南的源 DSL 对象。"
@@ -132,7 +132,7 @@ class AgnoWorkbookProposalPlanner:
                 "仅定位时无需propose_operations；若还需编辑，先请求定位，再一次性提交完整候选。最终正文或JSON不能发起导航。")
         from ..office.settings import configure_office_agent
         await configure_office_agent(agent, update_model=True)
-        await run_agent_with_events(agent, tool_protocol + prompt, session_id=session_id, user_id=user_id)
+        await run_owned_agent_with_events(agent, tool_protocol + prompt, session_id=session_id, user_id=user_id)
         if navigation_enabled and (toolkit.proposal is not None or toolkit.navigation is not None):
             return WorkbookAINativePlan(toolkit.proposal, toolkit.navigation)
         if toolkit.proposal is None:

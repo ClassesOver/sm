@@ -106,7 +106,7 @@ class AgnoSlidesProposalPlanner:
                           current_order: list[int], preview: Any,
                           session_id: str, user_id: str) -> SlidesAIProposal:
         """原生PPTX通过Agno工具读取授权草稿并提交真实预览候选。"""
-        from ..reporting.agent_events import run_agent_with_events
+        from ..reporting.agent_events import run_owned_agent_with_events
         from .slides_ai_tools import SlidesAIToolkit
 
         toolkit = SlidesAIToolkit(deck=deck, scope=scope, current_order=current_order, preview=preview)
@@ -128,7 +128,7 @@ class AgnoSlidesProposalPlanner:
         })
         from ..office.settings import configure_office_agent
         await configure_office_agent(agent, update_model=True)
-        await run_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
+        await run_owned_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
         if toolkit.proposal is None:
             raise ValueError('slides_ai_proposal_not_submitted')
         return toolkit.proposal

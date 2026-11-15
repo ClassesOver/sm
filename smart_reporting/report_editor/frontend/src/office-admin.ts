@@ -30,15 +30,14 @@ function render() {
     const row = element('label'), input = element('input'); input.type = 'checkbox'; input.checked = settings[key]; input.disabled = busy
     input.onchange = () => { settings[key] = input.checked; status.textContent = '有未保存的修改' }; row.append(element('span', label), input); form.append(row)
   }
-  if (section === '模型配置') { text('模型 ID', 'modelId'); form.append(element('p', '公司内统一使用此模型；服务地址和凭据沿用已部署的 Office 提供商。留空恢复部署默认。')) }
-  if (section === '生图') { text('图像模型', 'imageModel'); form.append(element('p', '用于幻灯片 AI 配图，服务地址和凭据沿用已部署的图像提供商。')) }
+  if (section === '模型配置') { text('模型 ID', 'modelId'); form.append(element('p', '仅在尚未保存上方提供商配置时，使用此部署默认模型 ID。留空沿用部署配置。')) }
   if (section === '搜索') flag('启用文件内容搜索和 AI 重排', 'searchEnabled')
   if (section === '集成') flag('允许助手使用已授权的数据源集成', 'integrationsEnabled')
-  if (section === '媒体' || section === '搜索') {
+  if (['模型配置','生图','媒体','搜索'].includes(section)) {
     const cards = element('div'); content.append(cards)
     // Mount after the node is connected; detached results never replace another page.
     queueMicrotask(() => void mountOfficeProviderSettings(cards, {
-      capabilities: section === '媒体' ? ['imageAnalysis', 'videoAnalysis'] : ['webSearch'],
+      capabilities: section === '媒体' ? ['imageAnalysis', 'videoAnalysis'] : section === '搜索' ? ['webSearch'] : section === '生图' ? ['imageGeneration'] : ['chatModel'],
       onDirty: value => { if (cards.isConnected) providerDirty = value },
       onBusy: value => { providerBusy = value; for (const button of host.querySelectorAll<HTMLButtonElement>('nav button')) button.disabled = value; save.disabled = value },
     }))

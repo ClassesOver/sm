@@ -5,8 +5,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-Capability = Literal["imageAnalysis", "videoAnalysis", "webSearch"]
-CAPABILITIES = ("imageAnalysis", "videoAnalysis", "webSearch")
+Capability = Literal["imageAnalysis", "videoAnalysis", "webSearch", "chatModel", "imageGeneration"]
+CAPABILITIES = ("imageAnalysis", "videoAnalysis", "webSearch", "chatModel", "imageGeneration")
 # id, label, endpoint, default analysis model, protocol, video support.
 _MEDIA = [
     ("openai", "OpenAI", "https://api.openai.com/v1", "gpt-5.6-luna", "openai", False),
@@ -57,17 +57,49 @@ MEDIA = {
 SEARCH = {p[0]: dict(id=p[0], label=p[1], baseUrl=p[2], model="") for p in _SEARCH}
 
 
+_CHAT_MODELS = {
+    "openai": "gpt-6.1-terra",
+    "deepseek": "deepseek-v4-pro",
+    "glm": "glm-5.3",
+    "qwen": "qwen3.8-max",
+    "doubao": "doubao-seed-2-1-pro-260628",
+    "minimax": "MiniMax-M3.1-Flash",
+    "xai": "grok-4.6",
+    "custom": "",
+}
+CHAT = {key: {**MEDIA[key], "model": model} for key, model in _CHAT_MODELS.items()}
+_IMAGE_MODELS = {
+    "openai": "gpt-image-2",
+    "gemini": "gemini-nano-banana-2.1",
+    "doubao": "doubao-seedream-5-0-pro-260915",
+    "glm": "glm-image",
+    "xai": "grok-imagine-image-2.0",
+    "qwen": "qwen-image-3.0-pro",
+    "custom": "",
+}
+IMAGES = {key: {**MEDIA[key], "model": model} for key, model in _IMAGE_MODELS.items()}
+IMAGES["qwen"]["baseUrl"] = "https://dashscope.aliyuncs.com"
+
+
 def catalog_for(capability):
+    if capability == "chatModel":
+        return list(CHAT.values())
+    if capability == "imageGeneration":
+        return list(IMAGES.values())
     if capability == "webSearch":
         return list(SEARCH.values())
     return [p for p in MEDIA.values() if capability == "imageAnalysis" or p["video"]]
 
 
 def defaults(capability):
-    provider = {"imageAnalysis": "openai", "videoAnalysis": "gemini", "webSearch": "tavily"}[
-        capability
-    ]
-    meta = (SEARCH if capability == "webSearch" else MEDIA)[provider]
+    provider = {
+        "imageAnalysis": "openai",
+        "videoAnalysis": "gemini",
+        "webSearch": "tavily",
+        "chatModel": "openai",
+        "imageGeneration": "openai",
+    }[capability]
+    meta = next(item for item in catalog_for(capability) if item["id"] == provider)
     return dict(enabled=False, provider=provider, baseUrl=meta["baseUrl"], model=meta["model"])
 
 

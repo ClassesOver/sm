@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import re
@@ -163,6 +164,10 @@ class PersonalSettingsInput(Input):
     disabledSkills: list[str] = Field(default_factory=list, max_length=1000)
     expectedVersion: int = Field(ge=0, strict=True)
 
+class ImageGenerationInput(Input):
+    prompt: str = Field(min_length=1, max_length=1000)
+
+
 class GlobalSettingsInput(Input):
     modelId: str = Field(default='', max_length=200, pattern=r'^[^\s]*$')
     imageModel: str = Field(default='', max_length=200, pattern=r'^[^\s]*$')
@@ -194,6 +199,12 @@ def create_office_router(
     settings_service = OfficeSettings(office)
     from .provider_settings import OfficeProviders
     office.providers = OfficeProviders(office, source_vault)
+
+    @router.post('/media/images')
+    async def generate_office_image(body: ImageGenerationInput, identity: Identity = Depends(actor)):
+        content, media_type, _extension = await office.providers.generate(identity, body.prompt)
+        return {'mediaType': media_type, 'previewDataUrl': f'data:{media_type};base64,{base64.b64encode(content).decode()}',
+                'sha256': hashlib.sha256(content).hexdigest()}
 
     @router.get('/admin/providers')
     async def provider_settings(identity: Identity = Depends(actor)):

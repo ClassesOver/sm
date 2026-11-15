@@ -15,10 +15,18 @@ class ProviderHTTP:
         self.transport, self.resolver = transport, resolver or resolve
 
     async def request(
-        self, method, url, *, headers=None, json=None, params=None, max_bytes=2 * 1024 * 1024
+        self,
+        method,
+        url,
+        *,
+        headers=None,
+        json=None,
+        params=None,
+        max_bytes=2 * 1024 * 1024,
+        timeout_seconds=60,
     ):
         try:
-            async with asyncio.timeout(60):
+            async with asyncio.timeout(timeout_seconds):
                 parsed = validate_https_url(url)
                 if parsed.port not in (None, 443):
                     raise OfficeError("office_provider_url_invalid", "仅支持 HTTPS 443 端口。", 422)
@@ -32,7 +40,9 @@ class ProviderHTTP:
                     transport=transport,
                     trust_env=False,
                     follow_redirects=False,
-                    timeout=httpx.Timeout(45, connect=10),
+                    timeout=httpx.Timeout(
+                        45 if timeout_seconds <= 60 else timeout_seconds, connect=10
+                    ),
                 ) as client:
                     async with client.stream(
                         method, url, headers=headers, json=json, params=params

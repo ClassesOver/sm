@@ -41,3 +41,9 @@ html[data-office-theme=dark] .report-app{background:#191919}
 }
 
 .office-provider-card .office-provider-field input:not([type=checkbox]) { max-width: 100%; }
+.office-native-image-tools { padding: 12px; border-top: 1px solid #ddd; }
+.office-native-image-tools form { display: grid; gap: 8px; }
+.office-native-image-tools textarea { width: 100%; min-height: 64px; box-sizing: border-box; resize: vertical; }
+.office-native-image-tools img { max-width: 100%; max-height: 220px; object-fit: contain; margin: 8px 0; }
+.office-native-image-tools button { padding: 6px 10px; }
+.office-native-image-tools p { font-size: 12px; overflow-wrap: anywhere; }

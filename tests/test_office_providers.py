@@ -454,3 +454,378 @@ async def test_nonvideo_iso_container_is_not_misrouted_as_video():
     )
     with pytest.raises(OfficeError):
         await ProviderRuntime().load_media([image])
+
+
+@pytest.mark.asyncio
+async def test_admin_chat_model_uses_native_agno_and_isolated_credentials(providers):
+    from agno.agent import Agent
+    from agno.models.openai import OpenAIChat
+    from smart_reporting.reporting.agent_events import run_owned_agent_with_events
+    from smart_reporting.office.settings import OfficeSettings
+    from smart_reporting.office.provider_http import ProviderHTTP
+
+    service, admin, user, other = providers
+    service.office.providers = service
+    original = OpenAIChat(id="deployment-default", api_key="deployment-key")
+    assert (await OfficeSettings(service.office).model(user, original)).id == "deployment-default"
+    await service.save(admin, "chatModel", config())
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        assert request.headers["authorization"] == "Bearer secret-provider-key"
+        assert json.loads(request.content)["model"] == "vision-model"
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "vision-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ready"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    service.runtime.http = ProviderHTTP(transport=httpx.MockTransport(respond))
+    model = await OfficeSettings(service.office).model(user, original)
+    assert isinstance(model, OpenAIChat) and original.id == "deployment-default"
+    result = await run_owned_agent_with_events(Agent(model=model), "hello")
+    assert result.content == "ready" and model.async_client.is_closed()
+    assert (await OfficeSettings(service.office).model(other, original)).id == "deployment-default"
+    await service.save(
+        admin, "chatModel", {**config(), "enabled": False, "apiKey": None, "expectedVersion": 1}
+    )
+    with pytest.raises(OfficeError):
+        await OfficeSettings(service.office).model(user, original)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openai", "gemini", "qwen", "doubao", "glm", "xai", "custom"])
+async def test_generation_protocols_validate_images_and_never_forward_keys_to_assets(
+    providers, provider
+):
+    import base64
+    from smart_reporting.office.provider_http import ProviderHTTP
+    from smart_reporting.office.provider_catalog import catalog_for
+
+    service, admin, user, _ = providers
+    meta = next(item for item in catalog_for("imageGeneration") if item["id"] == provider)
+    body = {
+        "enabled": True,
+        "provider": provider,
+        "model": meta["model"] or "image-model",
+        "baseUrl": meta["baseUrl"] or "https://example.com/v1",
+        "apiKey": "image-private-key",
+        "expectedVersion": 0,
+    }
+    encoded = image_data().split(",", 1)[1]
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        if request.url.host == "assets.example.com":
+            assert (
+                "authorization" not in request.headers and "x-goog-api-key" not in request.headers
+            )
+            return httpx.Response(
+                200, content=base64.b64decode(encoded), headers={"content-type": "image/png"}
+            )
+        payload = json.loads(request.content)
+        if provider == "gemini":
+            assert payload["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
+            return httpx.Response(
+                200,
+                json={
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {"inlineData": {"mimeType": "image/png", "data": encoded}}
+                                ]
+                            }
+                        }
+                    ]
+                },
+            )
+        if provider == "qwen":
+            assert payload["input"]["messages"][0]["content"][0]["text"] == "white square"
+            return httpx.Response(
+                200,
+                json={
+                    "output": {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": [{"image": "https://assets.example.com/image.png"}]
+                                }
+                            }
+                        ]
+                    }
+                },
+            )
+        assert payload["n"] == 1 and payload["prompt"] == "white square"
+        if provider == "xai":
+            assert "size" not in payload
+        return httpx.Response(200, json={"data": [{"url": "https://assets.example.com/image.png"}]})
+
+    service.runtime.http = ProviderHTTP(transport=httpx.MockTransport(respond))
+    await service.save(admin, "imageGeneration", body)
+    content, mime, extension = await service.generate(user, "white square")
+    assert content == base64.b64decode(encoded) and mime == "image/png" and extension == "png"
+    await service.save(
+        admin, "imageGeneration", {**body, "enabled": False, "apiKey": None, "expectedVersion": 1}
+    )
+    with pytest.raises(OfficeError):
+        await service.generate(user, "white square")
+
+
+@pytest.mark.asyncio
+async def test_generated_nonimage_or_oversized_data_is_rejected(providers):
+    from smart_reporting.office.provider_http import ProviderHTTP
+
+    service, admin, user, _ = providers
+    await service.save(admin, "imageGeneration", config())
+    service.runtime.http = ProviderHTTP(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"data": [{"b64_json": "bm90IGFuIGltYWdl"}]})
+        )
+    )
+    with pytest.raises(OfficeError):
+        await service.generate(user, "white square")
+
+
+@pytest.mark.asyncio
+async def test_user_image_generation_api_is_authenticated_and_csrf_protected(providers):
+    from fastapi import FastAPI
+    from smart_reporting.office.api import create_office_router, csrf_token
+    from smart_reporting.office.provider_http import ProviderHTTP
+
+    service, admin, user, _ = providers
+    await service.save(admin, "imageGeneration", config())
+    app = FastAPI()
+    app.include_router(
+        create_office_router(
+            service.office, public_origin="http://test", source_vault=service.vault
+        )
+    )
+    encoded = image_data().split(",", 1)[1]
+    service.office.providers.runtime.http = ProviderHTTP(
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={"data": [{"b64_json": encoded}]})
+        )
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        url = "/office/api/media/images"
+        assert (await client.post(url, json={"prompt": "white square"})).status_code == 401
+        token = await service.office.create_session(user)
+        client.cookies.set("genoffice_session", token)
+        assert (await client.post(url, json={"prompt": "white square"})).status_code == 403
+        response = await client.post(
+            url,
+            json={"prompt": "white square"},
+            headers={"origin": "http://test", "x-csrf-token": csrf_token(token)},
+        )
+        assert response.status_code == 200 and response.json()["previewDataUrl"] == image_data()
+        assert "secret-provider-key" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_model_transport_pins_scope_redacts_errors_and_rechecks_revocation():
+    from smart_reporting.office.provider_models import OfficeModelTransport
+
+    calls = []
+    active = True
+
+    async def guard():
+        if not active:
+            raise OfficeError("revoked", "配置已撤销。")
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(401, text="private-provider-key response body")
+
+    transport = OfficeModelTransport(
+        "https://api.openai.com/v1", guard, transport=httpx.MockTransport(respond)
+    )
+    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
+        response = await client.post("https://api.openai.com/v1/chat/completions")
+        assert response.status_code == 401 and "private-provider-key" not in response.text
+        with pytest.raises(OfficeError):
+            await client.post("https://other.example.com/v1/chat/completions")
+        active = False
+        with pytest.raises(OfficeError):
+            await client.post("https://api.openai.com/v1/chat/completions")
+    assert len(calls) == 1
+
+    async def allow():
+        pass
+
+    async def private(*args):
+        return [(2, 1, 6, "", ("127.0.0.1", 443))]
+
+    async with httpx.AsyncClient(
+        transport=OfficeModelTransport("https://private.example", allow, resolver=private)
+    ) as client:
+        with pytest.raises(Exception):
+            await client.post("https://private.example/chat/completions")
+
+
+@pytest.mark.asyncio
+async def test_agno_streaming_model_policy_and_response_limits():
+    from smart_reporting.office.provider_models import OfficeModelTransport
+
+    events = []
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"text":"hello"}\n\n'
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            events.append("close")
+
+    async def guard():
+        events.append("guard")
+
+    transport = OfficeModelTransport(
+        "https://api.example.com",
+        guard,
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(
+                200, stream=Stream(), headers={"content-type": "text/event-stream"}
+            )
+        ),
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        async with client.stream("POST", "https://api.example.com/chat/completions") as response:
+            chunks = [chunk async for chunk in response.aiter_bytes()]
+    assert b"hello" in b"".join(chunks) and events.count("guard") == 3 and "close" in events
+
+    class Huge(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"x" * (16 * 1024 * 1024 + 1)
+
+    transport = OfficeModelTransport(
+        "https://api.example.com",
+        guard,
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, stream=Huge())),
+    )
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(OfficeError):
+            await client.post("https://api.example.com/chat/completions")
+
+
+@pytest.mark.asyncio
+async def test_source_openai_models_use_native_responses_and_test_drafts_do_not_save(providers):
+    from agno.models.openai.responses import OpenAIResponses
+    from smart_reporting.office.provider_models import native_chat_model
+    from smart_reporting.office.provider_http import ProviderHTTP
+
+    service, admin, _, _ = providers
+
+    async def guard():
+        pass
+
+    model = native_chat_model(
+        {"provider": "openai", "model": "gpt-6.1-terra", "baseUrl": "https://api.openai.com/v1"},
+        "secret",
+        guard,
+    )
+    assert isinstance(model, OpenAIResponses)
+    await model.http_client.aclose()
+
+    def respond(request):
+        return httpx.Response(
+            200,
+            json={
+                "id": "chat-1",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "test",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "OK"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    service.runtime.http = ProviderHTTP(transport=httpx.MockTransport(respond))
+    assert (await service.test(admin, "chatModel", config()))["ok"]
+    assert (await service.catalog(admin))["settings"]["chatModel"]["version"] == 0
+
+
+@pytest.mark.asyncio
+async def test_actual_openai_sdk_done_marker_rechecks_policy_and_closes_stream():
+    from openai import AsyncOpenAI
+    from smart_reporting.office.provider_models import OfficeModelTransport
+
+    events = []
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"id":"x","object":"chat.completion.chunk","created":1,"model":"x","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}]}\n\n'
+            events.append("revoked")
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            events.append("close")
+
+    async def guard():
+        events.append("guard")
+        if "revoked" in events:
+            raise OfficeError("revoked", "revoked")
+
+    transport = OfficeModelTransport(
+        "https://model.example/v1",
+        guard,
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(
+                200, stream=Stream(), headers={"content-type": "text/event-stream"}
+            )
+        ),
+    )
+    async with AsyncOpenAI(
+        api_key="secret",
+        base_url="https://model.example/v1",
+        max_retries=0,
+        http_client=httpx.AsyncClient(transport=transport),
+    ) as client:
+        with pytest.raises(OfficeError, match="revoked"):
+            stream = await client.chat.completions.create(
+                model="x", messages=[{"role": "user", "content": "hello"}], stream=True
+            )
+            async for _ in stream:
+                pass
+    assert "close" in events
+
+
+@pytest.mark.asyncio
+async def test_image_generation_matches_native_size_and_source_deadline(providers):
+    import base64
+    from smart_reporting.office.provider_images import validate_image
+    from smart_reporting.office.provider_http import ProviderHTTP
+
+    service, admin, user, _ = providers
+    content = base64.b64decode(image_data().split(",", 1)[1]) + b"x" * (6 * 1024 * 1024)
+    with pytest.raises(OfficeError) as oversized:
+        validate_image(content)
+    assert oversized.value.code == "office_image_size_invalid"
+    await service.save(admin, "imageGeneration", config())
+
+    def respond(request):
+        assert request.extensions["timeout"]["read"] == 600
+        return httpx.Response(200, json={"data": [{"b64_json": image_data().split(",", 1)[1]}]})
+
+    service.runtime.http = ProviderHTTP(transport=httpx.MockTransport(respond))
+    await service.generate(user, "white square")

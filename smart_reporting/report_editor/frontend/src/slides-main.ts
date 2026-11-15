@@ -1,3 +1,4 @@
+import { mountOfficeGeneratedImage } from './office-generated-image'
 import { mountSlidesRailNavigation } from './slides-rail-navigation'
 import { createSlidesPdfExport } from './slides-export-pdf'
 import { createSlidesOpenFile } from './slides-open-file'
@@ -3742,6 +3743,19 @@ imageAdd.addEventListener('click', () => {
   renderPendingImages()
   markDirty()
 })
+
+if (native && nativeDraft) {
+  const imageIdentity = () => !deck || locked() || isNewSlide(selectedSlide) ? undefined : JSON.stringify([deck.sha256, selectedSlide, slideChanges()])
+  mountOfficeGeneratedImage(root.querySelector<HTMLElement>('.slides-inspector')!, {
+    identity: imageIdentity,
+    insert: async (file, expectedIdentity) => {
+      const image = await prepareSlideImage(file, deck.size)
+      if (imageIdentity() !== expectedIdentity) throw new Error('文档、页面或草稿已变化，请重新生成图片。')
+      commitNativeChanges({...slideChanges(), images: [...nativeImages, {slideIndex:selectedSlide,...image}]})
+      canvasStatus.textContent = '生成图片已加入草稿；保存并打开新修订后显示。'
+    },
+  })
+}
 
 const chartTools = createSlidesChartTools(root.querySelector<HTMLElement>('.slides-inspector')!, request, markDirty, { enabled: !native })
 

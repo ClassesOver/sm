@@ -1,11 +1,11 @@
 // Capability/provider/model/key/base URL arrangement adapted from GenOffice SettingsModal.tsx.
 // Source revision and license: smart_reporting/office/PROVIDERS-SOURCE.md.
 import { officeRequest } from './office-client'
-export type Capability = 'imageAnalysis' | 'videoAnalysis' | 'webSearch'
+export type Capability = 'imageAnalysis' | 'videoAnalysis' | 'webSearch' | 'chatModel' | 'imageGeneration'
 type Provider = { id: string; label: string; model: string; baseUrl: string }
 type Configuration = { enabled: boolean; provider: string; model: string; baseUrl: string; version: number; hasKey: boolean }
 type Catalog = { settings: Record<Capability, Configuration>; catalog: Record<Capability, Provider[]>; credentialStorageAvailable: boolean }
-const titles: Record<Capability, string> = { imageAnalysis: '图片分析', videoAnalysis: '视频分析', webSearch: '联网搜索' }
+const titles: Record<Capability, string> = { imageAnalysis: '图片分析', videoAnalysis: '视频分析', webSearch: '联网搜索', chatModel: '对话模型', imageGeneration: '图片生成' }
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, content = '') { const node = document.createElement(tag); node.textContent = content; return node }
 
 export async function mountOfficeProviderSettings(host: HTMLElement, options: {
@@ -14,7 +14,10 @@ export async function mountOfficeProviderSettings(host: HTMLElement, options: {
   if (!host.isConnected) return
   host.textContent = '正在加载提供商配置…'
   let catalog: Catalog
-  try { catalog = await officeRequest<Catalog>('/admin/providers') }
+  try {
+    catalog = await officeRequest<Catalog>('/admin/providers')
+    if (options.capabilities.some(cap => !catalog.settings?.[cap] || !Array.isArray(catalog.catalog?.[cap]))) throw new Error('提供商配置格式已变化，请刷新或重新加载。')
+  }
   catch (error) {
     if (!host.isConnected) return
     host.textContent = (error as Error).message
@@ -31,6 +34,7 @@ export async function mountOfficeProviderSettings(host: HTMLElement, options: {
     warning.setAttribute('role', 'status'); host.append(warning)
   }
   for (const capability of options.capabilities) {
+    const needsMedia = capability === 'imageAnalysis' || capability === 'videoAnalysis'
     const card = element('section'); card.className = 'office-provider-card'; card.setAttribute('aria-label', titles[capability]); host.append(card)
     let saved = catalog.settings[capability], draft = { ...saved }, apiKey: string | null = null, testFile: File | undefined
     const changed = () => {
@@ -68,8 +72,10 @@ export async function mountOfficeProviderSettings(host: HTMLElement, options: {
       base.oninput = () => { draft.baseUrl = base.value.trim(); key.placeholder = saved.baseUrl === draft.baseUrl && saved.provider === draft.provider && saved.hasKey ? '已配置，留空保持现有密钥' : '地址已变化，请输入该服务的密钥'; status.textContent = '有未保存的修改'; changed() }
       field('服务地址', base)
       const note = element('p', capability === 'webSearch' ? '文档助手需要联网资料时使用此提供商；本地文件搜索由下方开关单独控制。' : '文档助手使用此提供商分析图片或视频；支持公网 HTTPS 地址和提供的文件内容，每次最多 4 个、合计 20 MiB。')
+      if (capability === 'chatModel') note.textContent = '使用原生 Agno 模型调用。未配置时沿用部署默认；保存停用后将停止公司内的模型调用。测试会发起一次短对话。'
+      if (capability === 'imageGeneration') note.textContent = '用于原生 PPTX 的 AI 生图预览，PNG/JPEG 单张不超过 6 MiB；用户确认后才加入草稿。测试会真实生成一张图片，但不会修改文档。'
       note.className = 'office-provider-note'; form.append(note)
-      if (capability !== 'webSearch') {
+      if (needsMedia) {
         const file = element('input'); file.type = 'file'; file.accept = capability === 'imageAnalysis' ? 'image/png,image/jpeg,image/webp,image/gif' : 'video/mp4,video/webm'
         file.onchange = () => { testFile = file.files?.[0]; status.textContent = testFile ? `测试文件：${testFile.name}` : '' }
         field('测试文件', file)
@@ -86,7 +92,7 @@ export async function mountOfficeProviderSettings(host: HTMLElement, options: {
       actions.append(save, test, reload); form.append(actions, status); card.append(form)
       const run = async (testing: boolean) => {
         if (busy || !form.reportValidity()) return
-        if (testing && capability !== 'webSearch' && !testFile) { status.textContent = '请选择测试文件，以验证实际分析能力。'; return }
+        if (testing && needsMedia && !testFile) { status.textContent = '请选择测试文件，以验证实际分析能力。'; return }
         if (testing && testFile && testFile.size > 20 * 1024 * 1024) { status.textContent = '测试文件不得超过 20 MiB。'; return }
         busy = true; options.onBusy(true)
         const controls = [...host.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input, select, button')].map(control => ({control, disabled:control.disabled}))
@@ -96,7 +102,7 @@ export async function mountOfficeProviderSettings(host: HTMLElement, options: {
           const body = { enabled: draft.enabled, provider: draft.provider, model: draft.model, baseUrl: draft.baseUrl, apiKey, expectedVersion: saved.version }
           if (testing) {
             const media: string[] = []
-            if (capability !== 'webSearch' && testFile) media.push(await new Promise<string>((resolve,reject) => {
+            if (needsMedia && testFile) media.push(await new Promise<string>((resolve,reject) => {
               const reader = new FileReader(); reader.onload = () => resolve(reader.result as string); reader.onerror = () => reject(new Error('无法读取测试文件。')); reader.readAsDataURL(testFile!)
             }))
             const result = await officeRequest<{message:string}>(`/admin/providers/${capability}/test`, 'POST', {...body, media})

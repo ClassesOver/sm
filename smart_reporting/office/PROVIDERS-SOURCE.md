@@ -1,4 +1,4 @@
-# GenOffice media/search adaptation
+# GenOffice model, generation, media and search adaptation
 
 Source: https://github.com/genspark-ai/genoffice/tree/f8c17004fb730df11f0f743164ffd8b4281bb38c
 
@@ -6,6 +6,7 @@ Copyright 2026 Mainfunc, Inc. Apache-2.0; see vendor/genoffice/LICENSE.
 
 | Upstream file | SHA-256 |
 | --- | --- |
+| `packages/ai-provider/src/providers.ts` | `4e247ff2a767e7d11147abd76630eda16dcb76417427e1722be580c67cfdb7f6` |
 | `packages/ai-provider/src/media.ts` | `12f005067c82525e0fc2c27aa1310b8277dafb9af55b8be4b2138176df5420a1` |
 | `packages/ai-provider/src/media-protocols.ts` | `9d160fa8ed6fcb730bb0fc4eb79a8b3fb1667a45d2c3de6e29f94efa11c1de01` |
 | `packages/ai-search/src/index.ts` | `b6f7f1b86ea51a9781f24c6d9b7bfd8193d914b505c9ecf1c2692390f5453a39` |
@@ -16,3 +17,11 @@ Adapted provider catalogs, OpenAI/Gemini analysis payloads, eight search request
 Deployment: API keys use existing `AGENT_MANAGEMENT_CREDENTIAL_KEYS` (Fernet key ring `key-id:base64-key`); preserve old key IDs during rotation. Admin GET returns only `hasKey`. Each capability has its own version; tests are ephemeral and do not save drafts. Company configuration is read for each tool call and rechecked after it completes.
 
 Verification (2026-11-15): 28 provider regressions pass, including every search wire mapping, actual image/video payload construction, encrypted persistence, tenant/admin/CSRF boundaries, key clearing and endpoint changes, runtime policy revocation, private DNS/redirect/size rejection, malformed responses and source-protocol regressions. Related settings/API/native Skill suite passed (43 tests before the additional 12 review regressions). Four admin frontend tests cover draft retention, in-flight freezing, tests that do not save and guarded navigation. Production TypeScript/Vite build and Chromium desktop/mobile UI/API/database flows passed. Provider responses were mocked for deterministic verification; paid-provider live connectivity requires the deployment's credentials and can be checked using each admin card's test button.
+
+Model/generation extension (2026-11-15): the compatible chat catalog uses native Agno OpenAIChat, with OpenAIResponses for the upstream OpenAI GPT-5.4+ / GPT-6 selection. Native Anthropic/Gemini chat is not advertised. Unconfigured chat uses deployment defaults; explicitly saved disabled configuration refuses calls. Per-task SDK clients close, use public pinned HTTPS, reject redirects, sanitize upstream errors and check current policy even when an SDK stream stops at `[DONE]`.
+
+Image generation adapts OpenAI-compatible, Gemini and DashScope protocols, including vendor-specific OpenAI request fields. Generation permits 600 seconds; actual PNG/JPEG bytes are verified and limited to 6 MiB / 25 million pixels. Downloading a returned image URL never forwards provider credentials. The native PPTX inspector previews an ephemeral image and adds it to the existing NativeDraft only after explicit acceptance; changed document/page/draft identity invalidates the candidate. No document is changed by the admin test button.
+
+Extension verification: 43 provider regressions pass; the broader backend selection passed 96 tests before two additional review regressions. Six focused admin/provider/image UI tests, the native PPTX insertion regression, TypeScript/Vite production build, and Chromium desktop/mobile smoke passed. Browser checks use actual image decoding and NativeDraft insertion with mocked upstream provider responses; live paid-provider connectivity remains deployment-dependent.
+
+Post-integration verification against PR head 230e87f4: provider/settings tests 46 passed; Skill, slideshow tools and concurrent workbook navigation tests 43 passed; frontend cards/preview tests 6 passed; selected native PPTX lifecycle, 501st-edit boundary and image insertion tests 3 passed with a 20-second timeout. The expanded native file did not complete in the earlier run; no full native-suite pass is claimed. The unchanged baseline 501st-edit case takes 6.5 seconds and exceeds the default 5-second timeout. Integration preserves the new Office pinned_http module and workbook navigation behavior; the retired report image-model control was removed from admin UI.

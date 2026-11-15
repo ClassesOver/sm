@@ -7,7 +7,7 @@ it('媒体搜索切换保留未保存草稿并在保存时锁定导航',async()=
     if(url.endsWith('/session'))return new Response(JSON.stringify({user:{user:'10',name:'Admin',role:'admin'},csrfToken:'token'}))
     if(url.endsWith('/admin/settings'))return new Response(JSON.stringify({version:0,modelId:'',imageModel:'',searchEnabled:true,integrationsEnabled:true}))
     if(options.method==='PUT')return await new Promise<Response>(resolve=>{finish=resolve})
-    return new Response(JSON.stringify({settings:{webSearch:config},catalog:{webSearch:[{id:'tavily',label:'Tavily',model:'',baseUrl:config.baseUrl}]},credentialStorageAvailable:true}))
+    return new Response(JSON.stringify({settings:{webSearch:config,chatModel:config},catalog:{webSearch:[{id:'tavily',label:'Tavily',model:'',baseUrl:config.baseUrl}],chatModel:[{id:'tavily',label:'Tavily',model:'',baseUrl:config.baseUrl}]},credentialStorageAvailable:true}))
   }))
   vi.spyOn(window,'confirm').mockReturnValue(false)
   await import('./office-admin')

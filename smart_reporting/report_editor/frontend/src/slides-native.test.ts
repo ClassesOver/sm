@@ -1,11 +1,12 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createEditorShell } from './shell'
 import { createSlidesEditorView } from './slides-main'
 import { createNativeOfficeView } from './native-office-view'
 import { NativeDraft, type NativeDraftIdentity, type NativeSaveRequest } from './native-draft'
 import type { NativeContextResponse } from './native-api'
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
-afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks() })
+beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} }))
+afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const deck = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [{ slideIndex: 0, transitionApplyAllSafe: true, animations: [], elements: [{ id: 'title', type: 'text', name: 'title', text: '原文', editable: true, geometry: { x: 10, y: 20, width: 300, height: 80 } }] }] }
 it('native PPTX skips unsupported AI requests and retains draft until registration, then offers explicit reopen', async () => {
   document.body.innerHTML = '<main id="app"></main>'
@@ -856,4 +857,24 @@ it('recovers new paragraph targets against the recovered text snapshot',async()=
   const {shell,view}=await openDraft(draft,{preview:vi.fn(async()=>({model:deck})),renderTree:vi.fn(async()=>({slides:[]}))})
   expect(shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!.value).toBe('one\ntwo\nthree')
   expect(draft.operations).toEqual(operations);view.dispose()
+})
+
+it('Office generation previews before acceptance and joins the existing native PPTX draft', async () => {
+  const imageTools = await import('./slides-native-images')
+  vi.spyOn(imageTools, 'prepareSlideImage').mockResolvedValue({bytesBase64:'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIklEQVR4nGP8//8/AzUAE1VMGTVo1KBRg0YNGjVo1CCKAAAZ0QMtxqFhfwAAAABJRU5ErkJggg==', extension:'png',descr:'generated.png',geometry:{x:10,y:10,width:100,height:100}})
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith('/session')
+    ? {user:{user:'u',role:'user',name:'User'},csrfToken:'csrf'}
+    : {previewDataUrl:'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIklEQVR4nGP8//8/AzUAE1VMGTVo1KBRg0YNGjVo1CCKAAAZ0QMtxqFhfwAAAABJRU5ErkJggg==',mediaType:'image/png'}))))
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const {shell,view} = await openDraft(draft, {preview:vi.fn(async()=>({model:deck})),renderTree:vi.fn(async()=>({slides:[]}))})
+  const panel = shell.editor.querySelector<HTMLElement>('.office-native-image-tools')!
+  expect(panel).not.toBeNull()
+  panel.querySelector('textarea')!.value='A landscape'
+  panel.querySelector<HTMLButtonElement>('button[type=submit]')!.click()
+  await vi.waitFor(()=>expect(panel.querySelector('img')!.hidden).toBe(false))
+  expect(draft.operations).toEqual([])
+  panel.querySelector<HTMLButtonElement>('[data-insert]')!.click()
+  await vi.waitFor(()=>expect(draft.operations, panel.querySelector('[role="status"]')?.textContent ?? '').toHaveLength(1))
+  expect(draft.operations[0]).toMatchObject({kind:'editSlides',images:[{slideIndex:0,bytesBase64:'iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIklEQVR4nGP8//8/AzUAE1VMGTVo1KBRg0YNGjVo1CCKAAAZ0QMtxqFhfwAAAABJRU5ErkJggg==',extension:'png'}]})
+  view.dispose()
 })

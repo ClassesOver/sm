@@ -161,6 +161,29 @@ class OfficeProviders:
         if after["version"] != before["version"]:
             raise OfficeError("office_provider_changed", "任务期间提供商配置已变化，请重试。", 409)
 
+    async def chat_model(self, actor):
+        from .provider_models import native_chat_model
+
+        value = await self._read(actor, "chatModel")
+        if value["version"] == 0:
+            return None
+        value = await self._active(actor, "chatModel")
+
+        async def guard():
+            await self._unchanged(actor, "chatModel", value)
+
+        return native_chat_model(
+            value, self._key(value), guard, transport=self.runtime.http.transport
+        )
+
+    async def generate(self, actor, prompt):
+        from .provider_images import generate_image
+
+        value = await self._active(actor, "imageGeneration")
+        result = await generate_image(self.runtime, value, self._key(value), prompt)
+        await self._unchanged(actor, "imageGeneration", value)
+        return result
+
     async def search(self, actor, query, limit=6):
         value = await self._active(actor, "webSearch")
         result = await self.runtime.search(value, self._key(value), query, limit)
@@ -186,7 +209,38 @@ class OfficeProviders:
     async def test(self, actor, capability, document, media=None):
         value, version = await self._prepare(actor, capability, document)
         key = self._key(value)
-        if capability == "webSearch":
+        if capability == "chatModel":
+            from agno.agent import Agent
+            from .provider_models import native_chat_model
+            from ..reporting.agent_events import run_owned_agent_with_events
+
+            async def guard():
+                current = await self._read(actor, capability, admin=True)
+                if current["version"] != version:
+                    raise OfficeError("office_provider_conflict", "配置已变化，请重新测试。", 409)
+
+            model = native_chat_model(value, key, guard, transport=self.runtime.http.transport)
+            try:
+                answer = await run_owned_agent_with_events(
+                    Agent(model=model, telemetry=False, retries=0), "Reply with OK."
+                )
+                if not isinstance(answer.content, str) or not answer.content.strip():
+                    raise ValueError
+            except OfficeError:
+                raise
+            except Exception:
+                raise OfficeError(
+                    "office_model_test_failed",
+                    "模型未返回有效响应，请检查模型、服务地址、密钥及配额。",
+                    502,
+                ) from None
+        elif capability == "imageGeneration":
+            from .provider_images import generate_image
+
+            await generate_image(
+                self.runtime, value, key, "A simple white square on a blue background."
+            )
+        elif capability == "webSearch":
             result = await self.runtime.search(value, key, "GenOffice", 1)
             if not result["results"]:
                 raise OfficeError(

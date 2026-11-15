@@ -159,6 +159,11 @@ class OfficeSettings:
         return OfficeSkills(loaders=[SnapshotLoader(values)]) if values else None
 
     async def model(self, actor, fallback):
+        providers = getattr(self.office, 'providers', None)
+        if providers is not None:
+            selected = await providers.chat_model(actor)
+            if selected is not None:
+                return selected
         model = deepcopy(fallback)
         configured = await self.global_settings(actor, require_admin=False)
         if configured["modelId"] and model is not None:
