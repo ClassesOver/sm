@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import math
 import re
 from builtins import range as iter_range
 from collections import Counter
@@ -27,6 +28,18 @@ def _bounds(address: str) -> tuple[int, int, int, int]:
     if not (1 <= r0 <= r1 <= 1048576 and 1 <= c0 <= c1 <= 16384):
         raise ValueError('workbook_ai_range_invalid')
     return r0 - 1, r1 - 1, c0 - 1, c1 - 1
+
+
+def _matches_expected_value(actual: Any, expected: Any) -> bool:
+    # Source uses JS strict scalar equality: numbers may compare across Python
+    # int/float, but True must never satisfy expectedValue=1 (or vice versa).
+    if type(expected) not in (str, int, float, bool, type(None)) or (
+        type(expected) is float and not math.isfinite(expected)
+    ):
+        raise ValueError('workbook_ai_precondition_invalid')
+    if type(actual) is bool or type(expected) is bool:
+        return type(actual) is type(expected) and actual == expected
+    return actual == expected
 
 
 class WorkbookAIToolkit(Toolkit):
@@ -247,7 +260,7 @@ class WorkbookAIToolkit(Toolkit):
     def load_guide(self, guides: list[str]) -> dict[str, Any]:
         """加载适配器实际支持的操作协议；结构操作仅用于明确授权整簿模式。"""
         catalog = {
-            'writing': 'set_cell(sheetId,address,value)、set_formula(sheetId,address,formula以=开头)、clear_cell(sheetId,address)。原生操作使用{kind,arguments}，applyCellEdits.edits每项sheetName,row,column,writeValue布尔,cell:{value,formula?},style?；行列从0开始。',
+            'writing': 'set_cell(sheetId,address,value,expectedValue可选)、set_formula(sheetId,address,formula以=开头,expectedFormula可选)、clear_cell(sheetId,address)。前置条件精确核对冻结值/公式，纯单元格DSL批次按顺序核对前序写入；混合原生或结构操作之后的条件写入须另起候选，不能按旧快照猜测。原生操作使用{kind,arguments}，applyCellEdits.edits每项sheetName,row,column,writeValue布尔,cell:{value,formula?},style?；行列从0开始。',
             'layout': 'sort_range(sheetId,range,byColumn,order=asc|desc,hasHeader布尔)复用真实引擎排序；有公式或批注时引擎拒绝。merge_cells/unmerge_cells(sheetId,range)保留范围外既有合并。',
             'data': 'set_filter(sheetId,range)、clear_filter(sheetId)、add_defined_name(name,ref)、delete_defined_name(name)。需要复杂筛选可使用原生applySheetFilter。',
             'table': '原生applyTableAdditions/additions；applyTableEdits/edits每项worksheetSheetName,tableName，可含name,area,columnNames,style,totalsRow,bandedRows,headerRow,remove等；先read_sheet_features核对既有表格。',
@@ -259,13 +272,22 @@ class WorkbookAIToolkit(Toolkit):
             raise ValueError('workbook_ai_guide_invalid')
         return {guide: catalog[guide] for guide in guides}
 
-    def _translate(self, operation: dict[str, Any], merges: dict[str, list[str]]) -> dict[str, Any]:
+    def _translate(
+        self, operation: dict[str, Any], merges: dict[str, list[str]],
+        cell_state: dict[tuple[str, str], dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        op = operation.get('op')
+        if ('expectedValue' in operation and op != 'set_cell') or (
+            'expectedFormula' in operation and op != 'set_formula'
+        ):
+            raise ValueError('workbook_ai_precondition_invalid')
         if 'kind' in operation:
+            if 'op' in operation:
+                raise ValueError('workbook_ai_operation_invalid')
             arguments = operation.get('arguments', {})
             if not isinstance(arguments, dict) or 'kind' in arguments:
                 raise ValueError('workbook_ai_operation_invalid')
             return {'kind': operation['kind'], **arguments}
-        op = operation.get('op')
         if op in {'add_chart', 'edit_chart'}:
             return {'kind': 'applyChartSource', 'operation': deepcopy(operation)}
         if op in {'add_defined_name', 'delete_defined_name'}:
@@ -274,15 +296,34 @@ class WorkbookAIToolkit(Toolkit):
         sheet = self._sheet(operation.get('sheetId'))
         name = sheet['name']
         if op in {'set_cell', 'set_formula', 'clear_cell'}:
-            row, _, column, _ = _bounds(operation['address'])
+            bounds = _bounds(operation['address'])
+            row, _, column, _ = bounds
             if ':' in operation['address']:
                 raise ValueError('workbook_ai_range_invalid')
+            self._authorized(sheet, bounds)
+            key = (name, operation['address'])
+            expected_key = 'expectedValue' if op == 'set_cell' else 'expectedFormula' if op == 'set_formula' else None
+            if expected_key is not None and expected_key in operation:
+                if cell_state is None:
+                    raise ValueError('workbook_ai_precondition_requires_cell_batch')
+                before = cell_state.get(key, sheet.get('cells', {}).get(operation['address'], {'value': None}))
+                if expected_key == 'expectedValue':
+                    matches = _matches_expected_value(before.get('value'), operation[expected_key])
+                else:
+                    expected = operation[expected_key]
+                    if not isinstance(expected, str):
+                        raise ValueError('workbook_ai_precondition_invalid')
+                    matches = before.get('formula') == expected
+                if not matches:
+                    raise ValueError('workbook_ai_precondition_mismatch')
             cell = {'value': operation.get('value') if op == 'set_cell' else None}
             if op == 'set_formula':
                 formula = operation['formula']
                 if not isinstance(formula, str) or not formula.startswith('='):
                     raise ValueError('workbook_ai_formula_invalid')
                 cell['formula'] = formula[1:]
+            if cell_state is not None:
+                cell_state[key] = {**cell, **({'formula': operation['formula']} if op == 'set_formula' else {})}
             return {'kind': 'applyCellEdits', 'edits': [{'sheetName': name, 'row': row, 'column': column, 'writeValue': True, 'cell': cell}]}
         if op == 'sort_range':
             if operation.get('order') not in {'asc', 'desc'} or type(operation.get('hasHeader', False)) is not bool:
@@ -314,11 +355,18 @@ class WorkbookAIToolkit(Toolkit):
         if self._scope == 'range' and any(operation.get('op') not in {'set_cell', 'set_formula', 'clear_cell', None} or operation.get('kind') not in {'applyCellEdits', None} for operation in operations):
             raise ValueError('workbook_ai_selection_mismatch')
         merges: dict[str, list[str]] = {}
-        proposal = WorkbookAIProposal.model_validate({'summary': summary, 'operations': [
-            {'kind': translated['kind'], 'arguments': {key: value for key, value in translated.items() if key != 'kind'}}
-            for operation in operations
-            for translated in [self._translate(operation, merges)]
-        ]})
+        cell_state: dict[tuple[str, str], dict[str, Any]] | None = {}
+        translated_operations = []
+        for operation in operations:
+            translated = self._translate(operation, merges, cell_state)
+            translated_operations.append({'kind': translated['kind'], 'arguments': {
+                key: value for key, value in translated.items() if key != 'kind'
+            }})
+            if 'kind' in operation or operation.get('op') not in {'set_cell', 'set_formula', 'clear_cell'}:
+                # Native and structural operations can move/replace cells. Never
+                # validate a later condition against an unchanged base model.
+                cell_state = None
+        proposal = WorkbookAIProposal.model_validate({'summary': summary, 'operations': translated_operations})
         candidate = proposal.engine_operations()
         validate_chart_candidates(self._model, candidate)
         if self._scope == 'range':

@@ -5,7 +5,7 @@ import {installFocusTrap} from './focus-trap'
 export const PDF_EXISTING_IMAGE_ALONE_REASON='已有图像编辑须单独保存，请先保存或撤销其他修改'
 export type PdfImagePixelTarget={sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string}
 export type PdfImagePixels=PdfImagePixelTarget&{image:string;width:number;height:number;sha256:string}
-export interface PdfExistingImage {pageId:string;pageIndex:number;rect:[number,number,number,number];imageId:string;expectedImageSha256:string;aboveText:boolean;editable:boolean;reason?:string;replaceable?:boolean;replaceReason?:string;bakeable?:boolean;bakeReason?:string}
+export interface PdfExistingImage {pageId:string;pageIndex:number;rect:[number,number,number,number];imageId:string;expectedImageSha256:string;aboveText:boolean;editable:boolean;reason?:string;removable?:boolean;removalReason?:string;layerable?:boolean;layerReason?:string;replaceable?:boolean;replaceReason?:string;bakeable?:boolean;bakeReason?:string}
 /** 固定源 ImageBakeOp 的像素编辑：由桥接取图像自身显示像素后烘焙并经 replaceImage 写回。 */
 export type PdfImageBake={kind:'flip';axis:'h'|'v'}|{kind:'opacity';alpha:number}|{kind:'crop';crop:CropFractions}|{kind:'cutout';tolerance:number}|{kind:'rotate';quarterTurns:1|3}
 /** 替换像素的上限与固定源插入图像一致：浏览器转 PNG、最长边 ≤2000px、编码 ≤6MB。 */
@@ -19,6 +19,15 @@ export function existingImageTransform(sourceSha256:string,image:PdfExistingImag
  if(replacement!==undefined&&!pngBase64(replacement))throw Error('替换图像须为不超过限额的 PNG')
  if(replacement!==undefined&&image.replaceable!==true)throw Error(image.replaceReason??'此图像暂不支持替换')
  return {kind:'transformExistingImage',sourceSha256,pageId:image.pageId,imageId:image.imageId,expectedImageSha256:image.expectedImageSha256,rect:[x,y,x+width,y+height],...(replacement!==undefined?{image:replacement}:{})}
+}
+export function existingImageLayer(sourceSha256:string,image:PdfExistingImage,layer:'aboveText'|'belowText'):NativeOperation{
+ if(!['aboveText','belowText'].includes(layer)||!image.editable||image.layerable!==true)throw Error(image.layerReason??'此图像暂不能切换文字层级')
+ if(image.aboveText===(layer==='aboveText'))throw Error('图像已处于所选文字层级')
+ return {kind:'transformExistingImage',sourceSha256,pageId:image.pageId,imageId:image.imageId,expectedImageSha256:image.expectedImageSha256,rect:[...image.rect],layer}
+}
+export function existingImageRemoval(sourceSha256:string,image:PdfExistingImage):NativeOperation{
+ if(!image.editable||image.removable!==true)throw Error(image.removalReason??'此图像暂不能删除')
+ return {kind:'transformExistingImage',sourceSha256,pageId:image.pageId,imageId:image.imageId,expectedImageSha256:image.expectedImageSha256,rect:[...image.rect],remove:true}
 }
 /** 裁剪/翻转/透明度：不与移动或替换同批；裁剪的新范围由固定源 cropRect 计算。 */
 export function existingImageBake(sourceSha256:string,image:PdfExistingImage,bake:PdfImageBake):NativeOperation {
@@ -48,7 +57,7 @@ export function validatePdfExistingImage(pages:PdfPageIdentity[],operations:Nati
  const edits=operations.filter(operation=>operation.kind==='transformExistingImage');if(!edits.length)return
  if(operations.length!==1)throw Error(PDF_EXISTING_IMAGE_ALONE_REASON)
  const operation=edits[0]!
- if(Object.keys(operation).some(key=>!['kind','sourceSha256','pageId','imageId','expectedImageSha256','rect','image','bake'].includes(key))||(operation.image!==undefined&&!pngBase64(operation.image))||(operation.image!==undefined&&operation.bake!==undefined))throw Error('已有图像编辑参数无效')
+ if(Object.keys(operation).some(key=>!['kind','sourceSha256','pageId','imageId','expectedImageSha256','rect','image','bake','remove','layer'].includes(key))||(operation.image!==undefined&&!pngBase64(operation.image))||(operation.image!==undefined&&operation.bake!==undefined)||operation.remove!==undefined&&(operation.remove!==true||operation.image!==undefined||operation.bake!==undefined||operation.layer!==undefined)||operation.layer!==undefined&&(!['aboveText','belowText'].includes(String(operation.layer))||operation.image!==undefined||operation.bake!==undefined||operation.remove!==undefined))throw Error('已有图像编辑参数无效')
  if(operation.bake!==undefined)validateBake(operation.bake)
  const page=pages.find(page=>page.pageId===operation.pageId)
  if(!page||page.blank||!digest(operation.sourceSha256)||!page.pageId.startsWith('sha256:'+operation.sourceSha256+':page:')||!digest(operation.imageId)||!digest(operation.expectedImageSha256))throw Error('已有图像来源或页面身份已变化')
@@ -56,7 +65,7 @@ export function validatePdfExistingImage(pages:PdfPageIdentity[],operations:Nati
  if(!Array.isArray(rect)||rect.length!==4||rect.some(value=>typeof value!=='number'||!Number.isFinite(value)))throw Error('图像范围无效')
  const [x1,y1,x2,y2]=rect as number[],box=page.cropBox
  if(x2-x1<3||y2-y1<3||x1<box.x||y1<box.y||x2>box.x+box.width||y2>box.y+box.height)throw Error('图像范围超出当前页面或尺寸过小')
- if(images){const target=images.find(image=>image.imageId===operation.imageId&&image.pageId===operation.pageId&&image.expectedImageSha256===operation.expectedImageSha256);if(!target?.editable)throw Error(target?.reason??'已有图像身份已变化');if(operation.image!==undefined&&target.replaceable!==true)throw Error(target.replaceReason??'此图像暂不支持替换');if(operation.bake!==undefined){if(target.bakeable!==true)throw Error(target.bakeReason??'此图像暂不支持裁剪、翻转、旋转与透明度');const bake=operation.bake as PdfImageBake,expected=bake.kind==='crop'?cropRect(target.rect,bake.crop):bake.kind==='rotate'?rotatedImageRect(target.rect):target.rect;if((rect as number[]).some((value,i)=>Math.abs(value-expected[i]!)>.05))throw Error('裁剪、翻转、旋转或透明度不能同时移动图像')}}
+ if(images){const target=images.find(image=>image.imageId===operation.imageId&&image.pageId===operation.pageId&&image.expectedImageSha256===operation.expectedImageSha256);if(!target?.editable)throw Error(target?.reason??'已有图像身份已变化');if(operation.layer!==undefined&&(target.layerable!==true||target.aboveText===(operation.layer==='aboveText')||(rect as number[]).some((value,i)=>Math.abs(value-target.rect[i]!)>1e-7)))throw Error(target.layerable!==true?target.layerReason??'此图像不能切换文字层级':target.aboveText===(operation.layer==='aboveText')?'图像已处于所选文字层级':'层级切换不能同时移动或缩放');if(operation.remove&&(target.removable!==true||(rect as number[]).some((value,i)=>Math.abs(value-target.rect[i]!)>1e-7)))throw Error(target.removable!==true?target.removalReason??'此图像不能删除':'删除不能同时移动或缩放图像');if(operation.image!==undefined&&target.replaceable!==true)throw Error(target.replaceReason??'此图像暂不支持替换');if(operation.bake!==undefined){if(target.bakeable!==true)throw Error(target.bakeReason??'此图像暂不支持裁剪、翻转、旋转与透明度');const bake=operation.bake as PdfImageBake,expected=bake.kind==='crop'?cropRect(target.rect,bake.crop):bake.kind==='rotate'?rotatedImageRect(target.rect):target.rect;if((rect as number[]).some((value,i)=>Math.abs(value-expected[i]!)>.05))throw Error('裁剪、翻转、旋转或透明度不能同时移动图像')}}
 }
 /** 与“插入图像”相同：PNG/JPEG ≤10MB，浏览器按最长边 ≤2000px 转为 PNG。 */
 export async function pngFromImageFile(owner:Document,file:File):Promise<{png:string;width:number;height:number}>{
@@ -73,12 +82,16 @@ export function bindPdfExistingImagePanel(options:{root:HTMLElement;draft:Native
  const title=owner.createElement('h3');title.textContent='编辑已有图像'
  const header=owner.createElement('header'),close=owner.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','关闭编辑已有图像');header.append(title,close)
  const body=owner.createElement('div');body.className='pdf-existing-image-body'
- const hint=owner.createElement('p');hint.textContent='选择原 PDF 的图像对象，移动或调整尺寸，或替换为新图像（保留位置与层级，可同时调整范围）。坐标为原始 PDF 单位，原点在左下角；页面旋转不改变这里的坐标。也可水平/垂直翻转、按比例裁剪或调整透明度（像素编辑不能与移动或替换同批）。保存前请核对实际 PDF 预览。'
+ const hint=owner.createElement('p');hint.textContent='选择原 PDF 的图像对象，移动或调整尺寸，或替换为新图像（保留位置与层级，可同时调整范围）。坐标为原始 PDF 单位，原点在左下角；页面旋转不改变这里的坐标。也可水平/垂直翻转、按比例裁剪或调整透明度（像素编辑不能与移动或替换同批）。可单独删除支持的页面图片；这只移除页面绘制，不保证清除文件中的图片资源，安全擦除请用涂黑。保存前请核对实际 PDF 预览。'
  hint.setAttribute('role','region');hint.setAttribute('aria-label','已有图像编辑说明');hint.tabIndex=0;body.append(hint)
  function field(name:string,input:HTMLElement,parent:HTMLElement=body){const label=owner.createElement('label');label.textContent=name;input.setAttribute('aria-label','已有图像'+name);label.append(input);parent.append(label);return input}
  const select=field('选择',owner.createElement('select')) as HTMLSelectElement
  const geometry=owner.createElement('fieldset'),geometryTitle=owner.createElement('legend');geometry.className='pdf-existing-image-geometry';geometryTitle.textContent='位置与尺寸';geometry.append(geometryTitle);body.append(geometry)
  const inputs=['X','Y','宽度','高度'].map(name=>{const input=field(name,owner.createElement('input'),geometry) as HTMLInputElement;input.type='number';input.step='any';return input})
+ const layerGroup=owner.createElement('fieldset'),layerTitle=owner.createElement('legend');layerTitle.textContent='文字层级';layerGroup.append(layerTitle);body.append(layerGroup)
+ const layerKind=field('文字层级',owner.createElement('select'),layerGroup) as HTMLSelectElement
+ for(const[value,label]of [['','保持当前层级'],['aboveText','置于文字上方'],['belowText','置于文字下方']])layerKind.append(new Option(label,value))
+ const layerInfo=owner.createElement('p');layerInfo.setAttribute('aria-label','已有图像层级状态');layerGroup.append(layerInfo)
  // 固定源 Picture ▸ 替换图片（replaceExisting）：选择新图像替换像素
  const replaceGroup=owner.createElement('fieldset'),replaceTitle=owner.createElement('legend');replaceTitle.textContent='替换图像';replaceGroup.append(replaceTitle)
  const replaceRow=owner.createElement('div');replaceRow.className='pdf-existing-image-replace'
@@ -104,21 +117,31 @@ export function bindPdfExistingImagePanel(options:{root:HTMLElement;draft:Native
  const alert=owner.createElement('p');alert.setAttribute('role','alert');alert.setAttribute('aria-label','已有图像校验提示');alert.tabIndex=0;body.append(alert)
  const confirm=owner.createElement('button');confirm.type='button';confirm.textContent='应用';confirm.dataset.pdfExistingImageConfirm=''
  const dismiss=owner.createElement('button');dismiss.type='button';dismiss.textContent='取消'
- const actions=owner.createElement('div');actions.className='pdf-layout-actions';actions.append(dismiss,confirm)
+ const actions=owner.createElement('div');actions.className='pdf-layout-actions';const remove=owner.createElement('button');remove.type='button';remove.textContent='删除选中图像';remove.dataset.pdfExistingImageRemove='';actions.append(dismiss,remove,confirm)
  const footer=owner.createElement('footer');footer.append(actions);dialog.append(header,body,footer);options.root.append(dialog)
  let disposed=false,snapshot='',imageSnapshot='',choices:PdfExistingImage[]=[],replacement:string|undefined
  let fileGeneration=0,loading=false
  let visualDialog:{dispose:()=>void}|undefined
  let opener:HTMLElement|null=null,releaseFocus:(()=>void)|undefined
  function setReplacement(value?:{png:string;width:number;height:number;name:string}){replacement=value?.png;replaceClear.hidden=!value;replaceInfo.textContent=value?`将替换为 ${value.name}（${value.width}×${value.height}）`:'不替换像素';syncBake()}
- function syncReplace(){const image=choices[Number(select.value)];const reason=image&&image.replaceable!==true?image.replaceReason??'此图像暂不支持替换':null;replacePick.disabled=loading||!!reason||!!bakeKind.value;replacePick.title=bakeKind.value?'像素编辑与替换不能同批':reason??'选择 PNG 或 JPEG 替换此图像的像素';if(reason){if(replacement)setReplacement();replaceInfo.textContent=reason}else if(!replacement)replaceInfo.textContent='不替换像素';if(loading)replaceInfo.textContent='正在转换图像，请稍候…';confirm.disabled=loading;dialog.setAttribute('aria-busy',String(loading));syncBake()}
+ function syncReplace(){
+  const image=choices[Number(select.value)],reason=image&&image.replaceable!==true?image.replaceReason??'此图像暂不支持替换':null
+  if(reason&&replacement)setReplacement()
+  syncBake()
+  replacePick.disabled=loading||!!reason||!!bakeKind.value||!!layerKind.value;replacePick.title=bakeKind.value?'像素编辑与替换不能同批':reason??'选择 PNG 或 JPEG 替换此图像的像素'
+  if(reason)replaceInfo.textContent=reason;else if(!replacement)replaceInfo.textContent='不替换像素';if(loading)replaceInfo.textContent='正在转换图像，请稍候…'
+  confirm.disabled=loading;remove.disabled=loading||image?.removable!==true||replacement!==undefined||!!bakeKind.value||!!layerKind.value;remove.title=image?.removalReason??'单独删除这处页面图片，其他引用不变'
+  layerKind.disabled=loading||image?.layerable!==true||replacement!==undefined||!!bakeKind.value;layerInfo.textContent=image?.layerable?'当前位于文字'+(image.aboveText?'上方':'下方')+'；切换须单独应用，并核对实际 PDF 预览':image?.layerReason??'此图像暂不能切换文字层级'
+  for(const option of layerKind.options)option.disabled=!!option.value&&image?.aboveText===(option.value==='aboveText')
+  dialog.setAttribute('aria-busy',String(loading))
+ }
  /** 像素编辑与移动/替换互斥：选中时锁定坐标并隐藏替换。 */
  function syncBake(){const image=choices[Number(select.value)],reason=image&&image.bakeable!==true?image.bakeReason??'此图像暂不支持裁剪、翻转、旋转与透明度':null
   if(reason&&bakeKind.value)bakeKind.value=''
-  for(const button of visualButtons)button.disabled=loading||!!reason||replacement!==undefined||!options.readPixels||!!bakeKind.value
-  bakeKind.disabled=loading||!!reason||replacement!==undefined;bakeKind.title=replacement!==undefined?'替换与像素编辑不能同批':reason??''
+  for(const button of visualButtons)button.disabled=loading||!!reason||replacement!==undefined||!options.readPixels||!!bakeKind.value||!!layerKind.value
+  bakeKind.disabled=loading||!!reason||replacement!==undefined||!!layerKind.value;bakeKind.title=replacement!==undefined?'替换与像素编辑不能同批':reason??''
   cropRow.hidden=bakeKind.value!=='crop';opacityLabel.hidden=bakeKind.value!=='opacity';cutoutLabel.hidden=bakeKind.value!=='cutout'
-  for(const input of inputs)input.disabled=!!bakeKind.value
+  for(const input of inputs)input.disabled=!!bakeKind.value||!!layerKind.value
   if(bakeKind.value)fill()
   bakeInfo.textContent=reason?reason:bakeKind.value==='cutout'?'去除背景：与图像边缘相连、颜色接近边缘的区域变为透明；容差越大移除越多。保持原位置与层级，保存前请核对实际 PDF 预览。':bakeKind.value?'像素编辑保持原位置与层级（裁剪会按保留比例缩小范围），不能同时移动；保存前请核对实际 PDF 预览。':''}
  function currentBake():PdfImageBake|undefined{
@@ -138,7 +161,7 @@ export function bindPdfExistingImagePanel(options:{root:HTMLElement;draft:Native
  async function openVisual(kind:'crop'|'cutout'){
   if(disposed||!dialog.open||loading||!options.readPixels)return
   const image=choices[Number(select.value)],blocked=reason()
-  if(blocked||!image?.bakeable||replacement!==undefined||bakeKind.value){showError(blocked??'当前图像不能进行可视像素编辑');return}
+  if(blocked||!image?.bakeable||replacement!==undefined||bakeKind.value||layerKind.value){showError(blocked??'当前图像不能进行可视像素编辑');return}
   const generation=++fileGeneration,selected=select.value
   const active=()=>!disposed&&dialog.open&&fileGeneration===generation&&select.value===selected
   const target={sourceSha256:options.draft.identity.sourceSha256,pageId:image.pageId,imageId:image.imageId,expectedImageSha256:image.expectedImageSha256}
@@ -161,13 +184,14 @@ export function bindPdfExistingImagePanel(options:{root:HTMLElement;draft:Native
   }catch(error){if(!active())return;loading=false;syncReplace();showError(error)}
  }
  function fill(){const image=choices[Number(select.value)];if(!image)return;const [x1,y1,x2,y2]=image.rect;[x1,y1,x2-x1,y2-y1].forEach((value,i)=>inputs[i]!.value=String(value))}
- select.addEventListener('change',()=>{invalidateLoad();setReplacement();fill();syncReplace();alert.textContent=''});dismiss.addEventListener('click',cancel);bakeKind.addEventListener('change',()=>{alert.textContent='';syncReplace()})
+ select.addEventListener('change',()=>{invalidateLoad();layerKind.value='';setReplacement();fill();syncReplace();alert.textContent=''});dismiss.addEventListener('click',cancel);bakeKind.addEventListener('change',()=>{alert.textContent='';syncReplace()})
+ layerKind.addEventListener('change',()=>{alert.textContent='';syncReplace()})
  replacePick.addEventListener('click',()=>{replaceFile.value='';replaceFile.click()})
  replaceClear.addEventListener('click',()=>{invalidateLoad();setReplacement();syncReplace()})
  replaceFile.addEventListener('change',()=>{
   const file=replaceFile.files?.[0];if(!file||disposed||!dialog.open)return
   const image=choices[Number(select.value)],blocked=reason()
-  if(blocked||image?.replaceable!==true||bakeKind.value){showError(blocked??image?.replaceReason??'当前图像不可替换');return}
+  if(blocked||image?.replaceable!==true||bakeKind.value||layerKind.value){showError(blocked??image?.replaceReason??'当前图像不可替换');return}
   const generation=++fileGeneration,selected=select.value
   const active=()=>!disposed&&dialog.open&&fileGeneration===generation&&select.value===selected
   loading=true;alert.textContent='';syncReplace()
@@ -177,12 +201,25 @@ export function bindPdfExistingImagePanel(options:{root:HTMLElement;draft:Native
    loading=false;setReplacement({...result,name:file.name});syncReplace();alert.textContent=''
   }).catch(error=>{if(!active())return;loading=false;syncReplace();showError(error)})
  })
+ remove.addEventListener('click',async()=>{
+  if(disposed||!dialog.open)return
+  let staged=false
+  try{const blocked=reason();if(blocked)throw Error(blocked);if(loading||replacement!==undefined||bakeKind.value||layerKind.value)throw Error('删除不能同时替换、编辑像素或切换层级');const image=choices[Number(select.value)];if(!image)throw Error('请选择已有图像')
+   const values=inputs.map(input=>input.value.trim()===''?NaN:Number(input.value)),expected=[image.rect[0],image.rect[1],image.rect[2]-image.rect[0],image.rect[3]-image.rect[1]]
+   if(values.some((value,i)=>!Number.isFinite(value)||Math.abs(value-expected[i]!)>1e-7))throw Error('删除不能同时移动或缩放，请先恢复原图像坐标')
+   const operation=existingImageRemoval(options.draft.identity.sourceSha256,image);validatePdfExistingImage(options.pages(),[operation],options.images());options.draft.setOperations([operation]);staged=true;cancel();await options.refresh();options.status('已暂存已有图像删除，请核对实际 PDF 预览后保存；可撤销恢复')
+  }catch(error){if(staged)options.status('图像删除已暂存，实际预览刷新失败：'+String(error)+'；草稿已保留');else showError(error)}
+ })
  confirm.addEventListener('click',async()=>{
   if(disposed||!dialog.open)return
   let staged=false
-  try{if(loading)throw Error('替换图像正在转换，请稍候');const blocked=reason();if(blocked)throw Error(blocked);const image=choices[Number(select.value)];if(!image)throw Error('请选择已有图像');const bake=currentBake();if(bake){const operation=existingImageBake(options.draft.identity.sourceSha256,image,bake);validatePdfExistingImage(options.pages(),[operation],options.images());options.draft.setOperations([operation]);staged=true;cancel();await options.refresh();options.status('已暂存已有图像'+(bake.kind==='crop'?'裁剪':bake.kind==='flip'?(bake.axis==='h'?'水平翻转':'垂直翻转'):bake.kind==='rotate'?'旋转':bake.kind==='cutout'?'去除背景':'透明度')+'，请核对实际 PDF 预览后保存');return}
+  try{if(loading)throw Error('替换图像正在转换，请稍候');const blocked=reason();if(blocked)throw Error(blocked);const image=choices[Number(select.value)];if(!image)throw Error('请选择已有图像');if(layerKind.value){
+   if(replacement!==undefined||bakeKind.value)throw Error('层级不能同时替换或编辑像素');const values=inputs.map(input=>input.value.trim()===''?NaN:Number(input.value)),original=[image.rect[0],image.rect[1],image.rect[2]-image.rect[0],image.rect[3]-image.rect[1]]
+   if(values.some((value,i)=>!Number.isFinite(value)||Math.abs(value-original[i]!)>1e-7))throw Error('层级切换不能同时移动或缩放，请先恢复原图像坐标')
+   const operation=existingImageLayer(options.draft.identity.sourceSha256,image,layerKind.value as 'aboveText'|'belowText');validatePdfExistingImage(options.pages(),[operation],options.images());options.draft.setOperations([operation]);staged=true;cancel();await options.refresh();options.status('已暂存图像文字层级切换，请核对实际 PDF 预览后保存');return
+  }const bake=currentBake();if(bake){const operation=existingImageBake(options.draft.identity.sourceSha256,image,bake);validatePdfExistingImage(options.pages(),[operation],options.images());options.draft.setOperations([operation]);staged=true;cancel();await options.refresh();options.status('已暂存已有图像'+(bake.kind==='crop'?'裁剪':bake.kind==='flip'?(bake.axis==='h'?'水平翻转':'垂直翻转'):bake.kind==='rotate'?'旋转':bake.kind==='cutout'?'去除背景':'透明度')+'，请核对实际 PDF 预览后保存');return}
   const [x,y,width,height]=inputs.map(input=>input.value.trim()===''?NaN:Number(input.value));const replaced=replacement!==undefined,operation=existingImageTransform(options.draft.identity.sourceSha256,image,{x:x!,y:y!,width:width!,height:height!},replacement);validatePdfExistingImage(options.pages(),[operation],options.images());options.draft.setOperations([operation]);staged=true;cancel();await options.refresh();options.status(replaced?'已暂存已有图像替换，请核对实际 PDF 预览后保存':'已暂存已有图像移动或尺寸调整，请核对实际 PDF 预览后保存')}
   catch(error){if(staged)options.status('图像编辑已暂存，但预览刷新失败：'+(error instanceof Error?error.message:String(error))+'；请重试预览后核对');else showError(error)}
  })
- return {open(){if(disposed||dialog.open)return;invalidateLoad();const blocked=options.unavailable();if(blocked){options.status(blocked);return}if(options.draft.operations.length){options.status(PDF_EXISTING_IMAGE_ALONE_REASON);return}choices=options.images().filter(image=>image.editable);if(!choices.length){options.status('来源没有可编辑的已有图像');return}snapshot=JSON.stringify(options.draft.operations);imageSnapshot=JSON.stringify(options.images());select.replaceChildren();choices.forEach((image,i)=>{const option=owner.createElement('option');option.value=String(i);option.textContent='第 '+(image.pageIndex+1)+' 页 · 图像 '+(i+1);select.append(option)});select.value='0';bakeKind.value='';for(const input of cropInputs)input.value='0';opacityInput.value='50';fill();setReplacement();syncReplace();alert.textContent='';opener=owner.activeElement instanceof HTMLElement?owner.activeElement:null;releaseFocus=installFocusTrap(dialog);dialog.showModal();select.focus()},cancel,incompleteReason(){return dialog.open?'请先完成或取消已有图像编辑':null},refresh(){if(dialog.open&&reason())cancel()},dispose(){if(disposed)return;disposed=true;cancel();dialog.remove()}}
+ return {open(){if(disposed||dialog.open)return;invalidateLoad();const blocked=options.unavailable();if(blocked){options.status(blocked);return}if(options.draft.operations.length){options.status(PDF_EXISTING_IMAGE_ALONE_REASON);return}choices=options.images().filter(image=>image.editable);if(!choices.length){options.status('来源没有可编辑的已有图像');return}snapshot=JSON.stringify(options.draft.operations);imageSnapshot=JSON.stringify(options.images());select.replaceChildren();choices.forEach((image,i)=>{const option=owner.createElement('option');option.value=String(i);option.textContent='第 '+(image.pageIndex+1)+' 页 · 图像 '+(i+1);select.append(option)});select.value='0';bakeKind.value='';layerKind.value='';for(const input of cropInputs)input.value='0';opacityInput.value='50';fill();setReplacement();syncReplace();alert.textContent='';opener=owner.activeElement instanceof HTMLElement?owner.activeElement:null;releaseFocus=installFocusTrap(dialog);dialog.showModal();select.focus()},cancel,incompleteReason(){return dialog.open?'请先完成或取消已有图像编辑':null},refresh(){if(dialog.open&&reason())cancel()},dispose(){if(disposed)return;disposed=true;cancel();dialog.remove()}}
 }

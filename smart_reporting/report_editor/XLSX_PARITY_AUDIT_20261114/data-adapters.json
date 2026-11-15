@@ -1,0 +1,413 @@
+{
+  "auditKind": "bounded semantic source adapter mapping",
+  "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "localHead": "1e4a0a34 plus existing working tree",
+  "inputRegistry": "smart_reporting/report_editor/XLSX_PARITY_AUDIT_20261114/runtime-adapters.json",
+  "verificationPolicy": "No tests/builds/product edits. Missing means identified source adapter logic absent from inspected local implementation; runtime-specific symptom remains unverified unless an explicit local refusal/model omission establishes it. done_bounded refers only stated counterpart. Eager-model partial rows must not be counted as blanket ordinary-feature failures.",
+  "entries": [
+    {
+      "name": "installOtherFormulaAnchor",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/other-formula-anchor.ts",
+      "sourceSymbol": "installOtherFormulaAnchor",
+      "sourceAppLine": 2301,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "After CF/DV other-formula registration, anchor first dependency tree at range top-left instead of(-1,-1); virtual trees inherit correct ROW()/COLUMN()/dirty-range position.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:UniverSheetsConditionalFormattingPreset and validation/formula runtime"
+      ],
+      "staticEvidence": "No FormulaDependencyGenerator._registerOtherFormulas wrapper or anchorOtherFormulaTrees equivalent found in native workbook modules; source other-formula-anchor.ts wraps prototype registration.",
+      "remainingBehavior": "Migrate equivalent dependency tree anchoring for relative CF/DV formulas; inspect actual ROW()/COLUMN() and recalc invalidation at top-left.",
+      "verification": "missing source repair implementation established statically; exact current engine runtime symptom unverified",
+      "qualification": "Do not equate missing installer name alone with every CF/DV formula failing; core CF/DV product families already work in bounded tests."
+    },
+    {
+      "name": "installFormulaStreamHold",
+      "status": "partial",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/formula-stream-hold.ts",
+      "sourceSymbol": "installFormulaStreamHold",
+      "sourceAppLine": 2341,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Coalesce streamed set-range-values bursts: hold normal formula starts1000ms, release merged dirty state or explicitly requested full recalc; forced recalc bypasses hold.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-calculation.ts:installCalculation",
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:loadWorkbookData/calculation.calculateNow"
+      ],
+      "staticEvidence": "Local controls manual recalc and performs eager workbook projection/load, but no noteFormulaStreamChunk/requestFullRecalcAfterStream or merged streaming hold.",
+      "remainingBehavior": "Source streamed/viewport lifecycle is absent locally (storage S01); when that lifecycle is introduced, coalesce chunk recalculation and preserve full-recalc requests. Current eager path should not be declared broken solely for lacking this installer.",
+      "verification": "static source/local comparison; runtime not run",
+      "qualification": "Scale/lifecycle difference, not a new failure claim for bounded eager loads."
+    },
+    {
+      "name": "installSortFormulaRefs",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/sort-formula-refs.ts",
+      "sourceSymbol": "installSortFormulaRefs",
+      "sourceAppLine": 2374,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "After reorder, shift moved formula relative refs by row displacement and materialize touched shared groups; undo restores original f/si.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:sort command branches",
+        "smart_reporting/report_editor/frontend/src/workbook-vendor/grid/shared-formula-journal.ts"
+      ],
+      "staticEvidence": "Local official sort command has no ReorderRangeCommand interceptor counterpart; shared-formula journal records runtime groups for save but does not install source sort mutation patches.",
+      "remainingBehavior": "D2 =B2*C2 sorted to row21 must become =B21*C21; preserve shared group semantics and one undo.",
+      "verification": "source/local static omission; runtime repro not run"
+    },
+    {
+      "name": "installFormulaViewInterceptor",
+      "status": "done_bounded",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/formula-view.ts",
+      "sourceSymbol": "installFormulaViewInterceptor",
+      "sourceAppLine": 2378,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Per-sheet Show Formulas: high-priority display raw f (or indexed formula text) and reset render context.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-calculation.ts:installCalculation",
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:toggle-show-formulas branch"
+      ],
+      "staticEvidence": "Local CELL_CONTENT priority9999 replaces v with raw f/string, syncFormulaView resets skeleton via context, showFormulaSheets is persisted through pageSetup operations.",
+      "remainingBehavior": "Bounded ordinary projected f implemented; source indexed/shared cached-only formula fallback not covered, see installFormulaTextInterceptor.",
+      "verification": "current static counterpart; historical formula-view/GUI records not rerun"
+    },
+    {
+      "name": "installFormulaTextInterceptor",
+      "status": "partial",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/formula-view.ts",
+      "sourceSymbol": "installFormulaTextInterceptor",
+      "sourceAppLine": 2381,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Inject harvested/indexed formula text for cached-only streamed cells into view, BEFORE_CELL_EDIT and formula-bar preview; suppress stale covers and active typing.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts:univerCellOf",
+        "smart_reporting/report_editor/frontend/src/workbook-function-runtime.ts:createWorkbookFunctionHost",
+        "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/workbook-read.ts:parseWorksheetCells"
+      ],
+      "staticEvidence": "Local explicit formulas carry f and default engine/editor shows them; no harvested formulaText index, shared group index textAt or indexed BEFORE_CELL_EDIT/bar cover bridge.",
+      "remainingBehavior": "Existing explicit-f formula editing is implemented; cached-only/shared follower formula text and source lazy closure-gave-up recovery remains absent.",
+      "verification": "static counterpart/subset; cached-only editor runtime cases pending"
+    },
+    {
+      "name": "installFormulaBarAutosize",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/formula-bar-autosize.ts",
+      "sourceSymbol": "installFormulaBarAutosize",
+      "sourceAppLine": 2383,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Measure actual formula-bar document skeleton content, grow collapsed28px bar with wrapped formula up to124px; honor expanded80px mode.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-formula-bar-view.ts:createFormulaBarView",
+        "smart_reporting/report_editor/frontend/src/workbook-formula-bar-view.css"
+      ],
+      "staticEvidence": "Local module only toggles hidden CSS class; no DocSkeletonManagerService measurement/inline formula bar dynamic height counterpart found.",
+      "remainingBehavior": "Implement equivalent multiline formula-bar height measurement and bounded grid reflow.",
+      "verification": "source algorithm and local module inspected; current clipping runtime unverified",
+      "qualification": "Existing show/hide bar is delivered and is distinct from autosizing."
+    },
+    {
+      "name": "installFxButtonHook",
+      "status": "done_bounded",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/function-arguments-runtime.ts",
+      "sourceSymbol": "installFxButtonHook",
+      "sourceAppLine": 2384,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Route native formula bar fx button event to Insert Function dialog.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-insert-function.tsx:createWorkbookInsertFunction.clickFx/refresh"
+      ],
+      "staticEvidence": "Local captures actual formula-bar fx span click, prevents native docs-unit edit bug, opens flow; also subscribes IFormulaEditorManagerService.fxBtnClick$.",
+      "remainingBehavior": "No source callback gap identified for bounded native fx opening; full browser current-tree run not performed.",
+      "verification": "static real event + service wiring; historical function GUI records"
+    },
+    {
+      "name": "installWorkbookPickRelay",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/function-arguments-runtime.ts",
+      "sourceSymbol": "installWorkbookPickRelay",
+      "sourceAppLine": 2387,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "External workbook tab receives armed pick ID, sends its selected sheet/range via desktopApi, clears on cancel/dispose.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-function-runtime.ts:createWorkbookFunctionHost.observeRangePick/listExternalPickTargets/pickExternalRange"
+      ],
+      "staticEvidence": "Local handles in-workbook selection picks; external picker explicitly throws unavailable-host error. No arm/cancel/cross-tab relay equivalent.",
+      "remainingBehavior": "Authorized cross-workbook selection host/relay feeding formatted external reference; separate from External Links Update/Break panel.",
+      "verification": "explicit current refusal + source relay implementation"
+    },
+    {
+      "name": "installCachedValueFallbackInterceptor",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/formula-cached-fallback.ts",
+      "sourceSymbol": "installCachedValueFallbackInterceptor",
+      "sourceAppLine": 2390,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "When imported formula cannot safely recalc, retain true cached source value instead of swallowed unsupported errors; coordinate shifts invalidate unsafe fallback.",
+      "localCounterparts": [
+        "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/workbook-read.ts:parseWorksheetCells",
+        "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts:univerCellOf",
+        "smart_reporting/report_editor/frontend/src/workbook-external-links-host.ts:installExternalFormulaCaches"
+      ],
+      "staticEvidence": "General explicit formula reader sets value:null then continues, drops cached v; projection emits f only; no general fallback interceptor. External links only have specialized cached projection.",
+      "remainingBehavior": "Carry typed general source caches, determine supported/resolvable formulas and safely fall back/invalidate through edits.",
+      "verification": "direct model/reader static proof; runtime fixture pending"
+    },
+    {
+      "name": "installFormulaNewlineDisplay",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/formula-newline-display.ts",
+      "sourceSymbol": "installFormulaNewlineDisplay",
+      "sourceAppLine": 2392,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Wrapped formula string result containing CR/LF gets display-only rich paragraph document; no-wrap stays joined; f and si followers supported.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-vendor/core/univer-data.ts:univerCellOf",
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:installed CELL_CONTENT/render adapters"
+      ],
+      "staticEvidence": "No multilineFormulaDisplayCell/isFormulaDriven or equivalent calculated-result-to-rich-document interceptor found. Plain source text rich document conversion, if present, would not handle each later formula recalc.",
+      "remainingBehavior": "Preserve visual line breaks for wrapped calculated text without modifying stored formula/result; cover f and si.",
+      "verification": "absent source repair logic established; precise current canvas symptom unverified"
+    },
+    {
+      "name": "installNumberFormatFix",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/numfmt-fix.ts",
+      "sourceSymbol": "installNumberFormatFix",
+      "sourceAppLine": 2399,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Display fixes include empty sections, string text-section/numeric-looking-text preservation, NBSP _padding, *fill repeats, width-budget General/scientific display, decimal rounding repair, overflow hashes/date epoch and host/Japanese locale handling.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-numfmt-dialog.ts:numfmtPattern/numfmtPreview",
+        "smart_reporting/report_editor/frontend/src/workbook-vendor/core/style-map.ts",
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:number-format dispatch"
+      ],
+      "staticEvidence": "Local writes/roundtrips number format pattern and previews with numfmt; no installNumberFormatFix/fixFormattedValue/formatGeneral/expandAsteriskFill grid interceptor counterpart found. Copied calendar-date predicate in pivot vendor only classifies fields.",
+      "remainingBehavior": "Migrate concrete grid display transformations individually; do not treat format-pattern persistence/dialog presence as proving source display equivalence.",
+      "verification": "source helper/export inspection + local search; per-format current-engine pixel/value symptoms unverified",
+      "qualification": "This is missing source display adapter logic, not a claim all native number formatting is missing."
+    },
+    {
+      "name": "installErrorValueAlignment",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/error-value-align.ts",
+      "sourceSymbol": "installErrorValueAlignment",
+      "sourceAppLine": 2403,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Center formula error values under General alignment using style-only interceptor; preserve explicit alignment, rich cells, rotations and numeric hashes.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-vendor/core/style-map.ts:toUniverStyle",
+        "smart_reporting/report_editor/frontend/src/workbook-error-checking.ts:createWorkbookErrorChecking"
+      ],
+      "staticEvidence": "Local style projection honors authored alignment; error checking locates errors but has no centeredErrorStyle/default-error alignment interceptor.",
+      "remainingBehavior": "Source style-only General error centering without persisting false alignment edits.",
+      "verification": "source condition/adapter absent; current canvas symptom unverified"
+    },
+    {
+      "name": "installCellFilenameFunction",
+      "status": "done_bounded",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/cell-function.ts",
+      "sourceSymbol": "installCellFilenameFunction",
+      "sourceAppLine": 2406,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "CELL filename answers dir/[Book]Sheet with optional reference, delegates other CELL info types, empty for never-saved source.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-function-cell.ts:CellWithFilename/installCellFilenameFunction",
+        "smart_reporting/report_editor/frontend/src/workbook-function-overrides.ts:installWorkbookFunctionOverrides",
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:functionOverrides installation"
+      ],
+      "staticEvidence": "Concrete local override delegates builtin, receives source path provider, honors reference sheet, disposes/rebinds executor with ownership checks.",
+      "remainingBehavior": "No bounded source adapter omission found; actual desktop filesystem path is web document identity/path substitute.",
+      "verification": "static + NATIVE_XLSX_CELL_FILENAME_ACCEPTANCE.md historical record"
+    },
+    {
+      "name": "installRateFallback",
+      "status": "done_bounded",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/rate-function.ts",
+      "sourceSymbol": "installRateFallback",
+      "sourceAppLine": 2413,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "If builtin RATE returns NUM, scan bounded root domain and bisect fallback; preserve builtin normal/errors/array semantics.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-function-rate.ts:installRateFallback",
+        "smart_reporting/report_editor/frontend/src/workbook-function-overrides.ts:installWorkbookFunctionOverrides"
+      ],
+      "staticEvidence": "Source numerical override and lifecycle adaptation installed after load; owned executor restored on disposal.",
+      "remainingBehavior": "Source numeric domain remains bounded; universal pathological finance equivalence not claimed.",
+      "verification": "static + NATIVE_XLSX_RATE_ACCEPTANCE.md historical browser/save evidence"
+    },
+    {
+      "name": "installIfsEmptySetFix",
+      "status": "done_bounded",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/ifs-empty-set.ts",
+      "sourceSymbol": "installIfsEmptySetFix",
+      "sourceAppLine": 2415,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "MINIFS/MAXIFS empty match artifact becomes numeric0 including per-slot array criteria expansion.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-function-ifs.ts:fixIfsEmptySetResult/installIfsEmptySetFix",
+        "smart_reporting/report_editor/frontend/src/workbook-function-overrides.ts"
+      ],
+      "staticEvidence": "Local source override maps scalar1x1 empty-string artifact and nested array slots to NumberValueObject0, registers/rebinds/restores with ownership.",
+      "remainingBehavior": "No bounded source adapter omission identified.",
+      "verification": "static + function acceptance records; no rerun"
+    },
+    {
+      "name": "installCriteriaCompareCacheFix",
+      "status": "done_bounded",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/criteria-compare-cache.ts",
+      "sourceSymbol": "installCriteriaCompareCacheFix",
+      "sourceAppLine": 2418,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Prevent cached equality fast path from dropping numeric/Boolean criteria matches against previously indexed string keys; bypass mixed-type cache only, preserving same-type cache fast path.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-function-criteria.ts:installCriteriaCompareCacheFix",
+        "smart_reporting/report_editor/frontend/src/workbook-function-overrides.ts"
+      ],
+      "staticEvidence": "Concrete copied source cache wrapper with installer/disposal is wired.",
+      "remainingBehavior": "No bounded source adapter omission identified; arbitrary criteria function result matrix remains unverified.",
+      "verification": "static + NATIVE_XLSX_CRITERIA_CACHE_ACCEPTANCE.md"
+    },
+    {
+      "name": "installFormulaLexerFix",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/formula-lexer-fix.ts",
+      "sourceSymbol": "installFormulaLexerFix",
+      "sourceAppLine": 2421,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Repair escaped doubled-quote lexer slot→character indices/tokens, preserve literal CR/LF using guards, protect commit/autofill/F4 reconstruction.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-defined-name-scope.ts:installDefinedNameScopes",
+        "smart_reporting/report_editor/frontend/src/workbook-table-references.ts",
+        "smart_reporting/report_editor/frontend/src/workbook-vendor/grid/shared-formula-journal.ts"
+      ],
+      "staticEvidence": "Local name scope overrides Lexer.treeBuilder for scoped names but does not wrap LexerTreeBuilder.sequenceNodesBuilder/_nodeMaker; table ref parsers explicitly flatten CR/LF; no source guard/index repair equivalent.",
+      "remainingBehavior": "Correct escaped-string formula sequence indices and literal line breaks before cell commit/ref-offset/F4/autofill consumers; test these separate cases when authorized.",
+      "verification": "source code/consumer inspection; current runtime corruption case not executed",
+      "qualification": "Name-scope lexer wrapper is a different behavior and must not be counted as this repair."
+    },
+    {
+      "name": "installFormulaNullResultFix",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/formula-null-result.ts",
+      "sourceSymbol": "installFormulaNullResultFix",
+      "sourceAppLine": 2490,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Root formula NullValueObject becomes0, including1x1 reference-to-null, while intermediate concatenation emptiness stays unchanged.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-calculation.ts:installCalculation",
+        "smart_reporting/report_editor/frontend/src/workbook-function-overrides.ts"
+      ],
+      "staticEvidence": "No IFormulaRuntimeService.setRuntimeData wrapper or coerceNullResult equivalent found. MINIFS/MAXIFS empty-set fix is a different limited executor patch.",
+      "remainingBehavior": "Root-only null coercion for =IFERROR(H19,\"NA\"), =IF(...empty...), =CHOOSE etc while preserving =&\"\" intermediate semantics.",
+      "verification": "missing source root adapter logic; exact current builtin formula results unverified"
+    },
+    {
+      "name": "installCopyMaterialize",
+      "status": "partial",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/copy-materialize.ts",
+      "sourceSymbol": "installCopyMaterialize",
+      "sourceAppLine": 2493,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Ensure lazy selection resident before copy; beyond full-load budget serialize direct sidecar displayed TSV instead of blanks.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-clipboard.ts:CLIPBOARD_COMMANDS/clipboardCommandParams",
+        "smart_reporting/report_editor/frontend/src/workbook-vendor/grid/sync.ts",
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:eager readWorkbook/load"
+      ],
+      "staticEvidence": "Local bounded eager model has loaded cells available to official copy; no ensureLazyRangeLoaded/readCopySourceDirect or direct sidecar TSV fallback.",
+      "remainingBehavior": "Large never-resident selection direct-copy source path absent with lazy storage backend; ordinary copied loaded range is not missing merely because materializer installer absent.",
+      "verification": "static lifecycle/clipboard path; giant-range clipboard acceptance pending"
+    },
+    {
+      "name": "installLazyFindBridge",
+      "status": "partial",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/lazy-find.ts",
+      "sourceSymbol": "installLazyFindBridge",
+      "sourceAppLine": 2538,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Extend stock find provider with out-of-window file-index matches and journal overlay; focus match loads/reveals missing sheet range; paged fallback if sidecar find unavailable.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:UniverSheetsFindReplacePreset",
+        "smart_reporting/report_editor/frontend/src/workbook-find-replace.ts:validateWorkbookReplacement",
+        "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/workbook-read.ts:readWorkbook"
+      ],
+      "staticEvidence": "Local stock provider searches complete eager projection within supported package/memory bounds; no lazy/index backend provider wrapper, source journal overlay or paged disk search.",
+      "remainingBehavior": "Full source range-index scalability/navigation beyond local eager bounds; do not call ordinary full-loaded sheet find missing.",
+      "verification": "static source/local architecture comparison; behavior matrix pending"
+    },
+    {
+      "name": "installReplaceAutoSearch",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/replace-autosearch.ts",
+      "sourceSymbol": "installReplaceAutoSearch",
+      "sourceAppLine": 2541,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "In Replace tab commit changing query/options then start find after300ms (>stock200ms throttle), rather than requiring explicit Find click.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:UniverSheetsFindReplacePreset",
+        "smart_reporting/report_editor/frontend/src/workbook-find-replace.ts:validateWorkbookReplacement"
+      ],
+      "staticEvidence": "Local registers official preset and mutation preflight, no state$ replace-mode live-search subscription/debounce adapter. No custom source FindReplacePanel imported.",
+      "remainingBehavior": "Equivalent live Replace query/options auto-search preserving pending-query/IME/session behavior.",
+      "verification": "missing source live-search adapter logic; stock current-UI button disabled scenario not reproduced"
+    },
+    {
+      "name": "installLargeFilterValues",
+      "status": "partial",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/large-filter.ts",
+      "sourceSymbol": "installLargeFilterValues",
+      "sourceAppLine": 3486,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "For beyond-full-load streamed sheets read column projections from sidecar in screen coordinates; compute values and hidden rows over entire source with journal overlay.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-filters.ts:withWorkbookFilters/workbookFilterOperations",
+        "smart_reporting/report_editor/frontend/src/workbook-advanced-filter.ts:installAdvancedFilter",
+        "smart_reporting/report_editor/frontend/src/workbook-main.ts:UniverSheetsFilterPreset"
+      ],
+      "staticEvidence": "Local full eager grid feeds official filters and saves values/custom/dateGroup criteria + hidden rows; no ColumnProjection/largeFilterSheet/readSheetRangeMapped installer.",
+      "remainingBehavior": "Source scale-specific remote column projection and full-source hidden-row computation beyond local eager bounds. Ordinary loaded filter capability is delivered.",
+      "verification": "static projection/host comparison; no scale/filter benchmark"
+    },
+    {
+      "name": "installSupportedFunctionProbe",
+      "status": "missing",
+      "sourceRef": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+      "sourcePath": "apps/sheets/src/renderer/function-registry-probe.ts",
+      "sourceSymbol": "installSupportedFunctionProbe",
+      "sourceAppLine": 2396,
+      "inOriginalRegistry": true,
+      "sourceBehavior": "Attach live executor probe (SUM sentinel signals builtin batch ready) for imported cached-value decision; hasExecutor per canonical function including overrides.",
+      "localCounterparts": [
+        "smart_reporting/report_editor/frontend/src/workbook-function-catalog.ts:readLiveFunctionInfos",
+        "smart_reporting/report_editor/frontend/src/workbook-function-overrides.ts",
+        "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/workbook-read.ts:parseWorksheetCells"
+      ],
+      "staticEvidence": "Catalog reads descriptions, not executor registry supports/ready; no setSupportedFunctionProbe/runtime hasExecutor cache gate installer in native main. Source App.tsx calls at2396 although absent from input85 runtime registry.",
+      "remainingBehavior": "Canonical function support/ready probe integrated with general imported cache fallback; avoid treating description presence as executor support.",
+      "verification": "direct source installer + local distinction; no executor matrix run",
+      "rootRegistryCorrection": "Present in current verified85 imported registry; stale absent-registry note is superseded."
+    }
+  ],
+  "uncovered": "Source-scale performance and current dependency-specific symptom oracles were not executed; broader per-function executor/result matrix remains unverified. Grid/UI/keyboard/CF/DV/comment/clipboard rest delegated to core shard; CopyMaterialize here only covers source lazy backend materialization."
+}

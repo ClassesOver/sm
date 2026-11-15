@@ -158,3 +158,8 @@ it('同一文档连续阅读保留各轮问题、回答和引用，新对话清�
  expect(root.querySelector('.native-ai-transcript article')).toBeNull()
  binding.dispose()
 })
+it('review summary preset opens a read-only question without starting work until the user clicks read',async()=>{
+ const api={wordAIStart:vi.fn().mockResolvedValue({taskId:'summary',status:'completed',result}),wordAICancel:vi.fn()}
+ const {root,binding,draft}=fixture(api);binding.openPrompt('总结所有待处理修订，不接受或拒绝任何修订。')
+ expect(root.querySelector('textarea')!.value).toContain('修订');expect(api.wordAIStart).not.toHaveBeenCalled();root.querySelector<HTMLButtonElement>('[data-word-ai=start]')!.click();await vi.waitFor(()=>expect(api.wordAIStart).toHaveBeenCalled());expect(api.wordAIStart.mock.calls[0][0]).toMatchObject({action:'ask',selection:[],instruction:'总结所有待处理修订，不接受或拒绝任何修订。'});expect(draft.operations).toEqual([]);binding.dispose()
+})

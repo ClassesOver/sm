@@ -1,0 +1,62 @@
+{
+  "date": "2026-11-14",
+  "boundary": "Metadata identity correction only. These eight files exactly match baseline commit bytes. This does not claim fresh product behavior verification or rebind historical acceptance artifacts.",
+  "records": [
+    {
+      "path": "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/index.ts",
+      "previousManifestSha256": "8577ff27ba54379154b47c1abb5b40f9ec55ffdd2d4466d26542c7976e66c612",
+      "actualSha256": "bb7e8d18ff70b0ce33351d8b5eaee536390c60971ba454774b76e1aa8c4bad1e",
+      "baselineCommit": "1e4a0a344ffbd5b73f71c0a84bb67f766f19e8e9",
+      "exactBaselineBytes": true
+    },
+    {
+      "path": "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/notes.ts",
+      "previousManifestSha256": "13a61a02edeaae5707efb432fbefdd2a18ee8c1076ce3f44ceedb52ac176ad97",
+      "actualSha256": "3bea137e0a6e40b85f1ffae516284c5ead5b6aa20130b9a6e2dada1d43fac57b",
+      "baselineCommit": "1e4a0a344ffbd5b73f71c0a84bb67f766f19e8e9",
+      "exactBaselineBytes": true
+    },
+    {
+      "path": "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/note-read.ts",
+      "previousManifestSha256": "ee3eb11c7730255498f4416c92af86e59699ccc6a46bfcef6a18a5d8de313ef2",
+      "actualSha256": "18ebd0805006153a87ccba9be1ef7ecf41337cc3d56ff4d49b5481e82007a21b",
+      "baselineCommit": "1e4a0a344ffbd5b73f71c0a84bb67f766f19e8e9",
+      "exactBaselineBytes": true
+    },
+    {
+      "path": "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/style-read.ts",
+      "previousManifestSha256": "325f74f58e481287ee6ee9ea8c92cdcfbed5662e908f80cef58fbe26a15ffc92",
+      "actualSha256": "e86cc9dc6da0a06aca8d98c9b8abb8f98208b18582ccff92e0594500fbf6f13b",
+      "baselineCommit": "1e4a0a344ffbd5b73f71c0a84bb67f766f19e8e9",
+      "exactBaselineBytes": true
+    },
+    {
+      "path": "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/structural.ts",
+      "previousManifestSha256": "779d02b36d641d3f9422896215ef5b10597e31ef270cf112d24af8c81e28d3ff",
+      "actualSha256": "542daf58a2da9d1bc0ef0ffc69d00f6d019730fcb0887bb7fa0d1fdc7819419b",
+      "baselineCommit": "1e4a0a344ffbd5b73f71c0a84bb67f766f19e8e9",
+      "exactBaselineBytes": true
+    },
+    {
+      "path": "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/geometry.ts",
+      "previousManifestSha256": "eb6ef2e2edf89fea08eb76cd8ebfff9601f40ce9d9971d0621531dd76e93c451",
+      "actualSha256": "db2f93111bb30ce41493bde7d70225cac96a03073ba8035322ba0ed8e5b70403",
+      "baselineCommit": "1e4a0a344ffbd5b73f71c0a84bb67f766f19e8e9",
+      "exactBaselineBytes": true
+    },
+    {
+      "path": "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/sheet-removal-parts.ts",
+      "previousManifestSha256": "c8373173509827e0214c80c2e883903af9bc731266318b98943be1be917d8796",
+      "actualSha256": "e2e6ce96df53fff9291e1095f8b9d77562e1fbe400f0e44329988c3d6d0da331",
+      "baselineCommit": "1e4a0a344ffbd5b73f71c0a84bb67f766f19e8e9",
+      "exactBaselineBytes": true
+    },
+    {
+      "path": "smart_reporting/reporting/workbook_engine/packages/xlsx-engine/src/pivot-expand.ts",
+      "previousManifestSha256": "d9a8d6215e3359cf2e9d17cc25df7c8f86bc334ecfcd288c53f3d5b7d6b2ceb1",
+      "actualSha256": "d1dcde3027031e519d54ac3d04667c98cc185646e4e99d59d179a5663d820982",
+      "baselineCommit": "1e4a0a344ffbd5b73f71c0a84bb67f766f19e8e9",
+      "exactBaselineBytes": true
+    }
+  ]
+}

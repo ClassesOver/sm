@@ -10,6 +10,7 @@ import { decodeXmlText, escapeXmlAttribute, escapeXmlText } from './xml'
 import { SaxesParser } from 'saxes'
 import { applyDrawingLuminance, themeSlotIndex } from './style-color'
 import type { ChartEditLean } from './chart-edit'
+import { scatterLabelModes } from './scatter-label-mode'
 
 /** 只读解析按命名空间URI统一内部标记；不重写ZIP中的来源XML。 */
 function chartReadTokens(xml: string): string {
@@ -123,6 +124,8 @@ export interface ChartReadAxis {
 /** 对应现有编辑器的首个写入目标；无法用简化控件表示的状态不伪造默认值。 */
 export type ChartReadDesign = Pick<ChartEditLean, 'axisTitles' | 'dataLabels' | 'grouping' | 'gridlines'> & {
   readonly legend?: NonNullable<ChartEditLean['legend']> | 'top-right' | undefined
+  /** Removing plot labels would reveal preserved first-series value labels. */
+  readonly dataLabelsOffUnavailable?: boolean | undefined
 }
 
 export interface ChartReadSpec {
@@ -445,33 +448,9 @@ function dataLabelsOf(xml: string, palette?: readonly string[], pie = false): Ch
 }
 
 function scatterPlotDataLabelsOf(xml: string): ChartReadDataLabels | undefined {
-  const chartUri = 'http://schemas.openxmlformats.org/drawingml/2006/chart'
-  const parser = new SaxesParser({xmlns:true})
-  let depth = 0, labelsDepth = -1, blocks = 0
-  const flags = new Map<string,string>()
-  parser.on('doctype',()=>{throw new Error('DOCTYPE')})
-  parser.on('opentag',tag=>{
-    if (depth === 1 && tag.uri === chartUri && tag.local === 'dLbls') {
-      blocks++
-      labelsDepth = depth+1
-    } else if (depth === labelsDepth && tag.uri === chartUri && ['delete','showVal','showPercent'].includes(tag.local) && !flags.has(tag.local)) {
-      flags.set(tag.local,tag.attributes.val?.value ?? '')
-    }
-    depth++
-  })
-  parser.on('closetag',()=>{
-    depth--
-    if (depth < labelsDepth) labelsDepth = -1
-  })
-  try {
-    parser.write(`<c:scatterChart xmlns:c="${chartUri}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:foreign="urn:foreign">${xml}</c:scatterChart>`).close()
-  } catch {
-    return {unsupported:true}
-  }
-  if (!blocks) return undefined
-  if (blocks !== 1) return {unsupported:true}
-  const shown = (name:string) => ['1','true'].includes(flags.get(name) ?? '')
-  return {showValue:!shown('delete') && shown('showVal') && !shown('showPercent')}
+  const modes = scatterLabelModes(xml)
+  return modes.unsupported ? {unsupported:true}
+    : modes.mode === undefined ? undefined : {showValue:modes.mode === 'value'}
 }
 
 function designOf(xml: string, palette: readonly string[] | undefined, axes: ChartReadSpec['axes']): ChartReadDesign {
@@ -490,8 +469,8 @@ function designOf(xml: string, palette: readonly string[] | undefined, axes: Cha
   const body = plot?.[2], withoutSeries = body?.replace(/<c:ser\b[^>]*>[\s\S]*?<\/c:ser>/g, '')
   const pie = plot?.[1] === 'pieChart' || plot?.[1] === 'doughnutChart'
   const grouping = withoutSeries?.match(/<c:grouping\b[^>]*\bval="([^"]*)"/)?.[1] ?? 'standard'
-  const labels = withoutSeries === undefined ? undefined : scatter ? scatterPlotDataLabelsOf(withoutSeries) : dataLabelsOf(withoutSeries, palette, pie)
-  const customLabels = /<c:dLbls\b/.test(body ?? '') && (labels === undefined || labels.unsupported ||
+  const labels = withoutSeries === undefined ? undefined : scatter ? scatterPlotDataLabelsOf(body ?? '') : dataLabelsOf(withoutSeries, palette, pie)
+  const customLabels = scatter ? !!labels?.unsupported : /<c:dLbls\b/.test(body ?? '') && (labels === undefined || labels.unsupported ||
     /<c:dLbl\b/.test(body ?? '') || [...(body ?? '').matchAll(/<c:ser\b[^>]*>([\s\S]*?)<\/c:ser>/g)].some(series => /<c:dLbls\b/.test(series[1]!)))
   let dataLabels: ChartReadDesign['dataLabels']
   if (!customLabels && body !== undefined) {
@@ -506,6 +485,7 @@ function designOf(xml: string, palette: readonly string[] | undefined, axes: Cha
     axisTitles: { category: axisTitle(category, scatter ? axes?.category.title : undefined), value: axisTitle(value, scatter ? axes?.value.title : undefined) },
     legend: /<c:legend\b/.test(xml) ? legendOf(xml)?.position : 'none',
     ...(dataLabels !== undefined ? { dataLabels } : {}),
+    ...(scatter && body !== undefined && scatterLabelModes(body).firstSeriesMode === 'value' ? {dataLabelsOffUnavailable:true} : {}),
     ...(['barChart', 'lineChart', 'areaChart'].includes(plot?.[1] ?? '') && ['standard', 'clustered', 'stacked', 'percentStacked'].includes(grouping)
       ? { grouping: grouping === 'standard' ? 'clustered' as const : grouping as ChartReadDesign['grouping'] } : {}),
     ...(scatter ? axes?.value.majorGridlines === undefined ? {} : { gridlines: axes.value.majorGridlines }
@@ -740,14 +720,15 @@ export async function readCharts(
     if (series.length === 0) continue
     const axes = axesOf(chartXml, kind)
     const secondaryAxes = axesOf(chartXml, kind, true)
-    const plot = (
+    const plotBody = (
       pie ? chartXml.match(/<c:(?:pieChart|doughnutChart)\b[^>]*>([\s\S]*?)<\/c:(?:pieChart|doughnutChart)>/)?.[1]
         : kind === 'radar' ? chartXml.match(/<c:radarChart\b[^>]*>([\s\S]*?)<\/c:radarChart>/)?.[1]
           : kind === 'scatter' ? chartXml.match(/<c:scatterChart\b[^>]*>([\s\S]*?)<\/c:scatterChart>/)?.[1]
             : axes ? chartXml.match(/<c:(?:barChart|lineChart|areaChart)\b[^>]*>([\s\S]*?)<\/c:(?:barChart|lineChart|areaChart)>/)?.[1] : undefined
-    )?.replace(/<c:ser\b[^>]*>[\s\S]*?<\/c:ser>/g, '')
+    )
+    const plot = plotBody?.replace(/<c:ser\b[^>]*>[\s\S]*?<\/c:ser>/g, '')
     const dataLabels = plot === undefined ? undefined
-      : kind === 'scatter' ? scatterPlotDataLabelsOf(plot) : dataLabelsOf(plot, palette, pie)
+      : kind === 'scatter' ? scatterPlotDataLabelsOf(plotBody ?? '') : dataLabelsOf(plot, palette, pie)
     const scatterStyle = kind === 'scatter' ? chartXml.match(/<c:scatterStyle\b[^>]*\bval="([^"]*)"/)?.[1] : undefined
     const valueScaleUnavailable = !axes && (kind === 'bar' || kind === 'column') &&
       [...chartXml.matchAll(/<c:valAx\b[^>]*>([\s\S]*?)<\/c:valAx>/g)].some(axis => valueScaling(axis[1]!) !== undefined)

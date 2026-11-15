@@ -1,6 +1,6 @@
 /** GenOffice f8c17004fb730df11f0f743164ffd8b4281bb38c, Apache-2.0.
- * Native adaptation: provenance notice; search imports local unmodified find-text helpers.
- * LICENSE/NOTICE: reporting/pdf_engine. Algorithm is unchanged.
+ * Native adaptation: provenance notice, local find-text helpers and code-point word boundaries.
+ * LICENSE/NOTICE: reporting/pdf_engine.
  */
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { foldCase, isWordChar } from './genoffice-find-text'
@@ -57,8 +57,18 @@ const CJK_RE =
     runs glued into a longer word are still rejected. */
 function wordBoundaryOk(text: string, start: number, len: number): boolean {
   const wordChar = (ch: string | undefined): boolean => !!ch && !CJK_RE.test(ch) && isWordChar(ch)
-  const left = !wordChar(text[start - 1]) || !wordChar(text[start])
-  const right = !wordChar(text[start + len]) || !wordChar(text[start + len - 1])
+  const at = (offset: number): string | undefined => {
+    const point = text.codePointAt(offset)
+    return point === undefined ? undefined : String.fromCodePoint(point)
+  }
+  const before = (offset: number): string | undefined => {
+    const last = text.charCodeAt(offset - 1)
+    const previous = text.charCodeAt(offset - 2)
+    return at(last >= 0xdc00 && last <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff
+      ? offset - 2 : offset - 1)
+  }
+  const left = !wordChar(before(start)) || !wordChar(at(start))
+  const right = !wordChar(at(start + len)) || !wordChar(before(start + len))
   return left && right
 }
 

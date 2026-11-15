@@ -2,6 +2,8 @@
 
 日期：2026-11-13。固定源为 `/home/junge/pros/genoffice-source-full`，核验 HEAD `f8c17004fb730df11f0f743164ffd8b4281bb38c`。本文对照固定源 Review Ribbon 与当前本地 DOCX host；命令出现、可点击或已有局部验收均不等于 Review 命令族完整对齐。
 
+2026-11-14 续批：下表为历史调查。Editor／22语言翻译、Compare、保护、简单正文修订范围菜单及限定story修订已补；只读摘要为提示预填，仍须用户发起读取；批注AI批量改写、完整Review Pane和复杂修订仍未对齐。详见[本批验收](NATIVE_WORD_GENOFFICE_ALIGNMENT_20261114.md)。
+
 ## 命令映射
 
 | 命令族 | 固定源 Review 行为 | 本地实现与边界 |

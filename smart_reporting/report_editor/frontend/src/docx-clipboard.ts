@@ -19,10 +19,10 @@ import {richPasteControls} from './docx-rich-paste'
  *   docTextStyle 只保留 sizeHalfPoints/color/font 三个可写字段。
  * - 刷子作用粒度为整段（与高亮/底纹等 Home 命令一致的整段协议）。
  */
-import type { Editor } from '@tiptap/core'
+import { getSplittedAttributes, type Editor } from '@tiptap/core'
 import type { Node as PmNode } from '@tiptap/pm/model'
 import { Fragment, Slice } from '@tiptap/pm/model'
-import { DOCX_PASTE_IMAGE_MIMES, DOCX_PASTE_IMAGE_MAX_BYTES, DOCX_PASTE_IMAGE_MAX_EDGE_PX } from './docx-operations'
+import { DOCX_PASTE_IMAGE_MAX_BYTES, DOCX_PASTE_IMAGE_MAX_EDGE_PX } from './docx-operations'
 
 export type DocxPasteMode = 'source' | 'merge' | 'text' | 'picture'
 
@@ -351,12 +351,13 @@ function insertDocxPastedImage(editor: Editor, payload: { dataUrl: string; base6
     // 段中插入：显式拆段（split 把原 docxIndex 复制给两半）。拆分后右半段起点
     // 恒为 at+1（左半 = parentOffset 内容 + 2 个边界标记）；图片插在边界处，
     // 右半段恢复为新段落（extensions.ts:1440 split-twin 同规），避免重复锚点。
-    // setNodeMarkup 整体替换 attrs，必须从原段 attrs 全量展开。
+    // PM 原始 split 不读取 Tiptap keepOnSplit；仅继承允许拆段的属性，
+    // 由 schema 为新的来源/公式身份填回默认值，并保留段落的作者格式。
     const at = topLevelTextblock.pos
     tr.split(at)
     tr.insert(at + 1, imageNode)
     tr.setNodeMarkup(at + 1 + imageNode.nodeSize, undefined,
-      { ...topLevelTextblock.parent.attrs, docxIndex: null })
+      { ...getSplittedAttributes(editor.extensionManager.attributes, topLevelTextblock.parent.type.name, topLevelTextblock.parent.attrs), docxIndex: null })
   }
   if (!tr.docChanged) throw new Error('文档结构不支持图片粘贴')
   editor.view.dispatch(tr.scrollIntoView())
@@ -383,7 +384,7 @@ export async function insertDocxImageFile(editor: Editor, image: Blob, target = 
     }
   }
   validate()
-  if (!(DOCX_PASTE_IMAGE_MIMES as readonly string[]).includes(image.type)) throw new Error('仅支持粘贴 PNG 或 JPEG 图片')
+  if (!['image/png', 'image/jpeg', 'image/gif'].includes(image.type)) throw new Error('仅支持粘贴 PNG 或 JPEG 或 GIF 图片')
   if (image.size > DOCX_PASTE_IMAGE_MAX_BYTES) throw new Error('粘贴图片超过 8MB 大小上限')
   const observe = () => { changed ||= editor.isDestroyed || !editor.isEditable || editor.state.doc !== target.doc || !editor.state.selection.eq(target.selection) }
   editor.on('transaction', observe); editor.on('update', observe); editor.on('destroy', observe)
@@ -410,13 +411,21 @@ export async function insertDocxImageFile(editor: Editor, image: Blob, target = 
  * insertParagraphImage。
  */
 export async function docxClipboardPaste(editor: Editor, mode?: DocxPasteMode): Promise<void> {
-  if (!editor.isEditable) throw new Error('当前文档不可编辑')
+  if (editor.isDestroyed || !editor.isEditable) throw new Error('当前文档不可编辑')
   const target = { doc: editor.state.doc, selection: editor.state.selection }
-  const { text, html, image } = await readClipboardPayload()
+  let changed = false
+  const observe = () => { changed ||= editor.isDestroyed || !editor.isEditable || editor.state.doc !== target.doc || !editor.state.selection.eq(target.selection) }
+  editor.on('transaction', observe); editor.on('update', observe); editor.on('destroy', observe)
+  let payload: Awaited<ReturnType<typeof readClipboardPayload>>
+  try { payload = await readClipboardPayload() }
+  finally { editor.off('transaction', observe); editor.off('update', observe); editor.off('destroy', observe) }
+  // All lanes, including text-only and HTML-to-text, retain the original asynchronous target.
+  if (editor.isDestroyed || !editor.isEditable) throw new Error('当前文档不可编辑')
+  if (changed || editor.state.doc !== target.doc || !editor.state.selection.eq(target.selection)) throw new Error('读取剪贴板期间文档、选区或编辑状态已变化，请重新粘贴')
+  const { text, html, image } = payload
   if (html && mode !== 'picture' && mode !== 'text') {
     const controls=richPasteControls(editor)
     if(!controls)throw new Error('当前编辑器没有原生富文本粘贴能力')
-    if(!editor.state.doc.eq(target.doc)||!editor.state.selection.eq(target.selection))throw new Error('读取剪贴板期间选区已变化，请重新粘贴')
     controls.paste({html,text},mode);return
   }
   const plain = text || (html ? htmlToText(html) : '')

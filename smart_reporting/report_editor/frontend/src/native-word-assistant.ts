@@ -101,5 +101,6 @@ export function bindNativeWordAssistant(root: HTMLElement, options: Options) {
   }
   input.oninput=update;scope.onchange=()=>{status.textContent=scope.value==='selection' && !selection().length ? '请先选择要阅读的内容。' : '';update()}
   start.onclick=()=>{void run()};cancel.onclick=()=>stop();update()
-  return {open,dispose(){if(disposed)return;panelView.dispose();stop();disposed=true;panel.remove()}}
+  function openPrompt(instruction:string){if(disposed)return;open('ask');scope.value='document';input.value=instruction.slice(0,2000);status.textContent='将只读总结可核验的修订；实际读取覆盖范围会随结果列出。';update()}
+  return {open,openPrompt,dispose(){if(disposed)return;panelView.dispose();stop();disposed=true;panel.remove()}}
 }

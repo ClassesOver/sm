@@ -305,6 +305,7 @@ class NativePublicationService:
                 scope=parent.scope,
                 format=parent.format,
                 origin=parent.origin,
+                displayName=parent.display_name,
                 sourceFile=primary,
             )
             if primary_label in identities:

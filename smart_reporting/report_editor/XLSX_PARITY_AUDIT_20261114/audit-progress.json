@@ -1,0 +1,243 @@
+{
+  "status": "active",
+  "objective": "穷尽xlsx缺口",
+  "reference": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "localBase": "1e4a0a34",
+  "newProductChangesThisAudit": true,
+  "counts": {
+    "core": {
+      "done_bounded": 26,
+      "missing": 5,
+      "partial": 10,
+      "unverified": 5,
+      "source_boundary": 2
+    },
+    "data": {
+      "done_bounded": 31,
+      "missing": 6,
+      "unverified": 4,
+      "partial": 8,
+      "source_boundary": 3
+    },
+    "visuals": {
+      "done_bounded": 15,
+      "partial": 13,
+      "source_boundary": 4,
+      "missing": 9,
+      "unverified": 4
+    },
+    "storage": {
+      "missing": 5,
+      "partial": 4,
+      "done_bounded": 1,
+      "unverified": 1,
+      "source_boundary": 1,
+      "host_boundary": 1
+    }
+  },
+  "verificationGaps": [
+    {
+      "id": "C13",
+      "domain": "core",
+      "family": "Autofit measurement and display corrections",
+      "evidenceFile": "core.md"
+    },
+    {
+      "id": "C19",
+      "domain": "core",
+      "family": "CF Excel display/performance correction patches",
+      "evidenceFile": "core.md"
+    },
+    {
+      "id": "C22",
+      "domain": "core",
+      "family": "DV dropdown/input message/invalid marker visual behavior",
+      "evidenceFile": "core.md"
+    },
+    {
+      "id": "C46",
+      "domain": "core",
+      "family": "PC data-edge arrows, editor word jumps, selection collapse, wrap guard",
+      "evidenceFile": "core.md"
+    },
+    {
+      "id": "C47",
+      "domain": "core",
+      "family": "Context menus, count-input Enter, submenu reopen, Ctrl-drag fill",
+      "evidenceFile": "core.md"
+    },
+    {
+      "id": "D05",
+      "domain": "data",
+      "family": "F05 Builtin function numerical equivalence: Financial, Date & Time, Math, Statistical, Lookup, Database, Text, Logical, Information, Engineering, Cube, Compatibility, Web, Array, Other",
+      "evidenceFile": "data.md"
+    },
+    {
+      "id": "D09",
+      "domain": "data",
+      "family": "F09 Legacy array formula master/range, dynamic spill, error/null/string cached typing",
+      "evidenceFile": "data.md"
+    },
+    {
+      "id": "D12",
+      "domain": "data",
+      "family": "F12 Formula closure/large workbook lazy recalc/stream holds",
+      "evidenceFile": "data.md"
+    },
+    {
+      "id": "D51",
+      "domain": "data",
+      "family": "P11 Native Excel application behavior of owned controls/groupings",
+      "evidenceFile": "data.md"
+    },
+    {
+      "id": "V22",
+      "domain": "visuals",
+      "family": "V22 Live chart refs/cross-sheet recomputation",
+      "evidenceFile": "visuals.md"
+    },
+    {
+      "id": "V41",
+      "domain": "visuals",
+      "family": "V41 External media in print",
+      "evidenceFile": "visuals.md"
+    },
+    {
+      "id": "V44",
+      "domain": "visuals",
+      "family": "V44 Formula settlement before print",
+      "evidenceFile": "visuals.md"
+    },
+    {
+      "id": "V45",
+      "domain": "visuals",
+      "family": "V45 Exact chart/UI pixel parity",
+      "evidenceFile": "visuals.md"
+    },
+    {
+      "id": "S07",
+      "domain": "storage",
+      "family": "S07 Atomic replace and power-loss durability",
+      "evidenceFile": "storage.md"
+    }
+  ],
+  "next": [
+    "Verify the concrete remaining behaviors in the fully-owned85 runtime adapter map; static mapping does not certify every correction.",
+    "Resolve 14 explicitly unverified family records with bounded counterexamples or runtime evidence.",
+    "CF/DV static field matrix now exists; browser/evaluator combinations, axis/text/theme/cross-sheet/print and dynamic user skills still need verification."
+  ],
+  "notClaimed": [
+    "Full Microsoft Excel compatibility",
+    "All runtime paths executed",
+    "Live provider/production save/crash recovery passed",
+    "Every possible XLSX bug discovered"
+  ],
+  "inventoryCorrection": "85 unique imported runtime installers; 15 local helper calls excluded from initial broad100 call regex; not feature counts",
+  "supplementaryFieldRecords": 43,
+  "fieldEvidenceFile": "cf-dv.md",
+  "runtimeAdapterMapping": {
+    "total": 85,
+    "unowned": 0,
+    "statusCounts": {
+      "unverified": 34,
+      "partial": 20,
+      "missing": 18,
+      "done_bounded": 13
+    },
+    "file": "runtime-adapter-map.json"
+  },
+  "fixedBatches": [
+    {
+      "name": "source cell expectedValue/expectedFormula",
+      "evidence": "../NATIVE_XLSX_AI_PRECONDITIONS_ACCEPTANCE_20261114.md",
+      "tests": 63,
+      "boundary": "Sequential pure-cell DSL; native/non-cell prefixes conditional write explicitly refused. No production/provider/browser run."
+    },
+    {
+      "name": "ordinary multi-series stacked bar/column Canvas",
+      "evidence": "../NATIVE_XLSX_STACKED_BAR_ACCEPTANCE_20261114.md",
+      "tests": 175,
+      "browserScenes": 4,
+      "boundary": "Fixed-source nonnegative stacks; Line/Area/Combo and full axis/manual layout remain open."
+    },
+    {
+      "name": "shared formula eager import and edit-safe detachment",
+      "evidence": "../NATIVE_XLSX_SHARED_FORMULA_ACCEPTANCE_20261114.md",
+      "engineTests": 115,
+      "frontendTests": 126,
+      "independentXlsxFiles": 3,
+      "boundary": "Explicit stored shared cells; eager model. General cached fallback, arrays, streaming and full application/browser save remain unverified or open."
+    },
+    {
+      "name": "six fixed-source pivot aggregation modes",
+      "evidence": "../NATIVE_XLSX_PIVOT_AGGREGATIONS_ACCEPTANCE_20261114.md",
+      "engineTests": 66,
+      "uniqueFrontendTests": 109,
+      "sourceComparisons": 600,
+      "browserDownloads": 6,
+      "boundary": "11 aggregations total; source numeric coercion/null sample errors. P04 ShowAs/base field/item and P05 custom captions remain open. Isolated actual host dialog/browser engine, no full server revision/provider flow."
+    },
+    {
+      "name": "custom pivot value caption persistence",
+      "evidence": "../NATIVE_XLSX_PIVOT_CAPTIONS_ACCEPTANCE_20261114.md",
+      "engineTests": 35,
+      "frontendTests": 75,
+      "browserDownloads": 2,
+      "boundary": "Fixed-source trim/default/repeated-caption suffix rules, owned and foreign reader. ShowAs/base fields P04 and full application/server revision/provider chain remain open."
+    },
+    {
+      "name": "pivot parent row/column percentages and index",
+      "evidence": "../NATIVE_XLSX_PIVOT_PARENT_INDEX_ACCEPTANCE_20261114.md",
+      "engineTests": 55,
+      "frontendTests": 86,
+      "sourceComparisons": 300,
+      "browserDownloads": 3,
+      "boundary": "P04 partial:6 ShowAs modes plus normal, remaining8 base-field/item modes open. Canonical x14 parent serialization and explicit index General style reset correct source limitations. No full app/server/provider/desktop Excel run."
+    },
+    {
+      "name": "eight pivot base-field/item ShowAs modes",
+      "evidence": "../NATIVE_XLSX_PIVOT_BASE_MODES_ACCEPTANCE_20261114.md",
+      "engineTests": 93,
+      "frontendTests": 110,
+      "sourceComparisons": 1600,
+      "browserDownloads": 9,
+      "boundary": "All14 regular modes enabled/parameterized; P04 remains partial for raw foreign d/e cache base projection, unverifiable order and legacy unspecified format inheritance. No full application/server/provider/desktop Excel run."
+    },
+    {
+      "name": "pivot boolean source and cache fidelity",
+      "evidence": "../NATIVE_XLSX_PIVOT_SOURCE_BOOLEANS_ACCEPTANCE_20261114.md",
+      "engineTests": 107,
+      "frontendTests": 78,
+      "independentXlsxFiles": 12,
+      "boundary": "Source domain boolean arithmetic and both cache writers; P12 formatted dimension projection remains partial. No new browser, desktop Excel or full server/provider run."
+    },
+    {
+      "name": "report-filter slicer and timeline dimensions",
+      "evidence": "../NATIVE_XLSX_PIVOT_PAGE_CONTROLS_ACCEPTANCE_20261114.md",
+      "engineTests": 67,
+      "uniqueFrontendTests": 66,
+      "browserDownloads": 3,
+      "boundary": "Owned row/column/page dimensions; empty selection intersection and unknown/grouped controls remain guarded. No desktop Excel or full server/provider flow."
+    },
+    {
+      "name": "explicit numeric pivot dimension display identities",
+      "evidence": "../NATIVE_XLSX_PIVOT_DIMENSION_FORMATS_ACCEPTANCE_20261114.md",
+      "engineTests": 114,
+      "frontendTests": 104,
+      "browserDownloads": 4,
+      "boundary": "New host pivots and explicit cell XF; P12 partial for inherited styles, calculated dependencies, numeric headers and unmarked legacy/foreign raw identities. No desktop Excel/full server/provider run."
+    },
+    {
+      "name": "pivot inherited row and column number formats",
+      "evidence": "../NATIVE_XLSX_PIVOT_INHERITED_FORMATS_ACCEPTANCE_20261114.md",
+      "engineTests": 22,
+      "frontendTests": 52,
+      "browserDownloads": 4,
+      "boundary": "Pivot projection only; ordinary grid import unchanged. P12 remains partial for calculated dependencies, numeric headers and legacy/foreign migration."
+    }
+  ],
+  "inventoryCorrections": [
+    "Command declaration matching is restricted to an entire callee segment; geometry fraction()/transaction-like suffixes excluded. Current source260/local227 are static calls, not feature counts."
+  ],
+  "initialInventoryPhaseWasStaticOnly": true
+}

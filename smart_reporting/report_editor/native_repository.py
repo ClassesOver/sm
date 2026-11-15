@@ -233,6 +233,7 @@ class NativeDocumentRepository:
                     scope=scope,
                     sourceFile=source.source_file,
                     origin=source.origin,
+                    displayName=source.display_name,
                 )
                 initial = NativeRevision(
                     documentId=document_id,

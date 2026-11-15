@@ -12,28 +12,28 @@ Page/View、目录/属性/图像浮动工具条、缩略图和字段上下文，
 Electron 操作系统菜单、打印机/证书存储等宿主能力单独标识，不假定浏览器自动具备。
 AI 阅读、审阅和填表另有专项，不纳入此表。
 
-本表已按 2026-11-13 后续专项更新书签、Bates 和四项属性状态，三项不再列为全缺；下文原始实施、失败与冻结验收记录继续保留。
+本表当前状态于 2026-11-14 按 live 源码和后续专项记录校正，已实现但有边界的功能不再列为全缺。下文原始实施、失败与冻结验收记录继续保留；历史冻结资产不等于当前工作树整体验收。当前开放项另见 [有效缺口清单](NATIVE_PDF_ACTIVE_GAPS_20261114.md)。
 
 | 源工具及源码位置 | 当前本地状态 | 剩余缺口／范围限制 |
 | --- | --- | --- |
 | 目录书签编辑：`renderer/App.tsx:7147–7316,9153–9211`；`OutlinePanel.tsx::PendingItem`；`main/save-pdf.ts:372,1684` | 已交付当前页新增、嵌套改名、删子树、清空、草稿历史及保存下载重开；实际树写回及页面身份映射见下文验收 | 含 URI／外部动作、坏目标、异常树及签名／保护来源仅阅读，不以局部树覆盖 |
 | 无嵌入目录时从标题推导：`App.tsx:1691`；`heading-outline.ts::buildHeadingOutline` | 已接通：`pdf-heading-outline.ts` 优先嵌入目录；缺失或读取失败时调用固定源标题扫描器，最多扫描前 400 页，取消后不继续扫描；推导树只读导航，不写入 PDF 书签。真实 PDF.js fixture 覆盖嵌入目录优先、正文不误判、标题层级、页 0、读取失败回退及取消。 | 源生成目录本身不可直接编辑；此项不再列为本地缺口 |
 | 属性前四字段编辑：`PropertiesDialog.tsx:37–129`；`App.tsx:4623` 的 metadata | 已交付 title／author／subject／keywords 编辑、清空、草稿历史、真实预览及保存下载；见[四项属性验收](NATIVE_PDF_METADATA_SOURCE_ACCEPTANCE_20261113.md) | 仅四字段；签名／加密保护／动态 XFA／能力不明来源只读，既有独占操作组合限制保留；不扩展为任意 Info／XMP 编辑 |
-| 压缩文件：`App.tsx:6549,8955` → `pdfApi.reduceFileSize`；`main/pdf-shrink.ts` | Page ribbon 无压缩入口 | 源独立压缩输出、大小变化提示/文件身份与下载链未接 |
+| 压缩文件：`App.tsx:6549,8955` → `pdfApi.reduceFileSize`；`main/pdf-shrink.ts` | 已接 Page 压缩命令与 api.shrinkPdf，生成独立压缩文件并返回大小和下载身份 | 仍受来源及预算限制；不等于桌面原路径替换或任意 PDF 都可缩小 |
 | Bates 编号：`App.tsx:5315–5343,8988`；`BatesDialog.tsx`、`bates.ts` | 已交付源配置、可搜索逐页编号文字、页面身份快照及保存下载重开；见[Bates 验收](NATIVE_PDF_BATES_SOURCE_ACCEPTANCE_20261113.md) | 按应用时页面顺序固定编号；重排不重编号、删页不补号、后插页不自动编号。源无后缀及字体选择，不列为迁移缺口 |
-| 拆分 PDF / 合并 PDF 文件：`App.tsx:9049–9061` → `openSplitDlg/mergePdf` | `pdf-page-ribbon.ts` 两项 disabled，已有提取、插入/替换、N 合 1/每页拆格均可用 | 拆成多个 PDF 与多来源合并文件尚未接下载/来源链，不把已有页面功能重列缺 |
-| 比较文档：`App.tsx:4446–4466,8048–8070`；`ComparePanel.tsx` | `pdf-view-ribbon.ts` compare disabled | 第二来源选择与身份、文字页差异/前后切换/导航未接；源是只读比较，不涉及写回 |
-| 证书签名、签名面板：`App.tsx:8461–8493,7960`；`CertSignDialog.tsx/SignaturesDialog.tsx` | `pdf-main.ts` 两项 disabled；手绘/键入签名已有 | 证书/密钥宿主及实际签名、已有数字签名读取验证未接；不把普通签名贴图算证书签名 |
-| 普通签名的图片模式与复用库：`SignatureDialog.tsx:158–181,245,288–335,417`；`main/signature-store.ts` | 本地签名面板只有 draw/type；通用插图可用，无签名库 | 专门签名图片模式、保存以便复用、选择/移除历史签名未接；通用图片插入不是复用库 |
-| 静态填表的文字/勾/叉/完成：`App.tsx:8614–8687,8004` | Fill Form 对应组 disabled；已有 AcroForm 值填写/字段导航和通用静态文字插入 | 专门静态填表放置/编辑、勾叉与完成时必填检查流程尚未接；不等同已有 insertText 或字段值写回 |
-| 签名字段创建：`App.tsx:8747–8762` 的 signature | Form Design 签名字段 disabled；text/date/checkbox/radio/choice 已有 | 签名 widget 定义、能力证明和写回未接 |
-| 表单保留绘制工具、设计预览、自动检测：`App.tsx:8784–8824` → keepTool/preview/detectFields；检测实现在 `4316` | 自动检测/预览 disabled，无 keepTool 连续放置开关；实际排列入口已接 | 源设计预览/空白识别/连续放置未接，不据旧标题把所有字段排列重列为缺 |
-| 字段复制/重复/粘贴：`App.tsx:11192–11215` 上下文回调 | 当前字段创建、属性、单选追加/重命名/删除及排列已有，无 clipboard 设计协议 | 跨选中字段的复制、重复、粘贴与新字段身份/值关系未接 |
-| 图像浮动工具条剩余动作：`App.tsx:10952–11035` 的 rotateSelected/openImageDialog(cutout)/toggleImageLayer/deleteSelected | `pdf-existing-image.ts` 已有移动/尺寸/替换/水平垂直翻转/裁剪/透明度；仅这些能力可用 | 图像顺逆旋转、抠图、前后层切换、图像删除的源交互/写回仍未接；不把已支持像素编辑重列缺 |
-| 完整打印设置：`App.tsx:11563–11736`；`print.ts` | `pdf-main.ts::printPdf` 准备页面并调用浏览器 `window.print` | 源打印机选择、份数、整理、双面、范围/当前页/奇偶筛选等应用内配置未迁移；系统打印框不是这些源选项已接的证明 |
-| 自动 OCR 与继续/取消：`App.tsx:2495–2571,11082–11103`；`ocr-layer.ts/ocr-bake.ts` | 阅读基于现有 PDF 文字层，无对应原生 OCR 入口或自动扫描生命周期 | 扫描页识别、文字索引覆盖、分页上限续跑/取消和保存烘焙未接；这是源自动 OCR 功能，非本轮新增 AI 工具 |
+| 拆分 PDF / 合并 PDF 文件：`App.tsx:9049–9061` → `openSplitDlg/mergePdf` | 已实现文件级拆分多产物与多来源合并，独立身份/下载链见 NATIVE_PDF_SPLIT_BATCH_SOURCE_ACCEPTANCE_20261113.md、NATIVE_PDF_MERGE_SOURCE_ACCEPTANCE_20261113.md | 来源/页数/输出预算及干净草稿限制保留；复杂表单字段树、导航与关联批注的任意来源等价未完成 |
+| 比较文档：`App.tsx:4446–4466,8048–8070`；`ComparePanel.tsx` | 已接第二来源、只读文字差异与定位；实现见 pdf-compare.tsx、pdf-compare-compute.ts | 复杂来源与完整桌面交互/视觉等价尚未穷尽；文字比较不证明像素比较 |
+| 证书签名、签名面板：`App.tsx:8461–8493,7960`；`CertSignDialog.tsx/SignaturesDialog.tsx` | 已有数字签名读取和基础完整性展示，见 pdf-digital-signatures.ts；证书签署仍未开放 | 缺实际证书签署、密钥托管/签名服务与证书信任链/吊销验证；普通签名图像不算数字签署 |
+| 普通签名的图片模式与复用库：`SignatureDialog.tsx:158–181,245,288–335,417`；`main/signature-store.ts` | 已接手绘/键入/图片和复用库，见 pdf-signature-dialog.ts、pdf-signature-store.ts | 浏览器存储/来源限制与桌面宿主不同；普通签名库不提供证书签署 |
+| 静态填表的文字/勾/叉/完成：`App.tsx:8614–8687,8004` | 已实现文字、勾叉、放置/编辑、同页移动/删除、保存后重编及必填软提示，见 NATIVE_PDF_STATIC_FILL_ACCEPTANCE_20261113.md | 静态内容为图像，不可搜索或交互；跨页移动和任意复杂来源不支持，metadata 失败可能不能再编辑 |
+| 签名字段创建：`App.tsx:8747–8762` 的 signature | 已接空签名 Widget 创建与设计入口 | 创建签名字段不等于实际证书签署；复杂来源仍受能力限制 |
+| 表单保留绘制工具、设计预览、自动检测：`App.tsx:8784–8824` → keepTool/preview/detectFields；检测实现在 `4316` | 已有设计预览、受限字段检测和 Ctrl 连续创建；见字段检测及多字段创建验收 | 检测仅支持已验证来源和候选类型；完整源检测/工具生命周期等价仍须逐项验证 |
+| 字段复制/重复/粘贴：`App.tsx:11192–11215` 上下文回调 | 已支持待保存字段及安全已有单控件 text/checkbox/choice/date、空签名占位及安全 radio 整组（含跨页来源）的复制/重复/粘贴、快捷键、同文档跨页和唯一新名称；见 NATIVE_PDF_PENDING_FORM_CLIPBOARD_ACCEPTANCE_20261114.md、NATIVE_PDF_SOURCE_FORM_COPY_ACCEPTANCE_20261114.md | 已有复杂字段/实际或扩展签名/复杂 radio 结构；原 Widget 迁页的源支持待核实、系统及跨文档剪贴板未支持；不保证副本自动避让 |
+| 图像浮动工具条剩余动作：`App.tsx:10952–11035` 的 rotateSelected/openImageDialog(cutout)/toggleImageLayer/deleteSelected | 已有移动/尺寸/替换/翻转/裁剪/透明度、顺逆 90° 旋转、去背景及安全页面直属图片逻辑删除与文字上下层级切换；见 pdf-existing-image.ts 和 NATIVE_PDF_EXISTING_IMAGE_DELETE_ACCEPTANCE_20261114.md | 含Form/无直属文字等复杂来源的层级切换受限；模板/静态填表记录来源的通用图片删除受限；旋转/镜像/模板对象等复杂来源有安全限制 |
+| 完整打印设置：`App.tsx:11563–11736`；`print.ts` | 已有全部/当前/自定义页范围及奇偶筛选，见 pdf-print-dialog.ts；调用浏览器打印 | 打印机、份数、整理、双面等设备设置仍依赖宿主；不把浏览器系统框当成应用内已对齐 |
+| 自动 OCR 与继续/取消：`App.tsx:2495–2571,11082–11103`；`ocr-layer.ts/ocr-bake.ts` | 用户已于 2026-11-11 明确排除 OCR，阅读继续使用现有文字层 | 不列入本次交付缺口；不将扫描页识别宣称为已实现 |
 | 加密 PDF 打开及原保护修改/移除：`PasswordDialog.tsx`、`ProtectionDialog.tsx:125–135`；`App.tsx` 的 sourcePassword/protectionDirty | 当前受控保护入口仅从可读取已保存来源生成独立保护下载；PDF 打开无密码回调 | 输入来源密码后打开、保持原文件密钥以及修改/移除原保护的生命周期未接；本地“保护下载”仅关闭其独立子能力 |
-| 缩略图右键与拖放这一入口形态：`App.tsx:9304–9448,11116–11169`；`PdfThumb.tsx` | 已有旋转、删页、提取、插入、前移/后移命令、真实缩略图及按稳定 pageId 的原生草稿拖放排序；拖起页移动到目标缩略图位置，外部文件拖放继续交给宿主 | 源缩略图右键菜单与全部未保存 overlay 缩略图联动仍需单独对齐；不能说旋转/删页/重排业务能力缺失 |
+| 缩略图右键与拖放这一入口形态：`App.tsx:9304–9448,11116–11169`；`PdfThumb.tsx` | 已有缩略图右键、旋转/删页/提取/插入/顺序命令及按稳定 pageId 拖放排序 | 全部未保存 overlay 的缩略图联动、复杂来源与大文档性能尚未穷尽；外部拖放依赖宿主 |
 
 其余已见接线的非 AI 功能组：保存新修订/UndoRedo；原位改字及文字样式；文字
 标注四型/移除；便签/回复/已有便签编辑删除；源绘图各型/测量标定/涂黑；手绘和

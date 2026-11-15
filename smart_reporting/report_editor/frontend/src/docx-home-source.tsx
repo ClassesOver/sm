@@ -21,6 +21,7 @@ import { zh as ribbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i
 import { zh as appZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/app/zh'
 
 type Props = {
+  onExport?:(format:'html'|'markdown'|'pdf')=>void
   onAssistant?: () => void
   onClearFormatting?: () => void
   clearFormattingUnavailable?: string | null
@@ -95,7 +96,7 @@ const unavailable = '原版控件保留；当前 DOCX 原生操作协议未支�
  * recorded in SOURCE-SHA256.json). Its App callbacks are replaced by Native
  * Tiptap/DOCX operations; unsupported commands remain visible and disabled.
  */
-export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
+export function DocxHomeSource({ onExport, onAssistant, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
   const fontListId = useId()
   const [caseOpen, setCaseOpen] = useState(false)
   const caseWrap = useRef<HTMLDivElement>(null)
@@ -176,7 +177,7 @@ export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormatting
           <button type="button" role="menuitem" data-action="paste-text" data-source-action="paste-text" disabled={!canPaste} title={zh.ribbonPaste} aria-label={appZh.appPasteTextOnly} onClick={() => { setPasteOpen(false); onPaste?.('text') }}>
             <IconPasteText size={16} />{appZh.appPasteTextOnly}
           </button>
-          <button type="button" role="menuitem" data-action="paste-picture" data-source-action="paste-picture" disabled={!canPaste} title="粘贴剪贴板中的图片" aria-label="粘贴图片（PNG/JPEG）" onClick={() => { setPasteOpen(false); onPaste?.('picture') }}>
+          <button type="button" role="menuitem" data-action="paste-picture" data-source-action="paste-picture" disabled={!canPaste} title="粘贴剪贴板中的图片" aria-label="粘贴图片（PNG/JPEG/GIF）" onClick={() => { setPasteOpen(false); onPaste?.('picture') }}>
             <IconPicture size={16} />图片
           </button>
           <button type="button" role="menuitem" data-action="paste-special" disabled={!canPaste||!onPasteSpecial} onClick={()=>{setPasteOpen(false);onPasteSpecial?.()}}>{ribbonZh.ribbonPasteSpecial}</button>
@@ -203,8 +204,8 @@ export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormatting
           <option value="ZCOOL XiaoWei" label="站酷小薇（内置常用中文）" />
           {[['SimSun', '宋体'], ['SimHei', '黑体'], ['Microsoft YaHei', '微软雅黑'], ['KaiTi', '楷体'], ['FangSong', '仿宋']].map(([value, label]) => <option key={value} value={value} label={`${label}（系统字体）`} />)}
         </datalist>
-        <input className="rb-select rb-font-size" data-action="font-size" data-editable-action="true" type="number" min="1" max="200" step="0.5" defaultValue="12" aria-label={zh.ribbonFontSizeTip} disabled={!editable}
-          onInput={event => { const value = Number(event.currentTarget.value); if (value >= 1 && value <= 200 && Number.isInteger(value * 2)) onFontSizeValue(value) }} />
+        <input className="rb-select rb-font-size" data-action="font-size" data-editable-action="true" type="number" min="1" max="1638" step="0.5" defaultValue="12" aria-label={zh.ribbonFontSizeTip} disabled={!editable}
+          onInput={event => { const value = Number(event.currentTarget.value); if (value >= 1 && value <= 1638 && Number.isInteger(value * 2)) onFontSizeValue(value) }} />
         {action('grow-font', zh.ribbonGrowFont, <IconGrowFont size={17} />, () => onFontSize(1))}
         {action('shrink-font', zh.ribbonShrinkFont, <IconShrinkFont size={17} />, () => onFontSize(-1))}
         <div className="rb-split-wrap" ref={caseWrap} onMouseDown={event => event.preventDefault()}>
@@ -300,7 +301,7 @@ export function DocxHomeSource({ onAssistant, onClearFormatting, clearFormatting
     {group(zh.ribbonGroupStyles, paragraphStyleControl ? <div ref={element => { if (element && paragraphStyleControl.parentElement !== element) element.append(paragraphStyleControl) }} /> : <button type="button" className="rb-big" disabled title={unavailable}>{zh.ribbonStyleNormal}</button>)}
     <div className="ribbon-sep" />
     {group(zh.ribbonGroupEditing, <>{(['find', 'replace'] as const).map(mode => <button key={mode} type="button" className="rb-icon docx-source-command" data-action={mode} data-source-action={mode} disabled={!onFindReplace} onClick={() => onFindReplace?.(mode)}>{mode === 'find' ? <IconSearch /> : <IconReplace />}{mode === 'find' ? '查找' : '替换'}</button>)}<button type="button" className="rb-small" data-action="select" data-source-action="select" title={ribbonZh.ribbonSelectAllTip} disabled={!onSelectAll} onClick={() => onSelectAll?.()}><IconSelectAll />{ribbonZh.ribbonSelectAll}</button><button type="button" className={`rb-icon${formattingMarksVisible ? ' active' : ''}`} data-action="formatting-marks" aria-label="显示/隐藏编辑标记" title="显示/隐藏编辑标记" aria-pressed={!!formattingMarksVisible} disabled={!onToggleFormattingMarks} onClick={() => onToggleFormattingMarks?.()}><IconPilcrow /></button></>)}
-    {group('转换', <>{disabled('convert-pdf', '转换为 PDF', <><IconConvert /><span>PDF</span></>)}{disabled('convert-html', '转换为 HTML', <><IconConvert /><span>HTML</span></>)}{disabled('convert-markdown', '转换为 Markdown', <><IconConvert /><span>MD</span></>)}{disabled('export-images', '导出图像', <><IconPicture /><span>IMG</span></>)}</>)}
+    {group('转换', <><button type="button" className="rb-icon" data-action="convert-pdf" disabled={!onExport || !editable} title="转换为 PDF" onClick={()=>onExport?.('pdf')}><IconConvert/><span>PDF</span></button><button type="button" className="rb-icon" data-action="convert-html" disabled={!onExport} title="转换为 HTML" onClick={()=>onExport?.('html')}><IconConvert/><span>HTML</span></button><button type="button" className="rb-icon" data-action="convert-markdown" disabled={!onExport} title="转换为 Markdown" onClick={()=>onExport?.('markdown')}><IconConvert/><span>MD</span></button>{disabled('export-images', '导出图像', <><IconPicture /><span>IMG</span></>)}</>)}
     <div className="ribbon-sep" />
   </div>
 }

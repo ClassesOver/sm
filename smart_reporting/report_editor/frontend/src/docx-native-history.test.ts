@@ -92,3 +92,11 @@ it('leaves nested header input history independent until its value is committed'
     expect(intents(body)).toEqual([])
   } finally { nested.discard(); host.remove() }
 })
+it('keeps document theme and protection in the same undoable and restorable journal',()=>{
+ const {editor}=setup(),theme={kind:'setDocumentTheme',expectedThemeSha256:'a'.repeat(64),fontPreset:'ribbonThemeFontArial'},protection={kind:'setDocumentProtection',expectedSettingsSha256:'b'.repeat(64),protection:null}
+ expect(commitDocxNativeOperations(editor,[theme])).toBe(true);expect(intents(editor)).toEqual([theme]);expect(commitDocxNativeOperations(editor,[theme,protection])).toBe(true);step(editor,undo);expect(intents(editor)).toEqual([theme]);step(editor,redo);expect(intents(editor)).toEqual([theme,protection]);seedDocxNativeOperations(editor,[theme,protection]);expect(intents(editor)).toEqual([theme,protection])
+})
+it('restores non-body revision decisions as document history without changing body content',()=>{
+ const {editor}=setup(),before=editor.state.doc.content.toJSON(),story={kind:'resolveStoryRevision',targetId:'story',expectedPartSha256:'a'.repeat(64),expectedWrapperSha256:'b'.repeat(64),action:'reject'}
+ expect(commitDocxNativeOperations(editor,[story])).toBe(true);expect(intents(editor)).toEqual([story]);expect(editor.state.doc.content.toJSON()).toEqual(before);step(editor,undo);expect(intents(editor)).toEqual([]);step(editor,redo);expect(intents(editor)).toEqual([story])
+})

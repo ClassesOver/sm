@@ -1,0 +1,497 @@
+[
+  {
+    "name": "openSourcePath",
+    "line": 3291,
+    "signature": "openSourcePath(path: string): Promise<void>"
+  },
+  {
+    "name": "getLanguage",
+    "line": 3293,
+    "signature": "getLanguage(): Promise<'zh' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'th' | 'id' | 'ru' | 'ar'>"
+  },
+  {
+    "name": "onLanguageChanged",
+    "line": 3295,
+    "signature": "onLanguageChanged(\n    handler: (\n      lang: 'zh' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'th' | 'id' | 'ru' | 'ar',\n    ) => void,\n  ): () => void"
+  },
+  {
+    "name": "getTheme",
+    "line": 3301,
+    "signature": "getTheme(): Promise<UiTheme>"
+  },
+  {
+    "name": "onThemeChanged",
+    "line": 3303,
+    "signature": "onThemeChanged(handler: (theme: UiTheme) => void): () => void"
+  },
+  {
+    "name": "getDocumentTheme",
+    "line": 3305,
+    "signature": "getDocumentTheme(): Promise<DocTheme>"
+  },
+  {
+    "name": "onDocumentThemeChanged",
+    "line": 3307,
+    "signature": "onDocumentThemeChanged(handler: (theme: DocTheme) => void): () => void"
+  },
+  {
+    "name": "getAutoSaveDefault",
+    "line": 3309,
+    "signature": "getAutoSaveDefault(): Promise<AutoSaveDefault>"
+  },
+  {
+    "name": "onAutoSaveDefaultChanged",
+    "line": 3310,
+    "signature": "onAutoSaveDefaultChanged(handler: (value: AutoSaveDefault) => void): () => void"
+  },
+  {
+    "name": "getAiPanelPrefs",
+    "line": 3312,
+    "signature": "getAiPanelPrefs(): Promise<AiPanelPrefs>"
+  },
+  {
+    "name": "setAiPanelPrefs",
+    "line": 3313,
+    "signature": "setAiPanelPrefs(patch: Partial<AiPanelPrefs>): Promise<AiPanelPrefs>"
+  },
+  {
+    "name": "onAiPanelPrefsChanged",
+    "line": 3314,
+    "signature": "onAiPanelPrefsChanged(handler: (prefs: AiPanelPrefs) => void): () => void"
+  },
+  {
+    "name": "onChromePressed",
+    "line": 3320,
+    "signature": "onChromePressed(handler: () => void): () => void"
+  },
+  {
+    "name": "selectWorkbook",
+    "line": 3321,
+    "signature": "selectWorkbook(): Promise<WorkbookFile | { passwordRequired: true; path: string } | null>"
+  },
+  {
+    "name": "openEncryptedWorkbook",
+    "line": 3322,
+    "signature": "openEncryptedWorkbook(path: string, password: string): Promise<WorkbookFile | null>"
+  },
+  {
+    "name": "updateWorkbookPassword",
+    "line": 3323,
+    "signature": "updateWorkbookPassword(\n    sessionId: string,\n    newPassword: string,\n  ): Promise<{ sha256: string; fileBytes: number; passwordProtected: true }>"
+  },
+  {
+    "name": "selectWorkbooksForMerge",
+    "line": 3328,
+    "signature": "selectWorkbooksForMerge(): Promise<WorkbookFile[] | null>"
+  },
+  {
+    "name": "openWorkbooksForMerge",
+    "line": 3330,
+    "signature": "openWorkbooksForMerge(paths: string[]): Promise<WorkbookFile[] | null>"
+  },
+  {
+    "name": "reopenWorkbook",
+    "line": 3335,
+    "signature": "reopenWorkbook(path: string): Promise<WorkbookFile | null>"
+  },
+  {
+    "name": "onSidecarCrashed",
+    "line": 3339,
+    "signature": "onSidecarCrashed(callback: () => void): () => void"
+  },
+  {
+    "name": "readWorkbookRange",
+    "line": 3340,
+    "signature": "readWorkbookRange(request: WorkbookRangeRequest): Promise<WorkbookRangeResult>"
+  },
+  {
+    "name": "readWorkbookFormulas",
+    "line": 3341,
+    "signature": "readWorkbookFormulas(request: WorkbookFormulaCellsRequest): Promise<WorkbookFormulaCellsResult>"
+  },
+  {
+    "name": "findWorkbookCells",
+    "line": 3342,
+    "signature": "findWorkbookCells(request: WorkbookFindCellsRequest): Promise<WorkbookFindCellsResult>"
+  },
+  {
+    "name": "listWorkbookConnections",
+    "line": 3344,
+    "signature": "listWorkbookConnections(request: WorkbookConnectionsRequest): Promise<WorkbookConnectionsResult>"
+  },
+  {
+    "name": "refreshWorkbookConnection",
+    "line": 3346,
+    "signature": "refreshWorkbookConnection(request: WorkbookRefreshRequest): Promise<WorkbookRefreshResult>"
+  },
+  {
+    "name": "readWorkbookRowOutline",
+    "line": 3347,
+    "signature": "readWorkbookRowOutline(request: WorkbookFormulaCellsRequest): Promise<WorkbookRowOutlineResult>"
+  },
+  {
+    "name": "recalcWorkbook",
+    "line": 3348,
+    "signature": "recalcWorkbook(request: WorkbookRecalcRequest): Promise<WorkbookRecalcResult>"
+  },
+  {
+    "name": "listExternalLinks",
+    "line": 3349,
+    "signature": "listExternalLinks(request: ExternalLinksRequest): Promise<ExternalLinksResult>"
+  },
+  {
+    "name": "updateExternalLinks",
+    "line": 3350,
+    "signature": "updateExternalLinks(request: ExternalLinksRequest): Promise<ExternalLinksUpdateResult>"
+  },
+  {
+    "name": "readExternalLinkUsage",
+    "line": 3353,
+    "signature": "readExternalLinkUsage(request: ExternalLinksRequest): Promise<ExternalLinkUsageResult>"
+  },
+  {
+    "name": "selectExternalLinkSource",
+    "line": 3355,
+    "signature": "selectExternalLinkSource(): Promise<string | null>"
+  },
+  {
+    "name": "listWorkbookTabs",
+    "line": 3357,
+    "signature": "listWorkbookTabs(): Promise<{ tabs: WorkbookTab[] }>"
+  },
+  {
+    "name": "armWorkbookPick",
+    "line": 3360,
+    "signature": "armWorkbookPick(wcId: number): Promise<{ pickId: string }>"
+  },
+  {
+    "name": "sendWorkbookPickSelection",
+    "line": 3361,
+    "signature": "sendWorkbookPickSelection(selection: WorkbookPickSelection): Promise<void>"
+  },
+  {
+    "name": "cancelWorkbookPick",
+    "line": 3362,
+    "signature": "cancelWorkbookPick(pickId: string): Promise<void>"
+  },
+  {
+    "name": "onWorkbookPickArmed",
+    "line": 3363,
+    "signature": "onWorkbookPickArmed(listener: (payload: { pickId: string }) => void): () => void"
+  },
+  {
+    "name": "onWorkbookPickSelected",
+    "line": 3364,
+    "signature": "onWorkbookPickSelected(listener: (selection: WorkbookPickSelection) => void): () => void"
+  },
+  {
+    "name": "onWorkbookPickCancelled",
+    "line": 3365,
+    "signature": "onWorkbookPickCancelled(listener: (payload: { pickId: string }) => void): () => void"
+  },
+  {
+    "name": "revealLinkSource",
+    "line": 3366,
+    "signature": "revealLinkSource(request: ExternalLinkRevealRequest): void"
+  },
+  {
+    "name": "readWorkbookMedia",
+    "line": 3367,
+    "signature": "readWorkbookMedia(request: WorkbookMediaRequest): Promise<WorkbookMediaResult>"
+  },
+  {
+    "name": "readPivotDefinition",
+    "line": 3368,
+    "signature": "readPivotDefinition(request: WorkbookPivotRequest): Promise<WorkbookPivotDefinition>"
+  },
+  {
+    "name": "readWorkbookRedactions",
+    "line": 3374,
+    "signature": "readWorkbookRedactions(request: WorkbookRedactionsRequest): Promise<WorkbookRedactionsResult>"
+  },
+  {
+    "name": "readWorkbookQueries",
+    "line": 3376,
+    "signature": "readWorkbookQueries(request: WorkbookQueriesRequest): Promise<WorkbookQueriesResult>"
+  },
+  {
+    "name": "readLocalImage",
+    "line": 3377,
+    "signature": "readLocalImage(request: LocalImageRequest): Promise<LocalImageResult>"
+  },
+  {
+    "name": "captureScreenSources",
+    "line": 3378,
+    "signature": "captureScreenSources(): Promise<ScreenSourcesResult>"
+  },
+  {
+    "name": "captureScreenSource",
+    "line": 3380,
+    "signature": "captureScreenSource(request: ScreenCaptureRequest): Promise<ScreenCaptureResult | null>"
+  },
+  {
+    "name": "saveWorkbookEdits",
+    "line": 3381,
+    "signature": "saveWorkbookEdits(request: WorkbookSaveRequest): Promise<WorkbookSaveResult>"
+  },
+  {
+    "name": "beginSaveEditsTransfer",
+    "line": 3385,
+    "signature": "beginSaveEditsTransfer(request: WorkbookSaveEditsBegin): Promise<void>"
+  },
+  {
+    "name": "sendSaveEditsChunk",
+    "line": 3386,
+    "signature": "sendSaveEditsChunk(request: WorkbookSaveEditsChunk): Promise<void>"
+  },
+  {
+    "name": "abortSaveEditsTransfer",
+    "line": 3389,
+    "signature": "abortSaveEditsTransfer(request: WorkbookSaveEditsAbort): Promise<void>"
+  },
+  {
+    "name": "writeWorkbookRecovery",
+    "line": 3392,
+    "signature": "writeWorkbookRecovery(request: WorkbookSaveRequest): Promise<{ ok: boolean }>"
+  },
+  {
+    "name": "autoRenameWorkbook",
+    "line": 3395,
+    "signature": "autoRenameWorkbook(\n    sessionId: string,\n    baseName: string,\n  ): Promise<{ renamed: boolean; name?: string }>"
+  },
+  {
+    "name": "exportPdf",
+    "line": 3399,
+    "signature": "exportPdf(request: WorkbookExportPdfRequest): Promise<WorkbookExportPdfResult>"
+  },
+  {
+    "name": "printWorkbook",
+    "line": 3400,
+    "signature": "printWorkbook(request: WorkbookExportPdfRequest): Promise<WorkbookPrintResult>"
+  },
+  {
+    "name": "listPrinters",
+    "line": 3401,
+    "signature": "listPrinters(): Promise<PrinterInfo[]>"
+  },
+  {
+    "name": "exportCsv",
+    "line": 3402,
+    "signature": "exportCsv(request: WorkbookExportCsvRequest): Promise<WorkbookExportCsvResult>"
+  },
+  {
+    "name": "confirmCsvSave",
+    "line": 3404,
+    "signature": "confirmCsvSave(): Promise<'csv' | 'xlsx' | 'cancel'>"
+  },
+  {
+    "name": "createDocument",
+    "line": 3407,
+    "signature": "createDocument(request: WorkbookCreateDocumentRequest): Promise<WorkbookCreateDocumentResult>"
+  },
+  {
+    "name": "closeWorkbook",
+    "line": 3408,
+    "signature": "closeWorkbook(sessionId: string): Promise<void>"
+  },
+  {
+    "name": "openExternal",
+    "line": 3409,
+    "signature": "openExternal(url: string): Promise<void>"
+  },
+  {
+    "name": "onMenuAction",
+    "line": 3411,
+    "signature": "onMenuAction(callback: (action: MenuAction) => void): () => void"
+  },
+  {
+    "name": "onWorkbookRenamed",
+    "line": 3414,
+    "signature": "onWorkbookRenamed(callback: (newName: string) => void): () => void"
+  },
+  {
+    "name": "notifyPendingEdits",
+    "line": 3416,
+    "signature": "notifyPendingEdits(count: number): void"
+  },
+  {
+    "name": "onCloseSaveRequest",
+    "line": 3418,
+    "signature": "onCloseSaveRequest(callback: () => void): () => void"
+  },
+  {
+    "name": "reportCloseSaveResult",
+    "line": 3419,
+    "signature": "reportCloseSaveResult(ok: boolean): void"
+  },
+  {
+    "name": "onRecoveryPrompt",
+    "line": 3423,
+    "signature": "onRecoveryPrompt(callback: (prompt: RecoveryPromptPayload) => void): () => void"
+  },
+  {
+    "name": "replyRecoveryPrompt",
+    "line": 3424,
+    "signature": "replyRecoveryPrompt(restore: boolean): void"
+  },
+  {
+    "name": "consumeNewBlankWorkbook",
+    "line": 3427,
+    "signature": "consumeNewBlankWorkbook(): Promise<boolean>"
+  },
+  {
+    "name": "onMcpCommand",
+    "line": 3431,
+    "signature": "onMcpCommand(callback: (message: McpCommandMessage) => void): () => void"
+  },
+  {
+    "name": "reportMcpResult",
+    "line": 3432,
+    "signature": "reportMcpResult(result: McpCommandResult): void"
+  },
+  {
+    "name": "signalMcpReady",
+    "line": 3433,
+    "signature": "signalMcpReady(): void"
+  },
+  {
+    "name": "hasQueuedWorkbook",
+    "line": 3436,
+    "signature": "hasQueuedWorkbook(): Promise<boolean>"
+  },
+  {
+    "name": "consumeHeadlessExport",
+    "line": 3439,
+    "signature": "consumeHeadlessExport(): Promise<string | null>"
+  },
+  {
+    "name": "headlessExportDone",
+    "line": 3441,
+    "signature": "headlessExportDone(result: { ok: boolean; error?: string }): void"
+  },
+  {
+    "name": "getUserDisplayName",
+    "line": 3443,
+    "signature": "getUserDisplayName(): Promise<string>"
+  },
+  {
+    "name": "onUserDisplayNameChanged",
+    "line": 3444,
+    "signature": "onUserDisplayNameChanged(handler: (name: string) => void): () => void"
+  },
+  {
+    "name": "getAiSettings",
+    "line": 3445,
+    "signature": "getAiSettings(): Promise<AiSettings>"
+  },
+  {
+    "name": "setAiSettings",
+    "line": 3446,
+    "signature": "setAiSettings(settings: AiSettings): Promise<void>"
+  },
+  {
+    "name": "onAiSettingsChanged",
+    "line": 3448,
+    "signature": "onAiSettingsChanged(handler: () => void): () => void"
+  },
+  {
+    "name": "openAiModelSettings",
+    "line": 3450,
+    "signature": "openAiModelSettings(): Promise<void>"
+  },
+  {
+    "name": "openSkillsSettings",
+    "line": 3452,
+    "signature": "openSkillsSettings(): Promise<void>"
+  },
+  {
+    "name": "skillsList",
+    "line": 3454,
+    "signature": "skillsList(): Promise<UserSkillEntry[]>"
+  },
+  {
+    "name": "skillText",
+    "line": 3456,
+    "signature": "skillText(name: string): Promise<string>"
+  },
+  {
+    "name": "aiChat",
+    "line": 3457,
+    "signature": "aiChat(request: AiChatRequest): Promise<AiChatResponse>"
+  },
+  {
+    "name": "aiStream",
+    "line": 3459,
+    "signature": "aiStream(request: AiStreamRequest): Promise<void>"
+  },
+  {
+    "name": "aiStreamCancel",
+    "line": 3460,
+    "signature": "aiStreamCancel(requestId: string): Promise<void>"
+  },
+  {
+    "name": "aiGskStatus",
+    "line": 3463,
+    "signature": "aiGskStatus(withEmail?: boolean): Promise<GenSparkAccountStatus>"
+  },
+  {
+    "name": "aiGskLogin",
+    "line": 3466,
+    "signature": "aiGskLogin(): Promise<void>"
+  },
+  {
+    "name": "webSearch",
+    "line": 3468,
+    "signature": "webSearch(query: string, maxResults?: number): Promise<WebSearchResult>"
+  },
+  {
+    "name": "imageSearch",
+    "line": 3470,
+    "signature": "imageSearch(query: string, maxResults?: number): Promise<ImageSearchResponse>"
+  },
+  {
+    "name": "generateImage",
+    "line": 3472,
+    "signature": "generateImage(op: { prompt: string; aspectRatio?: string }): Promise<GenerateImageResult>"
+  },
+  {
+    "name": "fetchImage",
+    "line": 3474,
+    "signature": "fetchImage(url: string): Promise<{ base64: string; mime: string } | null>"
+  },
+  {
+    "name": "onAiStream",
+    "line": 3475,
+    "signature": "onAiStream(handler: (chunk: AiStreamChunk) => void): () => void"
+  },
+  {
+    "name": "pickAttachments",
+    "line": 3477,
+    "signature": "pickAttachments(): Promise<AttachmentAddResult | null>"
+  },
+  {
+    "name": "addAttachmentPaths",
+    "line": 3479,
+    "signature": "addAttachmentPaths(paths: string[]): Promise<AttachmentAddResult>"
+  },
+  {
+    "name": "addPastedImage",
+    "line": 3482,
+    "signature": "addPastedImage(data: ArrayBuffer, ext: string): Promise<AttachmentAddResult>"
+  },
+  {
+    "name": "readAttachment",
+    "line": 3484,
+    "signature": "readAttachment(path: string, offset: number, maxChars: number): Promise<AttachmentReadResult>"
+  },
+  {
+    "name": "readAttachmentImage",
+    "line": 3486,
+    "signature": "readAttachmentImage(path: string): Promise<AttachmentImageResult>"
+  },
+  {
+    "name": "getPathForFile",
+    "line": 3488,
+    "signature": "getPathForFile(file: File): string"
+  }
+]

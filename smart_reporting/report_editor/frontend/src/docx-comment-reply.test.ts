@@ -103,3 +103,17 @@ it('scrolls the reply input into view whenever keyboard navigation returns to it
  f.controls.openFor(targetId);expect(scroll).toHaveBeenCalledWith({block:'nearest'})
  input.blur();scroll.mockClear();input.focus();expect(scroll).toHaveBeenCalledWith({block:'nearest'})
 })
+
+it('exposes unsubmitted reply input so isolated document actions can preserve it',()=>{
+ const f=fixture();f.controls.openFor(targetId)
+ const input=f.root.querySelector<HTMLTextAreaElement>('[data-comment-reply-text]')!
+ expect('hasPendingInput' in f.controls&&f.controls.hasPendingInput).toBe(false)
+ input.value='保留未提交回复'
+ expect('hasPendingInput' in f.controls&&f.controls.hasPendingInput).toBe(true)
+ expect(f.draft.operations).toEqual([])
+ f.root.querySelector<HTMLButtonElement>('[data-comment-reply-cancel]')!.click()
+ expect('hasPendingInput' in f.controls&&f.controls.hasPendingInput).toBe(false)
+ f.controls.openFor(targetId);input.value='添加回复';f.controls.flush()
+ expect('hasPendingInput' in f.controls&&f.controls.hasPendingInput).toBe(false)
+ expect(f.draft.operations).toHaveLength(1)
+})

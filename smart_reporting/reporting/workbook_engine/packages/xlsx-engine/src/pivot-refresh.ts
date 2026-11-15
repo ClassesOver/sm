@@ -104,6 +104,7 @@ function escapeAttribute(value: string): string {
 function measureCellXml(value: SourceValue): string {
   if (value === null || value === '') return '<m/>'
   if (typeof value === 'number') return `<n v="${value}"/>`
+  if (typeof value === 'boolean') return `<b v="${value ? 1 : 0}"/>`
   const n = Number(value)
   if (Number.isFinite(n) && value.trim() !== '') return `<n v="${n}"/>`
   return `<s v="${escapeAttribute(String(value))}"/>`

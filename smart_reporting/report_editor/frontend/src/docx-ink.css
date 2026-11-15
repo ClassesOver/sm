@@ -1,0 +1,5 @@
+/* Fixed-source InkOverlay positioning; parent is the unscaled page wrapper. */
+.ink-overlay{position:absolute;inset:0;z-index:12;pointer-events:none;overflow:hidden}
+.ink-overlay.ink-active{pointer-events:auto;touch-action:none;cursor:crosshair}
+.ink-overlay.ink-tool-eraser{cursor:cell}
+.ink-svg{width:100%;height:100%;display:block;overflow:visible}

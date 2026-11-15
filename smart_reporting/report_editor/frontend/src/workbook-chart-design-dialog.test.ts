@@ -170,3 +170,21 @@ it.each(['resolve', 'reject', 'dispose'] as const)('ignores a stale %s receipt a
     dialog.dispose()
   }
 })
+
+it('blocks only ineffective scatter off requests and resets the restriction on reopen',()=>{
+ const apply=vi.fn(),dialog=createChartDesignDialog(document.body,apply)
+ const target={chartPath:'xl/charts/chart1.xml',sheetId:'sheet-1',sheetName:'Sheet1',property:'labels' as const}
+ try{
+  dialog.open({...target,initial:{dataLabels:'value',dataLabelsOffUnavailable:true}})
+  const labels=document.querySelector<HTMLSelectElement>('[aria-label="数据标签"]')!
+  expect(labels.querySelector<HTMLOptionElement>('option[value="none"]')!.disabled).toBe(true)
+  expect(document.body.textContent).toContain('首个系列')
+  labels.value='none';document.querySelector<HTMLButtonElement>('[data-chart-design-submit]')!.click()
+  expect(apply).not.toHaveBeenCalled()
+  expect(document.querySelector('[role="alert"]')!.textContent).toContain('首个系列')
+  dialog.open({...target,initial:{dataLabels:'value'}})
+  expect(labels.querySelector<HTMLOptionElement>('option[value="none"]')!.disabled).toBe(false)
+  labels.value='none';document.querySelector<HTMLButtonElement>('[data-chart-design-submit]')!.click()
+  expect(apply).toHaveBeenCalledWith({chartPath:target.chartPath,dataLabels:'none'},expect.anything())
+ }finally{dialog.dispose()}
+})
