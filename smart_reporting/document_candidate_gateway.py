@@ -46,6 +46,10 @@ class DocumentCandidateGateway:
         scope = await self._scope(channel, identity)
         adapter = self._registry.require(scope.format)
         request = DocumentCandidateRequest(scope, request_id, instruction, selection)
+        # Request validation and adapter lookup may precede asynchronous work.
+        # Recheck immediately before dispatch as well as after it completes.
+        if await self._scope(channel, identity) != scope:
+            raise DocumentCandidateDenied("document_scope_changed")
         task_id = await adapter.prepare(request)
         # The authorization may have been revoked while the adapter awaited.
         if await self._scope(channel, identity) != scope:
@@ -57,6 +61,8 @@ class DocumentCandidateGateway:
         if not task_id or len(task_id) > 256:
             raise ValueError("document_task_id_invalid")
         adapter = self._registry.require(scope.format)
+        if await self._scope(channel, identity) != scope:
+            raise DocumentCandidateDenied("document_scope_changed")
         result = await adapter.status(scope, task_id)
         if await self._scope(channel, identity) != scope:
             raise DocumentCandidateDenied("document_scope_changed")
