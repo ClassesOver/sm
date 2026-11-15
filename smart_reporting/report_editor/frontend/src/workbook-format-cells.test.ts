@@ -72,20 +72,20 @@ it('preserves imported protection booleans when applying unrelated formatting', 
     removedEntries: [], addedEntries: [], touchedEntries: [path],
   })).buffer
   const edited = await applyCellEdits(imported, [
-    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, style: { bold: true } },
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, cell: { value: null }, style: { bold: true } },
   ])
   const model = await readWorkbook(edited)
   const xf = model.styles.cellXfs[model.sheets[0]!.cells.A1!.styleIndex!]!
   expect(xf.protection).toEqual({ locked: false, hidden: true })
   expect(model.styles.fonts[xf.fontId]?.bold).toBe(true)
   const locked = await applyCellEdits(edited, [
-    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, style: { protectionLocked: true } },
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, cell: { value: null }, style: { protectionLocked: true } },
   ])
   const lockedModel = await readWorkbook(locked)
   expect(lockedModel.styles.cellXfs[lockedModel.sheets[0]!.cells.A1!.styleIndex!]?.protection)
     .toEqual({ locked: true, hidden: true })
   const visible = await applyCellEdits(locked, [
-    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, style: { protectionHidden: false } },
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, cell: { value: null }, style: { protectionHidden: false } },
   ])
   const visibleModel = await readWorkbook(visible)
   expect(visibleModel.styles.cellXfs[visibleModel.sheets[0]!.cells.A1!.styleIndex!]?.protection)
