@@ -51,3 +51,17 @@ def test_registry_fails_closed_and_rejects_duplicates():
     assert registry.require(DocumentFormat.DOCX) is adapter
     with pytest.raises(ValueError, match="document_adapter_already_registered"):
         registry.register(adapter)
+
+
+def test_selection_snapshot_is_independent_of_caller_mutations():
+    target = {"cell": "A1", "metadata": {"sheet": "Sheet1"}}
+    request = DocumentCandidateRequest(scope(DocumentFormat.XLSX), "id", "Edit", (target,))
+    target["cell"] = "Z99"
+    target["metadata"]["sheet"] = "Other"
+    assert request.selection == ({"cell": "A1", "metadata": {"sheet": "Sheet1"}},)
+
+
+@pytest.mark.parametrize("selection", [(None,), ({},), ("A1",)])
+def test_malformed_selection_rejected(selection):
+    with pytest.raises(ValueError, match="document_selection_invalid"):
+        DocumentCandidateRequest(scope(), "id", "Edit", selection)
