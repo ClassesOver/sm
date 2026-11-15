@@ -314,6 +314,67 @@ function setKnowledgeDraftAttachments(space: string, ids: string[], conversation
   } catch { /* Keep the in-page attachments. */ }
 }
 
+function chooseWorkspaceAttachments() {
+  const space = currentSpace, conversation = conversationOf(space), account = accountGeneration
+  if (!space || busy || !knowledgeConversations.has(space) || knowledgePending.has(space)) return
+  const current = new Set(knowledgeDraftAttachments(space).map(file => file.id))
+  const candidates = library.entries.filter(file => file.space === space && !current.has(file.id))
+  const location = workspaceFileLocation()
+  const dialog = document.createElement('dialog')
+  dialog.className = 'office-administration office-attachment-picker'
+  dialog.setAttribute('aria-label', '从工作区选择附件')
+  dialog.innerHTML = `<h2>从工作区选择附件</h2><form>
+    <label>筛选文件<input type="text" maxlength="160" autofocus></label>
+    <fieldset><legend>工作区文件</legend>${candidates.map(file => `<label>
+      <input type="checkbox" aria-label="${escape(file.name)}" value="${escape(file.id)}">
+      <span>${escape(file.name)}</span><small>${escape(location(file.folder))}</small></label>`).join('')}
+      <p data-empty-files hidden>没有可添加的文件。</p>
+    </fieldset>
+    <button type="submit" disabled>添加所选文件</button><button type="button" data-close>取消</button>
+    <p role="status"></p></form>`
+  dialog.addEventListener('click', event => event.stopPropagation())
+  dialog.onclose = () => dialog.remove()
+  const form = dialog.querySelector('form')!
+  const filter = form.querySelector<HTMLInputElement>('[type=text]')!
+  const submit = form.querySelector<HTMLButtonElement>('[type=submit]')!
+  const choices = [...form.querySelectorAll<HTMLInputElement>('[type=checkbox]')]
+  const selected = () => choices.filter(choice => choice.checked).map(choice => choice.value)
+  const empty = form.querySelector<HTMLElement>('[data-empty-files]')!
+  empty.hidden = choices.length > 0
+  filter.oninput = () => {
+    const query = filter.value.trim().toLowerCase()
+    let visible = 0
+    for (const choice of choices) {
+      const row = choice.closest('label')!
+      row.hidden = !row.textContent!.toLowerCase().includes(query)
+      if (!row.hidden) visible++
+    }
+    empty.hidden = visible > 0
+  }
+  form.onchange = () => { submit.disabled = !selected().length }
+  form.onsubmit = event => {
+    event.preventDefault()
+    if (account !== accountGeneration || space !== currentSpace || conversation !== conversationOf(space) || knowledgePending.has(space)) {
+      dialog.close()
+      return
+    }
+    const choices = new Set(selected())
+    const next = [...knowledgeDraftAttachments(space).map(file => file.id),
+      ...library.entries.filter(file => file.space === space && choices.has(file.id)).map(file => file.id)]
+    if (new Set(next).size > 10) {
+      form.querySelector('[role=status]')!.textContent = '一次最多添加 10 个附件。'
+      return
+    }
+    setKnowledgeDraftAttachments(space, [...new Set(next)], conversation)
+    dialog.close()
+    render()
+    root.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()
+  }
+  form.querySelector<HTMLButtonElement>('[data-close]')!.onclick = () => dialog.close()
+  root.append(dialog)
+  dialog.showModal()
+}
+
 function ask() {
   const turns = knowledgeTurns.get(currentSpace) ?? []
   const pending = knowledgePending.has(currentSpace)
@@ -351,6 +412,7 @@ function ask() {
           aria-label="移除附件 ${escape(file.name)}">${escape(file.name)} ×</button>`).join('')}</div>
       <textarea aria-label="向知识库提问" placeholder="问一个关于收藏文件的问题…" maxlength="8000" ${pending || !ready || !currentUser ? 'disabled' : ''}>${pending ? '' : escape(draft)}</textarea>
       <div><span class="kb-model">默认模型</span><button data-action="kb-attach" ${ready && canWrite() && !pending ? '' : 'disabled'} aria-label="添加附件">${icon('plus')}</button>
+      <button data-action="kb-choose-attachment" ${ready && !pending && !busy && library.entries.length ? '' : 'disabled'}>从工作区选择附件</button>
       ${pending ? '<button data-action="kb-stop" class="send">停止</button>' :
         `<button data-action="kb-send" ${canSend ? '' : 'disabled'} class="send" aria-label="发送"><img alt="" src="${assets}send-enter-${canSend ? 'on' : 'off'}.png"></button>`}</div>
     </div></div></section>`
@@ -532,6 +594,22 @@ function showFavoriteGroups(entries: Entry[]) {
   input.select()
 }
 
+function workspaceFileLocation() {
+  const workspaceName = spaces.find(space => space.id === currentSpace)?.name ?? 'GenOffice'
+  const foldersById = new Map(library.folders.map(item => [item.id, item]))
+  return (id: string) => {
+    const ancestors: string[] = []
+    const visited = new Set<string>()
+    let item = foldersById.get(id)
+    while (item && !visited.has(item.id)) {
+      visited.add(item.id)
+      ancestors.push(item.name)
+      item = foldersById.get(item.parent)
+    }
+    return [workspaceName, ...ancestors.reverse()].join(' / ')
+  }
+}
+
 function renderEntries() {
   const list = root.querySelector('.file-list')
   if (!list) return
@@ -591,19 +669,7 @@ function renderEntries() {
     `${count} 项${partial ? '（部分匹配）' : ''}${modelOrder.size && !sortByName ? ' · 已由 AI 重排' : result?.rerankUnavailable ? ' · AI 重排暂不可用' : ''}`
   const message = searching ? '正在搜索正文…' : failed ? '正文搜索失败，请重试。' : query || filter ? '找不到匹配的文件。' : view === 'folder' ? '这个文件夹还是空的。新建文件，或把文件拖到这里。' :
     view === 'starred' ? '暂无收藏文件。' : '暂无最近文件 — 新建或打开一个文件开始使用。'
-  const workspaceName = spaces.find(space => space.id === currentSpace)?.name ?? 'GenOffice'
-  const foldersById = new Map(library.folders.map(item => [item.id, item]))
-  const location = (id: string) => {
-    const ancestors: string[] = []
-    const visited = new Set<string>()
-    let item = foldersById.get(id)
-    while (item && !visited.has(item.id)) {
-      visited.add(item.id)
-      ancestors.push(item.name)
-      item = foldersById.get(item.parent)
-    }
-    return [workspaceName, ...ancestors.reverse()].join(' / ')
-  }
+  const location = workspaceFileLocation()
   list.innerHTML = count ? folderResults.map(item => `<div class="file-row folder-list-row" data-drop-folder="${escape(item.id)}">
     <button data-folder="${escape(item.id)}" ${canWrite() ? 'draggable="true"' : ''}>${icon('folder')} ${escape(item.name)}</button>
     ${canWrite() ? `<button data-folder-actions="${escape(item.id)}" aria-label="管理文件夹 ${escape(item.name)}">${icon('more')}</button>` : ''}
@@ -1194,6 +1260,7 @@ root.addEventListener('click', event => {
     render()
     return
   }
+  if (data.action === 'kb-choose-attachment') { chooseWorkspaceAttachments(); return }
   if (data.action === 'kb-attach') { picker.removeAttribute('webkitdirectory'); picker.click(); return }
   if (data.openAnswerDocx) {
     const entry = library.entries.find(item => item.id === data.openAnswerDocx)
