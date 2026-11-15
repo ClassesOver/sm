@@ -7,11 +7,11 @@ ephemeral and process-local; no acceptance or saving API is provided.
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
 import hashlib
 import io
 import json
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from typing import Any
 
 from openpyxl import load_workbook
