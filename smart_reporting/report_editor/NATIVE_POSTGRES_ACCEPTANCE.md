@@ -138,3 +138,33 @@ passed (1 passed, 8.81s). Thus the earlier statement that delivery stores are
 doubles remains true for the original runs, not this new dedicated scenario.
 Exact run counts, grant rotation behavior, cleanup and remaining synthetic
 ASGI/tenant boundaries: `NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`.
+
+## GenOffice Word AI task recovery
+
+`test_native_word_task_chain_docx.py` uses a real DOCX, PostgreSQL task and
+revision repositories, an ASGI editor client, and a synthetic MCP transport.
+Run it against a disposable PostgreSQL database because its fixture truncates
+task and document tables. Set both `REPORTING_TEST_DB_URL` and `AGENT_DB_URL` to
+that database. The fixture imports the application middleware, so set
+`AGENT_WORKSPACE_HMAC_SECRET`, `AGENT_MANAGEMENT_CREDENTIAL_KEYS` with a throwaway
+Fernet key, and `AGENT_REPORT_PUBLIC_BASE_URL` for the isolated run. Put a
+working Node executable for the test OS on `PATH` and install the frontend
+dependencies used by the native DOCX engine.
+
+The fixture injects a `WordTaskDispatcher`. In application startup,
+`create_native_ai_service` uses the GenOffice Agno planner. Production recovery
+through the dispatcher requires application wiring and a trusted execution
+transport.
+
+The isolated run passed five selected cases on PostgreSQL with Node 24. It
+covered HTTP upload, start, explicit acceptance, save and independent DOCX
+readback, plus completed-receipt replay, stale-worker cancellation after
+takeover, and recovery after both a lost commit acknowledgement and a finish
+failure. The recovery cases verified that the model transport was not called
+again once a trusted receipt existed.
+
+```bash
+python -m pytest -q -o addopts='' \
+  smart_reporting/reporting/tests/test_native_word_task_chain_docx.py \
+  -k 'existing_http_start_status or old_executor_cancel or completed_receipt_restores or persisted_receipt_after_uncertain'
+```
