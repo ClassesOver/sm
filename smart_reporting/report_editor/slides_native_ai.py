@@ -132,6 +132,7 @@ class NativeSlidesAIService(NativeAIService):
         changes = base[0] if base else {}
         if changes.get("newSlides") or changes.get("deletedSlides"):
             raise _invalid("native_ai_selection_invalid", "请先保存新建或删除的页面，再生成 AI 候选。")
+        selection = deepcopy(selection)
         request_id = self._request_id(client_request_id)
         request_sha256 = native_digest({"context": context.digest(), "instruction": instruction,
             "operations": base, "selection": selection, "scope": scope})

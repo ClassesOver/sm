@@ -83,6 +83,28 @@ class Editor:
 
 
 @pytest.mark.anyio
+async def test_native_pptx_ai_keeps_the_submitted_selection_during_background_preview():
+    from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
+
+    prompts = []
+
+    async def planner(prompt, **_kwargs):
+        prompts.append(prompt)
+        return SlidesAIProposal(summary="润色标题", edits=[
+            {"slideIndex": 0, "elementId": "title", "text": "候选标题"},
+        ], order=[0, 1])
+
+    ai = NativeSlidesAIService(Editor(), planner=planner, enabled=True)
+    selection = [{"slideIndex": 0, "elementId": "title"}]
+    started = await ai.start_edit(None, client_request_id=uuid4().hex, instruction="润色",
+        expected_sha256="a" * 64, operations=[], selection=selection)
+    selection[0]["slideIndex"] = 1
+    result = await ai.wait_edit_status(None, started["editId"])
+    assert prompts and "未选择的机密文字" not in prompts[0]
+    assert result["status"] == "succeeded", result
+
+
+@pytest.mark.anyio
 async def test_native_pptx_ai_uses_unsaved_selection_and_accepts_combined_snapshot():
     from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
     editor = Editor()
@@ -196,7 +218,7 @@ async def test_native_pptx_ai_http_requires_csrf_version_scope_and_strict_select
         async def lookup_session(self, raw):
             if raw != "session":
                 raise ReportingError("native_permission_denied", "无原生编辑授权")
-            return SimpleNamespace(report_id="slides", revision=1)
+            return SimpleNamespace(report_id="slides", revision=1, capabilities={})
 
     async def planner(_prompt, **_kwargs):
         return SlidesAIProposal(summary="候选", edits=[{"slideIndex": 0, "elementId": "title", "text": "候选"}], order=[0, 1])
