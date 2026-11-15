@@ -163,7 +163,7 @@ export function showOfficeReport(
   const sourceNotice = document.createElement('p')
   sourceNotice.setAttribute('aria-live', 'polite')
   sourceNotice.textContent = '正在读取工作区数据源…'
-  let sourcesReady = false
+  let hasAvailableSources = false
   let restoring = true
   let submitting = false
   let paused: ReportPause | undefined
@@ -173,8 +173,8 @@ export function showOfficeReport(
   host.append(panel)
   panel.showModal()
   function updateSubmit() {
-    start.disabled = restoring || submitting || (!paused && !sourcesReady)
-    sourceNotice.hidden = Boolean(paused) || sourcesReady
+    start.disabled = restoring || submitting || (!paused && !hasAvailableSources)
+    sourceNotice.hidden = Boolean(paused) || !sourceNotice.textContent
   }
   function setPause(value?: ReportPause, question?: string) {
     paused = value
@@ -224,11 +224,12 @@ export function showOfficeReport(
   let saved = pauseIds.get(key)
   try { saved ??= sessionStorage.getItem(key) ?? undefined } catch { /* Use in-memory state. */ }
   void restore(saved)
-  void officeRequest<{items: {id: string; name?: string; available: boolean}[]}>(
+  void officeRequest<{items: {id: string; name?: string; available: boolean; reason?: string}[]}>(
     `/workspaces/${encodeURIComponent(space.id)}/data-sources`,
   ).then(result => {
     if (!panel.open) return
-    for (const source of result.items.filter(item => item.available)) {
+    const availableSources = result.items.filter(item => item.available)
+    for (const source of availableSources) {
       const checkbox = document.createElement('input')
       checkbox.type = 'checkbox'
       checkbox.value = source.id
@@ -237,7 +238,13 @@ export function showOfficeReport(
       sources.append(label)
     }
     sources.hidden = Boolean(paused) || sources.childElementCount === 1
-    sourcesReady = true
+    hasAvailableSources = availableSources.length > 0
+    const unavailable = result.items.filter(item => !item.available)
+      .map(item => `${item.name ?? item.id}：${item.reason ?? '暂不可用。'}`)
+    sourceNotice.textContent = [
+      ...(hasAvailableSources ? [] : ['当前工作区没有可用于报告的数据源。请联系管理员检查授权或连接配置。']),
+      ...unavailable,
+    ].join(' ')
   }).catch(error => {
     const reason = error instanceof Error ? error.message : '无法读取工作区数据源。'
     sourceNotice.textContent = `${reason} 请重新打开报告窗口重试。`

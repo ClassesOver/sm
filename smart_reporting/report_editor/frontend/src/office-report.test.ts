@@ -34,6 +34,26 @@ it('waits for the workspace source list before submitting a new report', async (
   }
 })
 
+it('explains why a workspace cannot generate a new report without an available source', async () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {configurable:true, value:function (this: HTMLDialogElement) { this.open = true }})
+  const send = vi.fn(async (url: string) => {
+    if (url.endsWith('/reports/pending')) return Response.json({pending:null})
+    return Response.json({items:[{id:'legacy',name:'历史连接',available:false,reason:'缺少解密历史凭据所需的密钥。'}]})
+  })
+  vi.stubGlobal('fetch', send)
+  try {
+    showOfficeReport(host, {id:'no-source-team',name:'团队',role:'owner',personal_user:null,archived:false}, async () => {})
+    const notice = host.querySelector('form [aria-live=polite]')!
+    await vi.waitFor(() => expect(notice?.textContent).toContain('缺少解密历史凭据所需的密钥。'))
+    expect(notice.textContent).toContain('当前工作区没有可用于报告的数据源。')
+    expect(host.querySelector<HTMLButtonElement>('button[type=submit]')!.disabled).toBe(true)
+  } finally {
+    Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+    host.remove()
+  }
+})
+
 it('submits the selected workspace and preserves downloads when acceptance fails', async () => {
   const report = {
     reportId: 'r1',
@@ -56,7 +76,7 @@ it('keeps the signed artifacts already issued before a workflow error', async ()
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {configurable:true, value:function (this: HTMLDialogElement) { this.open = true }})
   const send = vi.fn(async (url: string) => {
     if (url.endsWith('/reports/pending')) return Response.json({pending:null})
-    if (url.endsWith('/data-sources')) return Response.json({items:[]})
+    if (url.endsWith('/data-sources')) return Response.json({items:[{id:'sales',available:true}]})
     return Response.json({
       status:'ERROR', content:'归档写入失败。',
       step_results:[{content:{
@@ -109,7 +129,7 @@ it('sends clarification to the original run and shows its download', async () =>
   const refresh = vi.fn().mockResolvedValue(undefined)
   const send = vi.fn().mockImplementation(async (url: string, _request: RequestInit) => {
     if (url.endsWith('/reports/pending')) return Response.json({pending:null})
-    if (url.endsWith('/data-sources')) return Response.json({items:[]})
+    if (url.endsWith('/data-sources')) return Response.json({items:[{id:'sales',available:true}]})
     if (url.endsWith('/clarification')) return Response.json({status:'COMPLETED',
       content:{reportId:'r1', word:{downloadUrl:'/reports/v1/download/token/word'}, validation:{ok:false}}})
     return Response.json({status:'PAUSED', run_id:'run-1', step_requirements:[{
@@ -196,7 +216,7 @@ it.each([false, true])('shows reasons and preserves all usable links (malformed 
     }
     const send = vi.fn().mockImplementation(async (url: string, _request: RequestInit) => url.endsWith('/reports/pending')
       ? Response.json({pending:null}) : url.endsWith('/data-sources')
-      ? Response.json({items:[{id:'sales',name:'销售',available:true},{id:'blocked',available:false}]})
+      ? Response.json({items:[{id:'sales',name:'销售',available:true},{id:'blocked',available:false,reason:'历史凭据不可用。'}]})
       : Response.json({status:'COMPLETED', content:report}))
     vi.stubGlobal('fetch', send)
     const refresh = vi.fn().mockResolvedValue(undefined)
@@ -205,6 +225,7 @@ it.each([false, true])('shows reasons and preserves all usable links (malformed 
     host.querySelector('textarea')!.value = '生成报告'
     host.querySelector('select')!.value = 'pptx'
     expect(host.querySelector('input[value=blocked]')).toBeNull()
+    expect(host.querySelector('form [aria-live=polite]')?.textContent).toContain('历史凭据不可用。')
     host.querySelector<HTMLInputElement>('input[value=sales]')!.checked = true
     host.querySelector('form')!.dispatchEvent(new Event('submit', {cancelable:true}))
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce())
