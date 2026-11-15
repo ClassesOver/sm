@@ -26,7 +26,7 @@ function operation(kind:string):NativeOperation{
 }
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
-async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;signatureTargets?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
+async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;noFormFields?:boolean;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;signatureTargets?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
  pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??'';pdfMock.printed=[]
  const notes=options.savedThread?[
   { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
@@ -44,6 +44,7 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
   widgets:[{pageIndex,rect:[30,200,150,230]}],
  })): []
  const model={sourceSha256,pages:Array.from({length:options.exportPages??1},(_,index)=>({pageId:'sha256:'+sourceSha256+':page:'+index,index,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes})),formFields:[{name:'existing',kind:'text',value:options.requiredField?'':'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)},...(options.navigationFields?[{name:'locked',kind:'text',value:'Locked',editable:false,fieldId:'2'.repeat(64),expectedFieldSha256:'3'.repeat(64)},{name:'secondary',kind:'text',value:'Second',editable:true,fieldId:'4'.repeat(64),expectedFieldSha256:'5'.repeat(64)}]:[]),...signatureFields.map(field=>({...field,kind:'signature',value:null,editable:false}))],signatureFields,formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
+ if(options.noFormFields){model.formFields=[];model.formDesignWidgets=[]}
  const staticModel=options.staticFills?{staticFormFills:[{id:'saved-fill',kind:'text',pageIndex:0,rect:[30,100,150,124],text:'已保存填写',fontSize:14,color:'#111111',align:'left',editable:true,expectedImageSha256:'9'.repeat(64)}]}:{}
  const attachmentModel=options.attachments?{attachmentsEditable:true,attachments:[{key:'stored',name:'keep.txt',description:'保留附件',size:3,contentSha256:'b'.repeat(64),attachmentId:'c'.repeat(64),expectedAttachmentSha256:'d'.repeat(64)}]}:{}
  const api={exportImages:vi.fn(async()=>{throw new Error('test request observed')}),file:async()=>new Uint8Array(options.sourceSize??2).buffer,preview:vi.fn(async()=>({sourceSha256,model:{...model,...attachmentModel,...staticModel,...(options.digitalSignatures?{digitalSignatures:[],signatureVerification:{scope:"basic-integrity-only",trustPolicy:"none",readable:true,issues:[],revocationChecked:false,timestampsVerified:false}}:{})}})),previewFile:vi.fn(async()=>new Uint8Array([3,4]).buffer)} as unknown as ReturnType<typeof createNativeApi>
@@ -448,6 +449,24 @@ it('submits merger settings with Enter and the selected source direction radio',
  count.value='3';count.dispatchEvent(new Event('input',{bubbles:true}));expect(count.hasAttribute('aria-invalid')).toBe(false)
  enter()
  const operation={kind:'mergePages',perSheet:3,direction:'horizontal',separator:true}
+ await vi.waitFor(()=>expect(f.draft.operations).toEqual([operation]))
+ expect(document.activeElement).toBe(open)
+ await vi.waitFor(()=>expect(f.api.preview).toHaveBeenCalledWith(expect.objectContaining({operations:[operation]}),expect.anything()))
+})
+it('offers one source row for splitting every page into 2, 4 or 9 pages', async () => {
+ const f=await fixture({exportPages:3,noFormFields:true});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
+ const open=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.splitPages"]')!
+ open.focus();open.click()
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog:has(.pdf-layout-body)')!
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ expect(dialog.getAttribute('aria-label')).toBe('拆分页面')
+ expect(dialog.textContent).toContain('将每页按网格切分为多页（共 3 页）')
+ const choices=[...dialog.querySelectorAll<HTMLButtonElement>('.pdf-layout-split-options button')]
+ expect(choices.map(button=>button.textContent)).toEqual(['1 分 2','1 分 4','1 分 9'])
+ expect(document.activeElement).toBe(choices[0])
+ choices[1]!.click()
+ const operation={kind:'splitPages',perPage:4}
  await vi.waitFor(()=>expect(f.draft.operations).toEqual([operation]))
  expect(document.activeElement).toBe(open)
  await vi.waitFor(()=>expect(f.api.preview).toHaveBeenCalledWith(expect.objectContaining({operations:[operation]}),expect.anything()))

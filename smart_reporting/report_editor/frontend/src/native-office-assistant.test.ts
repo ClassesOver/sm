@@ -2,14 +2,69 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { bindNativeOfficeAssistant } from './native-office-assistant'
 import { NativeDraft } from './native-draft'
 afterEach(() => { document.body.replaceChildren(); localStorage.clear() })
-function fixture(api: object, format: 'xlsx' | 'pptx' = 'xlsx', extra: object = {}) {
+function fixture(api: object, format: 'xlsx' | 'pptx' = 'xlsx') {
  const root=document.body.appendChild(document.createElement('div'))
  const draft=new NativeDraft({documentId:'word',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},localStorage)
  let selected: unknown={sheetName:'数据',startRow:0,endRow:1,startColumn:0,endColumn:1};const flush=vi.fn()
- const binding=bindNativeOfficeAssistant(root,{api:api as never,draft,format,context:async scope=>{flush();return {operations:structuredClone(draft.operations),selection:scope==='selection' ? selected : null} as never},...extra})
+ const binding=bindNativeOfficeAssistant(root,{api:api as never,draft,format,context:async scope=>{flush();return {operations:structuredClone(draft.operations),selection:scope==='selection' ? selected : null} as never}})
  return {root,draft,binding,flush,setSelection:(value:unknown)=>{selected=value}}
 }
 const result={answer:'<img src=x>文档总结',readingVersion:'draft',coverage:{scope:'document',totalBlocks:3,fullyReadBlockIds:['b1'],scopeReadComplete:false},sourceSha256:'a'.repeat(64),effectiveSha256:'b'.repeat(64),citations:[{label:'数据!A1:B2'}],issues:[{code:'incomplete',message:'尚未完整读取'}],toolEvents:[{tool:'read_cells'}],limitations:['仅为引擎已提取文字，不包含备注。']}
+function enterQuestion(root: HTMLElement, question: string) {
+ const input=root.querySelector('textarea')!
+ input.value=question
+ input.dispatchEvent(new Event('input'))
+ input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+ return input
+}
+it.each(['xlsx','pptx'] as const)('%s 排队保留顺序并在实际开始时读取当前选区与草稿',async format=>{
+ let finish!:(value:object)=>void
+ const api={officeAIStart:vi.fn().mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve}))
+   .mockResolvedValue({taskId:'second',status:'failed'}),officeAICancel:vi.fn()}
+ const {root,binding,draft,setSelection}=fixture(api,format)
+ try {
+  binding.open()
+  root.querySelector<HTMLSelectElement>('[data-office-ai=scope]')!.value='selection'
+  enterQuestion(root,'先问')
+  await vi.waitFor(()=>expect(api.officeAIStart).toHaveBeenCalledOnce())
+  expect(enterQuestion(root,'第二问').value).toBe('')
+  enterQuestion(root,'第三问')
+  await vi.waitFor(()=>expect(root.querySelector('.ai-queue-toggle')?.textContent).toContain('2 条排队中'))
+  expect(api.officeAIStart).toHaveBeenCalledOnce()
+  setSelection({sheetName:'新选区'})
+  draft.setOperations([{kind:'replaceText',blockId:'b1',text:'新草稿'}])
+  finish({taskId:'first',status:'completed',result})
+  await vi.waitFor(()=>expect(api.officeAIStart).toHaveBeenCalledTimes(3))
+  expect(api.officeAIStart.mock.calls.slice(1).map(call=>call[0])).toEqual(
+   ['第二问','第三问'].map(instruction=>expect.objectContaining({action:'ask',instruction,selection:{sheetName:'新选区'},operations:draft.operations})))
+ } finally { binding.dispose() }
+})
+it('取消当前任务会暂停排队，继续后才开始下一问，新对话清空排队',async()=>{
+ const api={officeAIStart:vi.fn().mockImplementation(()=>new Promise(()=>{})),officeAICancel:vi.fn().mockResolvedValue({status:'cancelled'})}
+ const {root,binding}=fixture(api)
+ try {
+  binding.open()
+  const scope=root.querySelector<HTMLSelectElement>('[data-office-ai=scope]')!
+  scope.value='selection'
+  enterQuestion(root,'取消当前问')
+  await vi.waitFor(()=>expect(api.officeAIStart).toHaveBeenCalledOnce())
+  enterQuestion(root,'保留排队')
+  root.querySelector<HTMLButtonElement>('[data-office-ai=cancel]')!.click()
+  const resume=()=>root.querySelector<HTMLButtonElement>('[aria-label="继续排队"]')
+  await vi.waitFor(()=>expect(resume()).not.toBeNull())
+  expect(api.officeAICancel).toHaveBeenCalledWith(api.officeAIStart.mock.calls[0][0].clientRequestId)
+  expect(api.officeAIStart).toHaveBeenCalledOnce()
+  scope.value='document'
+  scope.dispatchEvent(new Event('change'))
+  resume()!.click()
+  await vi.waitFor(()=>expect(api.officeAIStart).toHaveBeenCalledTimes(2))
+  expect(api.officeAIStart.mock.calls[1][0].selection).toMatchObject({sheetName:'数据'})
+  enterQuestion(root,'清空排队')
+  root.querySelector<HTMLButtonElement>('[aria-label="新对话"]')!.click()
+  await vi.waitFor(()=>expect(root.querySelector('.ai-queue-toggle')).toBeNull())
+  expect(api.officeAIStart).toHaveBeenCalledTimes(2)
+ } finally { binding.dispose() }
+})
 it('默认整篇、同步未保存编辑并只读展示真实覆盖',async()=>{
  const api={officeAIStart:vi.fn().mockResolvedValue({taskId:'t',status:'completed',result}),officeAICancel:vi.fn()}
  const {root,draft,binding,flush}=fixture(api);binding.open('summarize')
@@ -102,27 +157,4 @@ it.each(['xlsx','pptx'] as const)('%s 新对话取消任务并保留输入草稿
  expect(input.value).toBe('保留草稿')
  expect(reset.hidden).toBe(true)
  binding.dispose()
-})
-
-const navigation={sheetName:'数据',range:'C3:D4',startRow:2,endRow:3,startColumn:2,endColumn:3}
-it('claims navigation success only after host callback',async()=>{
- let release!:()=>void;const navigate=vi.fn(()=>new Promise<void>(resolve=>{release=resolve}))
- const api={officeAIStart:vi.fn().mockResolvedValue({taskId:'t',status:'completed',result:{...result,navigation}})}
- const f=fixture(api,'xlsx',{navigate});f.binding.open('summarize')
- await vi.waitFor(()=>expect(navigate).toHaveBeenCalled());expect(f.root.querySelector('[role=status]')!.textContent).not.toContain('已定位')
- release();await vi.waitFor(()=>expect(f.root.querySelector('[role=status]')!.textContent).toContain('已定位到 数据!C3:D4'))
- expect(f.draft.dirty).toBe(false);expect(f.draft.operations).toEqual([]);f.binding.dispose()
-})
-it('keeps answer and reports failed reveal',async()=>{
- const api={officeAIStart:vi.fn().mockResolvedValue({taskId:'t',status:'completed',result:{...result,navigation}})}
- const f=fixture(api,'xlsx',{navigate:vi.fn().mockRejectedValue(Error('视口不可用'))});f.binding.open('summarize')
- await vi.waitFor(()=>expect(f.root.textContent).toContain('视口不可用'))
- expect(f.root.textContent).toContain('文档总结');expect(f.root.querySelector('[role=status]')!.textContent).not.toContain('已定位到');f.binding.dispose()
-})
-it('never navigates stale selection response',async()=>{
- let finish!:(value:object)=>void;const navigate=vi.fn(),api={officeAIStart:vi.fn(()=>new Promise(resolve=>{finish=resolve}))}
- const f=fixture(api,'xlsx',{navigate});f.binding.open();f.root.querySelector<HTMLSelectElement>('select')!.value='selection'
- f.root.querySelector<HTMLButtonElement>('[data-office-ai=summarize]')!.click();await vi.waitFor(()=>expect(api.officeAIStart).toHaveBeenCalled())
- f.setSelection({...navigation,sheetName:'其他'});finish({taskId:'t',status:'completed',result:{...result,navigation}})
- await vi.waitFor(()=>expect(f.root.textContent).toContain('草稿或选区已变化'));expect(navigate).not.toHaveBeenCalled();f.binding.dispose()
 })

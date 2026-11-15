@@ -543,6 +543,10 @@ it('refreshes GenOffice view buttons and preview after opening or exiting Readin
     const command = (label: string) => ribbon.querySelector<HTMLButtonElement>(`[data-view-command="${label}"]`)!
     const print = command('页面视图'), web = command('Web 版式'), reading = command('阅读视图'), pagination = command('分页预览')
     expect(web.querySelector('.rb-big-icon svg')).not.toBeNull()
+    expect(print.title).toContain('按页面尺寸显示文档')
+    expect(pagination.title).toContain('真实切页')
+    expect([...ribbon.querySelectorAll('section[aria-label]')].map(group => group.getAttribute('aria-label')))
+      .toEqual(['视图', '缩放', '外观', '显示', '窗口'])
     expect(print.getAttribute('aria-pressed')).toBe('true')
     web.click(); expect(web.getAttribute('aria-pressed')).toBe('true'); expect(pagination.disabled).toBe(true)
     web.click(); expect(print.getAttribute('aria-pressed')).toBe('true'); expect(pagination.disabled).toBe(false)
@@ -550,6 +554,22 @@ it('refreshes GenOffice view buttons and preview after opening or exiting Readin
     host.querySelector<HTMLButtonElement>('.docx-read-exit')!.click()
     expect(print.getAttribute('aria-pressed')).toBe('true'); expect(reading.getAttribute('aria-pressed')).toBe('false')
     pagination.click(); expect(preview).toHaveBeenCalledOnce()
+    const zoom = command('缩放')
+    editor.view.dom.focus()
+    const down = new MouseEvent('mousedown', { cancelable: true })
+    zoom.dispatchEvent(down)
+    expect(down.defaultPrevented).toBe(true)
+    zoom.click()
+    const percent = host.querySelector<HTMLInputElement>('.docx-zoom-dialog input[type=number]')!
+    expect(document.activeElement).toBe(percent)
+    percent.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(document.activeElement).toBe(zoom)
+    const actualSize = command('100%')
+    expect(actualSize.getAttribute('aria-pressed')).toBe('true')
+    command('放大').click()
+    expect(actualSize.getAttribute('aria-pressed')).toBe('false')
+    actualSize.click()
+    expect(actualSize.getAttribute('aria-pressed')).toBe('true')
   } finally { view.dispose(); editor.destroy() }
 })
 

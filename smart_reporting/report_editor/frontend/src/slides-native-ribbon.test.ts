@@ -673,9 +673,9 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   const advancedGroup = animationPanel.querySelector<HTMLElement>('[aria-label="Advanced Animation"]')!
   const animationCommands = [...animationPanel.querySelectorAll<HTMLElement>('[data-command]:not([data-animation-effect])')]
   expect(animationCommands.map(control => control.dataset.command)).toEqual([
-    'animationPreview', 'animationNone', 'animationEffect', 'animationDirection',
-    'addAnimation', 'toggleAnimationPane', 'animationByParagraph',
+    'animationPreview', 'animationNone',
     'motionPathRight', 'motionPathDown', 'motionPathDiagonal', 'motionPathCircle', 'motionPathZigzag',
+    'animationEffect', 'animationDirection', 'addAnimation', 'toggleAnimationPane', 'animationByParagraph',
     'animationTrigger', 'animationDuration', 'animationDelay',
   ])
   const effects = [...animationGroup.querySelectorAll<HTMLButtonElement>('[data-animation-effect]')]
@@ -709,6 +709,56 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   transitions.find(button => button.dataset.transitionEffect === 'wipe')!.click()
   expect(onAction).toHaveBeenCalledWith('transition', 'wipe')
   ribbon.dispose()
+})
+
+it('folds Motion Paths before Animation and keeps the original controls working in the flyout', () => {
+  let resize: () => void = () => {}
+  const disconnect = vi.fn()
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: () => void) { resize = callback }
+    observe() {}
+    disconnect = disconnect
+  })
+  const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  try {
+    const panel = host.querySelector<HTMLElement>('[data-ribbon-panel="animations"]')!
+    const paths = panel.querySelector<HTMLButtonElement>('[data-animation-collapse="motionPaths"]')!
+    const effects = panel.querySelector<HTMLButtonElement>('[data-animation-collapse="animation"]')!
+    const pulse = panel.querySelector<HTMLButtonElement>('[data-animation-effect="pulse"]')!
+    let width = 1200
+    Object.defineProperty(panel, 'clientWidth', { get: () => width })
+    for (const group of panel.children) {
+      const button = group.querySelector<HTMLButtonElement>('[data-animation-collapse]')
+      const inlineWidth = button === effects ? 650 : button === paths ? 200 : 100
+      Object.defineProperty(group, 'offsetWidth', { get: () => button && !button.hidden ? 80 : inlineWidth })
+    }
+    host.querySelector<HTMLButtonElement>('[data-ribbon-tab="animations"]')!.click()
+    expect(paths.hidden && effects.hidden).toBe(true)
+    width = 1080; resize()
+    expect(paths.hidden).toBe(false)
+    expect(effects.hidden).toBe(true)
+    width = 640; resize()
+    expect(effects.hidden).toBe(false)
+    ribbon.setAnimationGallery('shape', 'pulse')
+    paths.click()
+    expect(paths.getAttribute('aria-expanded')).toBe('true')
+    effects.click()
+    expect(paths.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(pulse)
+    pulse.click()
+    expect(onAction).toHaveBeenCalledWith('applyAnimationEffect', 'pulse')
+    pulse.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(effects.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(effects)
+    width = 1200; resize()
+    expect(paths.hidden && effects.hidden).toBe(true)
+    expect(pulse.parentElement?.getAttribute('data-ribbon-group')).toBe('Animation')
+  } finally {
+    ribbon.dispose()
+    vi.unstubAllGlobals()
+  }
+  expect(disconnect).toHaveBeenCalledOnce()
 })
 
 it('uses source paragraph formatting actions, spacing presets and Enter-only point inputs with target and lock gates', () => {

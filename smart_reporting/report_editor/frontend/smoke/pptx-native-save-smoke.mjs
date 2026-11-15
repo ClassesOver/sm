@@ -442,6 +442,13 @@ try {
     const body = inspected.slides[0].elements.find(item => item.text.includes('Native browser formatting fixture'))
     const other = inspected.slides[0].elements.find(item => item.text.includes('Untouched object'))
     const command = id => page.locator(`[data-command="${id}"]`)
+    const clickAnimationTool = async (id, group) => {
+      const tool = command(id)
+      const flyout = page.locator(`[data-animation-collapse="${group}"]`)
+      if (!await tool.isVisible()) await flyout.click()
+      await tool.click()
+      if (await flyout.getAttribute('aria-expanded') === 'true') await flyout.click()
+    }
     const rows = () => page.locator('.animation-pane-row .animation-pane-select').allTextContents()
     await page.locator('[data-ribbon-tab="animations"]').click()
     assert.equal(await page.locator('.slides-animation-pane').isHidden(), true)
@@ -452,7 +459,7 @@ try {
     assert.match((await rows())[0], /^1 淡入/); assert.match((await rows())[1], /^2 缩放/)
     // 无：移除正文对象的全部动画
     await page.locator('#object-select').selectOption(body.id)
-    await command('animationNone').click()
+    await clickAnimationTool('animationNone', 'animation')
     assert.equal((await rows()).length, 1)
     // 按段：正文两段各生成一条飞入（自左侧）
     await command('animationByParagraph').click()
@@ -464,7 +471,7 @@ try {
     assert.match((await rows())[1], /飞入.*第 1 段$/); assert.match((await rows())[2], /飞入.*第 2 段$/)
     // 动作路径：锯齿
     await page.locator('#object-select').selectOption(other.id)
-    await command('motionPathZigzag').click()
+    await clickAnimationTool('motionPathZigzag', 'motionPaths')
     assert.equal((await rows()).length, 4)
     assert.match((await rows())[3], /动作路径/)
     // 窗格：动作路径上移一位；选中缩放改计时；删除最后一条

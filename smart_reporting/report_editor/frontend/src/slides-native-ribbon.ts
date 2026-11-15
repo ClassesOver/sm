@@ -3,7 +3,7 @@ import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
 import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
 import { SLIDE_TRANSITIONS } from './slides-transitions'
-import { AnimEffectIcon } from './vendor/genoffice-slides/components/icons'
+import { AnimEffectIcon, IconAnimStar, IconPathDiagonal } from './vendor/genoffice-slides/components/icons'
 import { EFFECT_LABELS, MOTION_PATHS, type SequenceEffect } from './slides-animation-sequence'
 import { IconApplyAll, IconTransCircle, IconTransCover, IconTransDissolve, IconTransFade, IconTransMorph, IconTransNone, IconTransPull, IconTransPush, IconTransRandom, IconTransSplit, IconTransWipe, IconTransZoom } from './vendor/genoffice-slides/components/icons'
 import { SMARTART_GALLERY } from './vendor/genoffice-slides/components/smartart-gallery-data'
@@ -292,19 +292,19 @@ const tabs: Tab[] = [
     { label: 'Animation', controls: [
       { id: 'animationNone', label: 'None', sourceActionId: 'onApplyAnimation' },
     ] },
-    { label: 'Advanced Animation', controls: [
-      { id: 'animationEffect', label: 'Effect', kind: 'select', sourceActionId: 'onAddAnimation', options: animationCards.map(([kind]) => kind) },
-      { id: 'animationDirection', label: 'Direction', kind: 'select', options: ['top', 'bottom', 'left', 'right'] },
-      { id: 'addAnimation', label: 'Add Animation', sourceActionId: 'onAddAnimation' },
-      { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane' },
-      { id: 'animationByParagraph', label: 'By Paragraph', sourceActionId: 'onToggleAnimByParagraph' },
-    ] },
     { label: 'Motion Paths', controls: [
       { id: 'motionPathRight', label: 'Line Right', sourceActionId: 'onApplyMotionPath' },
       { id: 'motionPathDown', label: 'Line Down', sourceActionId: 'onApplyMotionPath' },
       { id: 'motionPathDiagonal', label: 'Diagonal', sourceActionId: 'onApplyMotionPath' },
       { id: 'motionPathCircle', label: 'Circle', sourceActionId: 'onApplyMotionPath' },
       { id: 'motionPathZigzag', label: 'Zigzag', sourceActionId: 'onApplyMotionPath' },
+    ] },
+    { label: 'Advanced Animation', controls: [
+      { id: 'animationEffect', label: 'Effect', kind: 'select', sourceActionId: 'onAddAnimation', options: animationCards.map(([kind]) => kind) },
+      { id: 'animationDirection', label: 'Direction', kind: 'select', options: ['top', 'bottom', 'left', 'right'] },
+      { id: 'addAnimation', label: 'Add Animation', sourceActionId: 'onAddAnimation' },
+      { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane' },
+      { id: 'animationByParagraph', label: 'By Paragraph', sourceActionId: 'onToggleAnimByParagraph' },
     ] },
     { label: 'Timing', controls: [
       { id: 'animationTrigger', label: 'Trigger', kind: 'select', sourceActionId: 'onAnimTiming', options: ['onClick', 'withPrev', 'afterPrev'] },
@@ -373,7 +373,7 @@ const tabs: Tab[] = [
   { id: 'model3dFormat', label: '3D Model', context: 'model3d', groups: [{ label: 'Views', controls: [{ id: 'model3dView', label: '3D View', unavailable: noWrite('3D 视角') }] }] },
 ]
 
-function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOpen: () => void) {
+function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOpen: () => void, afterClose?: () => void) {
   const menu = document.createElement('div')
   menu.className = 'slides-ribbon-popover'
   menu.setAttribute('popover', 'manual')
@@ -390,6 +390,7 @@ function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOp
     menu.hidePopover?.()
     menu.hidden = true
     trigger.setAttribute('aria-expanded', 'false')
+    afterClose?.()
     if (focus) trigger.focus()
   }
   const open = () => {
@@ -402,7 +403,7 @@ function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOp
     menu.style.left = Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8)) + 'px'
     menu.style.top = Math.max(8, Math.min(anchor.bottom + 4, innerHeight - box.height - 8)) + 'px'
     dismiss = installPopoverDismiss(close, { inside: () => [trigger, menu] })
-    const first = menu.querySelector<HTMLElement>('[aria-pressed="true"]') ?? menu.querySelector<HTMLElement>('input, button')
+    const first = menu.querySelector<HTMLElement>('[aria-pressed="true"]:not(:disabled)') ?? menu.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)')
     first?.focus({ preventScroll: true })
   }
   trigger.onclick = () => menu.hidden ? open() : close()
@@ -497,6 +498,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let appliedAnimation = ''
   let animationHoverTimer: number | undefined
   let animationHoveredButton: HTMLButtonElement | undefined
+  const animationFlyouts: Array<{ group: HTMLElement; trigger: HTMLButtonElement; close(): void; setCollapsed(value: boolean): void; inlineWidth: number; foldedWidth: number }> = []
+  let updateAnimationLayout: (() => void) | undefined
   const cancelAnimationHover = () => {
     if (!animationHoveredButton) return
     window.clearTimeout(animationHoverTimer)
@@ -531,7 +534,10 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     for (const button of controls.get('animationNone') ?? []) (button as HTMLButtonElement).disabled = locked || !animationTarget
   }
   const selectTab = (id: string) => {
-    if (id !== 'animations') cancelAnimationHover()
+    if (id !== 'animations') {
+      cancelAnimationHover()
+      for (const flyout of animationFlyouts) flyout.close()
+    }
     if (id !== 'chartDesign') chartGallery?.close()
     if (id !== 'pictureFormat') closePictureMenus()
     if (id !== 'shapeFormat') closeShapeFormatMenus()
@@ -544,6 +550,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       button.tabIndex = selected ? 0 : -1
       panels.get(tab.id)!.hidden = !selected
     }
+    if (id === 'animations') updateAnimationLayout?.()
   }
   for (const tab of tabs) {
     const button = document.createElement('button')
@@ -936,6 +943,40 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           return button
         }))
       }
+      if (tab.id === 'animations' && ['Animation', 'Motion Paths'].includes(groupDefinition.label)) {
+        const animation = groupDefinition.label === 'Animation'
+        const items = [...group.children].filter(item => item !== heading)
+        const trigger = document.createElement('button')
+        trigger.type = 'button'
+        trigger.dataset.animationCollapse = animation ? 'animation' : 'motionPaths'
+        trigger.disabled = locked
+        trigger.hidden = true
+        trigger.innerHTML = renderToStaticMarkup(reactElement(animation ? IconAnimStar : IconPathDiagonal, { size: 24 }))
+        trigger.append(document.createTextNode(groupLabel + ' ▾'))
+        const { menu, close } = createRibbonPopover(trigger, groupLabel, () => {
+          for (const flyout of animationFlyouts) if (flyout.trigger !== trigger) flyout.close()
+        }, cancelAnimationHover)
+        menu.classList.add('slides-animation-collapsed-flyout')
+        group.append(trigger, menu)
+        const flyout: typeof animationFlyouts[number] = { group, trigger, close, inlineWidth: 0, foldedWidth: 88, setCollapsed(value) {
+          if (value === !trigger.hidden) return
+          const focused = document.activeElement
+          const restore = items.find(item => item === focused || item.contains(focused))
+          cancelAnimationHover()
+          close()
+          trigger.hidden = !value
+          if (value) menu.append(...items)
+          else for (const item of items) group.insertBefore(item, trigger)
+          if (value && restore) trigger.focus({ preventScroll: true })
+          else if (!value && (restore || focused === trigger)) {
+            const target = restore ?? items.find(item => item instanceof HTMLButtonElement && !item.disabled)
+            if (target instanceof HTMLElement) target.focus({ preventScroll: true })
+          }
+        } }
+        // Source collapse priority is Motion Paths before Animation.
+        if (animation) animationFlyouts.push(flyout)
+        else animationFlyouts.unshift(flyout)
+      }
       if (tab.id === 'chartDesign' && groupDefinition.label === 'Chart Styles') {
         chartGallery = createNativeChartGallery(group, (command, value) => options.onAction(command, value))
         chartGallery.setLocked(locked)
@@ -947,6 +988,33 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
   root.prepend(tablist)
   host.prepend(root)
+  const animationPanel = panels.get('animations')!
+  // Fixed source Ribbon.tsx COLLAPSE_ORDER and fitCount with 8px unfolding hysteresis.
+  updateAnimationLayout = () => {
+    if (animationPanel.hidden || !animationPanel.clientWidth) return
+    const style = getComputedStyle(animationPanel)
+    const available = animationPanel.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0)
+    let fullWidth = [...animationPanel.children].reduce((width, group) => width + (group as HTMLElement).offsetWidth, 0)
+    const savings = animationFlyouts.map(flyout => {
+      if (flyout.trigger.hidden) flyout.inlineWidth = flyout.group.offsetWidth
+      else flyout.foldedWidth = flyout.group.offsetWidth
+      const saving = Math.max(0, flyout.inlineWidth - flyout.foldedWidth)
+      if (!flyout.trigger.hidden) fullWidth += saving
+      return saving
+    })
+    const fitCount = (width: number) => {
+      let needed = fullWidth, count = 0
+      while (count < savings.length && needed > width) needed -= savings[count++]!
+      return count
+    }
+    const current = animationFlyouts.filter(flyout => !flyout.trigger.hidden).length
+    const fit = fitCount(available)
+    const next = fit >= current ? fit : Math.min(fitCount(available - 8), current)
+    animationFlyouts.forEach((flyout, index) => flyout.setCollapsed(index < next))
+  }
+  const animationLayoutObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateAnimationLayout) : undefined
+  animationLayoutObserver?.observe(animationPanel)
+  for (const group of animationPanel.children) animationLayoutObserver?.observe(group)
   selectTab(activeTab)
   updateTextFormattingState()
   updateSlideOrientationState()
@@ -1062,7 +1130,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
-      if (value) cancelAnimationHover()
+      for (const flyout of animationFlyouts) flyout.trigger.disabled = value
+      if (value) {
+        cancelAnimationHover()
+        for (const flyout of animationFlyouts) flyout.close()
+      }
       if (value) { closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus() }
       chartGallery?.setLocked(value)
       for (const elements of controls.values()) for (const element of elements) {
@@ -1080,7 +1152,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateCommentEdit()
       updateAIEdit()
     },
-    dispose() { cancelAnimationHover(); chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
+    dispose() { animationLayoutObserver?.disconnect(); for (const flyout of animationFlyouts) flyout.close(); cancelAnimationHover(); chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

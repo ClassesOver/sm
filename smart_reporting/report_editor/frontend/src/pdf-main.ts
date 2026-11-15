@@ -1312,12 +1312,18 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       })
       layoutActions.append(apply)
     } else {
-      layoutHint.textContent = `把每一页按显示方向均分为 2、4 或 9 页（共 ${total} 页），按可见范围分割，仍保留底层页面内容；含表单字段的来源暂不支持。保存为新修订，来源修订不变。`
+      // GenOffice Split Pages chooser: all N-up presets fill one row.
+      layoutHint.textContent = `将每页按网格切分为多页（共 ${total} 页）`
+      const choices = documentElement('div', 'pdf-layout-split-options')
       for (const perPage of [2, 4, 9]) {
-        const choice = documentElement('button'); choice.type = 'button'; choice.textContent = `拆成 ${perPage} 页`; choice.dataset.pdfSplitPages = String(perPage)
+        const choice = documentElement('button')
+        choice.type = 'button'; choice.textContent = `1 分 ${perPage}`; choice.dataset.pdfSplitPages = String(perPage)
         choice.addEventListener('click', () => { void applyPageLayout(pdfSplitPagesOperation(perPage)).catch(error => { fail(error); showError(error) }) })
-        layoutBody.append(choice)
+        choices.append(choice)
       }
+      const note = documentElement('p', 'pdf-measure-hint')
+      note.textContent = '每页按可见范围分割，保留底层内容。含表单字段的来源暂不支持。保存为新修订，来源修订不变。'
+      layoutBody.append(choices, note)
     }
     layoutDialog.showModal()
     layoutBody.querySelector<HTMLElement>('input, [data-pdf-split-pages]')?.focus()

@@ -19,6 +19,7 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   title: HTMLElement; help: HTMLElement; input: HTMLTextAreaElement
   start: HTMLButtonElement; cancel: HTMLButtonElement; close: HTMLButtonElement
   controls?: HTMLElement; scope?: HTMLSelectElement; headerAction?: HTMLButtonElement
+  queue?: HTMLElement; onQueue?(): void
   onClose?(): void
 }) {
   const {title,help,input,start,cancel,close,controls} = parts
@@ -46,6 +47,7 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   start.querySelector('svg')?.remove();start.prepend(svg(IconSparkle))
   cancel.querySelector('svg')?.remove();cancel.prepend(svg(IconStop))
   const composer = document.createElement('div'); composer.className = 'office-assistant-composer'
+  if (parts.queue) composer.append(parts.queue)
   const inputLabel = input.closest('label')
   composer.append(inputLabel && !inputLabel.querySelector('select') ? inputLabel : input)
   actions.append(start,cancel);composer.append(actions)
@@ -93,7 +95,9 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
     if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
     event.preventDefault()
     event.stopPropagation()
-    if (!event.repeat && !start.disabled) start.click()
+    if (event.repeat) return
+    if (!start.disabled) start.click()
+    else if (!cancel.disabled && input.value.trim()) parts.onQueue?.()
   }
   input.addEventListener('keydown', onInputKey)
   const onKeyDown = (event: KeyboardEvent) => {
