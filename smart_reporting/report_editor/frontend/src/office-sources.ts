@@ -248,11 +248,15 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
     content.replaceChildren(button('返回数据源', list), node('h3', '成员数据表权限'))
     for (const member of members.items) {
       const current = limits.items.find(item => item.user === member.user)
-      const selection = choices(limits.tables, current?.tables ?? limits.tables)
+      const allowedTables = current ? limits.tables.filter(table => current.tables.includes(table)) : limits.tables
+      const selection = choices(limits.tables, allowedTables)
+      const scope = current ? '自定义范围' : '继承工作区范围'
+      const count = allowedTables.length ? `${allowedTables.length} 张表` : '无可访问表'
       const section = node('section')
       const path = `${base}/data-sources/${enc(source)}/members/${enc(member.user)}`
-      section.append(node('h4', member.name), selection.container, button('保存成员范围', async () => {
+      section.append(node('h4', member.name), node('p', `${scope} · ${count}`), selection.container, button('保存成员范围', async () => {
         await officeRequest(path, 'PUT', { tables: selection.values() })
+        await memberLimits(source)
       }), button('继承工作区范围', async () => {
         await officeRequest(path, 'PUT', { tables: null }); await memberLimits(source)
       }))

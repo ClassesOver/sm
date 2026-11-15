@@ -40,3 +40,37 @@ it.each([403, 409])('clears query results and reloads table access after HTTP %s
   expect(host.querySelector('textarea')?.value).toBe(status === 403 ? undefined : original)
   expect(host.querySelector('[role=status]')?.textContent).toContain('数据源授权或版本已变化')
 })
+
+it('shows the effective member table scope after saving and restoring inheritance', async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true, value: function (this: HTMLDialogElement) { this.open = true },
+  })
+  const tables = ['db.orders', 'db.items']
+  let memberTables: string[] | null = null
+  const updates: (string[] | null)[] = []
+  vi.stubGlobal('fetch', async (url: string, request: RequestInit) => {
+    if (request.method === 'PUT') {
+      memberTables = JSON.parse(String(request.body)).tables
+      updates.push(memberTables)
+      return Response.json({})
+    }
+    if (url.endsWith('/sales/members')) {
+      return Response.json({ tables, items: memberTables === null ? [] : [{ user: 'member', tables: memberTables }] })
+    }
+    if (url.endsWith('/members')) return Response.json({ items: [{ user: 'member', name: '成员' }] })
+    return Response.json({ items: [{ id: 'sales', name: '销售', available: true, tables }] })
+  })
+  const host = document.body.appendChild(document.createElement('div'))
+  await showOfficeSources(host, { admin: false, space: {
+    id: 'team', name: '团队', role: 'owner', personal_user: null, archived: false,
+  } })
+  const click = (label: string) => [...host.querySelectorAll('button')].find(button => button.textContent === label)!.click()
+  click('成员表权限')
+  await vi.waitFor(() => expect(host.textContent).toContain('继承工作区范围 · 2 张表'))
+  for (const input of host.querySelectorAll<HTMLInputElement>('input[type=checkbox]')) input.checked = false
+  click('保存成员范围')
+  await vi.waitFor(() => expect(host.textContent).toContain('自定义范围 · 无可访问表'))
+  click('继承工作区范围')
+  await vi.waitFor(() => expect(host.textContent).toContain('继承工作区范围 · 2 张表'))
+  expect(updates).toEqual([[], null])
+})
