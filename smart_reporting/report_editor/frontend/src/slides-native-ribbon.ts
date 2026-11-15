@@ -11,7 +11,7 @@ export const WORDART_PRESET_LABELS: Record<string, string> = { blue: '填充：�
 import { LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS } from './vendor/genoffice-slides/components/shape-gallery-data'
 import './office-theme.css'
 import { BULLET_GLYPHS, BULLET_GLYPH_LABELS, BULLET_SYMBOLS, NUMBER_TYPES, BULLET_COLORS, PARAGRAPH_LIST_COMMANDS } from './slides-paragraph'
-import { ArrowDown, ArrowUp, Bold, Download, Italic, Plus, Strikethrough, Trash2, Underline, createElement } from 'lucide'
+import { ArrowDown, ArrowUp, Bold, Download, FolderOpen, Italic, Plus, Strikethrough, Trash2, Underline, createElement } from 'lucide'
 import { createElement as reactElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { IconAlignCenter, IconAlignJustify, IconAlignLeft, IconAlignRight, IconChart, IconComment, IconCopy, IconCut, IconDateTime, IconEquation, IconFooter, IconFormatPainter, IconGrowFont, IconNavPane, IconNewSlide, IconPageNumber, IconPaste, IconPicture, IconPlayFromStart, IconSave, IconSection, IconScreenRec, IconShapes, IconShrinkFont, IconSmartArt, IconSlideLayout, IconSlideMaster, IconSwitchRowCol, IconTable, IconTextBox, IconWordArt } from './vendor/genoffice-slides/components/icons'
@@ -65,6 +65,7 @@ export function stepNativeFontSize(current: number | null | undefined, direction
 }
 const tabs: Tab[] = [
   { id: 'file', label: 'File', groups: [
+    { label: 'File', controls: [{ id: 'openFile', label: 'Open', icon: FolderOpen, sourceActionId: 'onOpen' }] },
     { label: 'Export', controls: [
       { id: 'print', label: 'Print' },
       { id: 'exportPdf', label: 'Export PDF', icon: Download, sourceActionId: 'onExportPdf' },
@@ -251,6 +252,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   onAssistant?: () => void
   pdfExportAvailable?: boolean
   saveAsAvailable?: boolean
+  openFileAvailable?: boolean
   layouts?: NativeSlidesLayout[]
   locked?: boolean
 }): NativeSlidesRibbon {
@@ -369,7 +371,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           ? clipboardLocale[(control.id === 'formatBrush' ? 'formatPainter' : control.id) as keyof typeof clipboardLocale] as string
           : localize(control.label)
         const unavailable = control.id === 'exportPdf' && !options.pdfExportAvailable ? '当前会话未开放 PDF 导出。'
-          : control.id === 'saveAs' && !options.saveAsAvailable ? '当前会话未开放另存为。' : control.unavailable
+          : control.id === 'saveAs' && !options.saveAsAvailable ? '当前会话未开放另存为。'
+          : control.id === 'openFile' && !options.openFileAvailable ? '当前会话未开放文件导入。' : control.unavailable
         const controlId = `slides-native-command-${tab.id}-${control.id}`
         const sourceGlyph = control.sourceIcon ?? slidesRibbonSourceIcons[control.id]
         const glyph = control.icon ?? slidesRibbonIcons[control.id]
@@ -467,6 +470,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         }
         if (control.sourceActionId) element.dataset.sourceAction = control.sourceActionId
         if (!element.title) element.title = localizedLabel
+        if (control.id === 'openFile' && !unavailable) element.setAttribute('aria-keyshortcuts', 'Control+O Meta+O')
         if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = localizedLabel + '：作用于当前对象的全部段落；自定义输入 Enter 提交'
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
         if (control.caption || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {

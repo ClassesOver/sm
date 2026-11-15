@@ -183,13 +183,13 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     const headers = new Headers()
     if (payload !== undefined) {
       if (!csrfToken) throw new NativeApiError(403, 'native_csrf_missing', '缺少原生编辑授权，请重新打开文档')
-      headers.set('Content-Type', 'application/json')
+      if (!(payload instanceof FormData)) headers.set('Content-Type', 'application/json')
       headers.set('X-CSRF-Token', csrfToken)
     }
     const response = await fetch(`${base}/${path}`, { method: payload === undefined ? 'GET' : 'POST',
       credentials: 'same-origin', cache: 'no-store', headers, signal,
       ...((path === 'ai/forms/cancel' || path === 'ai/office-read/cancel' || path === 'ai/word-read/cancel' || path === 'ai/read/cancel' || path === 'ai/review/cancel') ? { keepalive: true } : {}),
-      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) })
+      ...(payload === undefined ? {} : { body: payload instanceof FormData ? payload : JSON.stringify(payload) }) })
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
       throw new NativeApiError(response.status, body.detail?.code ?? 'native_request_failed',
@@ -212,6 +212,12 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     saveWordAs: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/save-as',payload)).json(),
     saveSlidesAs: async (payload: NativeWordFileRequest & { operations: NativeOperation[] }): Promise<NativeWordFileResult> =>
       (await request('slides/save-as', payload)).json(),
+    openSlidesFile: async (file: File, requestId: string, signal: AbortSignal): Promise<NativeWordFileResult> => {
+      const form = new FormData()
+      form.append('file', file)
+      form.append('requestId', requestId)
+      return (await request('slides/open', form, signal)).json()
+    },
     context: async (signal?: AbortSignal): Promise<NativeContextResponse> => (await request('context', undefined, signal)).json(),
     imagePixels: async (target: {sourceSha256: string; pageId: string; imageId: string; expectedImageSha256: string}, signal?: AbortSignal): Promise<{sourceSha256:string;imageId:string;expectedImageSha256:string;pageId:string;image:string;width:number;height:number;sha256:string}> => (await request('image-pixels', target, signal)).json(),
     imageBackground: async (target: {sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};pxWidth:number}, signal?:AbortSignal): Promise<{sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};image:string;width:number;height:number;sha256:string}> => (await request('image-background',target,signal)).json(),

@@ -170,6 +170,9 @@
 .docx-native .docx-find-replace :is([data-find-status],.find-results-note) { margin:6px 0 0; padding:0; color:var(--color-text-muted); font-size:var(--office-label-size); line-height:1.5; }
 .docx-native .docx-notice { margin:0; padding:8px 14px; color:var(--office-muted); background:var(--office-tabbar); font-size:13px; }
 .docx-native .editor-scroll { overflow:auto; min-height:0; max-height:none; background:var(--office-canvas); padding:24px; }
+.docx-split-pane { display:flex; flex:0 0 40%; flex-direction:column; min-height:0; border-top:1px solid var(--office-border-strong); }
+.docx-split-pane > header { display:flex; flex:none; justify-content:space-between; align-items:center; padding:4px 12px; color:var(--office-ink); background:var(--office-chrome); }
+.docx-split-scroll { flex:1; min-height:0; overflow:auto; padding:24px; background:var(--office-canvas); }
 .docx-native .doc-zoom { width:max-content; min-width:100%; }
 .docx-native .doc-page { margin:auto; background:var(--page-bg, white); color:#111; box-shadow:0 2px 10px rgb(27 42 65 / 13%); outline:none; }
 .docx-native .pagination-preview { z-index:100; }

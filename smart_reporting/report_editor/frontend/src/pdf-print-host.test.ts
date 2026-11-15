@@ -66,6 +66,46 @@ it('binds GenOffice scrolling keys to the PDF viewer and leaves the print dialog
   expect(viewport.scrollTop).toBe(60)
 })
 
+it.each(['ctrlKey', 'metaKey'] as const)('uses GenOffice %s print and zoom shortcuts only in the active PDF editor', async modifier => {
+  const root = await createHost()
+  const viewport = root.querySelector<HTMLElement>('.pdf-document-pages')!
+  Object.defineProperties(viewport, { clientWidth: { value: 600 }, clientHeight: { value: 400 } })
+  const slider = root.querySelector<HTMLInputElement>('[aria-label="页面缩放滑块"]')!
+  const outside = document.body.appendChild(document.createElement('button'))
+  function key(value: string, target: HTMLElement, init: KeyboardEventInit = {}) {
+    target.focus()
+    const event = new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, [modifier]: true, ...init })
+    target.dispatchEvent(event)
+    return event.defaultPrevented
+  }
+
+  expect(key('=', outside)).toBe(false)
+  expect(slider.value).toBe('100')
+  expect(key('+', viewport, { isComposing: true })).toBe(false)
+  expect(key('+', viewport, { shiftKey: true })).toBe(true)
+  await vi.waitFor(() => expect(slider.value).toBe('110'))
+  expect(key('-', viewport)).toBe(true)
+  await vi.waitFor(() => expect(slider.value).toBe('100'))
+  expect(key('0', viewport)).toBe(true)
+  await vi.waitFor(() => expect(slider.value).toBe('150'))
+
+  expect(key('p', viewport, { shiftKey: true })).toBe(false)
+  expect(key('p', viewport)).toBe(true)
+  const dialog = root.querySelector<HTMLDialogElement>('dialog[aria-label="打印 PDF"]')!
+  expect(dialog.open).toBe(true)
+  const printMode = dialog.querySelector<HTMLInputElement>('input[name="pdf-print-mode"]')!
+  expect(key('-', printMode)).toBe(false)
+  expect(slider.value).toBe('150')
+  dialog.close()
+  expect(document.activeElement).toBe(viewport)
+
+  views.at(-1)!.setSaving(true)
+  expect(key('p', viewport)).toBe(true)
+  expect(dialog.open).toBe(false)
+  expect(root.querySelector('.pdf-editor-message')?.textContent).toContain('再打印 PDF')
+  expect(window.print).not.toHaveBeenCalled()
+})
+
 it('opens the print range dialog from the Ribbon and prints the selected visible page', async () => {
   const root = await createHost()
   const command = root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.print.print"]')!

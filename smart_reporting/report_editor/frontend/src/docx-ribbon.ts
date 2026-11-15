@@ -721,8 +721,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if (!available) command.setAttribute('aria-description', reason ?? migrating)
         if (actionId) command.dataset.action = actionId
         else if (available) command.dataset.action = view && label !== '分页预览' ? `view-${label}` : 'pagination-preview'
-        if (view && available && ['标尺', '导航窗格', '大纲', '页面视图', '网格线'].includes(label)) {
-          command.dataset.action = label === '标尺' ? 'ruler-toggle' : label === '网格线' ? 'gridlines-toggle' : label === '导航窗格' ? 'navigation-toggle' : label === '大纲' ? 'view-outline' : 'view-page'
+        if (view && available && ['标尺', '导航窗格', '大纲', '页面视图', '网格线', '拆分'].includes(label)) {
+          command.dataset.action = label === '标尺' ? 'ruler-toggle' : label === '网格线' ? 'gridlines-toggle' : label === '导航窗格' ? 'navigation-toggle' : label === '大纲' ? 'view-outline' : label === '拆分' ? 'split-view-toggle' : 'view-page'
           command.dataset.viewCommand = label
           command.setAttribute('aria-pressed', String(view.active?.(label) ?? false))
         }
@@ -731,9 +731,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           command.addEventListener('mousedown', event => event.preventDefault())
           command.addEventListener('click', () => tableCommands.run(actionId))
         } else if (view && available) {
-          command.dataset.sourceAction = label === '标尺' ? 'onShowRuler' : label === '网格线' ? 'onShowGrid' : label === '导航窗格' ? 'onShowNav' : label === '大纲' || label === '页面视图' ? 'onViewMode' : label === '页宽' || label === '整页' ? 'onZoomFit' : label === '缩放' ? 'onZoomDialog' : label === '分页预览' ? 'onPagePreview' : 'onZoom'
+          command.dataset.sourceAction = label === '标尺' ? 'onShowRuler' : label === '网格线' ? 'onShowGrid' : label === '导航窗格' ? 'onShowNav' : label === '拆分' ? 'onSplitView' : label === '大纲' || label === '页面视图' ? 'onViewMode' : label === '页宽' || label === '整页' ? 'onZoomFit' : label === '缩放' ? 'onZoomDialog' : label === '分页预览' ? 'onPagePreview' : 'onZoom'
           command.addEventListener('mousedown', event => event.preventDefault())
-          command.addEventListener('click', () => { if (label === '导航窗格') command.focus({ preventScroll: true }); view.run(label); refreshView() })
+          command.addEventListener('click', () => { if (label === '导航窗格' || label === '拆分') command.focus({ preventScroll: true }); view.run(label); refreshView() })
         } else if (available) command.addEventListener('click', onPaginationPreview!)
         items.append(command)
       }

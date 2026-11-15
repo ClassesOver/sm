@@ -791,7 +791,7 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
     ['toggle-right-to-left', '从右到左'], ['toggle-cross-highlight', '突出显示活动行和列'],
     ['zoom-reset', '重置缩放'], ['zoom-to-selection', '缩放到选定区域'],
     ['zoom-in', '放大'], ['zoom-out', '缩小'],
-    ['new-window', '新建窗口'], ['arrange-all', '全部重排'], ['freeze-panes', '冻结窗格'],
+    ['new-window', '新建窗口'], ['arrange-all', '全部重排'],
     ['split-window', '拆分窗口'], ['hide-window', '隐藏窗口'], ['switch-window', '切换窗口'],
   ])
   for (const [id, label] of expected) {
@@ -810,6 +810,41 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   }
   const fit = buttons.find(button => button.dataset.ribbonCommand === 'zoom-to-selection')!
   expect(fit.disabled).toBe(false)
+  expect(document.querySelector('[data-ribbon-control="freeze-panes"]')?.getAttribute('aria-label')).toBe('冻结窗格')
+})
+
+it('dispatches the four GenOffice Freeze Panes choices and guards the selection-only action', () => {
+  const command = vi.fn()
+  let editable = true, selected = true
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => editable, rotation: () => 0, hasSelection: () => selected,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const freeze = document.querySelector<HTMLSelectElement>('[data-ribbon-control="freeze-panes"]')!
+  expect([...freeze.options].slice(1).map(option => [option.value, option.textContent])).toEqual([
+    ['freeze-here', '在所选位置冻结窗格'], ['freeze-top-row', '冻结首行'],
+    ['freeze-first-col', '冻结首列'], ['unfreeze', '取消冻结窗格'],
+  ])
+  const select = (value: string) => {
+    freeze.value = value
+    freeze.dispatchEvent(new Event('change'))
+    expect(freeze.value).toBe('')
+  }
+  for (const option of [...freeze.options].slice(1)) {
+    select(option.value)
+    expect(command).toHaveBeenLastCalledWith(option.value)
+  }
+  selected = false; ribbon.refreshState()
+  expect(freeze.options[1]!.disabled).toBe(true)
+  select('freeze-here')
+  expect(command).toHaveBeenCalledTimes(4)
+  select('freeze-top-row')
+  expect(command).toHaveBeenCalledTimes(5)
+  editable = false; ribbon.refreshState()
+  expect(freeze.disabled).toBe(true)
+  select('unfreeze')
+  expect(command).toHaveBeenCalledTimes(5)
+  ribbon.dispose()
 })
 
 it('enables split window only to remove an existing file split pane on an editable, unprotected sheet', () => {

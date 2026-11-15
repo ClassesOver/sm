@@ -19,6 +19,10 @@ vi.mock('./workbook-ribbon', () => ({
 vi.mock('./workbook-vendor/grid/decimal-step', () => ({ stepSelectionDecimals() {} }))
 vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {}, setSparklineWorkbookResolver() {} }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts() {} }))
+vi.mock('./workbook-threaded-comments-host', () => ({ mountWorkbookThreads: () => ({ load() {}, dispose() {} }) }))
+vi.mock(import('./workbook-note-pictures-host'), async original => ({
+  ...await original(), installNotePictureHover: () => ({ dispose() {} }),
+}))
 vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { Univer, IUniverInstanceService, LocaleType, mergeLocales } = await import('@univerjs/core')
   const CoreZhCN = (await import('@univerjs/preset-sheets-core/locales/zh-CN')).default
@@ -89,6 +93,36 @@ const write = (row: number, column: number, value: string) => grid.api.executeCo
 afterEach(() => {
   for (const instance of grid.instances.splice(0)) instance.dispose()
   document.body.replaceChildren()
+})
+
+it('routes GenOffice Freeze Panes commands, preserves source protection and writes the selected pane to XLSX', async () => {
+  const source = await fixture(), draft = new NativeDraft(identity, store())
+  let output: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    output = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/freeze.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('B2').activate()
+    grid.ribbon('freeze-here')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 1, ySplit: 1 })
+    grid.ribbon('freeze-here')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 1, ySplit: 1 })
+    grid.ribbon('freeze-top-row')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 0, ySplit: 1 })
+    grid.ribbon('unfreeze')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 0, ySplit: 0 })
+    grid.ribbon('freeze-first-col')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 1, ySplit: 0 })
+    await vi.waitFor(() => expect(draft.operations).toContainEqual({
+      kind: 'applyPageSetups', setups: [{ sheetName: 'Sheet1', frozenRows: 0, frozenColumns: 1 }],
+    }))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(output).toBeDefined())
+    const model = await readWorkbook(output!)
+    expect(model.sheets[0]).toMatchObject({ freeze: { frozenRows: 0, frozenColumns: 1 }, protection: { protected: true } })
+    expect(model.sheets[1]?.freeze).toBeNull()
+  } finally { current.view?.dispose() }
 })
 
 it.each(['sheet-protect', 'workbook-protect'] as const)('undoes %s in native history without undoing source frozen panes', async command => {

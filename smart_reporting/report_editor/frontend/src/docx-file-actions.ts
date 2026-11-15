@@ -5,7 +5,7 @@ import type { createNativeApi, NativeWordFileRequest, NativeWordFileResult } fro
 export type DocxFileAction = 'new' | 'save-as'
 const savedOnly = '另存为仅复制已保存的修订；请先保存或撤销当前修改，再另存为。'
 
-function createdDocumentUrl(result: NativeWordFileResult): string {
+export function createdDocumentUrl(result: NativeWordFileResult): string {
   const raw = result?.editor?.openUrl
   if (typeof result?.documentId !== 'string' || !result.documentId || !Number.isSafeInteger(result.revision) || result.revision < 1 || typeof raw !== 'string' || !raw || raw !== raw.trim()) throw new Error('新文档地址无效，请重试')
   let url: URL

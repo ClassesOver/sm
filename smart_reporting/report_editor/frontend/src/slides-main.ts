@@ -1,5 +1,6 @@
 import { mountSlidesRailNavigation } from './slides-rail-navigation'
 import { createSlidesPdfExport } from './slides-export-pdf'
+import { createSlidesOpenFile } from './slides-open-file'
 import type { createNativeApi, NativePreviewRequest } from './native-api'
 import { createNativeFileActions } from './docx-file-actions'
 import {validateZoomDraft} from './slides-zoom-model'
@@ -152,6 +153,7 @@ export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
   previewPdf?: (payload: NativePreviewRequest, signal: AbortSignal) => Promise<ArrayBuffer>
   filename?: string
   saveAs?: ReturnType<typeof createNativeApi>['saveSlidesAs']
+  openFile?: ReturnType<typeof createNativeApi>['openSlidesFile']
 }) {
 const root = host
 const basePath = location.pathname.replace(/\/$/, '')
@@ -1248,6 +1250,12 @@ function onClipboardKey(event: KeyboardEvent) {
   if(event.key==='Escape'&&screenRecordingController&&!disposed){event.preventDefault();event.stopPropagation();screenRecordingController.abort();return}
   if(!native||!nativeDraft||disposed||event.defaultPrevented||event.isComposing||event.keyCode===229||!root.contains(document.activeElement))return
   const target=event.target
+  if (openFileDialog && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'o') {
+    if (target instanceof Element && target.closest('dialog,[role="dialog"]')) return
+    event.preventDefault(); event.stopPropagation()
+    if (!event.repeat && !loading && !locked() && !mutationPending) openFileDialog.open()
+    return
+  }
   // 固定源文件菜单 CmdOrCtrl+S：先提交失焦输入，再复用保存修订动作。
   if((event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='s'){
     if(target instanceof Element&&target.closest('dialog'))return
@@ -1391,6 +1399,7 @@ const pdfExport = sharedShell?.previewPdf && createSlidesPdfExport({
   status: message => { statusMessage.textContent = message },
 })
 const saveAs = sharedShell?.saveAs
+const openFileDialog = sharedShell?.openFile && createSlidesOpenFile(root, sharedShell.openFile)
 const saveAsActions = nativeDraft && saveAs ? createNativeFileActions({
   root, extension: 'pptx', formatLabel: 'PowerPoint 演示文稿',
   sourceSha256: nativeDraft.identity.sourceSha256,
@@ -2448,8 +2457,13 @@ function mountInkControls(){
 if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   pdfExportAvailable: !!pdfExport,
   saveAsAvailable: !!saveAsActions,
+  openFileAvailable: !!openFileDialog,
   onAssistant: sharedShell?.onAssistant ?? (sharedShell?.nativeAI ? () => nativeAIHost?.open() : undefined),
   onAction(command, value) {
+    if (command === 'openFile') {
+      if (!loading && !locked() && !mutationPending) openFileDialog?.open()
+      return
+    }
     if (command === 'saveAs') { saveAsActions?.open('save-as'); return }
     if (command === 'exportPdf') {
       if (pdfExport && !loading && !locked() && !mutationPending &&
@@ -3566,7 +3580,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; pdfExport?.dispose(); saveAsActions?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

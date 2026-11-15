@@ -20,6 +20,16 @@ it('fits the full page in both axes and rejects unavailable viewport dimensions'
   expect(docxFitZoom('width', { width: 0, height: 648 }, { width: 800, height: 1000 })).toBeUndefined()
   expect(docxFitZoom('width', { width: Infinity, height: 648 }, { width: 800, height: 1000 })).toBeUndefined()
 })
+it('routes Split through the read-only secondary view and reflects its visibility', () => {
+  let open = false
+  const split = { toggle: vi.fn(() => { open = !open }), get visible() { return open } }
+  const { view } = setup({ split })
+  expect(view.reason('拆分')).toBeNull()
+  expect(view.active('拆分')).toBe(false)
+  view.run('拆分')
+  expect(split.toggle).toHaveBeenCalledOnce()
+  expect(view.active('拆分')).toBe(true)
+})
 it('uses source zoom limits and keeps original document content and physical dimensions unchanged', () => {
   const f = setup(); const content = f.page.innerHTML
   for (let i = 0; i < 60; i++) f.view.run('放大')

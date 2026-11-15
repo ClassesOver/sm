@@ -14,12 +14,35 @@ const views:Array<ReturnType<typeof createSlidesEditorView>>=[]
 beforeEach(()=>{vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}unobserve(){}});HTMLDialogElement.prototype.showModal=function(){this.open=true};HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new Event('close'))};render.mockClear()})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals()})
 async function fixture(previewPdf?: (payload: NativePreviewRequest, signal: AbortSignal) => Promise<ArrayBuffer>,
-                       saveAs?: ReturnType<typeof createNativeApi>['saveSlidesAs']){
+                       saveAs?: ReturnType<typeof createNativeApi>['saveSlidesAs'],
+                       openFile?: ReturnType<typeof createNativeApi>['openSlidesFile']){
  const shell=createEditorShell(document.body.appendChild(document.createElement('main')),'full','pptx'),sha='a'.repeat(64),draft=new NativeDraft({documentId:'print',revision:1,sourceSha256:sha,scope:{database:'f',companyId:'f',userId:'u',threadId:'t'}},{getItem:()=>null,setItem(){},removeItem(){}})
  const slides=[{slideIndex:0,elements:[],notesText:'visible notes'},{slideIndex:1,elements:[],hidden:true,notesText:'hidden notes'}],tree={slides:slides.map(slide=>({...slide,widthPx:960,heightPx:540,nodes:[],background:{type:'solid',color:'#ffffff'}}))}
  const request=vi.fn(async(path:string,_init?:RequestInit)=>path==='deck'?{revision:1,sha256:sha,size:{cx:9144000,cy:5143500},slides}:path==='render-tree'?tree:path==='preview'?{sourceSha256:sha,model:{slides}}:Promise.reject(Error('unexpected '+path)))
- const view=createSlidesEditorView(shell.editor,{native:true,draft,request:request as never,save:shell.save,download:shell.exportPptx,previewPdf,saveAs,filename:'季度.pptx'});views.push(view);await view.ready;request.mockClear();return {shell,sha,draft,request,view}
+ const view=createSlidesEditorView(shell.editor,{native:true,draft,request:request as never,save:shell.save,download:shell.exportPptx,previewPdf,saveAs,openFile,filename:'季度.pptx'});views.push(view);await view.ready;request.mockClear();return {shell,sha,draft,request,view}
 }
+it('opens another local PPTX through the File shortcut and keeps the working draft', async () => {
+ const openFile = vi.fn(async () => ({ documentId:'opened', revision:1, filename:'New deck.pptx',
+   editor:{ openUrl:'/reports/v1/native/open/grant', url:'/reports/v1/native/open/grant', expiresAt:'' } }))
+ const f = await fixture(undefined, undefined, openFile)
+ const operations = [{kind:'editSlides', order:[1,0]}]
+ f.draft.setOperations(operations)
+ const button = f.shell.editor.querySelector<HTMLButtonElement>('[data-command="openFile"]')!
+ const anchor = f.shell.editor.appendChild(document.createElement('button'))
+ expect(button.dataset.sourceAction).toBe('onOpen')
+ anchor.focus()
+ const event = new KeyboardEvent('keydown', {key:'o',ctrlKey:true,bubbles:true,cancelable:true})
+ anchor.dispatchEvent(event)
+ expect(event.defaultPrevented).toBe(true)
+ const picker = f.shell.editor.querySelector<HTMLInputElement>('[aria-label="打开演示文稿"] input[type=file]')!
+ const file = new File(['pptx fixture'], 'New deck.pptx')
+ Object.defineProperty(picker, 'files', { value:[file] })
+ picker.dispatchEvent(new Event('change'))
+ await vi.waitFor(() => expect(f.shell.editor.querySelector('[aria-label="打开演示文稿"] a')?.getAttribute('href')).toContain('/reports/v1/native/open/grant'))
+ expect(openFile).toHaveBeenCalledWith(file, expect.any(String), expect.any(AbortSignal))
+ expect(f.draft.operations).toEqual(operations)
+ expect(f.request).not.toHaveBeenCalled()
+})
 it('sends the current PPTX draft to Save As and opens a separate file without saving the source', async () => {
  const saveAs = vi.fn(async () => ({ documentId:'new', revision:1, filename:'副本.pptx',
    editor:{ openUrl:'/reports/v1/native/open/grant', url:'/reports/v1/native/open/grant', expiresAt:'' } }))

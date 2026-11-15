@@ -8,16 +8,32 @@ from .native_models import native_digest
 from .native_office import patch_office
 
 
+def slides_filename(filename):
+    filename = filename.strip()
+    if (len(filename) > 160 or not filename[:-5].strip() or filename.startswith('.')
+            or not filename.lower().endswith('.pptx') or re.search(r'[\\/:*?"<>|\x00-\x1f\x7f]', filename)):
+        raise ReportingError('native_slides_filename_invalid', '请输入有效的演示文稿文件名（.pptx），不能包含路径。')
+    return filename
+
+
+async def open_slides_file(editor, context, *, request_id, filename, content, session):
+    editor.require_enabled('pptx')
+    if context.format != 'pptx':
+        raise ReportingError('native_permission_denied', '此命令只适用于演示文稿。')
+    filename = slides_filename(filename)
+    creation_id = native_digest({'action': 'slides-open', 'documentId': context.document_id,
+                                 'scope': context.scope.model_dump(), 'filename': filename, 'requestId': request_id})
+    return await register_native_file(editor, context, content=content, creation_id=creation_id,
+                                      filename=filename, session=session, expected_format='pptx')
+
+
 async def save_slides_as(editor, context, *, expected_sha256, request_id, filename, operations, session):
     editor.require_enabled('pptx')
     if context.format != 'pptx':
         raise ReportingError('native_permission_denied', '此命令只适用于演示文稿。')
     if expected_sha256 != context.source_file.sha256:
         raise ReportingError('native_source_changed', '演示文稿来源已变化，请重新打开后操作。')
-    filename = filename.strip()
-    if (len(filename) > 160 or not filename[:-5].strip() or filename.startswith('.')
-            or not filename.lower().endswith('.pptx') or re.search(r'[\\/:*?"<>|\x00-\x1f\x7f]', filename)):
-        raise ReportingError('native_slides_filename_invalid', '请输入有效的演示文稿文件名（.pptx），不能包含路径。')
+    filename = slides_filename(filename)
     source = await editor.read_file(context)
     try:
         content = await run_office_engine(patch_office, 'pptx', source, operations) if operations else source

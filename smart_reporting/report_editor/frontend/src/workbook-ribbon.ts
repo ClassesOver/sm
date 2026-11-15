@@ -160,7 +160,7 @@ type RibbonCommand =
   | 'comments-pane-toggle'
   | 'spell-check'
   | 'spellcheck-toggle'
-  | 'freeze-panes'
+  | 'freeze-here' | 'freeze-top-row' | 'freeze-first-col' | 'unfreeze'
   | 'zoom-in'
   | 'zoom-out'
   | 'zoom-reset'
@@ -586,7 +586,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('放大', 'zoom-in', 'zoom-in'), action('缩小', 'zoom-out', 'zoom-out'),
     ] },
     { title: '窗口', actions: [
-      action('新建窗口', 'new-window'), action('全部重排', 'arrange-all'), action('冻结窗格', 'freeze-panes', 'freeze-panes'),
+      action('新建窗口', 'new-window'), action('全部重排', 'arrange-all'),
       action('拆分窗口', 'split-window', 'split-window'), action('隐藏窗口', 'hide-window'), action('切换窗口', 'switch-window'),
     ] },
   ],
@@ -617,6 +617,13 @@ const COMMAND_GLYPHS: Record<string, string> = {
   'insert-row-here': '⊞', 'delete-row-here': '⊟', 'insert-col-here': '⊞', 'delete-col-here': '⊟',
   find: '🔍', replace: '⇄', 'pivot-open': '▥', 'pivot-edit': '▦', 'format-as-table': '▦', 'insert-chart:column': '📊',
 }
+
+const FREEZE_CHOICES = [
+  ['freeze-here', '在所选位置冻结窗格'],
+  ['freeze-top-row', '冻结首行'],
+  ['freeze-first-col', '冻结首列'],
+  ['unfreeze', '取消冻结窗格'],
+] as const
 
 /** 视图▸拆分窗口：固定源窗口组只有冻结窗格；网格无拆分视口，只能取消文件中已有的拆分窗格。 */
 export const SPLIT_WINDOW_UNAVAILABLE = '固定源未提供拆分窗口，网格无拆分视口；当前工作表没有可取消的拆分窗格'
@@ -1121,6 +1128,13 @@ export function mountWorkbookRibbon(
       zoomMenu.disabled = view.zoomSelectionAvailable?.() === false
       zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放比例'
     }
+    const freezeMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-control="freeze-panes"]')
+    if (freezeMenu) {
+      freezeMenu.disabled = !editable
+      freezeMenu.title = editable ? '冻结行和列' : '当前工作簿不可编辑或正在保存'
+      freezeMenu.setAttribute('aria-description', freezeMenu.title)
+      freezeMenu.options[1]!.disabled = !selected
+    }
     const notes = body.querySelector<HTMLSelectElement>('[data-ribbon-control="notes"]')
     if (notes) for (const option of Array.from(notes.options).slice(1)) {
       const reason = view.noteReason?.(option.value) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
@@ -1416,6 +1430,27 @@ export function mountWorkbookRibbon(
           if (name && !select.disabled) onCommand(`use-in-formula:${name}` as RibbonCommand)
         })
         section.append(select)
+      }
+      if (active === 'View' && group.title === '窗口') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span')
+        icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true')
+        icon.innerHTML = workbookCommandIcon('freeze-panes') ?? ''
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'
+        select.setAttribute('aria-label', '冻结窗格')
+        select.dataset.ribbonControl = 'freeze-panes'
+        select.title = '冻结行和列'
+        select.append(new Option('冻结窗格', ''), ...FREEZE_CHOICES.map(([id, label]) => new Option(label, id)))
+        select.addEventListener('change', () => {
+          const option = select.selectedOptions[0]
+          select.value = ''
+          if (option?.value && !option.disabled && !select.disabled) onCommand(option.value as RibbonCommand)
+        })
+        wrapper.append(icon, select)
+        section.append(wrapper)
       }
       if (active === 'View' && group.title === '缩放') {
         const select = document.createElement('select')

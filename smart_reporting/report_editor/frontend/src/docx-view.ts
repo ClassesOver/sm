@@ -37,6 +37,7 @@ export function createDocxViewCommands(options: {
   navigation?: {toggle(): void; readonly visible: boolean}
   gridlines?: {toggle(): void; readonly visible: boolean}
   ruler?: {toggle(): void; readonly visible: boolean}
+  split?: {toggle(): void; readonly visible: boolean}
   outline?: {run(label: string): void; reason(label: string): string | null; readonly mode: string}
 }) {
   let zoom = 100
@@ -162,11 +163,15 @@ export function createDocxViewCommands(options: {
       if (!disposed && label === '标尺' && options.ruler) return null
       if (!disposed && label === '网格线' && options.gridlines) return null
       if (!disposed && label === '导航窗格' && options.navigation) return null
+      if (!disposed && label === '拆分' && options.split) return null
       if (!disposed && label === '阅读视图' && options.reading) return null
       if (!disposed && ['大纲', '页面视图'].includes(label) && options.outline) return options.outline.reason(label)
       return !disposed && handled.has(label) ? null : '此视图命令尚未与原生 Word 画布对齐'
     },
-    active(label) { return !disposed && (label === '深色模式' ? dark : label === '阅读视图' ? reading : label === 'Web 版式' ? web : label === '标尺' ? !!options.ruler?.visible : label === '网格线' ? !!options.gridlines?.visible : label === '导航窗格' ? !!options.navigation?.visible : label === '大纲' ? options.outline?.mode === 'outline' : label === '页面视图' ? !web && (!options.outline || options.outline.mode === 'page') : false) },
+    active(label) {
+      if (label === '拆分') return !disposed && !!options.split?.visible
+      return !disposed && (label === '深色模式' ? dark : label === '阅读视图' ? reading : label === 'Web 版式' ? web : label === '标尺' ? !!options.ruler?.visible : label === '网格线' ? !!options.gridlines?.visible : label === '导航窗格' ? !!options.navigation?.visible : label === '大纲' ? options.outline?.mode === 'outline' : label === '页面视图' ? !web && (!options.outline || options.outline.mode === 'page') : false)
+    },
     run(label) {
       if (commands.reason(label) !== null) return
       if (label === '深色模式') {
@@ -184,6 +189,7 @@ export function createDocxViewCommands(options: {
       if (label === '标尺') { options.ruler!.toggle(); return }
       if (label === '网格线') { options.gridlines!.toggle(); return }
       if (label === '导航窗格') { options.navigation!.toggle(); return }
+      if (label === '拆分') { options.split!.toggle(); return }
       if (label === '缩小') set(Math.max(DOCX_ZOOM_MIN, Math.round(zoom) - 10))
       else if (label === '放大') set(Math.min(DOCX_ZOOM_MAX, Math.round(zoom) + 10))
       else if (label === '100%') set(100)

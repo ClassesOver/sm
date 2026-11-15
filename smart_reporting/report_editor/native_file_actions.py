@@ -4,7 +4,7 @@ from ..reporting.models import ReportingError
 from .native_import import NativeImportService
 
 
-async def register_native_file(editor, context, *, content, creation_id, filename, session, generated=False):
+async def register_native_file(editor, context, *, content, creation_id, filename, session, generated=False, expected_format=None):
     authorize_created = None
     if session is not None and (session.capabilities or {}).get('office'):
         documents = getattr(getattr(editor, 'office_authorize', None), '__self__', None)
@@ -21,6 +21,7 @@ async def register_native_file(editor, context, *, content, creation_id, filenam
         scope=context.scope, content=content, request_id=creation_id, filename=filename, display_name=filename,
         authorize_created=authorize_created,
         generation_key=creation_id if generated else None,
+        expected_format=expected_format,
     )
     result['filename'] = filename
     result['editor']['openUrl'] = result['editor']['url']

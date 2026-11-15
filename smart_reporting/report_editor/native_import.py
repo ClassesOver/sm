@@ -122,11 +122,13 @@ class NativeImportService:
 
     async def import_file(self, scope: NativeScope, content: bytes, *, request_id: str, filename: str = '',
                           display_name: str | None = None, authorize_created: ImportAuthorization | None = None,
-                          generation_key: str | None = None) -> dict[str, Any]:
+                          generation_key: str | None = None, expected_format: NativeFormat | None = None) -> dict[str, Any]:
         """scope 必须由宿主可信会话构造，不接收上传表单中的身份字段。"""
         if not isinstance(scope, NativeScope) or not isinstance(request_id, str) or not request_id or len(request_id) > 256:
             raise ReportingError('native_import_request_invalid', '文件导入请求身份无效。')
         format = await run_office_engine(inspect_native_upload, content, filename=filename)
+        if expected_format is not None and format != expected_format:
+            raise ReportingError('native_format_invalid', '所选文件的实际格式与打开命令不符。')
         digest = hashlib.sha256(content).hexdigest()
         key = bind_native_workspace(self.workspace, scope)
         copy_id = native_digest({'scope': scope.model_dump(), 'sha256': digest, 'requestId': request_id})

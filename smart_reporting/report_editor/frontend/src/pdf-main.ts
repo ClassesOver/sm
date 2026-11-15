@@ -505,9 +505,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   printButton.type = 'button'; printButton.append(createPdfRibbonIcon('print', 22))
   const printLabel = documentElement('span'); printLabel.textContent = pdfRibbonLabel('打印'); printButton.append(printLabel)
   printButton.title = pdfRibbonLabel('选择页面范围并打印；未保存草稿不可打印')
+  printButton.setAttribute('aria-keyshortcuts', 'Control+P Meta+P')
+  const printUnavailable = () => pdfCanPrint({ loaded: !!document, locked, dirty: draft.dirty, previewing, printing, previewDocument: !!previewDocument })
+    ? null : '请先完成保存或返回原稿，再打印 PDF'
   const printDialog = bindPdfPrintDialog({ root, trigger: printButton, pageCount: () => state().length,
     currentPage: () => Math.max(1, state().findIndex(page => page.pageId === activeId) + 1),
-    unavailable: () => pdfCanPrint({ loaded: !!document, locked, dirty: draft.dirty, previewing, printing, previewDocument: !!previewDocument }) ? null : '请先完成保存或返回原稿，再打印 PDF',
+    unavailable: printUnavailable,
     print: pages => { void printPdf(pages).catch(showError) } })
   sourceCommand(printButton, 'home.print.print')
   const search = documentElement('input', 'pdf-search')
@@ -681,6 +684,21 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const viewFitPage = button('适合页面', () => fitScale('page'), false)
   sourceCommand(viewFitWidth, 'view.pageZoom.fitWidth'); sourceCommand(viewFitPage, 'view.pageZoom.fitPage')
   viewZoomGroup.append(zoomOut, zoomIn, viewFitWidth, viewFitPage)
+  viewFitWidth.setAttribute('aria-keyshortcuts', 'Control+0 Meta+0')
+  // GenOffice App.tsx reading shortcuts use the same commands as the ribbon.
+  root.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.altKey || !(event.ctrlKey || event.metaKey)) return
+    const target = event.key.toLowerCase() === 'p' && !event.shiftKey ? printButton
+      : event.key === '+' || event.key === '=' ? zoomIn
+      : event.key === '-' ? zoomOut : event.key === '0' ? viewFitWidth : undefined
+    if (!target || root.ownerDocument.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return
+    event.preventDefault()
+    if (target === printButton) {
+      const reason = printUnavailable()
+      if (reason) { status.textContent = reason; return }
+    } else if (!document || locked || previewing || printing) return
+    target.click()
+  }, { signal: abort.signal })
   const zoomStatus = documentElement('footer', 'pdf-view-status')
   const statusZoomOut = documentElement('button'); statusZoomOut.type = 'button'; statusZoomOut.textContent = '−'; statusZoomOut.setAttribute('aria-label', '缩小页面')
   const statusZoomIn = documentElement('button'); statusZoomIn.type = 'button'; statusZoomIn.textContent = '+'; statusZoomIn.setAttribute('aria-label', '放大页面')
@@ -1887,7 +1905,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (!textEnabled) homeTextEdit.title = '当前服务未启用 PDF 原位改字。'
     if (textEditButton) textEditButton.disabled ||= !textLoaded
     previewButton.disabled = locked || previewing || !response.editingEnabled || draft.closed
-    printButton.disabled = !pdfCanPrint({ loaded: !!document, locked, dirty: draft.dirty, previewing, printing, previewDocument: !!previewDocument })
+    printButton.disabled = printUnavailable() !== null
     backToSource.disabled = locked || previewing
     confirmPreview.disabled = locked || previewing || draft.closed
     for (const input of pageInputs) input.disabled = !document
@@ -1957,7 +1975,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     updateControls(); scheduleFit()
   }
   async function printPdf(visiblePages?: number[]) {
-    if (!pdfCanPrint({ loaded: !!document, locked, dirty: draft.dirty, previewing, printing, previewDocument: !!previewDocument }) || !document) throw new Error('请先完成保存或返回原稿，再打印 PDF')
+    const unavailable = printUnavailable()
+    if (unavailable || !document) throw new Error(unavailable ?? '请先打开 PDF')
     printing = true; updateControls(); status.textContent = '正在准备 PDF 打印页面…'
     let printHost: Awaited<ReturnType<typeof renderPdfPrintHost>> | undefined
     try {

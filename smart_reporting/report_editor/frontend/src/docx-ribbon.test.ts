@@ -921,7 +921,7 @@ it('wires the Word Home clipboard group: paste split menu, cut/copy and the form
   editor.destroy()
 })
 
-it.each([['网格线', 'gridlines-toggle', 'onShowGrid'], ['标尺', 'ruler-toggle', 'onShowRuler']])('routes readonly %s with source identity and updates its pressed state', (label, action, source) => {
+it.each([['网格线', 'gridlines-toggle', 'onShowGrid'], ['标尺', 'ruler-toggle', 'onShowRuler'], ['拆分', 'split-view-toggle', 'onSplitView']])('routes readonly %s with source identity and updates its pressed state', (label, action, source) => {
   const host = document.createElement('div'); document.body.append(host)
   const editor = new Editor({element:host,extensions:[Doc,Paragraph,Text],editable:false,content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'原文'}]}]}})
   let visible = false

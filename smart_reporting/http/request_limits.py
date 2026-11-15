@@ -74,7 +74,7 @@ def agentos_run_request_limit(path: str, method: str) -> int | None:
 def report_editor_write_request_limit(path: str, method: str) -> int | None:
     """编辑器写接口先解析 JSON 再核验会话，必须在读取请求体前限定大小。"""
 
-    if str(path).rstrip("/") == "/reports/v1/native/import":
+    if native_import_request_limit(path, method) is not None:
         return None
     if method.upper() in {"PUT", "POST"} and path.startswith(("/reports/v1/editor/", "/reports/v1/slides/", "/reports/v1/workbooks/", "/reports/v1/native/")):
         return MAX_REPORT_EDITOR_WRITE_REQUEST_BYTES
@@ -82,7 +82,13 @@ def report_editor_write_request_limit(path: str, method: str) -> int | None:
 
 
 def native_import_request_limit(path: str, method: str) -> int | None:
-    if method.upper() == "POST" and str(path).rstrip("/") == "/reports/v1/native/import":
+    if method.upper() != "POST":
+        return None
+    parts = str(path).strip("/").split("/")
+    if parts == ["reports", "v1", "native", "import"] or (
+        len(parts) == 8 and parts[:3] == ["reports", "v1", "native"]
+        and parts[3] and parts[4].isdigit() and parts[5:] == ["api", "slides", "open"]
+    ):
         return MAX_NATIVE_IMPORT_REQUEST_BYTES
     return None
 

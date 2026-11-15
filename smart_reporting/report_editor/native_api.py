@@ -19,8 +19,10 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError
+from starlette.datastructures import UploadFile
 
 from ..reporting.contract import SHA256_PATTERN
+from ..http.request_limits import install_streaming_body_limit
 from ..reporting.delivery.docx_native import inspect_docx
 from ..reporting.delivery.pdf_native import inspect_pdf, read_pdf_image_background, read_pdf_image_pixels, shrink_pdf
 from ..reporting.delivery.office_engine import run_office_engine
@@ -330,6 +332,29 @@ def create_native_editor_router(
             if error.code == "native_slides_filename_invalid":
                 raise HTTPException(422, detail={"code": error.code, "message": error.message}) from None
             raise _error(error) from None
+
+    @router.post("/reports/v1/native/{document_id}/{revision}/api/slides/open")
+    async def slides_open(document_id: str, revision: int, request: Request):
+        from .native_import import MAX_IMPORT_BYTES
+        from .native_slides_file_actions import open_slides_file
+
+        session, context = await session_context(request, document_id, revision, write=True)
+        install_streaming_body_limit(request, MAX_IMPORT_BYTES + 64 * 1024)
+        async with request.form(max_files=1, max_fields=1, max_part_size=1024) as form:
+            uploaded = form.get("file")
+            request_id = form.get("requestId")
+            if not isinstance(uploaded, UploadFile) or not isinstance(request_id, str) or not 0 < len(request_id) <= 256:
+                raise HTTPException(422, detail={"code": "native_format_invalid", "message": "请选择要打开的 PPTX 文件。"})
+            content = await uploaded.read(MAX_IMPORT_BYTES + 1)
+            if not 0 < len(content) <= MAX_IMPORT_BYTES:
+                raise HTTPException(413, detail={"code": "native_file_too_large", "message": "文件必须为 1 字节至 24 MiB。"})
+            try:
+                return await open_slides_file(editor, context, request_id=request_id, filename=uploaded.filename or '',
+                                              content=content, session=session)
+            except ReportingError as error:
+                if error.code in {"native_slides_filename_invalid", "native_import_invalid"}:
+                    raise HTTPException(422, detail={"code": error.code, "message": error.message}) from None
+                raise _error(error) from None
 
     @router.get("/reports/v1/native/open/{raw_grant}", include_in_schema=False)
     async def open_native(raw_grant: str):

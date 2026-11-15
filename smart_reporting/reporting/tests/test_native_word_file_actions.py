@@ -144,6 +144,18 @@ async def test_pptx_save_as_copies_the_current_draft_without_changing_the_origin
         copy = Presentation(BytesIO(await editor.read_file(revision.context)))
         assert [slide.shapes[0].text for slide in copy.slides] == ['Second', 'First']
         assert await editor.read_file(context) == original
+        open_url = url.removesuffix('save-as') + 'open'
+        files = {'file': ('Opened.pptx', original, source.media_type)}
+        assert (await client.post(open_url, files=files, data={'requestId': 'open-slides'})).status_code == 403
+        opened = await client.post(open_url, files=files, data={'requestId': 'open-slides'}, headers=headers)
+        assert opened.status_code == 200, opened.text
+        opened_id = opened.json()['documentId']
+        assert opened_id not in {context.document_id, result['documentId']}
+        opened_revision = await editor.repository.get_revision(opened_id, 1, scope=context.scope)
+        assert opened_revision.context.display_name == 'Opened.pptx'
+        assert await editor.read_file(opened_revision.context) == original
+        assert (await client.post(open_url, files={'file': ('Wrong.pptx', b'bad bytes')},
+                                  data={'requestId': 'invalid-open'}, headers=headers)).status_code == 422
 
 
 @pytest.mark.anyio

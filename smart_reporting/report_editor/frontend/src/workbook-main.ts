@@ -1778,25 +1778,31 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         void removeSplitPane().catch(error => { feedback.textContent = (error as Error).message })
         return
       }
-      if (command === 'freeze-panes') {
-        if (loading || saving || saved || disposed || shell.editor.inert || shell.editor.closest('[inert]')) return
+      if (command === 'freeze-here' || command === 'freeze-top-row' || command === 'freeze-first-col' || command === 'unfreeze') {
+        if (!editable()) return
         try {
-          const active = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
-          if (!active) throw new Error('工作簿尚未就绪')
-          const anchor = active.getSelection()?.getActiveRange()
-          if (!anchor) throw new Error('请先选择单元格或区域')
-          // Excel 语义：冻结选区左上角的上侧与左侧；再次冻结同点=取消冻结。
-          const frozenRows = anchor.getRow(), frozenColumns = anchor.getColumn()
-          const current = active.getFreeze?.()
-          const same = current && current.ySplit === frozenRows && current.xSplit === frozenColumns
-          const targetRows = same ? 0 : frozenRows, targetColumns = same ? 0 : frozenColumns
-          if (!runtime.univerAPI.syncExecuteCommand('sheet.command.set-frozen', {
-            unitId: runtime.univerAPI.getActiveWorkbook()!.getId(), subUnitId: active.getSheetId(),
-            startRow: targetRows, startColumn: targetColumns, ySplit: targetRows, xSplit: targetColumns,
-          })) throw new Error('冻结未应用')
-          markDirty()
-          ribbon.refreshState?.()
-          feedback.textContent = same ? '冻结已取消，修改尚未保存。' : '冻结窗格已更新，修改尚未保存。'
+          const book = runtime.univerAPI.getActiveWorkbook(), active = book?.getActiveSheet()
+          if (!book || !active) throw new Error('工作簿尚未就绪')
+          const anchor = command === 'freeze-here' ? book.getActiveRange() : null
+          if (command === 'freeze-here' && !anchor) throw new Error('请先选择单元格或区域')
+          const rows = command === 'freeze-top-row' ? 1 : anchor?.getRow() ?? 0
+          const columns = command === 'freeze-first-col' ? 1 : anchor?.getColumn() ?? 0
+          const current = active.getFreeze()
+          const target = { unitId: book.getId(), subUnitId: active.getSheetId() }
+          const startRow = rows || -1, startColumn = columns || -1
+          const unfrozen = rows === 0 && columns === 0
+          if (current.ySplit !== rows || current.xSplit !== columns ||
+              (!unfrozen && (current.startRow !== startRow || current.startColumn !== startColumn))) {
+            const applied = unfrozen
+              ? runtime.univerAPI.syncExecuteCommand('sheet.command.cancel-frozen', target)
+              : runtime.univerAPI.syncExecuteCommand('sheet.command.set-frozen', {
+                ...target, startRow, startColumn, ySplit: rows, xSplit: columns,
+              })
+            if (!applied) throw new Error('冻结未应用')
+            markDirty()
+            ribbon.refreshState?.()
+          }
+          feedback.textContent = unfrozen ? '已取消冻结窗格。' : '冻结窗格已更新。'
         } catch (error) { feedback.textContent = (error as Error).message }
         return
       }
