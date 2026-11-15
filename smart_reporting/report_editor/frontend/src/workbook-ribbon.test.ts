@@ -51,6 +51,31 @@ it('dispatches the three GenOffice Number shortcuts in their source order', () =
   ribbon.dispose()
 })
 
+it('offers the source Chart Grouping menu after chart types only for stackable charts', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const selection = { isPie: false, canLabel: true, canGroup: true, categoryCount: 2, seriesCount: 1, design: { grouping: 'stacked' as const } }
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0, chart: () => selection,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Chart Design"]')!.click()
+  const menu = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="chart-grouping"]')!
+  expect(menu).not.toBeNull()
+  expect(menu.parentElement?.previousElementSibling?.getAttribute('data-ribbon-command')).toBe('chart-type-doughnut')
+  expect(Array.from(menu.options, option => option.text)).toEqual(['堆积', '簇状（并列）', '堆积 ✓', '百分比堆积'])
+  menu.value = 'chart-grouping:percentStacked'
+  menu.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledExactlyOnceWith('chart-grouping:percentStacked')
+  expect(menu.value).toBe('')
+  protectedSheet = true; ribbon.refreshState()
+  expect(menu.disabled).toBe(true)
+  expect(menu.parentElement?.style.display).toBe('none')
+  protectedSheet = false; selection.canGroup = false; ribbon.refreshState()
+  expect(menu.parentElement?.style.display).toBe('none')
+  ribbon.dispose()
+})
+
 it('offers the source Chart Elements operations and checks the current legend and label modes', () => {
   const command = vi.fn()
   let protectedSheet = false

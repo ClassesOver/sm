@@ -2,11 +2,13 @@ import {readModelSources} from './pptx-model3d.ts'
 import { readSlideMedia } from './pptx-media.ts'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { openPptx, listMasterParts, parseMasterPart } from '@genoffice/pptx-engine'
+import { openPptx, listMasterParts, parseMasterPart, elementSpid } from '@genoffice/pptx-engine'
 import { buildRenderSlide } from '@genoffice/pptx-render'
 import { excerptForNaming, modelTextOfDeck } from './pptx-naming-text.ts'
 
-const request = JSON.parse(await readFile(process.argv[2]!, 'utf8')) as { input: string; purpose?: 'fileName' }
+const request = JSON.parse(await readFile(process.argv[2]!, 'utf8')) as {
+  input: string; purpose?: 'fileName'; draftShapes?: { path: string; draftKey: string; spid: number }[] | null
+}
 const opened = await openPptx(new Uint8Array(await readFile(request.input)))
 if (request.purpose === 'fileName') {
   const slides = opened.deck.slides.map((slide, index) => buildRenderSlide(slide, opened.deck.size, {
@@ -29,6 +31,12 @@ if (request.purpose === 'fileName') {
       slideIdentity: createHash('sha256').update(slide.path).update('\0').update(slide.originalXml).digest('hex'),
       mediaSources: readSlideMedia(opened, index),
       modelSources: readModelSources(opened,index),
+      ...(request.draftShapes?.length ? {
+        draftShapeSources: request.draftShapes.filter(shape => shape.path === slide.path).flatMap(shape => {
+          const element = slide.elements.find(item => elementSpid(item) === shape.spid)
+          return element ? [{ draftKey: shape.draftKey, sourceId: element.id }] : []
+        }),
+      } : {}),
       ...buildRenderSlide(slide, opened.deck.size, { fitWidthPx: opened.deck.size.cx / 9525, media, slideNo: index + 1 }),
     })),
   }))

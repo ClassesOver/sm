@@ -10,10 +10,12 @@ export interface ChartPresetSource {
   seriesCount: number
   categoryCount: number
   hasAxes?: boolean
+  canGroup?: boolean
   design?: ChartReadDesign | undefined
 }
 
 export interface ChartPresetEdit {
+  grouping?: ChartGrouping
   legend?: 'right' | 'top' | 'bottom' | 'left' | 'none'
   dataLabels?: 'value' | 'percent' | 'category-percent' | 'none'
   seriesColors?: Record<string, string>
@@ -35,6 +37,14 @@ const layouts = [
   { id: '4', legend: 'none', label: '无图例' },
 ] as const
 const colorLabels = { office: 'Office', blue: '单色蓝', green: '单色绿', warm: '暖色', gray: '灰度' }
+
+const groupingModes = [
+  { mode: 'clustered', label: '簇状（并列）' },
+  { mode: 'stacked', label: '堆积' },
+  { mode: 'percentStacked', label: '百分比堆积' },
+] as const
+
+export type ChartGrouping = typeof groupingModes[number]['mode']
 
 const legendElements = [
   { mode: 'right', label: '图例：右' },
@@ -60,6 +70,8 @@ function chartLabelElements(source: ChartPresetSource) {
 }
 
 export function chartPresetEdit(command: string, source: ChartPresetSource): ChartPresetEdit | null {
+  const grouping = groupingModes.find(({ mode }) => command === `chart-grouping:${mode}`)
+  if (grouping) return source.canGroup ? { grouping: grouping.mode } : null
   const legend = legendElements.find(({ mode }) => command === `chart-legend:${mode}`)
   if (legend) return { legend: legend.mode }
   const labels = chartLabelElements(source).find(({ mode }) => command === `chart-labels:${mode}`)
@@ -82,7 +94,16 @@ export function chartPresetEdit(command: string, source: ChartPresetSource): Cha
   return null
 }
 
-export function chartPresetMenuOptions(kind: 'elements' | 'layout' | 'colors', source: ChartPresetSource | null, editable = true): { command: string; label: string; disabled: boolean }[] {
+export function chartPresetMenuOptions(kind: 'elements' | 'layout' | 'colors' | 'grouping', source: ChartPresetSource | null, editable = true): { command: string; label: string; disabled: boolean }[] {
+  if (kind === 'grouping') {
+    if (!source?.canGroup) return []
+    const current = source.design?.grouping ?? 'clustered'
+    return groupingModes.map(({ mode, label }) => ({
+      command: `chart-grouping:${mode}`,
+      label: label + (current === mode ? ' ✓' : ''),
+      disabled: !editable,
+    }))
+  }
   if (kind === 'elements') {
     const disabled = !editable || !source
     const checked = (on: boolean) => on ? ' ✓' : ''

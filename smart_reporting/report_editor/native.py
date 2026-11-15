@@ -332,9 +332,10 @@ class NativeEditorService:
         from .slides_render import render_pptx_tree
         content = await self.read_file(context)
         try:
+            receipt = {}
             if operations:
-                content = await run_office_engine(patch_office, context.format, content, operations)
-            tree = await run_office_engine(render_pptx_tree, content)
+                content = await run_office_engine(patch_office, context.format, content, operations, pptx_receipt=receipt)
+            tree = await run_office_engine(render_pptx_tree, content, draft_shapes=receipt.get("draftShapes"))
             return {**tree, "revision": context.revision, "sha256": context.source_file.sha256}
         except ValueError:
             raise ReportingError("native_operations_invalid", "幻灯片画布无法应用当前修改。") from None

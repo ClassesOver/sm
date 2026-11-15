@@ -7,6 +7,19 @@ import { chartPresetEdit, chartPresetMenuOptions, type ChartPresetSource } from 
 
 const axis: ChartPresetSource = { isPie: false, canLabel: true, seriesCount: 2, categoryCount: 3 }
 
+it('offers GenOffice grouping only for stackable plots and preserves the checked mode', () => {
+  const grouped = { ...axis, canGroup: true, design: { grouping: 'stacked' as const } }
+  expect(chartPresetMenuOptions('grouping', grouped)).toEqual([
+    { command: 'chart-grouping:clustered', label: '簇状（并列）', disabled: false },
+    { command: 'chart-grouping:stacked', label: '堆积 ✓', disabled: false },
+    { command: 'chart-grouping:percentStacked', label: '百分比堆积', disabled: false },
+  ])
+  expect(chartPresetMenuOptions('grouping', axis)).toEqual([])
+  expect(chartPresetMenuOptions('grouping', grouped, false).every(option => option.disabled)).toBe(true)
+  expect(chartPresetEdit('chart-grouping:percentStacked', grouped)).toEqual({ grouping: 'percentStacked' })
+  expect(chartPresetEdit('chart-grouping:stacked', axis)).toBeNull()
+})
+
 it('maps Chart Elements legend and label choices to the existing native edit patch', () => {
   expect(chartPresetEdit('chart-legend:left', axis)).toEqual({ legend: 'left' })
   expect(chartPresetEdit('chart-labels:value', axis)).toEqual({ dataLabels: 'value' })
@@ -82,6 +95,23 @@ it('disables menus without an editable target and disables only colors for empty
   expect(chartPresetMenuOptions('colors', axis, false).every(option => option.disabled)).toBe(true)
   expect(chartPresetMenuOptions('colors', { ...axis, seriesCount: 0 }).every(option => option.disabled)).toBe(true)
   expect(chartPresetMenuOptions('layout', { ...axis, seriesCount: 0 }).every(option => !option.disabled)).toBe(true)
+})
+
+it('writes chart grouping and reopens the same native line chart and series', async () => {
+  const addition = chartAdditionFromGrid({
+    sheetName: 'Sheet1', chartType: 'line', title: '季度收入',
+    range: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 },
+    values: [['季度', '收入'], ['Q1', 10], ['Q2', 20]],
+  })
+  let bytes = await applyWorkbookOperations(await createBlankWorkbook(), [{ kind: 'applyChartAdditions', additions: [addition] }])
+  const before = (await readWorkbook(bytes)).sheets[0]!.charts![0]!
+  for (const mode of ['stacked', 'percentStacked', 'clustered'] as const) {
+    const edit = chartPresetEdit('chart-grouping:' + mode, { ...axis, canGroup: true })
+    bytes = await applyWorkbookOperations(bytes, [{ kind: 'applyChartEdits', edits: [{ chartPath: before.chartPath, ...edit }] }])
+    const chart = (await readWorkbook(bytes)).sheets[0]!.charts![0]!
+    expect(chart).toMatchObject({ chartPath: before.chartPath, title: '季度收入', design: { grouping: mode } })
+    expect(chart.series[0]!.valuesRef).toBe(before.series[0]!.valuesRef)
+  }
 })
 
 it('saves and reopens the direct left legend and percent-only label edits', async () => {

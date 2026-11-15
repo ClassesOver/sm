@@ -16,6 +16,7 @@ from smart_reporting.report_editor.native_office import (
     inspect_office,
     patch_office,
 )
+from smart_reporting.report_editor.slides_render import render_pptx_tree
 
 
 def _png(color='red'):
@@ -104,6 +105,25 @@ def test_drawn_connector_preserves_reverse_direction_at_the_placed_geometry():
     for malformed in ({**shape, 'flipH': 'true'}, {**shape, 'kind': 'rect'}):
         with pytest.raises(ValueError):
             patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [malformed]}])
+
+
+def test_drawn_shape_preview_identity_uses_the_written_shape_without_storing_draft_key():
+    content, _ = _presentation()
+    key = '12345678-1234-4321-8765-123456789abc'
+    shape = {'slideIndex': 0, 'kind': 'rect', 'geometry': {'x': 96, 'y': 192, 'width': 144, 'height': 48},
+             'draftKey': key}
+    receipt = {}
+    updated = patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [shape]}], pptx_receipt=receipt)
+    tree = render_pptx_tree(updated, draft_shapes=receipt['draftShapes'])
+    slide = tree['slides'][0]
+    [target] = slide['draftShapeSources']
+    assert target['draftKey'] == key
+    node = next(item for item in slide['nodes'] if item['sourceId'] == target['sourceId'])
+    assert (node['box']['x'], node['box']['y'], node['box']['w'], node['box']['h']) == (96, 192, 144, 48)
+    with ZipFile(BytesIO(updated)) as archive:
+        assert key.encode() not in archive.read('ppt/slides/slide1.xml')
+    with pytest.raises(ValueError):
+        patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [shape, shape]}])
 
 
 def _patch(content, **operation):

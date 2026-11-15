@@ -25,7 +25,18 @@ function newDraft(){const values=new Map<string,string>();return new NativeDraft
 async function open(draft:NativeDraft){
  document.documentElement.lang='zh-CN';document.body.innerHTML='<main id="app"></main>'
  const shell=createEditorShell(document.querySelector('#app')!,'full','pptx')
- const request=vi.fn(async(path:string,_init?:RequestInit)=>path==='deck'?source:path==='render-tree'?tree:{revision:2,revisionRegistered:true,validation:{issues:[]}})
+ const request=vi.fn(async(path:string,init?:RequestInit)=>{
+  if(path==='deck')return source
+  if(path!=='render-tree')return {revision:2,revisionRegistered:true,validation:{issues:[]}}
+  const shapes=init?.method==='POST' ? JSON.parse(init.body as string).operations[0].shapes ?? [] : []
+  const drawn=shapes.map((shape:{draftKey:string;geometry:typeof geometry},index:number)=>({
+   id:`drawn-${index}`,sourceId:`engine-drawn-${index}`,type:'shape',
+   box:{x:shape.geometry.x,y:shape.geometry.y,w:shape.geometry.width,h:shape.geometry.height,rotationDeg:0},
+   draftKey:shape.draftKey,
+  }))
+  return {slides:[{...tree.slides[0],nodes:[...tree.slides[0]!.nodes,...drawn],
+   draftShapeSources:drawn.map(({draftKey,sourceId}: {draftKey:string;sourceId:string})=>({draftKey,sourceId}))}]}
+ })
  const previousCanvasCount=canvasStates.length
  const view=createSlidesEditorView(shell.editor,{native:true,draft,request:request as never,save:shell.save,download:shell.exportPptx})
  await view.ready;await vi.waitFor(()=>expect(canvasStates.length).toBeGreaterThan(previousCanvasCount))
@@ -49,21 +60,33 @@ it('arms shape placement from the gallery and stages the drawn connector directi
   expect(line.kind).toBe('lineArrow')
   line.commit(resolveDrawRect(line.kind,240,140,100,100,false))
   expect(draft.operations[0]?.shapes).toEqual([
-   {slideIndex:0,kind:'lineArrow',geometry:{x:100,y:100,width:140,height:40},flipH:true,flipV:true},
+   {slideIndex:0,kind:'lineArrow',geometry:{x:100,y:100,width:140,height:40},flipH:true,flipV:true,draftKey:expect.any(String)},
   ])
   const rectangle=pick('rect')
   rectangle.commit({x:16,y:32,...defaultDrawSize(rectangle.kind)})
-  expect(draft.operations[0]?.shapes).toContainEqual({slideIndex:0,kind:'rect',geometry:{x:16,y:32,width:96,height:96}})
+  expect(draft.operations[0]?.shapes).toContainEqual({slideIndex:0,kind:'rect',geometry:{x:16,y:32,width:96,height:96},draftKey:expect.any(String)})
   const horizontal=pick('line')
   horizontal.commit({x:16,y:48,...defaultDrawSize(horizontal.kind)})
-  expect(draft.operations[0]?.shapes).toContainEqual({slideIndex:0,kind:'line',geometry:{x:16,y:48,width:96,height:0}})
+  expect(draft.operations[0]?.shapes).toContainEqual({slideIndex:0,kind:'line',geometry:{x:16,y:48,width:96,height:0},draftKey:expect.any(String)})
   await vi.waitFor(()=>expect(app.request.mock.calls.some(([path,init])=>path==='render-tree' && init?.method==='POST' &&
     JSON.parse(init.body as string).operations[0].shapes?.length===3)).toBe(true),{timeout:5000})
+  const lastShape=(draft.operations[0]?.shapes as {draftKey:string}[]).at(-1)!
+  const target=`draft-shape:${lastShape.draftKey}`
+  await vi.waitFor(()=>expect(canvasStates.at(-1)!.selectedId).toBe(target),{timeout:5000})
+  expect(canvasStates.at(-1)!.editableIds.has(target)).toBe(true)
+  canvasStates.at(-1)!.onGeometry(target,{x:40,y:50,width:96,height:1})
+  expect(draft.operations[0]?.edits ?? []).toEqual([])
+  expect(draft.operations[0]?.shapes).toContainEqual({slideIndex:0,kind:'line',geometry:{x:40,y:50,width:96,height:0},draftKey:lastShape.draftKey})
   const cancelled=pick('ellipse')
   app.command('insertShape').focus()
   window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))
   cancelled.commit({x:0,y:0,w:96,h:96})
   expect(draft.operations[0]?.shapes).toHaveLength(3)
+  app.shell.save.click()
+  await vi.waitFor(()=>expect(app.request.mock.calls.some(([path])=>path==='save')).toBe(true))
+  const saved=JSON.parse(app.request.mock.calls.find(([path])=>path==='save')![1]!.body as string).operations[0]
+  expect(saved.shapes).toHaveLength(3)
+  expect(saved.shapes.at(-1)).toMatchObject({draftKey:lastShape.draftKey,geometry:{x:40,y:50,width:96,height:0}})
  }finally{app.view.dispose()}
 })
 it('shows crop in Picture Format Size and preserves pending picture orientation',async()=>{

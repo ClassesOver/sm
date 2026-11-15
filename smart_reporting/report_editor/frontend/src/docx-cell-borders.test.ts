@@ -88,9 +88,23 @@ it('keeps pen state without mutating document until a source gallery command is 
  expect(style.options).toHaveLength(8);expect(width.options).toHaveLength(5)
  style.value='dashed';style.dispatchEvent(new Event('change'));width.value='18';width.dispatchEvent(new Event('change'));color.value='#00b050';color.dispatchEvent(new Event('input'))
  expect(f.editor.getJSON()).toEqual(f.baseline)
+ const trigger=controls.element.querySelector<HTMLButtonElement>('[data-action="table-border-menu"]')!
+ const last=controls.element.querySelector<HTMLButtonElement>('[data-action="table-border-apply-last"]')!
+ const initialIcon=last.querySelector('svg')!.outerHTML
+ trigger.click()
+ expect(trigger.getAttribute('aria-expanded')).toBe('true')
+ expect(document.activeElement).toBe(controls.element.querySelector('[data-action="table-border-bottom"]'))
+ document.activeElement!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+ expect(document.activeElement).toBe(trigger)
+ expect(trigger.getAttribute('aria-expanded')).toBe('false')
+ trigger.click()
  controls.element.querySelector<HTMLButtonElement>('[data-action="table-border-outer"]')!.click()
  expect(normalizeDocxCellBorders(f.baseline,f.editor.getJSON() as DocxPmNode,f.anchors).operations[0]!.steps[0]!.pen).toEqual({style:'dashed',szEighths:18,color:'00B050'})
  expect(state.lastMode).toBe('outer')
+ expect(trigger.getAttribute('aria-expanded')).toBe('false')
+ expect(last.querySelector('svg')!.outerHTML).not.toBe(initialIcon)
+ expect(last.title).toContain('外侧框线')
+ controls.close()
 })
 import { docxOperations, replayDocxOperations, type DocxAnchor } from './docx-operations'
 it('integrates strict ordinary diff and draft replay without enabling rich-cell text rewrite',()=>{

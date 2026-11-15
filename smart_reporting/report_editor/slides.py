@@ -744,7 +744,8 @@ class ReportSlidesEditorService:
             except ValueError as error:
                 raise ReportingError("report_slides_engine_receipt_invalid", "PPTX 引擎回执无效。") from error
             if action == "edit":
-                return {"bytes": output_path.read_bytes(), "issues": receipt.get("issues", [])}
+                return {"bytes": output_path.read_bytes(), "issues": receipt.get("issues", []),
+                        "draftShapes": receipt.get("draftShapes", [])}
             return receipt
 
     @staticmethod

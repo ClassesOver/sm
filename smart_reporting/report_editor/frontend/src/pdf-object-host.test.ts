@@ -874,6 +874,26 @@ it('checks required form fields, focuses the missing value and exits after a sta
  expect(f.root.textContent).toContain('表单填写检查完成')
  expect(f.draft.operations).toHaveLength(1)
 })
+it('locates the first missing field on its visible page and keeps navigation on that widget', async () => {
+ const f=await fixture({exportPages:3,navigationFields:true,widgetNavigation:true})
+ const [first,deleted,last]=[0,1,2].map(page=>pageId.replace(/:0$/,':'+page))
+ for(const annotations of pdfMock.widgetPages!.slice(1))for(const field of annotations){
+  field.fieldName='secondary';field.required=true;field.fieldValue=''
+ }
+ f.draft.setOperations([{kind:'deletePage',pageId:deleted}])
+ await f.create()
+ const card=(id:string)=>f.root.querySelector<HTMLElement>('.pdf-page[data-page-id="'+id+'"]')!
+ const scroll=vi.fn();card(last).scrollIntoView=scroll
+ expect(card(first).classList.contains('is-active')).toBe(true)
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
+ f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.fillForm.complete"]')!.click()
+ await vi.waitFor(()=>expect(f.root.textContent).toContain('还有 1 个必填字段未填写'))
+ expect(scroll).toHaveBeenCalled()
+ expect(card(last).classList.contains('is-active')).toBe(true)
+ expect(document.activeElement?.getAttribute('aria-label')).toBe('secondary')
+ expect(f.root.querySelector('[aria-label="表单字段位置"]')?.textContent).toBe('2 / 2')
+ expect(f.draft.operations).toEqual([{kind:'deletePage',pageId:deleted}])
+})
 it('keeps the form placement tool armed across multiple clicks until Keep adding is turned off',async()=>{
  const observers:Array<{targets:Element[];callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void}>=[]
  vi.stubGlobal('IntersectionObserver',class{

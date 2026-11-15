@@ -592,6 +592,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       canLabel: !['scatter', 'radar'].includes(target.chart.kind),
       seriesCount: target.chart.series.length, categoryCount,
       hasAxes: ['column', 'bar', 'line', 'area', 'scatter'].includes(target.chart.kind),
+      canGroup: ['column', 'bar', 'line', 'area'].includes(target.chart.kind),
       design: target.chart.design,
     }
   }
@@ -2246,7 +2247,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           })().catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
           return
         }
-        if (/^chart-(layout|colors|legend|labels):/.test(command)) {
+        if (/^chart-(layout|colors|legend|labels|grouping):/.test(command)) {
           const target = chartTarget(), patch = chartPresetEdit(command, chartPresetSource(target))
           if (!patch) throw new Error('当前图表无法应用此预设')
           void applyChartOperation(target, { kind: 'applyChartEdits', edits: [{ chartPath: target.chart.chartPath, ...patch }] }, '图表预设已应用，修改尚未保存。')

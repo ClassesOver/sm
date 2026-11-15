@@ -1,22 +1,81 @@
 import type { Editor } from '@tiptap/core'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { DOCX_CELL_BORDER_MODES, DOCX_CELL_BORDER_STYLES, DOCX_CELL_BORDER_WIDTHS, type DocxCellBorderMode, type DocxCellBorderPen } from '../../../reporting/doc_engine/bridge/docx-cell-borders-spec'
 import { applyDocxCellBorders, docxCellBordersUnavailable, type DocxCellBordersAnchor } from './docx-cell-borders'
+import { IconBorderAll, IconBorderBottom, IconBorderDiagonalDown, IconBorderDiagonalUp, IconBorderInner, IconBorderInsideH, IconBorderInsideV, IconBorderLeft, IconBorderNone, IconBorderOuter, IconBorderRight, IconBorderTop, IconCaret } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 export function createDocxCellBorderUiState() { return { lastMode: 'bottom' as DocxCellBorderMode, pen: { style: 'single', szEighths: 4, color: '000000' } as DocxCellBorderPen } }
 const actions: Record<DocxCellBorderMode, string> = { bottom: 'bottom', top: 'top', left: 'left', right: 'right', none: 'none', all: 'all', outer: 'outer', inner: 'inner', insideH: 'inside-horizontal', insideV: 'inside-vertical', tl2br: 'diagonal-down', tr2bl: 'diagonal-up' }
 const labels: Record<DocxCellBorderMode, string> = { bottom: '下框线', top: '上框线', left: '左框线', right: '右框线', none: '无框线', all: '所有框线', outer: '外侧框线', inner: '内侧框线', insideH: '内部横框线', insideV: '内部竖框线', tl2br: '下斜框线', tr2bl: '上斜框线' }
+const icons = {
+  bottom: IconBorderBottom, top: IconBorderTop, left: IconBorderLeft, right: IconBorderRight,
+  none: IconBorderNone, all: IconBorderAll, outer: IconBorderOuter, inner: IconBorderInner,
+  insideH: IconBorderInsideH, insideV: IconBorderInsideV, tl2br: IconBorderDiagonalDown, tr2bl: IconBorderDiagonalUp,
+} satisfies Record<DocxCellBorderMode, typeof IconCaret>
 /** pen/最近命令保存在ribbon生命周期state中；改pen不产生文档事务。 */
 export function createDocxCellBordersControls(editor: Editor, anchors: readonly DocxCellBordersAnchor[], state: ReturnType<typeof createDocxCellBorderUiState>, onError?: (error: unknown) => void) {
-  const element = document.createElement('div'), panel = document.createElement('div')
-  element.className = 'rb-split-wrap table-tool-borders'; element.style.cssText = 'display:flex;flex-wrap:wrap;align-content:flex-start;gap:4px;max-width:280px'; panel.className = 'layout-menu'; panel.hidden = true; panel.dataset.rbPanel = ''
-  element.addEventListener('mousedown', event => event.preventDefault())
+  const element = document.createElement('div'), split = document.createElement('div'), panel = document.createElement('div')
+  element.className = 'table-tool-group table-tool-borders'
+  split.className = 'rb-split-wrap table-split'
+  panel.className = 'layout-menu table-autofit-menu'; panel.hidden = true; panel.dataset.rbPanel = ''
+  panel.setAttribute('role', 'menu'); panel.setAttribute('aria-label', '边框')
+  split.addEventListener('mousedown', event => event.preventDefault())
   const button = (action: string, label: string, run: () => void) => {
     const control = document.createElement('button'); control.type = 'button'; control.className = 'rb-icon docx-ribbon-command'; control.dataset.action = action; control.textContent = label; control.setAttribute('aria-label', label)
     control.addEventListener('click', run); return control
   }
-  const apply = (mode: DocxCellBorderMode) => { state.lastMode = mode; try { applyDocxCellBorders(editor, mode, state.pen, anchors) } catch (error) { onError?.(error) }; panel.hidden = true }
-  const last = button('table-border-apply-last', '应用最近边框', () => apply(state.lastMode)), menu = button('table-border-menu', '边框 ▾', () => { panel.hidden = !panel.hidden; menu.setAttribute('aria-expanded', String(!panel.hidden)) })
-  menu.setAttribute('aria-expanded', 'false')
-  for (const mode of DOCX_CELL_BORDER_MODES) panel.append(button(`table-border-${actions[mode]}`, labels[mode], () => apply(mode)))
+  let dismiss: (() => void) | undefined
+  const close = () => {
+    dismiss?.(); dismiss = undefined; panel.hidden = true
+    menu.classList.remove('active')
+    menu.setAttribute('aria-expanded', 'false')
+  }
+  const paint = (target: HTMLButtonElement, icon: typeof IconCaret, size: number, caption?: string) => {
+    target.innerHTML = renderToStaticMarkup(createElement(icon, { size }))
+    if (caption) { const text = document.createElement('span'); text.textContent = caption; target.append(text) }
+  }
+  const apply = (mode: DocxCellBorderMode) => {
+    close()
+    if (docxCellBordersUnavailable(editor, anchors)) return
+    state.lastMode = mode
+    try { applyDocxCellBorders(editor, mode, state.pen, anchors) } catch (error) { onError?.(error) }
+    sync()
+  }
+  const last = button('table-border-apply-last', '应用最近边框', () => apply(state.lastMode))
+  const menu = button('table-border-menu', '边框', () => { if (panel.hidden) open(); else close() })
+  last.className = 'table-split-main'
+  menu.className = 'table-split-caret'
+  menu.setAttribute('aria-label', '边框'); menu.setAttribute('aria-expanded', 'false'); menu.setAttribute('aria-haspopup', 'menu')
+  paint(menu, IconCaret, 12)
+  const entries = DOCX_CELL_BORDER_MODES.map(mode => {
+    const item = button(`table-border-${actions[mode]}`, labels[mode], () => { if (!panel.hidden) apply(mode) })
+    item.className = ''
+    item.setAttribute('role', 'menuitem'); item.tabIndex = -1
+    paint(item, icons[mode], 17, labels[mode]); panel.append(item)
+    return {mode, item}
+  })
+  const open = () => {
+    if (menu.disabled) return
+    panel.hidden = false; menu.classList.add('active'); menu.setAttribute('aria-expanded', 'true')
+    dismiss = installPopoverDismiss(close, { inside: () => [split] })
+    entries.find(entry => entry.mode === state.lastMode)?.item.focus({ preventScroll: true })
+  }
+  split.addEventListener('focusout', event => { if (!split.contains(event.relatedTarget as Node | null)) close() })
+  split.addEventListener('keydown', event => {
+    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+    if (panel.hidden) {
+      if (event.key === 'ArrowDown') { event.preventDefault(); open() }
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault(); event.stopPropagation(); close(); menu.focus()
+      return
+    }
+    const index = entries.findIndex(({item}) => item === document.activeElement)
+    const next = event.key === 'ArrowDown' ? index + 1 : event.key === 'ArrowUp' ? index - 1 : null
+    if (next !== null) { event.preventDefault(); entries[(next + entries.length) % entries.length]?.item.focus() }
+  })
   const style = document.createElement('select'); style.dataset.action = 'table-border-style'; style.setAttribute('aria-label', '边框样式')
   const glyphs = ['─────', '━━━━━', '═════', '≡≡≡≡≡', '┄┄┄┄┄', '╌╌╌╌╌', '─·─·─', '─··─··']
   DOCX_CELL_BORDER_STYLES.forEach((value, index) => { const option = document.createElement('option'); option.value = value; option.textContent = glyphs[index]!; style.append(option) }); style.value = state.pen.style
@@ -27,11 +86,16 @@ export function createDocxCellBordersControls(editor: Editor, anchors: readonly 
   const color = document.createElement('input'); color.type = 'color'; color.dataset.action = 'table-border-color'; color.setAttribute('aria-label', '边框颜色'); color.value = `#${state.pen.color}`
   color.addEventListener('input', () => { state.pen.color = color.value.slice(1).toUpperCase() })
   const automatic = button('table-border-color-auto', '自动', () => { state.pen.color = '000000'; color.value = '#000000' })
-  element.append(last, menu, panel, style, width, color, automatic)
+  const pen = document.createElement('div'); pen.className = 'table-border-opts'
+  pen.append(style, width, color, automatic)
+  split.append(last, menu, panel); element.append(split, pen)
   const sync = () => {
     const reason = docxCellBordersUnavailable(editor, anchors)
     for (const control of element.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLInputElement>('button,select,input')) { const label = control.dataset.borderLabel ?? control.getAttribute('aria-label') ?? ''; control.dataset.borderLabel = label; control.disabled = reason !== null; control.title = reason ?? label; control.setAttribute('aria-label', reason ? `${label}，${reason}` : label) }
     last.title = reason ?? `应用最近边框：${labels[state.lastMode]}`
+    paint(last, icons[state.lastMode], 18, '边框')
+    for (const {mode,item} of entries) item.classList.toggle('active', mode === state.lastMode)
+    if (reason) close()
   }
-  sync(); return { element, sync }
+  sync(); return { element, sync, close }
 }

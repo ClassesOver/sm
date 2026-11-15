@@ -12,7 +12,7 @@ import { indentToUniverPadding, univerPaddingToIndent, type UniverStyleData } fr
 import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboard'
 import { CELL_STYLE_PRESETS } from './workbook-cell-style-presets'
 import { THEME_MENU_OPTIONS } from './workbook-theme'
-import { chartPresetMenuOptions, type ChartElementCommand, type ChartPresetSource } from './workbook-chart-presets'
+import { chartPresetMenuOptions, type ChartElementCommand, type ChartGrouping, type ChartPresetSource } from './workbook-chart-presets'
 import { supportsWorkbookScreenshot } from './workbook-screenshot'
 import { workbookTranslationLanguages, type WorkbookTranslationLanguage } from './workbook-ai-translation'
 
@@ -51,6 +51,7 @@ type RibbonCommand =
   | 'chart-title' | 'chart-axis-cat' | 'chart-axis-val' | 'chart-legend' | 'chart-labels' | 'chart-format-pane' | 'chart-select-data' | 'chart-switch-row-col' | 'chart-delete' | 'chart-descriptions'
   | `chart-type-${'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut'}`
   | ChartElementCommand
+  | `chart-grouping:${ChartGrouping}`
   | `chart-layout:${'1' | '2' | '3' | '4'}`
   | `chart-colors:${'office' | 'blue' | 'green' | 'warm' | 'gray'}`
   | 'format-as-table'
@@ -1198,7 +1199,7 @@ export function mountWorkbookRibbon(
       pasteSpecial.title = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : '选择性粘贴'
     }
     const themeState = view.theme?.()
-    for (const kind of ['elements', 'layout', 'colors'] as const) {
+    for (const kind of ['elements', 'layout', 'colors', 'grouping'] as const) {
       const select = body.querySelector<HTMLSelectElement>(`[data-ribbon-menu="chart-${kind}"]`)
       if (!select) continue
       const source = view.chart?.() ?? null
@@ -1212,7 +1213,8 @@ export function mountWorkbookRibbon(
         return option
       }))
       select.value = ''; select.disabled = options.every(item => item.disabled)
-      select.title = !editable ? '当前工作簿不可编辑或正在保存' : protectedSheet ? PROTECTED_SHEET_REASON : !source ? '请先选择要操作的图表' : kind === 'elements' ? '标题、数据标签、图例' : label
+      if (kind === 'grouping') select.parentElement!.style.display = !source?.canGroup || !editable || protectedSheet ? 'none' : ''
+      select.title = !editable ? '当前工作簿不可编辑或正在保存' : protectedSheet ? PROTECTED_SHEET_REASON : !source ? '请先选择要操作的图表' : kind === 'elements' ? '标题、数据标签、图例' : kind === 'grouping' ? '簇状 / 堆积切换' : label
       select.setAttribute('aria-description', select.title)
     }
     for (const menu of ['theme', 'theme-colors', 'theme-fonts'] as const) {
@@ -1408,24 +1410,6 @@ export function mountWorkbookRibbon(
       if (group.title === 'AI 助手') {
         section.classList.add('office-ai-group')
         section.append(createOfficeAIEntry(view?.onAssistant))
-      }
-      if (active === 'Chart Design' && group.title === '图表布局') {
-        for (const [kind, label, glyph] of [['elements', '添加图表元素', '📊'], ['layout', '快速布局', '▦'], ['colors', '更改颜色', '🎨']] as const) {
-          const wrapper = document.createElement('label')
-          wrapper.className = 'workbook-ribbon-chart-menu'
-          const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
-          icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('', glyph) ?? ''
-          const select = document.createElement('select')
-          select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', label)
-          select.dataset.ribbonMenu = `chart-${kind}`
-          select.disabled = true
-          select.addEventListener('change', () => {
-            const value = select.value, enabled = !select.disabled && !select.selectedOptions[0]?.disabled
-            select.value = ''
-            if (value && enabled) onCommand(value as RibbonCommand)
-          })
-          wrapper.append(icon, select); section.append(wrapper)
-        }
       }
       if (active === 'Table Design' && group.title === '属性') {
         const input = document.createElement('input')
@@ -1644,6 +1628,28 @@ export function mountWorkbookRibbon(
           button.addEventListener('click', event => { if (!button.disabled && !captureError) { if (item.command === 'format:custom-open') onCommand(item.command, target); else if (item.command === 'format-painter') onCommand(event.detail >= 2 ? 'format-painter:dblclick' : 'format-painter'); else onCommand(item.command!) } })
         }
         section.append(button)
+      }
+      if (active === 'Chart Design') {
+        const menus = group.title === '图表布局'
+          ? [['elements', '添加图表元素', '📊'], ['layout', '快速布局', '▦'], ['colors', '更改颜色', '🎨']] as const
+          : group.title === '更改图表类型' ? [['grouping', '堆积', '▤']] as const : []
+        for (const [kind, label, glyph] of menus) {
+          const wrapper = document.createElement('label')
+          wrapper.className = 'workbook-ribbon-chart-menu'
+          if (kind === 'grouping') wrapper.style.display = 'none'
+          const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
+          icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('', glyph) ?? ''
+          const select = document.createElement('select')
+          select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', label)
+          select.dataset.ribbonMenu = `chart-${kind}`
+          select.disabled = true
+          select.addEventListener('change', () => {
+            const value = select.value, enabled = !select.disabled && !select.selectedOptions[0]?.disabled
+            select.value = ''
+            if (value && enabled) onCommand(value as RibbonCommand)
+          })
+          wrapper.append(icon, select); section.append(wrapper)
+        }
       }
       for (const menu of RIBBON_COMMAND_MENUS) {
         if (menu.tab !== active || menu.group !== group.title) continue

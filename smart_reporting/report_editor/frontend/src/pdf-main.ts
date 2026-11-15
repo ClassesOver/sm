@@ -2676,8 +2676,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       const first = missing[0]
       const control = [...formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,[data-pdf-form-signature-target]')]
         .find(field => field.getAttribute('aria-label') === first.name && !field.disabled)
-      if (control) control.focus()
-      else jumpToPageForIdentity(first.pageId)
+      const target = formNavigationTargets().find(item => item.pageId === first.pageId && item.control === control)
+      if (target) focusFormNavigationTarget(target)
+      else {
+        if (first.pageId !== activeId) jumpToPageForIdentity(first.pageId)
+        control?.focus()
+      }
       return
     }
     status.textContent = '表单填写检查完成'
@@ -2735,7 +2739,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (!targets.length) return
     const current = focusedFormIndex(targets)
     const next = current < 0 ? (direction > 0 ? 0 : targets.length - 1) : (current + direction + targets.length) % targets.length
-    const target = targets[next]
+    focusFormNavigationTarget(targets[next])
+  }
+  function focusFormNavigationTarget(target: ReturnType<typeof formNavigationTargets>[number]) {
     activeFormFieldId = target.control.dataset.pdfFormFieldId ?? ''
     activeFormWidgetKey = target.key
     if (target.pageId && target.pageId !== activeId) jumpToPageForIdentity(target.pageId)
