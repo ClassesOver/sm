@@ -37,6 +37,26 @@ it('aggregates independently and echoes actual saved protection flags, with unto
   expect(single).toMatchObject({ locked: 'off', hidden: 'on', size: '11', bold: 'on' })
   expect(formatCellsCommands(draft, { ...draft, noFill: true })).toEqual(['fill:none'])
 })
+it('resolves named-style protection and retains the inherited flag in a partial edit', async () => {
+  const original = await createBlankWorkbook()
+  const path = 'xl/styles.xml'
+  const zip = await createBufferEntrySource(original)
+  const styles = (await zip.readText(path))
+    .replace(/(<cellStyleXfs\b[^>]*>)<xf[^>]*\/>/, '$1<xf><protection locked="false" hidden="true"/></xf>')
+  const bytes = (await assemblePackage(original, {
+    replaced: new Map([[path, styles]]), added: new Map(), addedBinary: new Map(),
+    removedEntries: [], addedEntries: [], touchedEntries: [path],
+  })).buffer
+  const before = await readWorkbook(bytes)
+  expect(before.styles.cellXfs[0]?.protection).toEqual({ locked: false, hidden: true })
+  const output = await applyCellEdits(bytes, [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 7 }, style: { protectionLocked: true } },
+  ])
+  const after = await readWorkbook(output)
+  expect(after.styles.cellXfs[after.sheets[0]!.cells.A1!.styleIndex!]?.protection)
+    .toEqual({ locked: true, hidden: true })
+})
+
 it('preserves imported protection booleans when applying unrelated formatting', async () => {
   const bytes = await applyCellEdits(await createBlankWorkbook(), [
     { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 7 },

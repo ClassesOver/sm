@@ -94,6 +94,26 @@ export function formatCodeFor(styles: Stylesheet, xf: XfInfo): string {
   return BUILTIN_NUM_FMT_CODES.get(xf.numFmtId) ?? 'General'
 }
 
+function protectionOf(xf: string): XfInfo['protection'] {
+  const protection = extractElements(xf, 'protection')[0]
+  if (!protection) return undefined
+  return {
+    locked: !['0', 'false'].includes(readCoreAttribute(protection, 'locked') ?? '1'),
+    hidden: ['1', 'true'].includes(readCoreAttribute(protection, 'hidden') ?? '0'),
+  }
+}
+
+/** Cell XFs can carry their own protection snapshot or refer to a named style. */
+export function resolveXfProtection(xf: string, namedStyles: readonly string[]): XfInfo['protection'] {
+  const own = protectionOf(xf)
+  if (own) return own
+  if (['1', 'true'].includes(readCoreAttribute(xf, 'applyProtection') ?? '')) return { locked: true, hidden: false }
+  const id = readCoreAttribute(xf, 'xfId')
+  const parent = id !== undefined && /^\d+$/.test(id) ? namedStyles[Number(id)] : undefined
+  if (!parent || ['0', 'false'].includes(readCoreAttribute(parent, 'applyProtection') ?? '')) return undefined
+  return protectionOf(parent)
+}
+
 export function parseStylesheet(stylesXml: string): Stylesheet {
   const numFmts = new Map<number, string>()
   for (const entry of extractElements(sectionInner(stylesXml, 'numFmts') ?? '', 'numFmt')) {
@@ -107,20 +127,14 @@ export function parseStylesheet(stylesXml: string): Stylesheet {
   const borders = extractElements(sectionInner(stylesXml, 'borders') ?? '', 'border').map(
     parseBorder,
   )
+  const namedStyles = extractElements(sectionInner(stylesXml, 'cellStyleXfs') ?? '', 'xf')
   const cellXfs = extractElements(sectionInner(stylesXml, 'cellXfs') ?? '', 'xf').map((xf) => ({
     numFmtId: Number(readCoreAttribute(xf, 'numFmtId') ?? 0),
     fontId: Number(readCoreAttribute(xf, 'fontId') ?? 0),
     fillId: Number(readCoreAttribute(xf, 'fillId') ?? 0),
     borderId: Number(readCoreAttribute(xf, 'borderId') ?? 0),
     alignment: parseAlignment(xf),
-    ...(() => {
-      const protection = extractElements(xf, 'protection')[0]
-      if (!protection) return {}
-      return { protection: {
-        locked: !['0', 'false'].includes(readCoreAttribute(protection, 'locked') ?? '1'),
-        hidden: ['1', 'true'].includes(readCoreAttribute(protection, 'hidden') ?? '0'),
-      } }
-    })(),
+    protection: resolveXfProtection(xf, namedStyles),
   }))
   return { numFmts, fonts, fills, borders, cellXfs }
 }

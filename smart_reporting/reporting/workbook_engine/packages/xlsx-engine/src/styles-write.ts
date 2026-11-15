@@ -6,6 +6,7 @@
 import type { WorkbookStyleEdit } from './edit-schemas'
 import { shortDateNumFmtId } from './short-date'
 import { isGradientFill, type FillSpec, type StyleColor } from './style-color'
+import { resolveXfProtection } from './style-read'
 import { escapeXmlAttribute, extractElements, readCoreAttribute, sectionInner } from './xml'
 
 export class StylesheetEditor {
@@ -16,6 +17,7 @@ export class StylesheetEditor {
   private readonly borders: string[]
   private readonly hadBordersSection: boolean
   private readonly cellXfs: string[]
+  private readonly namedStyles: string[]
   private readonly dxfs: string[]
   private readonly hadDxfsSection: boolean
   private readonly originalCounts: {
@@ -47,6 +49,7 @@ export class StylesheetEditor {
     this.borders = bordersInner === null ? ['<border/>'] : extractElements(bordersInner, 'border')
     if (this.borders.length === 0) this.borders.push('<border/>')
     this.cellXfs = extractElements(cellXfsInner, 'xf')
+    this.namedStyles = extractElements(sectionInner(stylesXml, 'cellStyleXfs') ?? '', 'xf')
     const dxfsInner = sectionInner(stylesXml, 'dxfs')
     this.hadDxfsSection = dxfsInner !== null
     this.dxfs = dxfsInner === null ? [] : extractElements(dxfsInner, 'dxf')
@@ -120,7 +123,9 @@ export class StylesheetEditor {
     }
     const alignment = buildAlignment(baseXf, delta)
     const changesProtection = delta.protectionLocked !== undefined || delta.protectionHidden !== undefined
-    const protection = buildProtection(baseXf, delta)
+    const protection = changesProtection
+      ? buildProtection(resolveXfProtection(baseXf, this.namedStyles), delta)
+      : extractElements(baseXf, 'protection')[0] ?? ''
     const applyProtection = changesProtection
       ? '1'
       : readCoreAttribute(baseXf, 'applyProtection')
@@ -412,15 +417,10 @@ function ownsItsAlignment(xf: string): boolean {
   return true
 }
 
-/// Preserve the imported protection element unless the edit changes a flag.
 /// An empty explicit protection element applies the schema defaults.
-function buildProtection(baseXf: string, delta: WorkbookStyleEdit): string {
-  const baseProtection = extractElements(baseXf, 'protection')[0] ?? ''
-  if (delta.protectionLocked === undefined && delta.protectionHidden === undefined) return baseProtection
-  const locked =
-    delta.protectionLocked ?? !['0', 'false'].includes(readCoreAttribute(baseProtection, 'locked') ?? '1')
-  const hidden =
-    delta.protectionHidden ?? ['1', 'true'].includes(readCoreAttribute(baseProtection, 'hidden') ?? '0')
+function buildProtection(base: ReturnType<typeof resolveXfProtection>, delta: WorkbookStyleEdit): string {
+  const locked = delta.protectionLocked ?? base?.locked ?? true
+  const hidden = delta.protectionHidden ?? base?.hidden ?? false
   const attributes = [
     ...(locked === false ? ['locked="0"'] : []),
     ...(hidden === true ? ['hidden="1"'] : []),
