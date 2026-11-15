@@ -338,3 +338,46 @@ async def test_blank_acp_message_returns_422_not_500():
                                    json={"message_id": "blank", "text": "   "})
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"] == ["body", "text"]
+
+
+@pytest.mark.anyio
+async def test_revocation_cancels_inflight_acp_prompt():
+    import asyncio
+
+    identity = ConnectorIdentity("dsh", "synthetic", "session")
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class Repository:
+        active = True
+
+        async def member_grant(self, channel, caller):
+            return "grant" if self.active and caller == identity else None
+
+    repository = Repository()
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def open_session(self, resume=None):
+            return "session-id"
+
+        async def prompt(self, message):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    conversation = await ReportChannelAcp(repository, Client).bind("report-a", identity)
+    turn = asyncio.create_task(conversation.prompt(identity, "hello", message_id="first"))
+    await asyncio.wait_for(started.wait(), 2)
+    repository.active = False
+    with pytest.raises(ReportChannelAcpDenied):
+        await asyncio.wait_for(turn, 3)
+    assert cancelled.is_set()
