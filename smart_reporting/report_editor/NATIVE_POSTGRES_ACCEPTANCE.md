@@ -206,3 +206,16 @@ python -m pytest -q -o addopts='' \
   smart_reporting/reporting/tests/test_native_word_task_chain_docx.py \
   -k 'existing_http_start_status or old_executor_cancel or completed_receipt_restores or persisted_receipt_after_uncertain'
 ```
+
+## GenOffice XLSX AI task recovery
+
+Enable `AGENT_REPORT_EDITOR_WORKBOOK_TASKS_ENABLED=true` to use the existing
+PostgreSQL task repository for native XLSX edit candidates. The local application
+was built with Vite and exercised in Edge with two Uvicorn processes sharing a
+disposable PostgreSQL database. The first worker stopped at the planner boundary
+after validating and reading A1. Edge encountered a real connection failure and
+resubmitted the original request. The second worker reclaimed the same task and
+attempt and used the configured CCTQ `gpt-6-sol` model through Agno to generate
+the candidate. Explicit acceptance and save produced revision 2. Independent
+XLSX readback confirmed the expected A1 value and the adjacent control cell.
+The worker processes exited and the disposable database was removed.
