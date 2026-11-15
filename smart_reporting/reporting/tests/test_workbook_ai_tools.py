@@ -17,12 +17,14 @@ from openpyxl.utils.datetime import CALENDAR_MAC_1904
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table
 
+from smart_reporting.report_editor.native import bind_native_workspace
 from smart_reporting.report_editor.native_models import NativeEditorContext
 from smart_reporting.report_editor.native_office import inspect_office, patch_office
 from smart_reporting.report_editor.workbook_ai import AgnoWorkbookProposalPlanner
 from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
+from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
 from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
@@ -787,7 +789,7 @@ async def test_workbook_tools_do_not_read_or_propose_outside_frozen_range():
 
 
 @pytest.mark.anyio
-async def test_workbook_tools_real_agno_loop_previews_complex_engine_ops_and_accepts_complete_draft():
+async def test_workbook_tools_real_agno_loop_previews_complex_engine_ops_and_accepts_complete_draft(tmp_path):
     workbook = Workbook()
     sheet = workbook.active
     for row in [['项目', '金额'], ['乙', 9], ['甲', 2]]:
@@ -833,7 +835,23 @@ async def test_workbook_tools_real_agno_loop_previews_complex_engine_ops_and_acc
     assert any('人工未保存' in str(m.content) for turn in model.seen for m in turn)
     accepted = await ai.accept_edit(None, job['editId'], expected_sha256=editor.context.source_file.sha256, operations=base, snapshot_sha256=result['snapshotSha256'])
     assert accepted['operations'][0] == base[0]
-    edited = await asyncio.to_thread(patch_office, 'xlsx', content, accepted['operations'])
+    publication, _, downloads = await create_publication(tmp_path)
+    context = editor.context
+    key = bind_native_workspace(publication.workspace, context.scope)
+    path = 'native/assistant-source.xlsx'
+    await publication.workspace.awrite_bytes(key, path, content)
+    context = context.model_copy(update={'source_file': context.source_file.model_copy(update={'path': path})})
+    saved = await publication.save_revision(
+        context, operations=accepted['operations'], request_id='save-workbook-ai',
+        expected_sha256=context.source_file.sha256,
+    )
+    assert saved['revisionRegistered'] is True
+    assert saved['revision'] == context.revision + 1
+    artifact = saved['artifacts']['xlsx']
+    raw_grant = artifact['downloadUrl'].split('/')[-2]
+    _, chunks = await downloads.stream(raw_grant, artifact='xlsx')
+    edited = b''.join([chunk async for chunk in chunks])
+    assert hashlib.sha256(edited).hexdigest() == artifact['sha256']
     reopened = load_workbook(BytesIO(edited))
     target = reopened.active
     assert [target['B2'].value, target['B3'].value] == [2, 9]
@@ -845,6 +863,7 @@ async def test_workbook_tools_real_agno_loop_previews_complex_engine_ops_and_acc
     assert target.tables['Items'].totalsRowShown is True
     assert target['A5'].value == '人工未保存'
     assert load_workbook(BytesIO(content)).active['B2'].value == 9
+    assert (await publication.workspace.afile_bytes(key, path))[0] == content
     with pytest.raises(Exception):
         await ai.accept_edit(None, job['editId'], expected_sha256=editor.context.source_file.sha256, operations=[], snapshot_sha256=result['snapshotSha256'])
     await ai.aclose()
