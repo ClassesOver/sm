@@ -52,7 +52,7 @@ nav { display: grid; gap: 2px; }
 .folders-head { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; border-top: 1px solid #eee; padding: 11px 8px 4px 10px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .folders-head button { padding: 4px; }
 .folder-row { margin-left: calc(var(--depth) * 13px); display: flex; align-items: center; padding: 0 6px; }
-.folder-row.drop-target { outline: 1px solid currentColor; outline-offset: -1px; background: #f2f2f2; }
+.folder-row.drop-target, .folder-list-row.drop-target { outline: 1px solid currentColor; outline-offset: -1px; background: #f2f2f2; }
 .folder-row button { display: flex; align-items: center; gap: 7px; min-width: 0; white-space: nowrap; overflow: hidden; }
 .folder-row .folder-actions { margin-left: auto; flex: none; opacity: 0; }
 .folder-row:hover .folder-actions, .folder-row:focus-within .folder-actions { opacity: 1; }

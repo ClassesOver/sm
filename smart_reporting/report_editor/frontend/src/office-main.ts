@@ -382,7 +382,7 @@ function renderEntries() {
     const hit = byId.get(item.id)
     return hit?.revision === item.revision ? hit : undefined
   }
-  const folderResults = query && view !== 'starred' && !filter ? library.folders.filter(item =>
+  const folderResults = !filter && (view === 'folder' || (view === 'recent' && query)) ? library.folders.filter(item =>
     (view !== 'folder' || item.parent === folder) && item.name.toLowerCase().includes(query)) : []
   const eligible = library.entries.filter(item =>
     (view !== 'folder' || item.folder === folder) && (view !== 'starred' || item.starred) &&
@@ -423,7 +423,10 @@ function renderEntries() {
     `${count} 项${partial ? '（部分匹配）' : ''}${modelOrder.size && !sortByName ? ' · 已由 AI 重排' : result?.rerankUnavailable ? ' · AI 重排暂不可用' : ''}`
   const message = searching ? '正在搜索正文…' : failed ? '正文搜索失败，请重试。' : query || filter ? '找不到匹配的文件。' : view === 'folder' ? '这个文件夹还是空的。新建文件，或把文件拖到这里。' :
     view === 'starred' ? '暂无收藏文件。' : '暂无最近文件 — 新建或打开一个文件开始使用。'
-  list.innerHTML = count ? folderResults.map(item => `<div class="file-row"><button data-folder="${escape(item.id)}">${icon('folder')} ${escape(item.name)}</button></div>`).join('') + entries.map(item => `<div class="file-row" ${canWrite() ? `draggable="true" data-drag-file="${escape(item.id)}"` : ''}>
+  list.innerHTML = count ? folderResults.map(item => `<div class="file-row folder-list-row" data-drop-folder="${escape(item.id)}">
+    <button data-folder="${escape(item.id)}" ${canWrite() ? 'draggable="true"' : ''}>${icon('folder')} ${escape(item.name)}</button>
+    ${canWrite() ? `<button data-folder-actions="${escape(item.id)}" aria-label="管理文件夹 ${escape(item.name)}">${icon('more')}</button>` : ''}
+  </div>`).join('') + entries.map(item => `<div class="file-row" ${canWrite() ? `draggable="true" data-drag-file="${escape(item.id)}"` : ''}>
     <input type="checkbox" data-select-file="${escape(item.id)}" aria-label="选择 ${escape(item.name)}" ${selectedFiles.has(item.id) ? 'checked' : ''}>
     <button data-open="${escape(item.path)}">${badge(item.format, 24)} <span>${escape(item.name)}${match(item)?.snippet ? `<small class="file-search-snippet">${escape(match(item)!.snippet)}</small>` : ''}</span></button>
     <button data-star="${escape(item.path)}" aria-label="${item.starred ? '取消收藏' : '收藏'} ${escape(item.name)}" aria-pressed="${item.starred}">${icon('star')}</button>
@@ -770,10 +773,11 @@ function createOfficeFolder(parent: string) {
   })
 }
 
-function renameOfficeFolder(id: string) {
+function renameOfficeFolder(id: string, inList: boolean) {
   if (busy || !canWrite()) return
   const item = library.folders.find(item => item.id === id)
-  const button = root.querySelector<HTMLButtonElement>(`.folder-row button[data-folder="${CSS.escape(id)}"]`)
+  const surface = inList ? ".folder-list-row" : ".folder-row"
+  const button = root.querySelector<HTMLButtonElement>(`${surface} button[data-folder="${CSS.escape(id)}"]`)
   if (!item || !button) return
   const space = currentSpace
   renameInlineFolder(button, item.name, name => {
@@ -846,8 +850,9 @@ root.addEventListener('contextmenu', event => {
   if (action) {
     for (const [mode, label] of [['rename','重命名'], ['move','移动到文件夹'], ['delete','删除']] as const) {
       const folderId = action.dataset.folderActions
+      const inList = row?.classList.contains('folder-list-row') === true
       add(label, () => {
-        if (mode === 'rename' && folderId) requestAnimationFrame(() => renameOfficeFolder(folderId))
+        if (mode === 'rename' && folderId) requestAnimationFrame(() => renameOfficeFolder(folderId, inList))
         else manageOfficeItem(action.dataset, mode)
       })
     }
@@ -992,7 +997,7 @@ root.addEventListener('click', event => {
     view = data.view as View; filter = ''; selectedTab = ''
     if (view === 'ask') void loadKnowledge()
   }
-  if (data.folder) { view = 'folder'; folder = data.folder; filter = '' }
+  if (data.folder) { view = 'folder'; folder = data.folder; filter = ''; expandOfficeFolderPath(folder) }
   if (data.collapse) {
     setFolderCollapsed(data.collapse, !collapsed.has(data.collapse))
   }
@@ -1287,7 +1292,7 @@ function highlightFolder(target: HTMLElement | null) {
   if (!target) return
   target.classList.add('drop-target')
   const id = target.dataset.dropFolder
-  if (!id || !collapsed.has(id)) return
+  if (!id || !target.classList.contains('folder-row') || !collapsed.has(id)) return
   folderExpandTimer = window.setTimeout(() => {
     if (highlightedFolder !== target || !target.isConnected || !setFolderCollapsed(id, false)) return
     const toggle = target.querySelector<HTMLButtonElement>('[data-collapse]')!
