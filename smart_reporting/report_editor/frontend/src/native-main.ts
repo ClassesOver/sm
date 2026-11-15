@@ -1,3 +1,4 @@
+import './office-settings.css'
 import { createNativeApi, type NativeAISelection, type NativeAIReviewSelection, type NativeAINoteSelection } from './native-api'
 import { mountBinaryRefresh } from './binary-refresh'
 import { NativeDraft } from './native-draft'

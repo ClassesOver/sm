@@ -1,6 +1,7 @@
+import { setOfficeAssistantIdentity } from './office-assistant-preferences'
 import {openInlineFolder, renameInlineItem} from './office-inline-folder'
 import type { renderOfficeAnswer } from './office-answer'
-import { showOfficeAssistantPreferences } from './office-assistant-preferences'
+import { applyOfficeTheme, loadOfficePreferences, refreshOfficeTheme } from './office-personal-theme'
 import { showOfficeReport } from './office-report'
 import { bm25Score, mergeSearchCorpus, type SearchCorpus } from './office-search-rank'
 import './office.css'
@@ -139,6 +140,8 @@ async function refreshSpaces() {
 
 function clearAccount() {
   accountGeneration += 1
+  applyOfficeTheme('system')
+  setOfficeAssistantIdentity(null)
   for (const frame of tabs.values()) frame.remove()
   tabs.clear(); tabEntries.clear()
   closedTabs.length = 0
@@ -167,6 +170,8 @@ async function start() {
   accountGeneration += 1
   try {
     currentUser = await officeSession()
+    const preferenceAccount = accountGeneration
+    await loadOfficePreferences(() => preferenceAccount === accountGeneration)
     await refreshSpaces()
     status = ''
   } catch (error) { status = error instanceof Error ? error.message : 'Office 登录失败。' }
@@ -188,6 +193,8 @@ function showLogin() {
     try {
       currentUser = await loginOffice(Object.fromEntries(new FormData(form)) as Record<string, string>)
       accountGeneration += 1
+      const preferenceAccount = accountGeneration
+      await loadOfficePreferences(() => preferenceAccount === accountGeneration)
       await refreshSpaces()
       status = ''
       dialog.close()
@@ -778,12 +785,12 @@ function render() {
     ${folderTree('', 0)}
     <div class="space-controls">
       ${currentUser ? '<button data-action="space-sources">工作区数据源</button>' : ''}
-      ${currentUser ? '<button data-action="assistant-settings">AI 助手设置</button>' : ''}
+
       ${currentUser && canWrite() ? '<button data-action="create-report">生成报告</button>' : ''}
       ${spaces.find(item => item.id === currentSpace)?.role === 'owner' && !spaces.find(item => item.id === currentSpace)?.personal_user ? '<button data-action="members">成员管理</button>' : ''}
-      ${currentUser?.role === 'admin' ? '<button data-action="users">用户管理</button><button data-action="company-sources">公司数据源管理</button><button data-action="new-space">新建团队工作区</button>' : ''}
+      ${currentUser?.role === 'admin' ? '<a href="/office/admin" target="_blank" rel="noopener noreferrer">管理后台</a><button data-action="new-space">新建团队工作区</button>' : ''}
     </div>
-    <footer><span>?</span>${escape(currentUser?.name ?? '请登录 GenOffice')} ${currentUser ? '<button data-action="logout">退出</button>' : '<button data-action="login">登录</button>'}</footer></aside>
+    <footer><button class="office-account-entry" data-action="${currentUser ? 'personal-settings' : 'login'}" aria-haspopup="dialog" aria-label="${currentUser ? '账户设置' : '登录'}"><span class="office-account-avatar">${escape(currentUser?.name.slice(0, 1) || '○')}</span><span class="office-account-name">${escape(currentUser?.name || '登录')}</span><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.2 8 3.4l3 2.8M5 9.8l3 2.8 3-2.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg></button></footer></aside>
     <main>${view === 'ask' ? ask() : home()}</main>`
   const thread = body.querySelector<HTMLElement>('.kb-thread.has-messages')
   if (thread && !body.hidden) {
@@ -1334,7 +1341,12 @@ root.addEventListener('click', event => {
     return
   }
   if (data.action === 'login') { showLogin(); return }
-  if (data.action === 'assistant-settings' && currentUser) { showOfficeAssistantPreferences(root); return }
+  if (data.action === 'personal-settings' && currentUser) {
+    const account = accountGeneration, user = currentUser
+    void import('./office-settings').then(({ showOfficeSettings }) => showOfficeSettings(root, { user, isCurrent: () => account === accountGeneration,
+      onLogout: () => { clearAccount(); render() } })).catch(error => { status = error.message; render() })
+    return
+  }
   if (data.action === 'create-report') {
     const space = spaces.find(item => item.id === currentSpace)
     if (currentUser && space && canWrite()) {
@@ -1723,3 +1735,5 @@ root.addEventListener('drop', event => {
 
 render()
 void start()
+
+root.addEventListener('load', event => { if (event.target instanceof HTMLIFrameElement) refreshOfficeTheme() }, true)

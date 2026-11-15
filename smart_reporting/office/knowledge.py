@@ -1,7 +1,6 @@
 """Starred-file Q&A using Agno readers and a per-request, permission-bound toolkit."""
 import asyncio
 import json
-from copy import deepcopy
 from io import BytesIO
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -212,14 +211,16 @@ class OfficeKnowledge:
             VerifiedModelCapabilityResolver,
         )
 
-        model = deepcopy(self.model)
+        from .settings import OfficeSettings
+        personal = OfficeSettings(self.office)
+        model = await personal.model(tools.actor, self.model)
         modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(
             model.id, configured_mode=modes.get('standard') if isinstance(modes, dict) else None,
             endpoint=str(model.base_url) if getattr(model, 'base_url', None) is not None else None,
         )
         setattr(model, REPORTING_STRUCTURED_REQUEST_MODEL_ATTR, True)
-        agent = Agent(name='office-knowledge', model=model,
+        agent = Agent(name='office-knowledge', model=model, skills=await personal.skills(tools.actor),
             tools=[tools.list_knowledge_files, tools.search_knowledge_files, tools.read_knowledge_file],
             output_schema=KnowledgeAnswer,
             structured_outputs=capabilities.primary is StructuredOutputMode.JSON_SCHEMA,
@@ -237,6 +238,7 @@ class OfficeKnowledge:
             ])
         from .ai_skills import attach_office_skills
         attach_office_skills(agent)
+        agent.skills = await personal.skills(tools.actor)
         prompt = {'question': question, 'history': [
             {'question': turn['question'][:2000], 'answer': turn['answer'][:4000]} for turn in history[-6:]]}
         result = await run_owned_agent_with_events(agent, json.dumps(prompt, ensure_ascii=False),

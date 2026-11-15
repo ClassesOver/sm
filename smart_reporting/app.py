@@ -638,7 +638,7 @@ def create_base_app(
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
-    application.include_router(create_office_entry_router(static_dir=settings.report_editor_static_dir))
+    application.include_router(create_office_entry_router(static_dir=settings.report_editor_static_dir, office=office_repository))
     static_root = Path(
         settings.report_editor_static_dir
         or Path(__file__).with_name("report_editor") / "static"

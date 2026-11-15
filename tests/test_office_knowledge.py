@@ -179,10 +179,18 @@ async def test_knowledge_uses_provider_structured_output_policy_without_dropping
     monkeypatch.setattr(agent_events, "run_agent_with_events", run)
     model = OpenAIChat(id="deepseek-v4.1-flash", api_key="test",
                        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
-    tools = KnowledgeTools(None, None, Identity("db", "1", "10"), "space", parser=None)
-    assert await OfficeKnowledge(None, None, model).plan(tools, "Test", []) == {
-        "answer": "42", "citations": ["file"],
-    }
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        actor = Identity("db", "1", "10")
+        await office.bootstrap(actor, "Owner")
+        tools = KnowledgeTools(office, None, actor, "space", parser=None)
+        assert await OfficeKnowledge(office, None, model).plan(tools, "Test", []) == {
+            "answer": "42", "citations": ["file"],
+        }
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ export default defineConfig({
       await mkdir(join(directory, 'licenses'), { recursive: true })
       await cp(new URL('./node_modules/pdfjs-dist/LICENSE', import.meta.url), join(directory, 'licenses/pdfjs-LICENSE'))
       for (const family of ['genoffice-docs', 'genoffice-sheets-format']) for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/vendor/${family}/${file}`, import.meta.url), join(directory, `licenses/${family}-${file}`))
+      for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/account-settings/${file}`, import.meta.url), join(directory, `licenses/genoffice-settings-${file}`))
       for (const folder of ['cmaps', 'standard_fonts', 'wasm']) {
         await cp(new URL(`./node_modules/pdfjs-dist/${folder}`, import.meta.url),
           join(directory, `pdfjs/${folder}`), { recursive: true })
@@ -79,7 +80,7 @@ export default defineConfig({
     outDir: '../static',
     rollupOptions: {
       preserveEntrySignatures: 'exports-only',
-      input: { index: 'index.html', native: 'native.html', office: 'office.html', upload: 'src/native-upload.ts' },
+      input: { index: 'index.html', native: 'native.html', office: 'office.html', officeAdmin: 'office-admin.html', upload: 'src/native-upload.ts' },
       output: {
         entryFileNames: chunk => chunk.name === 'upload' ? 'native-upload.js' : 'assets/[name]-[hash].js',
         onlyExplicitManualChunks: true,

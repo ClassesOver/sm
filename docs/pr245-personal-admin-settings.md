@@ -1,0 +1,11 @@
+# PR 245: personal settings and administrator settings
+
+The document workspace account entry uses the pinned GenOffice shell SettingsModal layout. Personal navigation contains Account, Preferences, and Skill; About and global provider controls are excluded. Source provenance and Apache-2.0 attribution are included in `frontend/src/account-settings` and the build copies the license notices.
+
+Existing Office sessions remain the identity authority. Personal theme and enabled Skill IDs are stored by company/user with optimistic concurrency. Existing assistant interface preferences are browser-local and user-scoped. All 43 imported Skills are opt-in; the agent receives an isolated snapshot, cannot execute Skill scripts, and retains existing document authorization and preview/acceptance rules.
+
+`/office/admin` independently authenticates administrators. Global model IDs, image model, search and source integration switches are company-scoped. Model endpoints and secrets remain deployment-managed. Existing company data-source and user administration are available here. The media page accurately states that audio/video generation is not connected; it does not offer nonfunctional configuration fields.
+
+Validation: settings/session/source/search backend tests passed (30); native document AI/knowledge/entry regression completed with its four initial failures resolved by installing the existing PDF engine dependencies, using a real repository in the knowledge fixture, and correcting an existing Word test to consume paginated reads. The Word failure reproduced against unchanged PR-head implementation. Frontend settings/assistant/source tests passed (21), plus task dock tests (6). Production build and real Chromium desktop/mobile smoke cover login, personal persistence, user isolation, admin route denial and admin persistence. The admin save-race regression verifies that controls remain frozen while saving.
+
+The delivery was rebased onto concurrent PR changes through `006f4c3c`. The upstream native Skill loader and host context are retained; authenticated Office agents replace that complete catalog with the user's selected snapshot, including an empty selection. This is regression-tested so upstream Skill attachment cannot silently re-enable disabled Skills. The Word MCP transport also uses personal/global settings.

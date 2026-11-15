@@ -45,8 +45,8 @@ class AgnoWordTaskTransport:
                     "最终只输出 propose_operations 返回的 proposal JSON 对象，原样保留字段和值。",
                 ],
             )
-            from ..office.ai_skills import attach_office_skills
-            attach_office_skills(agent)
+            from ..office.settings import configure_office_agent
+            await configure_office_agent(agent, update_model=True)
             output = await run_owned_agent_with_events(
                 agent, f"task_id: {task_id}\n用户要求：{instruction}", session_id=task_id,
             )

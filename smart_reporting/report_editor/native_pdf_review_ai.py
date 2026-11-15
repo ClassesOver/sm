@@ -642,7 +642,8 @@ class AgnoNativePDFReviewPlanner:
         )
 
         candidates = NativePDFReviewTools(reader)
-        model = deepcopy(self.model)
+        from ..office.settings import native_model
+        model = await native_model(self.model)
         modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(
             model.id,
@@ -682,11 +683,10 @@ class AgnoNativePDFReviewPlanner:
                 "最终只输出符合 output_schema 的 JSON answer，逐条说明候选、澄清、跳过及未覆盖范围，不用摘要替代工具处理。",
             ],
         )
-        from ..office.ai_sources import attach_office_sources
         from ..reporting.agent_events import run_owned_agent_with_events
-        attach_office_sources(agent)
-        from ..office.ai_skills import attach_office_skills
-        attach_office_skills(agent)
+
+        from ..office.settings import configure_office_agent
+        await configure_office_agent(agent)
         output = await run_owned_agent_with_events(
             agent,
             json.dumps(

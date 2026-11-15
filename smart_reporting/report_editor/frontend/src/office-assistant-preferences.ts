@@ -1,8 +1,19 @@
-const key = 'genoffice-assistant-preferences'
+const baseKey = 'genoffice-assistant-preferences'
+const identityKey = 'genoffice-assistant-identity'
+let identity: string | null = null
+try { identity = localStorage.getItem(identityKey) } catch { /* storage unavailable */ }
+function currentKey() { return identity ? baseKey + ':' + identity : baseKey }
+function assertCurrentIdentity() {
+  if (localStorage.getItem(identityKey) !== identity) throw new Error('账户已变化，请重新打开设置。')
+}
+export function setOfficeAssistantIdentity(value: string | null) {
+  identity = value || 'anonymous'
+  try { localStorage.setItem(identityKey, identity) } catch { /* disabled browser storage uses defaults */ }
+}
 
 export function readOfficeAssistantPreferences(): { side: 'left' | 'right'; openInNewDocs: boolean; fontSize?: number; spellcheck: boolean } {
   try {
-    const value = JSON.parse(localStorage.getItem(key) ?? '{}')
+    const value = JSON.parse(localStorage.getItem(currentKey()) ?? '{}')
     const fontSize = typeof value?.fontSize === 'number' && Number.isFinite(value.fontSize)
       ? Math.min(32, Math.max(10, Math.round(value.fontSize))) : undefined
     return { side: value?.side === 'right' ? 'right' : 'left',
@@ -13,12 +24,13 @@ export function readOfficeAssistantPreferences(): { side: 'left' | 'right'; open
 }
 
 export function saveOfficeAssistantSide(side: 'left' | 'right') {
-  localStorage.setItem(key, JSON.stringify({...readOfficeAssistantPreferences(),side}))
+  assertCurrentIdentity()
+  localStorage.setItem(currentKey(), JSON.stringify({...readOfficeAssistantPreferences(),side}))
 }
 
 export function watchOfficeAssistantSide(onChange: (side: 'left' | 'right') => void) {
   const sync = (event: StorageEvent) => {
-    if (event.key === key || event.key === null) onChange(readOfficeAssistantPreferences().side)
+    if (event.key === currentKey() || event.key === identityKey || event.key === null) onChange(readOfficeAssistantPreferences().side)
   }
   window.addEventListener('storage',sync)
   return () => window.removeEventListener('storage',sync)
@@ -26,6 +38,7 @@ export function watchOfficeAssistantSide(onChange: (side: 'left' | 'right') => v
 
 export function showOfficeAssistantPreferences(host: HTMLElement) {
   const preferences = readOfficeAssistantPreferences()
+  const openedKey = currentKey()
   const dialog = document.createElement('dialog')
   dialog.className = 'office-administration'
   dialog.addEventListener('click', event => event.stopPropagation())
@@ -67,7 +80,9 @@ export function showOfficeAssistantPreferences(host: HTMLElement) {
   form.onsubmit = event => {
     event.preventDefault()
     try {
-      localStorage.setItem(key, JSON.stringify({ side: side.value, openInNewDocs: auto.checked,
+      assertCurrentIdentity()
+      if (currentKey() !== openedKey) throw new Error('账户已变化，请重新打开设置。')
+      localStorage.setItem(currentKey(), JSON.stringify({ side: side.value, openInNewDocs: auto.checked,
         fontSize: fontSize.valueAsNumber, spellcheck: spellcheck.checked }))
       dialog.close()
     } catch {

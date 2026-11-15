@@ -70,10 +70,19 @@ class ReportSlidesImageService:
             raise ReportingError("report_slides_image_prompt_required", "请描述需要生成的配图。")
         if len(normalized) > _MAX_PROMPT_CHARS:
             raise ReportingError("report_slides_image_prompt_too_large", "配图要求过长，请缩短后重试。")
-        if not self.api_key or not self.model or not self.base_url:
+        from copy import copy
+        from ..office.settings import native_settings
+        generator = self
+        office_context = await native_settings()
+        if office_context:
+            configured = await office_context[0].global_settings(office_context[1], require_admin=False)
+            if configured['imageModel']:
+                generator = copy(self)
+                generator.model = configured['imageModel']
+        if not generator.api_key or not generator.model or not generator.base_url:
             raise ReportingError("report_slides_image_unavailable", "AI 配图服务尚未配置。")
         try:
-            content, media_type, extension = await self._generate_image(normalized)
+            content, media_type, extension = await generator._generate_image(normalized)
         except Exception as error:  # noqa: BLE001 - image failures leave the PPTX untouched
             reason = _image_failure_reason(error)
             logger.warning(

@@ -115,10 +115,8 @@ class AgnoWorkbookProposalPlanner:
             '"seriesData":[{"index":0,"valuesRange":"B2:B3","categoriesRange":"A2:A3"}]}],'
             '"summary":"按真实范围换绑系列"}。不要将源DSL字段直接放到kind=applyChartSource的arguments中。\n'
         )
-        from ..office.ai_sources import attach_office_sources
-        attach_office_sources(agent)
-        from ..office.ai_skills import attach_office_skills
-        attach_office_skills(agent)
+        from ..office.settings import configure_office_agent
+        await configure_office_agent(agent, update_model=True)
         await run_agent_with_events(agent, tool_protocol + prompt, session_id=session_id, user_id=user_id)
         if toolkit.proposal is None:
             raise ValueError("workbook_ai_proposal_not_submitted")

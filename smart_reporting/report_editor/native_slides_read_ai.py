@@ -189,7 +189,8 @@ class AgnoNativeSlidesReadPlanner:
             VerifiedModelCapabilityResolver,
         )
 
-        model = deepcopy(self.model)
+        from ..office.settings import native_model
+        model = await native_model(self.model)
         modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(
             model.id, configured_mode=modes.get('standard') if isinstance(modes, dict) else None,
@@ -211,10 +212,8 @@ class AgnoNativeSlidesReadPlanner:
                 '不能编辑、提出操作、保存或导出，不得声称已修改文件。没有依据应明确说明。',
                 '最终仅返回answer和citations（页索引的字符串列表）的JSON，不返回operations。',
             ])
-        from ..office.ai_sources import attach_office_sources
-        attach_office_sources(agent)
-        from ..office.ai_skills import attach_office_skills
-        attach_office_skills(agent)
+        from ..office.settings import configure_office_agent
+        await configure_office_agent(agent)
         output = await run_owned_agent_with_events(agent,
             json.dumps({'action': action, 'instruction': instruction, 'scope': reader.scope},
                        ensure_ascii=False), session_id=session_id, user_id=user_id)

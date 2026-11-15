@@ -161,6 +161,19 @@ class KnowledgeInput(Input):
     attachmentIds: list[str] = Field(default_factory=list, max_length=10)
 
 
+class PersonalSettingsInput(Input):
+    theme: Literal['system', 'light', 'dark']
+    disabledSkills: list[str] = Field(default_factory=list, max_length=1000)
+    expectedVersion: int = Field(ge=0, strict=True)
+
+class GlobalSettingsInput(Input):
+    modelId: str = Field(default='', max_length=200, pattern=r'^[^\s]*$')
+    imageModel: str = Field(default='', max_length=200, pattern=r'^[^\s]*$')
+    searchEnabled: bool = True
+    integrationsEnabled: bool = True
+    expectedVersion: int = Field(ge=0, strict=True)
+
+
 def create_office_router(
     office: OfficeRepository, *, public_origin: str | None, cookie_secure=True,
     documents=None,
@@ -199,6 +212,25 @@ def create_office_router(
                 raise OfficeError("office_report_feedback_empty", "请填写补充说明。", 422)
             return await resume_office_report(office, report_runtime, report_workflow, identity,
                                               space, run_id, feedback, body.retry_count)
+
+    from .settings import OfficeSettings
+    settings_service = OfficeSettings(office)
+
+    @router.get('/settings')
+    async def personal_settings(identity: Identity = Depends(actor)):
+        return await settings_service.personal(identity)
+
+    @router.put('/settings')
+    async def save_personal_settings(body: PersonalSettingsInput, identity: Identity = Depends(actor)):
+        return await settings_service.save(identity, body.model_dump(exclude={'expectedVersion'}), body.expectedVersion)
+
+    @router.get('/admin/settings')
+    async def global_settings(identity: Identity = Depends(actor)):
+        return await settings_service.global_settings(identity)
+
+    @router.put('/admin/settings')
+    async def save_global_settings(body: GlobalSettingsInput, identity: Identity = Depends(actor)):
+        return await settings_service.save(identity, body.model_dump(exclude={'expectedVersion'}), body.expectedVersion, global_settings=True)
 
     @router.post("/session")
     async def login(body: LoginInput, request: Request):
@@ -298,12 +330,16 @@ def create_office_router(
                                after: str = Query(default='', max_length=36), identity: Identity = Depends(actor)):
             if not q.strip():
                 return {'hits': [], 'after': None, 'corpus': {'documents': 0, 'totalLength': 0, 'documentFrequencies': []}}
+            if not (await settings_service.global_settings(identity, require_admin=False))['searchEnabled']:
+                raise OfficeError('office_search_disabled', '管理员已关闭搜索。')
             return await search.page(identity, space, q, after)
 
         @router.post("/workspaces/{space}/search/rerank")
         async def rerank_search(space: str, body: SearchRerank, identity: Identity = Depends(actor)):
             if any(not 1 <= len(file_id) <= 36 or revision < 1 for file_id, revision in body.candidates.items()):
                 raise OfficeError('office_search_candidates_invalid', '搜索结果已变更，请重新搜索。', 422)
+            if not (await settings_service.global_settings(identity, require_admin=False))['searchEnabled']:
+                raise OfficeError('office_search_disabled', '管理员已关闭搜索。')
             return {'order': await search.rerank(identity, space, body.query, body.candidates)}
 
     @router.post("/workspaces/{space}/folders", status_code=201)

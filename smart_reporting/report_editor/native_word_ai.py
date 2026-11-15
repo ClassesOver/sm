@@ -413,7 +413,8 @@ class AgnoNativeWordProposalPlanner:
         from ..reporting.structured_output.policy import REPORTING_STRUCTURED_REQUEST_MODEL_ATTR
 
         tools = NativeWordAITools(selected)
-        model = deepcopy(self.model)
+        from ..office.settings import native_model
+        model = await native_model(self.model)
         setattr(model, REPORTING_STRUCTURED_REQUEST_MODEL_ATTR, True)
         agent = Agent(name='native-word-tools', model=model,
                       tools=[tools.get_document_context, tools.read_blocks,
@@ -425,10 +426,8 @@ class AgnoNativeWordProposalPlanner:
                       tool_call_limit=tools.tool_call_budget(), retries=0, add_history_to_context=False,
                       enable_session_summaries=False, markdown=False, telemetry=False,
                       instructions=[WORD_AI_INSTRUCTIONS])
-        from ..office.ai_sources import attach_office_sources
-        attach_office_sources(agent)
-        from ..office.ai_skills import attach_office_skills
-        attach_office_skills(agent)
+        from ..office.settings import configure_office_agent
+        await configure_office_agent(agent)
         output = await run_owned_agent_with_events(agent, prompt, session_id=session_id, user_id=user_id)
         content = getattr(output, 'content', None)
         proposal = content if isinstance(content, NativeWordAIProposal) else NativeWordAIProposal.model_validate(

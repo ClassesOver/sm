@@ -680,7 +680,8 @@ class AgnoNativePDFTaskPlanner:
         )
 
         # Agno Model.__deepcopy__ 清除客户端连接及工具/schema 状态；每任务独立副本。
-        model = deepcopy(self.model)
+        from ..office.settings import native_model
+        model = await native_model(self.model)
         configured_modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(
             model.id,
@@ -726,11 +727,10 @@ class AgnoNativePDFTaskPlanner:
                 "只回答或澄清，不生成编辑操作，不声称已修改、保存或生成新文件。",
             ],
         )
-        from ..office.ai_sources import attach_office_sources
         from ..reporting.agent_events import run_owned_agent_with_events
-        attach_office_sources(agent)
-        from ..office.ai_skills import attach_office_skills
-        attach_office_skills(agent)
+
+        from ..office.settings import configure_office_agent
+        await configure_office_agent(agent)
         output = await run_owned_agent_with_events(
             agent,
             json.dumps(

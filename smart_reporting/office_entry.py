@@ -1,12 +1,29 @@
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 
-def create_office_entry_router(*, static_dir: str | Path | None = None) -> APIRouter:
+def create_office_entry_router(*, static_dir: str | Path | None = None, office=None) -> APIRouter:
     router = APIRouter()
-    mount_editor_assets(router, static_dir)
+    frontend_static = mount_editor_assets(router, static_dir)
+
+    @router.get('/office/admin', include_in_schema=False)
+    async def office_admin(request: Request):
+        if office is None:
+            raise HTTPException(503, 'Office 管理服务不可用。')
+        from .office.api import COOKIE
+        from .office.repository import OfficeError
+        try:
+            actor = await office.authenticate(request.cookies.get(COOKIE, ''))
+            async with office.transaction(actor) as connection:
+                await office._user(connection, actor, admin=True)
+        except OfficeError as error:
+            raise HTTPException(error.status, error.message) from None
+        page = frontend_static / 'office-admin.html'
+        if not page.is_file(): raise HTTPException(404)
+        return FileResponse(page, headers={'Cache-Control': 'no-store'})
+
 
     @router.api_route(
         "/reports/v1/editor/{retired_path:path}",

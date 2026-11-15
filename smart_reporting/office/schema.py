@@ -132,6 +132,15 @@ knowledge_deleted = Table(
 )
 
 
+settings = Table(
+    "office_settings", metadata,
+    Column("company", ForeignKey("office_companies.id"), primary_key=True),
+    Column("owner", String(300), primary_key=True),
+    Column("version", Integer, nullable=False),
+    Column("document", JSON, nullable=False),
+)
+
+
 def initialize_schema(connection):
     """Create a new library or upgrade the known PostgreSQL prototype schema."""
     if connection.dialect.name != "postgresql":
