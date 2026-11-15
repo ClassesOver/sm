@@ -166,4 +166,25 @@ describe('shared Office task control',()=>{
   expect(cancel).not.toHaveBeenCalledWith('unrelated')
  })
 
+ it('new task cancellation does not wait on a stalled older cancellation',async()=>{
+  let finishOld!:()=>void
+  const oldCleanup=new Promise<void>(resolve=>{finishOld=resolve})
+  const cancel=vi.fn().mockImplementationOnce(()=>oldCleanup).mockResolvedValue(undefined)
+  const start=vi.fn().mockResolvedValueOnce({id:'old',status:'completed'})
+    .mockResolvedValueOnce({id:'new',status:'completed'})
+  const controller=new OfficeAssistantController({
+    start,status:async()=>({id:'unused',status:'completed'}),cancel,
+    id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  await controller.run({},'old-request')
+  const pendingOld=controller.cancel()
+  await controller.run({},'new-request')
+  await controller.cancel()
+  expect(cancel).toHaveBeenCalledTimes(2)
+  expect(cancel).toHaveBeenNthCalledWith(1,'old')
+  expect(cancel).toHaveBeenNthCalledWith(2,'new')
+  finishOld()
+  await pendingOld
+ })
+
 })
