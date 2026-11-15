@@ -94,6 +94,31 @@ const params = () => ({ unitId: grid.api.getActiveWorkbook().getId(), subUnitId:
 const update = (text: string) => grid.api.syncExecuteCommand('sheet.command.update-note', { ...params(), row: 0, col: 0, note: { note: text, width: 240, height: 140 } })
 const history = (direction: 'undo' | 'redo') => expect(grid.api.syncExecuteCommand(`univer.command.${direction}`)).toBe(true)
 
+it('clears legacy notes only within the selected cells and saves the remaining original notes', async () => {
+  const source = await fixture(), draft = new NativeDraft(identity, store())
+  let output: Uint8Array | undefined
+  const { shell, view } = await open(source, draft, async request => {
+    output = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/notes.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('A1:C3').activate()
+    grid.ribbon('clear-comments')
+    await vi.waitFor(() => expect(draft.operations).toMatchObject([{
+      kind: 'patchSheetNotes', sheetName: 'Sheet1',
+      changes: [{ row: 0, column: 0, text: null }, { row: 2, column: 2, text: null }],
+    }]))
+    shell.save.click()
+    await vi.waitFor(() => expect(shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = (await readWorkbook(output!)).sheets[0]!
+    expect(saved.cells.A1?.value).toBe('keep value')
+    expect(saved.notes!.notes).toEqual([
+      { row: 4, column: 4, author: 'Carol', text: 'delete with col' },
+      { row: 6, column: 6, author: 'Dan', text: 'untouched' },
+    ])
+  } finally { view.dispose() }
+})
+
 it('shows hidden notes on the current sheet, then hides them all without editing the draft', async () => {
   const draft = new NativeDraft(identity, store()), save = vi.fn()
   const { view } = await open(await fixture(), draft, save)

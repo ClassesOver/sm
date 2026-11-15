@@ -1,6 +1,7 @@
 /** Small monochrome SVG icons approximating Word's ribbon glyphs. */
 
 import type { ReactNode } from 'react'
+import type { CellHAlign, CellVAlign } from '../editor/table-ops'
 
 interface IconProps {
   size?: number
@@ -2010,6 +2011,21 @@ export function IconChevronRight(props: IconProps) {
   return (
     <Svg {...props}>
       <path d="M 6 3.5 10.5 8 6 12.5" />
+    </Svg>
+  )
+}
+
+/** a cell outline with three text strokes parked in one of the nine positions */
+export function IconCellAlign({ v, h, size }: { v: CellVAlign; h: CellHAlign; size?: number }) {
+  const y = v === 'top' ? 5.2 : v === 'center' ? 7.2 : 9.2
+  const long = 6
+  const short = 3.8
+  const x1 = h === 'left' ? 4.4 : h === 'center' ? 8 - long / 2 : 11.6 - long
+  const x2 = h === 'left' ? 4.4 : h === 'center' ? 8 - short / 2 : 11.6 - short
+  return (
+    <Svg size={size}>
+      <rect x="2.5" y="2.9" width="11" height="10.2" rx="0.7" />
+      <path d={`M ${x1} ${y} h ${long} M ${x2} ${y + 1.8} h ${short}`} />
     </Svg>
   )
 }

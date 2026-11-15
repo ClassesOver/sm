@@ -29,6 +29,7 @@ import { mountPdfCropCanvas } from './pdf-crop-canvas'
 import { bindPdfExtractDialog } from './pdf-extract-dialog'
 import { authorizeSavedPdfSource, type PdfFileOperation } from './pdf-file-source'
 import { bindPdfPrintDialog } from './pdf-print-dialog'
+import { missingRequiredPdfFields } from './pdf-form-completion'
 import { bindPdfRedactionConfirm } from './pdf-redaction-confirm'
 import {bindPdfSplitHost} from './pdf-split-host'
 import {bindPdfMergeHost} from './pdf-merge-host'
@@ -749,6 +750,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   nextField.addEventListener('click', () => focusFormField(1))
   formNavigation.append(previousField, nextField)
   formGroup.append(formNavigation)
+  commandGroup = formGroup
+  const finishForm = button('完成填写', completeFormFill, false)
+  sourceCommand(finishForm, 'fillForm.complete')
   const fillFormAI=documentElement('button','pdf-tool');fillFormAI.type='button';fillFormAI.dataset.pdfFormAiEntry='true'
   fillFormAI.append(createPdfRibbonIcon('sparkles'),window.document.createTextNode('AI 填写表单'));fillFormAI.onclick=()=>pdfFormAI?.open()
   fillFormAI.hidden=!(response.pdfFormAIEnabled&&response.editingEnabled);formGroup.append(fillFormAI)
@@ -2552,6 +2556,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     formControls.replaceChildren()
     const editableFields = fields.filter(field => field.editable && ['text', 'checkbox', 'radio', 'choice'].includes(field.kind))
     previousField.disabled = nextField.disabled = editableFields.length === 0
+    finishForm.hidden = fields.length === 0
     for (const field of fields) {
       const label = documentElement('label', 'pdf-form-field')
       const title = documentElement('span'); title.textContent = field.name; label.append(title)
@@ -2585,6 +2590,34 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
     ribbon.setHasForms(fields.length > 0,model.capabilities?.createFormField===true,model.capabilities?.staticFill===true)
     if (!editableFields.length && fields.length) { const note = documentElement('p'); note.textContent = '检测到表单字段，但当前字段均为只读或暂不支持。'; formControls.append(note) }
+  }
+  async function completeFormFill() {
+    const source = document
+    if (!source || disposed || locked || previewing || printing || previewDocument || !model.formFields?.length) return
+    const operations = draft.operations
+    const snapshot = JSON.stringify(operations)
+    const pages = []
+    for (const page of state()) {
+      if (page.blank) continue
+      const annotations = await annotationCache.get(source, page.index)
+      if (disposed || source !== document) return
+      pages.push({pageId: page.pageId, annotations})
+    }
+    if (snapshot !== JSON.stringify(draft.operations)) return
+    const missing = missingRequiredPdfFields(pages, operations)
+    if (missing.length) {
+      status.textContent = '还有 ' + missing.length + ' 个必填字段未填写'
+      const first = missing[0]
+      const control = [...formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input,select')]
+        .find(field => field.getAttribute('aria-label') === first.name && !field.disabled)
+      if (control) control.focus()
+      else jumpToPageForIdentity(first.pageId)
+      return
+    }
+    status.textContent = '表单填写检查完成'
+    const home = root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="home"]')
+    home?.click()
+    home?.focus()
   }
   function focusFormField(direction: -1 | 1) {
     const fields = [...formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-pdf-editable="true"]')]

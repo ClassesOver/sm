@@ -37,7 +37,7 @@ import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconStoryView, IconReadMode, IconWholePage } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconStoryView, IconReadMode, IconWholePage, IconCellAlign } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { closeHistory } from '@tiptap/pm/history'
@@ -93,6 +93,12 @@ const pendingGroups: Record<string, [string, string[]][]> = {
 }
 type TableRibbonCommand = { id: string; label: string }
 const command = (id: string, label: string): TableRibbonCommand => ({ id, label })
+// GenOffice Ribbon.tsx CELL_ALIGN_GRID in row-major order.
+const cellAlignments = ([
+  ['top', 'left', 'ribbonAlignTopLeft'], ['top', 'center', 'ribbonAlignTopCenter'], ['top', 'right', 'ribbonAlignTopRight'],
+  ['center', 'left', 'ribbonAlignMiddleLeft'], ['center', 'center', 'ribbonAlignMiddleCenter'], ['center', 'right', 'ribbonAlignMiddleRight'],
+  ['bottom', 'left', 'ribbonAlignBottomLeft'], ['bottom', 'center', 'ribbonAlignBottomCenter'], ['bottom', 'right', 'ribbonAlignBottomRight'],
+] as const).map(([v, h, label]) => ({ id: `table-align-${v === 'center' ? 'middle' : v}-${h}`, label: ribbonZh[label], v, h }))
 const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
   tableDesign: [
     ['表格样式', [
@@ -141,11 +147,7 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
       command('table-distribute-columns', '平均分布各列'),
     ]],
     ['对齐方式', [
-      command('table-align-top-left', '顶端左对齐'), command('table-align-top-center', '顶端居中'),
-      command('table-align-top-right', '顶端右对齐'), command('table-align-middle-left', '垂直居中左对齐'),
-      command('table-align-middle-center', '垂直居中'), command('table-align-middle-right', '垂直居中右对齐'),
-      command('table-align-bottom-left', '底端左对齐'), command('table-align-bottom-center', '底端居中'),
-      command('table-align-bottom-right', '底端右对齐'), command('table-text-direction-menu', '文字方向'),
+      ...cellAlignments, command('table-text-direction-menu', '文字方向'),
       command('table-cell-margins', '单元格边距'),
     ]],
     ['表格数据', [command('table-repeat-header-rows', '重复标题行')]],
@@ -529,10 +531,22 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       }
       const group = document.createElement('section')
       group.className = 'ribbon-group docx-ribbon-group'
-      if (id === 'tableLayout' && groupLabel === '单元格大小') group.classList.add('table-tool-group')
+      const cellAlignGroup = id === 'tableLayout' && groupLabel === '对齐方式'
+      if (cellAlignGroup || (id === 'tableLayout' && groupLabel === '单元格大小')) group.classList.add('table-tool-group')
       group.setAttribute('aria-label', groupLabel)
       const items = document.createElement('div')
       items.className = 'ribbon-group-items'
+      let alignmentGrid: HTMLElement | undefined, alignmentTools: HTMLElement | undefined
+      if (cellAlignGroup) {
+        alignmentGrid = document.createElement('div')
+        alignmentGrid.className = 'cell-align-grid'
+        alignmentGrid.setAttribute('role', 'group')
+        alignmentGrid.setAttribute('aria-label', ribbonZh.ribbonCellAlignment)
+        alignmentTools = document.createElement('div')
+        alignmentTools.className = 'table-tool-col'
+        items.classList.add('table-tool-row')
+        items.append(alignmentGrid, alignmentTools)
+      }
       for (const item of commands) {
         const { id: actionId, label } = item
         if (id === 'tableLayout' && (actionId === 'table-select-menu' || actionId === 'table-delete-menu' || actionId === 'table-autofit-menu' || actionId === 'table-text-direction-menu')) {
@@ -547,7 +561,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
             return tableCommands.reason(action)
           }, tableCommands?.active)
           tableLayoutMenus.push(menu)
-          items.append(menu.root)
+          const destination = alignmentTools ?? items
+          destination.append(menu.root)
           continue
         }
         if(id==='file'&&tools?.files&&['新建','保存','另存为'].includes(label)){
@@ -880,7 +895,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           command.addEventListener('mousedown', event => event.preventDefault())
           command.addEventListener('click', () => { if (label === '导航窗格' || label === '拆分') command.focus({ preventScroll: true }); view.run(label); refreshView() })
         } else if (available) command.addEventListener('click', onPaginationPreview!)
-        items.append(command)
+        const alignment = alignmentGrid ? cellAlignments.find(cell => cell.id === actionId) : undefined
+        if (alignment && alignmentGrid) {
+          command.className = 'table-tool-button'
+          command.classList.toggle('active', command.getAttribute('aria-pressed') === 'true')
+          command.innerHTML = renderToStaticMarkup(createElement(IconCellAlign, { v:alignment.v, h:alignment.h, size:16 }))
+          alignmentGrid.append(command)
+        } else {
+          const destination = alignmentTools ?? items
+          destination.append(command)
+        }
       }
       if (id === 'pictureFormat' && groupLabel === '调整' && tools?.pictureFormat) {
         // GenOffice Picture Format Adjust lays out rotation and flips in two columns.
@@ -1451,8 +1475,12 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       const selectionOnly = !!TABLE_SELECTION_ACTIONS[action]
       const reason = selectionOnly ? tableCommands.reason(action) : !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(action)
       button.disabled = reason !== null
-      if(action==='table-repeat-header-rows'||action.startsWith('table-autofit-')||action.startsWith('table-text-direction-')||action.startsWith('table-align-'))button.setAttribute('aria-pressed',String(tableCommands.active?.(action)??false))
-      const label = button.textContent ?? action
+      if(action==='table-repeat-header-rows'||action.startsWith('table-autofit-')||action.startsWith('table-text-direction-')||action.startsWith('table-align-')) {
+        const pressed=tableCommands.active?.(action)??false
+        button.setAttribute('aria-pressed',String(pressed))
+        if (action.startsWith('table-align-')) button.classList.toggle('active',pressed)
+      }
+      const label = cellAlignments.find(cell=>cell.id===action)?.label ?? button.textContent ?? action
       button.title = reason === null ? label : `${label}：${reason}`
       button.setAttribute('aria-label', reason === null ? label : `${label}，${reason}`)
       if (reason === null) button.removeAttribute('aria-description')

@@ -2824,6 +2824,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         if (opacity === (target.pictureOpacity ?? 1)) { if (index < 0) break }
         else pictureOpacities.push({ slideIndex: selectedSlide, elementId: target.id, expectedSha256: target.pictureSha256!, expectedSize: target.pictureSize!, opacity })
         markDirty()
+        nativeRibbon?.setValue('pictureOpacity', String(transparency))
         break
       }
       case 'chartData': openNativeChart('data'); return

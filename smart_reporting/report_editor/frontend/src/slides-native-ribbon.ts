@@ -252,7 +252,7 @@ const tabs: Tab[] = [
   ] },
   { id: 'tableDesign', label: 'Table Design', context: 'table', groups: [{ label: 'Table Styles', controls: [{ id: 'tableStructure', label: 'Rows and Columns', caption: '行列操作', sourceActionId: 'editTableStructure' }, { id: 'tableStyle', label: 'Table Style', caption: '表格样式', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...SLIDES_TABLE_PRESETS.map(item => item.name)], optionLabels: ['来源样式或未选择', ...SLIDES_TABLE_PRESETS.map(item => item.label)] }, { id: 'tableFirstRow', label: '标题行', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableBandRow', label: '斑马纹', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableRtl', label: '从右到左表格', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableShadingWholeTable', label: '底纹作用于整表', sourceActionId: 'onEditTableStyle' }, { id: 'tableShading', label: 'Shading', caption: '底纹', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...TABLE_SHADING_COLORS, 'none'], optionLabels: ['选择底纹', '白色', '浅灰', '浅青', '淡蓝', '灰蓝', '浅黄', '浅橙', '浅桃', '浅绿', '浅紫', '无填充'] }, { id: 'tableAllBorders', label: 'All Borders', caption: '所有边框', sourceActionId: 'onEditTableStyle' }, { id: 'tableNoBorders', label: 'No Borders', caption: '无边框', sourceActionId: 'onEditTableStyle' }] }] },
   { id: 'chartDesign', label: 'Chart Design', context: 'chart', groups: [{ label: 'Chart Elements', controls: [{ id: 'chartElements', label: 'Chart Elements', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Styles', controls: [{ id: 'chartDesignPresets', label: 'Chart Colors and Styles', sourceActionId: 'onEditChart', sourceIcon: IconChart }, { id: 'chartPointColors', label: 'Chart Point Colors', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Data', controls: [{ id: 'chartSwitchRowCol', label: 'Switch Row/Column', sourceActionId: 'onEditChart', sourceIcon: IconSwitchRowCol }, { id: 'chartType', label: 'Change Chart Type', sourceActionId: 'onChartType' }, { id: 'chartData', label: 'Edit Data', sourceActionId: 'onChartData' }] }] },
-  { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id:'removeBackground',label:'去除背景',sourceActionId:'onPictureCutout' }, { id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'pictureOpacity', label: 'Transparency', kind: 'select', options: PICTURE_TRANSPARENCY_PRESETS, optionLabels: PICTURE_TRANSPARENCY_PRESETS.map(value => `${value}%`), sourceActionId: 'onPictureOpacity' }, { id: 'cropPicture', label: 'Crop', sourceActionId: 'onPictureCrop' }] },
+  { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id:'removeBackground',label:'去除背景',sourceActionId:'onPictureCutout' }, { id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'pictureOpacity', label: 'Transparency', sourceActionId: 'onPictureOpacity' }, { id: 'cropPicture', label: 'Crop', sourceActionId: 'onPictureCrop' }] },
     { label: 'Outline', controls: [
       { id: 'pictureOutlineColor', label: '轮廓颜色', caption: '颜色', kind: 'color', sourceActionId: 'onPictureStroke' },
       { id: 'pictureOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: PICTURE_OUTLINE_WIDTHS, optionLabels: PICTURE_OUTLINE_WIDTHS.map(value => value + ' pt'), sourceActionId: 'onPictureStroke' },
@@ -271,6 +271,52 @@ const tabs: Tab[] = [
   ] },
   { id: 'model3dFormat', label: '3D Model', context: 'model3d', groups: [{ label: 'Views', controls: [{ id: 'model3dView', label: '3D View', unavailable: noWrite('3D 视角') }] }] },
 ]
+
+function createPictureRibbonMenu(trigger: HTMLButtonElement, label: string, closeSibling: () => void) {
+  const menu = document.createElement('div')
+  menu.className = 'slides-picture-ribbon-menu'
+  menu.setAttribute('popover', 'manual')
+  menu.setAttribute('role', 'dialog')
+  menu.setAttribute('aria-label', label)
+  menu.hidden = true
+  trigger.setAttribute('aria-haspopup', 'dialog')
+  trigger.setAttribute('aria-expanded', 'false')
+  let dismiss: (() => void) | undefined
+  const close = (focus = false) => {
+    if (menu.hidden) return
+    dismiss?.()
+    dismiss = undefined
+    menu.hidePopover?.()
+    menu.hidden = true
+    trigger.setAttribute('aria-expanded', 'false')
+    if (focus) trigger.focus()
+  }
+  const open = () => {
+    if (trigger.disabled || !menu.hidden) return
+    closeSibling()
+    menu.hidden = false
+    menu.showPopover?.()
+    trigger.setAttribute('aria-expanded', 'true')
+    const anchor = trigger.getBoundingClientRect(), box = menu.getBoundingClientRect()
+    menu.style.left = Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8)) + 'px'
+    menu.style.top = Math.max(8, Math.min(anchor.bottom + 4, innerHeight - box.height - 8)) + 'px'
+    dismiss = installPopoverDismiss(close, { inside: () => [trigger, menu] })
+    const first = menu.querySelector<HTMLElement>('[aria-pressed="true"]') ?? menu.querySelector<HTMLElement>('input, button')
+    first?.focus({ preventScroll: true })
+  }
+  trigger.onclick = () => menu.hidden ? open() : close()
+  trigger.onkeydown = event => {
+    if (event.key !== 'ArrowDown' || event.defaultPrevented || event.isComposing) return
+    event.preventDefault()
+    open()
+  }
+  menu.onkeydown = event => {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+    event.preventDefault()
+    close(true)
+  }
+  return { menu, close }
+}
 
 export function createSlidesNativeRibbon(host: HTMLElement, options: {
   onAction: NativeSlidesAction
@@ -297,6 +343,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let activeContext: NativeSlidesContext = null
   let chartGallery: ReturnType<typeof createNativeChartGallery> | undefined
   let closePictureOutline: (() => void) | undefined
+  let pictureTransparency: ReturnType<typeof createPictureRibbonMenu> | undefined
+  const closePictureMenus = () => { closePictureOutline?.(); pictureTransparency?.close() }
   let locked = options.locked === true
   let currentAnimationEffect = ''
   let listTargets = { bullets: false, numbers: false, hanging: false }
@@ -337,7 +385,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
   const selectTab = (id: string) => {
     if (id !== 'chartDesign') chartGallery?.close()
-    if (id !== 'pictureFormat') closePictureOutline?.()
+    if (id !== 'pictureFormat') closePictureMenus()
     activeTab = id
     for (const tab of tabs) {
       const selected = tab.id === id
@@ -400,46 +448,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         trigger.dataset.sourceAction = 'onPictureStroke'
         trigger.innerHTML = renderToStaticMarkup(reactElement(IconPageBorders, { size: 15 }))
         trigger.append(document.createTextNode(groupLabel + ' ▾'))
-        trigger.setAttribute('aria-haspopup', 'dialog')
-        trigger.setAttribute('aria-expanded', 'false')
         controls.set('pictureOutlineMenu', [trigger])
-
-        const menu = document.createElement('div')
-        menu.className = 'slides-picture-outline-menu'
-        menu.setAttribute('popover', 'manual')
-        menu.setAttribute('role', 'dialog')
-        menu.setAttribute('aria-label', groupLabel)
-        menu.hidden = true
+        const { menu, close } = createPictureRibbonMenu(trigger, groupLabel, () => pictureTransparency?.close())
         group.append(trigger, menu)
         controlHost = menu
-        let dismiss: (() => void) | undefined
-        const close = (focus = false) => {
-          if (menu.hidden) return
-          dismiss?.()
-          dismiss = undefined
-          menu.hidePopover?.()
-          menu.hidden = true
-          trigger.setAttribute('aria-expanded', 'false')
-          if (focus) trigger.focus()
-        }
         closePictureOutline = close
-        trigger.onclick = () => {
-          if (!menu.hidden) { close(); return }
-          if (trigger.disabled) return
-          menu.hidden = false
-          menu.showPopover?.()
-          trigger.setAttribute('aria-expanded', 'true')
-          const anchor = trigger.getBoundingClientRect(), box = menu.getBoundingClientRect()
-          menu.style.left = Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8)) + 'px'
-          menu.style.top = Math.max(8, Math.min(anchor.bottom + 4, innerHeight - box.height - 8)) + 'px'
-          dismiss = installPopoverDismiss(close, { inside: () => [trigger, menu] })
-          menu.querySelector('input')?.focus({ preventScroll: true })
-        }
-        menu.onkeydown = event => {
-          if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
-          event.preventDefault()
-          close(true)
-        }
         menu.addEventListener('click', event => {
           if (event.target instanceof Element && event.target.closest('[data-outline-width], [data-command="pictureNoOutline"]')) close(true)
         })
@@ -476,6 +489,32 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           buttonElement.dataset.command = control.id
           buttonElement.dataset.unavailable = 'true'
           element = buttonElement
+        } else if (control.id === 'pictureOpacity') {
+          const trigger = document.createElement('button')
+          trigger.type = 'button'
+          trigger.dataset.command = control.id
+          trigger.disabled = true
+          const icon = new Image(22, 22)
+          icon.src = iconTransparency
+          icon.alt = ''
+          trigger.append(icon, localizedLabel + ' ▾')
+          const { menu, close } = createPictureRibbonMenu(trigger, localizedLabel, () => closePictureOutline?.())
+          pictureTransparency = { menu, close }
+          for (const value of PICTURE_TRANSPARENCY_PRESETS) {
+            const choice = document.createElement('button')
+            choice.type = 'button'
+            choice.textContent = value + '%'
+            choice.dataset.pictureTransparency = value
+            choice.setAttribute('aria-pressed', 'false')
+            choice.onclick = () => {
+              if (trigger.disabled || menu.hidden) return
+              close(true)
+              options.onAction(control.id, value)
+            }
+            menu.append(choice)
+          }
+          controlHost.append(trigger, menu)
+          element = trigger
         } else if (control.id === 'pictureOutlineWidth') {
           const widths = document.createElement('fieldset')
           widths.dataset.command = control.id
@@ -576,15 +615,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (control.id === 'print') element.setAttribute('aria-keyshortcuts', 'Control+P Meta+P')
         if (PARAGRAPH_LIST_COMMANDS.includes(control.id)) element.title = localizedLabel + '：作用于当前对象的全部段落；自定义输入 Enter 提交'
         controls.set(control.id, [...(controls.get(control.id) ?? []), element])
-        if (control.id === 'pictureOpacity') {
-          const label = document.createElement('label')
-          label.className = 'slides-ribbon-field'
-          const icon = new Image(22, 22)
-          icon.src = iconTransparency
-          icon.alt = ''
-          label.append(icon, element)
-          controlHost.append(label)
-        } else if ((control.caption && control.id !== 'pictureOutlineWidth') || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
+        if (control.id === 'pictureOpacity') continue
+        if ((control.caption && control.id !== 'pictureOutlineWidth') || ['translate', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt'].includes(control.id)) {
           const label = document.createElement('label')
           label.htmlFor = controlId
           label.className = 'slides-ribbon-field'
@@ -668,14 +700,12 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (command === 'pictureOutlineWidth') for (const button of element.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
           button.setAttribute('aria-pressed', String(button.dataset.outlineWidth === value))
         }
-        if (command === 'pictureOpacity' && element instanceof HTMLSelectElement) {
-          element.querySelector('[data-source-value]')?.remove()
-          if (value && !PICTURE_TRANSPARENCY_PRESETS.includes(value)) {
-            const sourceValue = new Option(`${value}%`, value)
-            sourceValue.dataset.sourceValue = 'true'
-            sourceValue.disabled = true
-            element.add(sourceValue, 0)
+        if (command === 'pictureOpacity') {
+          for (const choice of pictureTransparency?.menu.querySelectorAll<HTMLButtonElement>('[data-picture-transparency]') ?? []) {
+            choice.setAttribute('aria-pressed', String(choice.dataset.pictureTransparency === value))
           }
+          if (value) element.setAttribute('aria-description', value + '%')
+          else element.removeAttribute('aria-description')
         }
         if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
           element.value = value
@@ -719,7 +749,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
-      if (value) closePictureOutline?.()
+      if (value) closePictureMenus()
       chartGallery?.setLocked(value)
       for (const elements of controls.values()) for (const element of elements) {
         if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement || element instanceof HTMLFieldSetElement) {
@@ -735,7 +765,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateCommentEdit()
       updateAIEdit()
     },
-    dispose() { chartGallery?.dispose(); closePictureOutline?.(); disposeScroll(); root.remove() },
+    dispose() { chartGallery?.dispose(); closePictureMenus(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

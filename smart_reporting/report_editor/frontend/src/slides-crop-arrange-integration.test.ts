@@ -135,15 +135,25 @@ it('stages picture rotation and flips from the ribbon with one undo step per com
 it('selects a GenOffice picture transparency preset and saves against the original picture identity', async () => {
   const app = await open()
   try {
-    const picker = app.shell.editor.querySelector<HTMLSelectElement>('select[data-command="pictureOpacity"]')!
+    const picker = app.command('pictureOpacity')
     expect(picker.disabled).toBe(true)
     const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
     object.value = 'picture'
     object.dispatchEvent(new Event('change', { bubbles: true }))
     expect(picker.disabled).toBe(false)
-    expect(Array.from(picker.options, option => option.textContent)).toEqual(['0%', '15%', '30%', '50%', '65%', '80%', '95%'])
-    picker.value = '65'
-    picker.dispatchEvent(new Event('change', { bubbles: true }))
+    app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-pictureFormat')!.click()
+    picker.click()
+    expect(picker.getAttribute('aria-expanded')).toBe('true')
+    const choices = [...app.shell.editor.querySelectorAll<HTMLButtonElement>('[data-picture-transparency]')]
+    expect(choices.map(choice => choice.textContent)).toEqual(['0%', '15%', '30%', '50%', '65%', '80%', '95%'])
+    const chosen = choices.find(choice => choice.dataset.pictureTransparency === '65')!
+    chosen.click()
+    expect(picker.getAttribute('aria-expanded')).toBe('false')
+    picker.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(chosen.getAttribute('aria-pressed')).toBe('true')
+    expect(document.activeElement).toBe(chosen)
+    chosen.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(document.activeElement).toBe(picker)
     app.shell.save.click()
     await vi.waitFor(() => expect(app.request.mock.calls.some(([path]) => path === 'save')).toBe(true))
     const call = app.request.mock.calls.find(([path]) => path === 'save')!

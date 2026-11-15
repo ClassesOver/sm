@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import type { NativeOperation } from './native-draft'
+import { NativeApiError } from './native-api'
 import { createWorkbookNativeAIClient, mountWorkbookNativeAI } from './workbook-native-ai'
 afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 function setup() {
@@ -7,13 +8,34 @@ function setup() {
   let operations: NativeOperation[] = []
   const selection = { sheetName: 'Sheet', startRow: 0, endRow: 0, startColumn: 0, endColumn: 0 }
   const candidate = { editId: 'id', status: 'succeeded', snapshotSha256: 'b'.repeat(64), proposal: { summary: '修改选区', operations: [{ kind: 'applyCellEdits', edits: [{ sheetName: 'Sheet', row: 0, column: 0, writeValue: true, cell: { value: '候选值' } }] }] } }
-  const api = { start: vi.fn(async () => candidate), status: vi.fn(async () => candidate), accept: vi.fn(async () => ({ operations: candidate.proposal.operations })), cancel: vi.fn(async () => ({})), cancelRequest: vi.fn(async () => ({})) }
+  const api = { start: vi.fn(async (_payload: Parameters<ReturnType<typeof createWorkbookNativeAIClient>['start']>[0]) => candidate), status: vi.fn(async () => candidate), accept: vi.fn(async () => ({ operations: candidate.proposal.operations })), cancel: vi.fn(async () => ({})), cancelRequest: vi.fn(async () => ({})) }
   const apply = vi.fn(async (next: NativeOperation[]) => { operations = next })
   const context = vi.fn(async (scope: 'range' | 'workbook') => ({ expectedSha256: 'a'.repeat(64), operations, scope, selection, label: 'Sheet!A1', cells: { A1: { value: '人工值' } } }))
   const view = mountWorkbookNativeAI(host, { api, locked: () => false, context, apply })
   const submit = () => { host.querySelector('textarea')!.value = '改成候选值'; host.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })) }
-  return { host, api, apply, view, submit, context, change: () => { operations = [{ kind: 'applyColumnWidths', sheetName: 'Sheet', entries: [] }] } }
+  return { host, api, apply, view, submit, context, candidate, change: () => { operations = [{ kind: 'applyColumnWidths', sheetName: 'Sheet', entries: [] }] } }
 }
+it('resumes the same XLSX task after connection loss and a missing in-memory job', async () => {
+  const { host, api, apply, view, submit, candidate } = setup()
+  const editId = 'b'.repeat(64)
+  api.start.mockResolvedValueOnce({ ...candidate, editId, status: 'running' })
+    .mockResolvedValueOnce({ ...candidate, editId })
+  api.status.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    .mockRejectedValueOnce(new NativeApiError(404, 'native_ai_job_missing', '任务不存在'))
+  try {
+    submit()
+    await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false), { timeout: 5000 })
+    expect(api.status).toHaveBeenCalledTimes(2)
+    expect(api.status).toHaveBeenNthCalledWith(1, editId, expect.any(AbortSignal))
+    expect(api.status).toHaveBeenNthCalledWith(2, editId, expect.any(AbortSignal))
+    expect(api.start).toHaveBeenCalledTimes(2)
+    const [originalPayload] = api.start.mock.calls[0]!
+    expect(api.start).toHaveBeenNthCalledWith(2, { ...originalPayload, resumeEditId: editId }, expect.any(AbortSignal))
+    expect(api.accept).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+    expect(host.textContent).toContain('候选值')
+  } finally { view.dispose() }
+})
 it('freezes range, previews Chinese differences with real icons and adopts explicitly', async () => {
   const { host, api, apply, view, submit } = setup(); submit()
   await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))

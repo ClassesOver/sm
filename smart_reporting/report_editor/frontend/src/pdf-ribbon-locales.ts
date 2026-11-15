@@ -1,6 +1,7 @@
 /** Small browser-safe localization closure adapted from GenOffice PDF i18n/strings.ts at f8c17004fb730df11f0f743164ffd8b4281bb38c. */
 const labels = {
   'Edit': ['Edit', '编辑'], 'Convert & Export': ['Convert & Export', '转换与导出'], 'Search, Print & Properties': ['Search, Print & Properties', '搜索、打印与属性'], 'Signature & Protection': ['Signature & Protection', '签名与保护'],
+  '完成填写': ['Finish filling', '完成填写'],
   '连续添加': ['Keep adding', '连续添加'],
   '查找敏感信息': ['Find sensitive info', '查找敏感信息'], '以上全部': ['All of the above', '以上全部'],
   '电话号码': ['Phone numbers', '电话号码'], '电子邮箱': ['Email addresses', '电子邮箱'], '信用卡号码': ['Credit card numbers', '信用卡号码'], '美国社会安全号码': ['US Social Security numbers', '美国社会安全号码'], '日期': ['Dates', '日期'], 'IBAN 账号': ['IBANs', 'IBAN 账号'],

@@ -1280,13 +1280,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     }).finally(() => { ribbon.refreshState?.(); nativeAI?.refresh() })
     feedback.textContent = `${target === null ? LINK_TEXT.removed : LINK_TEXT.saved}修改尚未保存。`
   }
-  const clearSelectedHyperlinks = async () => {
+  const captureClearSelection = (name: string) => {
     const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
     const range = sheet?.getSelection()?.getActiveRange()
     if (!workbook || !sheet || !range) throw new Error('请先选择单元格或区域')
     const bookCore = workbook.getWorkbook(), sheetCore = sheet.getSheet(), sheetId = sheet.getSheetId()
     const sheetName = sheet.getSheetName(), selection = { ...range.getRange() }
-    assertClearLinkSelection(selection)
     const validate = () => {
       if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
       if (sheetProtected(sheetId)) throw new Error('工作表受保护，请先撤销保护')
@@ -1295,8 +1294,13 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       if (active?.getWorkbook() !== bookCore || activeSheet?.getSheet() !== sheetCore || !bounds
         || bounds.startRow !== selection.startRow || bounds.endRow !== selection.endRow
         || bounds.startColumn !== selection.startColumn || bounds.endColumn !== selection.endColumn)
-        throw new Error('超链接选区已变化，请重新选择后操作')
+        throw new Error(name + '选区已变化，请重新选择后操作')
     }
+    return { sheetName, selection, validate }
+  }
+  const clearSelectedHyperlinks = async () => {
+    const { sheetName, selection, validate } = captureClearSelection('超链接')
+    assertClearLinkSelection(selection)
     await applyWorkbookDraftOperation(validate, async bytes => {
       const edits = hyperlinksToClear(await readPackageSheetHyperlinks(bytes, sheetName), selection)
       if (!edits.length) return []
@@ -1309,6 +1313,18 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       })) })
       return steps
     }, '已清除选区中的超链接，修改尚未保存。')
+  }
+  const clearSelectedNotes = async () => {
+    const { sheetName, selection, validate } = captureClearSelection('注释')
+    await applyWorkbookDraftOperation(validate, async bytes => {
+      const notes = noteSource(await readWorkbook(bytes), sheetName)
+      const changes = notes.notes
+        .filter(({ row, column }) => row >= selection.startRow && row <= selection.endRow
+          && column >= selection.startColumn && column <= selection.endColumn)
+        .map(({ row, column }) => ({ row, column, text: null }))
+      if (!changes.length) return []
+      return [{ kind: 'patchSheetNotes', sheetName, sourceIdentity: notes.sourceIdentity, changes }]
+    }, '已清除选区中的传统注释，修改尚未保存。')
   }
   const linkDialog = createWorkbookLinkDialog(shell.editor, applyLink)
   // 视图▸拆分窗口：固定源没有拆分窗口、网格没有拆分视口，只提供取消文件中已有的拆分窗格（Excel 再次点击“拆分”的行为）。
@@ -1858,6 +1874,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           }
           feedback.textContent = unfrozen ? '已取消冻结窗格。' : '冻结窗格已更新。'
         } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
+      if (command === 'clear-comments') {
+        void clearSelectedNotes().catch(error => { feedback.textContent = (error as Error).message })
         return
       }
       if (command === 'clear-hyperlinks') {

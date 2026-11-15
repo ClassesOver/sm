@@ -78,6 +78,7 @@ type RibbonCommand =
   | 'delete-col-here'
   | 'clear-contents'
   | 'clear-hyperlinks'
+  | 'clear-comments'
   | 'clear-formats'
   | 'clear-all'
   | 'insert-sheet'
@@ -609,7 +610,7 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   after?: RibbonCommand
   icon: string
   detail: string
-  choices: ReadonlyArray<{ command?: RibbonCommand; label: string; summary?: 'below' | 'right' }>
+  choices: ReadonlyArray<{ command?: RibbonCommand; label: string; detail?: string; summary?: 'below' | 'right' }>
 }> = [
   { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
   {
@@ -682,7 +683,7 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
       { command: 'clear-all', label: '全部清除' },
       { command: 'clear-formats', label: '清除格式' },
       { command: 'clear-contents', label: '清除内容' },
-      { label: '清除批注和注释' },
+      { command: 'clear-comments', label: '清除批注和注释', detail: '清除所选单元格的传统注释' },
       { command: 'clear-hyperlinks', label: '清除超链接' },
     ],
   },
@@ -1636,10 +1637,10 @@ export function mountWorkbookRibbon(
         select.dataset.ribbonControl = menu.id
         select.setAttribute('aria-label', menu.label)
         select.title = menu.detail
-        select.append(new Option(menu.label, ''), ...menu.choices.map(({ command, label }) => {
+        select.append(new Option(menu.label, ''), ...menu.choices.map(({ command, label, detail }) => {
           const option = new Option(label, command ?? label)
           option.disabled = !command
-          if (!command) option.title = '尚未接入选区回写'
+          option.title = detail ?? (!command ? '尚未接入选区回写' : '')
           return option
         }))
         select.addEventListener('change', () => {
