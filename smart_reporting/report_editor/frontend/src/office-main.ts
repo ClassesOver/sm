@@ -3,7 +3,7 @@ import { showOfficeAssistantPreferences } from './office-assistant-preferences'
 import { showOfficeReport } from './office-report'
 import { bm25Score, mergeSearchCorpus, type SearchCorpus } from './office-search-rank'
 import './office.css'
-import { officeRequest, officeSession, loginOffice, type OfficeLibrary, type OfficeSpace, type OfficeUser } from './office-client'
+import { officeRequest, officeSession, loginOffice, OfficeRequestError, type OfficeLibrary, type OfficeSpace, type OfficeUser } from './office-client'
 import { showOfficeAdministration } from './office-administration'
 import { showOfficeSources } from './office-sources'
 import { showOfficeFileActions, type OfficeFileAction } from './office-file-actions'
@@ -29,6 +29,7 @@ let currentUser: OfficeUser | undefined
 let spaces: OfficeSpace[] = []
 let currentSpace = ''
 const tabEntries = new Map<string, Entry>()
+const closedTabs: Entry[] = []
 let view: View = 'recent'
 let folder = rootFolder
 let filter: Format | '' = ''
@@ -136,6 +137,7 @@ function clearAccount() {
   accountGeneration += 1
   for (const frame of tabs.values()) frame.remove()
   tabs.clear(); tabEntries.clear()
+  closedTabs.length = 0
   knowledgeTurns.clear(); knowledgeInputs.clear(); knowledgeAttachments.clear()
   for (const controller of knowledgePending.values()) controller.abort()
   knowledgePending.clear(); knowledgeGeneration.clear(); activeKnowledgeConversation.clear(); knowledgeConversations.clear()
@@ -501,6 +503,8 @@ function render() {
 }
 
 function open(entry: Entry, source = entry.path) {
+  const closedIndex = closedTabs.findIndex(item => item.path === entry.path)
+  if (closedIndex >= 0) closedTabs.splice(closedIndex, 1)
   entry.seen = Date.now()
   entry.recentHidden = false
   const listing = library.entries.find(item => item.id === entry.id && item.space === entry.space)
@@ -524,12 +528,28 @@ function grantPath(input: string) {
   return url.pathname
 }
 
-async function reopen(entry: Entry) {
+async function reopen(entry: Entry, revision?: number) {
   const account = accountGeneration
-  const result = await officeRequest<{ documentId: string; revision: number; editor: { url: string } }>(`/files/${entry.id}/open`, 'POST')
+  const result = await officeRequest<{ documentId: string; revision: number; editor: { url: string } }>(
+    `/files/${entry.id}/open`, 'POST', revision === undefined ? undefined : { revision })
   if (account !== accountGeneration) return
   const path = `/reports/v1/native/${result.documentId}/${result.revision}`
   open({ ...entry, path, revision: result.revision }, grantPath(result.editor.url))
+}
+
+async function reopenClosedTab() {
+  const account = accountGeneration
+  while (closedTabs.length && account === accountGeneration) {
+    const entry = closedTabs.at(-1)!
+    try {
+      await reopen(entry, entry.revision)
+      return
+    } catch (error) {
+      if (!(error instanceof OfficeRequestError) || ![403, 404, 410].includes(error.status)) throw error
+      if (account === accountGeneration) closedTabs.pop()
+    }
+  }
+  if (account === accountGeneration) throw new Error('最近关闭的文件均已不可用。')
 }
 
 async function importFile(file: File, destination = view === 'folder' ? folder : rootFolder, openAfter = true) {
@@ -692,18 +712,20 @@ root.addEventListener('contextmenu', event => {
   if (!(event.target instanceof Element) || busy) return
   const tabButton = event.target.closest('.file-tab')?.querySelector<HTMLButtonElement>('[data-tab]')
   const tabEntry = tabButton ? tabEntries.get(tabButton.dataset.tab!) : undefined
-  if (!tabEntry && !canWrite()) return
+  const homeTab = event.target.closest<HTMLButtonElement>('button[data-tab=""]')
+  if (!tabEntry && !homeTab && !canWrite()) return
+  if (homeTab && !currentUser) return
   const row = event.target.closest('.file-row, .folder-row')
   const action = row?.querySelector<HTMLButtonElement>('[data-file-actions], [data-folder-actions]')
   const parent = (row as HTMLElement | null)?.dataset.dropFolder
-  if (!action && !parent && !tabEntry) return
+  if (!action && !parent && !tabEntry && !homeTab) return
   event.preventDefault()
   root.querySelector('.office-context-menu')?.remove()
   const menu = document.createElement('div')
   menu.className = 'office-context-menu'
   menu.popover = 'auto'
   menu.setAttribute('role', 'menu')
-  const origin = tabButton ?? row?.querySelector<HTMLElement>('[data-open], [data-folder]')
+  const origin = tabButton ?? homeTab ?? row?.querySelector<HTMLElement>('[data-open], [data-folder]')
   const items: HTMLButtonElement[] = []
   const add = (label: string, invoke: () => void, enabled = true) => {
     const item = document.createElement('button')
@@ -739,6 +761,9 @@ root.addEventListener('contextmenu', event => {
     }
     add('向左移动', () => move(-1), index > 0)
     add('向右移动', () => move(1), index >= 0 && index < tabs.size - 1)
+  }
+  if (tabEntry || homeTab) {
+    add('重新打开关闭的标签页', () => void withImport(reopenClosedTab), closedTabs.length > 0)
   }
   if (action) {
     for (const [mode, label] of [['rename','重命名'], ['move','移动到文件夹'], ['delete','删除']] as const) {
@@ -979,8 +1004,14 @@ root.addEventListener('click', event => {
   }
   if (data.tab !== undefined) selectedTab = data.tab
   if (data.close) {
+    const entry = tabEntries.get(data.close)
+    if (entry) {
+      closedTabs.push(entry)
+      if (closedTabs.length > 20) closedTabs.shift()
+    }
     tabs.get(data.close)?.remove()
     tabs.delete(data.close)
+    tabEntries.delete(data.close)
     if (selectedTab === data.close) selectedTab = ''
   }
   render()
