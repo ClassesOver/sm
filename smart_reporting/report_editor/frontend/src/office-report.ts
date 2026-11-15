@@ -23,6 +23,7 @@ class ReportClarification extends Error {
 
 type ReportReceipt = {
   reportId: string
+  workflowFailure?: string
   word?: { downloadUrl: string }
   pdf?: { downloadUrl: string }
   xlsx?: { downloadUrl: string }
@@ -32,6 +33,14 @@ type ReportReceipt = {
   validationIssues?: ReportIssue[]
   sourceWarnings?: ReportIssue[]
   publicationGate?: { formalReleaseAllowed?: boolean; issues?: ReportIssue[]; warnings?: ReportIssue[] }
+}
+
+function reportLink(value: unknown): URL | undefined {
+  if (typeof value !== 'string' || !value) return
+  try {
+    const url = new URL(value, window.location.origin)
+    if (url.origin === window.location.origin && !url.username && !url.password && url.pathname.startsWith('/reports/v1/')) return url
+  } catch { /* Ignore malformed links independently. */ }
 }
 
 function findWorkflowOutput<T>(value: unknown, read: (output: Record<string, unknown>) => T | undefined): T | undefined {
@@ -68,9 +77,24 @@ export async function submitOfficeReport(space: string, message: string, format?
 }
 
 function readReportResult(result: Record<string, unknown>) {
-  const report = findWorkflowOutput(result, output => typeof output.reportId === 'string' ? output as ReportReceipt : undefined)
-  if (String(result?.status).toLowerCase() !== 'completed' || !report) {
-    if (String(result?.status).toLowerCase() === 'paused' && typeof result.run_id === 'string'
+  const state = String(result?.status).toLowerCase()
+  const readReceipt = (output: Record<string, unknown>) => typeof output.reportId === 'string' ? output as ReportReceipt : undefined
+  if (state === 'error' || state === 'failed') {
+    const published = findWorkflowOutput(result, output => {
+      const report = readReceipt(output)
+      if (report && [report.word, report.pdf, report.xlsx, report.pptx].some(artifact => {
+        const url = reportLink(artifact?.downloadUrl)
+        return url && /^\/reports\/v1\/(?:native\/)?download\/[^/]+\/[^/]+$/.test(url.pathname)
+      })) return report
+    })
+    if (published) return {
+      ...published, workflowFailure: typeof result.content === 'string' && result.content.trim()
+        ? result.content.trim() : '报告流程未完成。',
+    }
+  }
+  const report = findWorkflowOutput(result, readReceipt)
+  if (state !== 'completed' || !report) {
+    if (state === 'paused' && typeof result.run_id === 'string'
         && Array.isArray(result.step_requirements)) {
       const requirement = result.step_requirements.find(item => item?.step_id === 'normalize-report-request')
       const question = requirement?.step_output?.content?.clarificationQuestion
@@ -245,17 +269,17 @@ export function showOfficeReport(
           ...(issue.details?.validationIssues ?? []).map(detail => detail.message),
         ]).filter(message => typeof message === 'string' && message.trim()))
         const failed = report.validation?.ok === false || gate?.formalReleaseAllowed === false
-        status.textContent = [failed ? '报告已生成，验收未通过。' : '报告已生成。', ...reasons].join(' ')
+        const summary = report.workflowFailure
+          ? [report.workflowFailure, '已生成的文件仍可下载。', ...(failed ? ['验收未通过。'] : [])]
+          : [failed ? '报告已生成，验收未通过。' : '报告已生成。']
+        status.textContent = [...summary, ...reasons].join(' ')
         for (const [label, value] of [
           ['下载 Word', report.word?.downloadUrl], ['下载 PDF', report.pdf?.downloadUrl],
           ['下载 Excel', report.xlsx?.downloadUrl], ['下载 PowerPoint', report.pptx?.downloadUrl],
           ['打开报告', report.editor?.openUrl],
         ] as const) {
-          if (!value) continue
-          let url: URL
-          try { url = new URL(value, window.location.origin) }
-          catch { continue }
-          if (url.origin !== window.location.origin || !url.pathname.startsWith('/reports/v1/')) continue
+          const url = reportLink(value)
+          if (!url) continue
           const link = document.createElement('a')
           link.href = url.href
           link.textContent = label

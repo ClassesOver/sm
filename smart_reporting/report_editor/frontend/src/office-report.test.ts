@@ -51,6 +51,50 @@ it('submits the selected workspace and preserves downloads when acceptance fails
   expect(request.body.get('message')).toBe('生成报告')
 })
 
+it('keeps the signed artifacts already issued before a workflow error', async () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {configurable:true, value:function (this: HTMLDialogElement) { this.open = true }})
+  const send = vi.fn(async (url: string) => {
+    if (url.endsWith('/reports/pending')) return Response.json({pending:null})
+    if (url.endsWith('/data-sources')) return Response.json({items:[]})
+    return Response.json({
+      status:'ERROR', content:'归档写入失败。',
+      step_results:[{content:{
+        reportId:'partial', word:{downloadUrl:'/reports/v1/download/word-proof/word'},
+        pdf:{downloadUrl:'/reports/v1/native/download/pdf-proof/pdf'},
+        validation:{ok:false, issues:[{message:'页数不一致。'}]},
+      }}],
+    })
+  })
+  vi.stubGlobal('fetch', send)
+  try {
+    showOfficeReport(host, {id:'partial-team',name:'团队',role:'owner',personal_user:null,archived:false}, async () => {})
+    const button = host.querySelector<HTMLButtonElement>('button[type=submit]')!
+    await vi.waitFor(() => expect(button.disabled).toBe(false))
+    host.querySelector('textarea')!.value = '生成报告'
+    button.click()
+    await vi.waitFor(() => expect([...host.querySelectorAll('a')].map(link => link.textContent)).toEqual(['下载 Word','下载 PDF']))
+    const status = host.querySelector('[role=status]')!.textContent
+    expect(status).toContain('归档写入失败。')
+    expect(status).toContain('页数不一致。')
+    expect(status).not.toContain('验收通过')
+  } finally {
+    Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+    host.remove()
+  }
+})
+
+it.each([
+  ['ERROR', 'https://elsewhere.example/reports/v1/download/token/word'],
+  ['RUNNING', '/reports/v1/download/token/word'],
+])('does not surface a preliminary or foreign receipt for %s', async (state, downloadUrl) => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({
+    status: state, content: '流程未完成。',
+    step_results: [{content:{reportId:'partial', word:{downloadUrl}}}],
+  })))
+  await expect(submitOfficeReport('team', '生成报告')).rejects.toThrow('流程未完成。')
+})
+
 it.each(['step_results', 'step_requirements'])('shows clarification from %s', async field => {
   const step = { content: { clarificationQuestion: '请明确唯一的分析期间。' } }
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({
