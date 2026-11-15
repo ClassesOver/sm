@@ -68,6 +68,11 @@ class XlsxLiteralPreviewEngine:
                 if sheet_name not in workbook.sheetnames or ":" in address:
                     raise ValueError("xlsx_preview_target_invalid")
                 sheet = workbook[sheet_name]
+                # Hidden and veryHidden sheets are not selectable in the normal
+                # editor. Refuse their mutation previews until the host exposes
+                # an explicit, independently authorized hidden-sheet workflow.
+                if sheet.sheet_state != "visible":
+                    raise ValueError("xlsx_preview_hidden_sheet")
                 if sheet.protection.sheet:
                     raise ValueError("xlsx_preview_protected_sheet")
                 cell = sheet[address]
