@@ -71,7 +71,13 @@ class XlsxLiteralPreviewEngine:
                 if sheet.protection.sheet:
                     raise ValueError("xlsx_preview_protected_sheet")
                 cell = sheet[address]
-                if cell.__class__.__name__ == "MergedCell" or cell.data_type == "f":
+                # The top-left anchor of a merged range is a normal Cell, not
+                # a MergedCell. Refuse both anchors and subordinate cells.
+                if (
+                    any(cell.coordinate in merged for merged in sheet.merged_cells.ranges)
+                    or cell.__class__.__name__ == "MergedCell"
+                    or cell.data_type == "f"
+                ):
                     raise ValueError("xlsx_preview_formula_or_merged_cell")
                 old = cell.value
                 if isinstance(old, str) and old.startswith("="):
