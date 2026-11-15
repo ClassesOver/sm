@@ -302,7 +302,7 @@ async def test_office_library_upload_save_and_reopen(tmp_path, format):
     publication.repository = Repository()
     publication.validator = AsyncMock(side_effect=RuntimeError("test acceptance"))
     editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
-                                 report_editor=None, docx_enabled=True, pdf_enabled=True,
+                                 docx_enabled=True, pdf_enabled=True,
                                  office_enabled=True, publication=publication)
     importer = NativeImportService(publication.workspace, publication.repository, publication.editor_grants)
     engine = create_async_engine("sqlite+aiosqlite://")

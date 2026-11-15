@@ -48,7 +48,7 @@ async def test_saved_office_links_keep_authority_and_revoke(tmp_path, revoke):
         _, opened = await publication.editor_grants.exchange(unquote(result['editor']['openUrl'].split('/')[-1]))
         assert download.capabilities['office'] == authority
         assert opened.capabilities['office'] == authority
-        editor = NativeEditorService(publication.workspace, None, publication.editor_grants, report_editor=None)
+        editor = NativeEditorService(publication.workspace, None, publication.editor_grants)
         editor.office_authorize = documents.authorize
         assert (await editor.download(download, 'word'))[0]
         if revoke == 'logout':
@@ -140,7 +140,7 @@ async def test_native_file_read_rechecks_revocation_after_io(monkeypatch):
         document_id="doc", scope=None, format="docx",
         source_file=SimpleNamespace(size=4, sha256="hash", path="original.docx"),
     )
-    editor = native.NativeEditorService(None, None, None, report_editor=None)
+    editor = native.NativeEditorService(None, None, None)
     revoked = False
 
     async def authorize(_session, *, write=False):

@@ -58,7 +58,7 @@ def test_source_blank_is_deterministic_and_first_text_edit_has_trusted_anchor(so
 
 async def runtime(tmp_path):
     publication,context,_=await create_publication(tmp_path)
-    editor=NativeEditorService(publication.workspace,Repository(),publication.editor_grants,report_editor=None,docx_enabled=True)
+    editor=NativeEditorService(publication.workspace,Repository(),publication.editor_grants,docx_enabled=True)
     editor.context_for_session=AsyncMock(return_value=context)
     raw,_=await editor.grants.issue(context,capabilities=editor.capabilities(context));token,_=await editor.grants.exchange(raw)
     app=FastAPI();app.include_router(create_native_editor_router(editor.grants,editor=editor,cookie_secure=False,allowed_origin='http://test'))
@@ -164,7 +164,7 @@ async def test_saved_copy_name_survives_next_revision_and_download(tmp_path,sour
     from smart_reporting.report_editor.native_api import _native_disposition
     publication,parent,downloads=await create_publication(tmp_path)
     repository=Repository();publication.repository=repository
-    editor=NativeEditorService(publication.workspace,repository,publication.editor_grants,report_editor=None,docx_enabled=True)
+    editor=NativeEditorService(publication.workspace,repository,publication.editor_grants,docx_enabled=True)
     result=await create_word_file(editor,parent,action='save-as',expected_sha256=parent.source_file.sha256,
         request_id='copy',filename='独立副本.docx')
     initial=(await repository.get_revision(result['documentId'],1,scope=parent.scope)).context
