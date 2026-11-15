@@ -42,13 +42,23 @@ class ReportAcpClient:
         self._session_id = None
         if process is None:
             return
-        process.stdin.close()
+        # The peer may have exited or closed stdin before cleanup begins.
+        try:
+            process.stdin.close()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
         try:
             await asyncio.wait_for(process.communicate(), 3)
+        except (BrokenPipeError, ConnectionResetError):
+            # Preserve the original protocol error if the child died abruptly.
+            await process.wait()
         except TimeoutError:
             if process.returncode is None:
                 process.kill()
-            await process.communicate()
+            try:
+                await process.communicate()
+            except (BrokenPipeError, ConnectionResetError):
+                await process.wait()
 
     async def open_session(self, resume: str | None = None) -> str:
         async with self._lock:
