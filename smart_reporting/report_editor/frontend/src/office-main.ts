@@ -1,4 +1,4 @@
-import {openInlineFolder} from './office-inline-folder'
+import {openInlineFolder, renameInlineFolder} from './office-inline-folder'
 import type { renderOfficeAnswer } from './office-answer'
 import { showOfficeAssistantPreferences } from './office-assistant-preferences'
 import { showOfficeReport } from './office-report'
@@ -770,6 +770,22 @@ function createOfficeFolder(parent: string) {
   })
 }
 
+function renameOfficeFolder(id: string) {
+  if (busy || !canWrite()) return
+  const item = library.folders.find(item => item.id === id)
+  const button = root.querySelector<HTMLButtonElement>(`.folder-row button[data-folder="${CSS.escape(id)}"]`)
+  if (!item || !button) return
+  const space = currentSpace
+  renameInlineFolder(button, item.name, name => {
+    if (space !== currentSpace || !canWrite()) return
+    void withImport(async () => {
+      await officeRequest(`/workspaces/${space}/folders/${id}`, 'PATCH', {name})
+      invalidateKnowledge(space)
+      await refreshLibrary()
+    })
+  })
+}
+
 root.addEventListener('contextmenu', event => {
   if (!(event.target instanceof Element) || busy) return
   const tabButton = event.target.closest('.file-tab')?.querySelector<HTMLButtonElement>('[data-tab]')
@@ -829,7 +845,11 @@ root.addEventListener('contextmenu', event => {
   }
   if (action) {
     for (const [mode, label] of [['rename','重命名'], ['move','移动到文件夹'], ['delete','删除']] as const) {
-      add(label, () => manageOfficeItem(action.dataset, mode))
+      const folderId = action.dataset.folderActions
+      add(label, () => {
+        if (mode === 'rename' && folderId) requestAnimationFrame(() => renameOfficeFolder(folderId))
+        else manageOfficeItem(action.dataset, mode)
+      })
     }
     const entry = library.entries.find(item => item.id === action.dataset.fileActions)
     if (entry) add('复制文件', () => void withImport(() => duplicateOfficeEntry(entry)))
