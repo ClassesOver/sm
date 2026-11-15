@@ -352,6 +352,38 @@ it('sorts an unlocked protected selection from the ribbon with undo and XLSX sav
   } finally { current.view?.dispose() }
 })
 
+it('saves the custom protected sort with two keys and leaves the title row in place', async () => {
+  const rows = [['Group', 'Score'], ['B', 3], ['A', 1], ['A', 4]]
+  const source = await applyWorkbookOperations(await createBlankWorkbook(), [
+    { kind: 'applyCellEdits', edits: rows.flatMap((cells, row) => cells.map((value, column) => ({
+      sheetName: 'Sheet1', row, column, writeValue: true, cell: { value }, style: { protectionLocked: false },
+    }))) },
+    { kind: 'protectSheet', sheetName: 'Sheet1', protect: true, allow: { sort: true } },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/custom.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('A1:B4').activate()
+    grid.ribbon('sort-custom-open')
+    const card = current.shell.editor.querySelector<HTMLElement>('.workbook-ribbon-sort-dialog')!
+    card.querySelector<HTMLSelectElement>('[data-sort-level="1"] [data-sort-column]')!.value = '1'
+    card.querySelector<HTMLSelectElement>('[data-sort-level="1"] [data-sort-order]')!.value = 'desc'
+    card.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await vi.waitFor(() => expect(draft.operations).toMatchObject([{ kind: 'sortRange', spec: {
+      byColumn: 'A', ascending: true, hasHeader: true, thenBy: [{ byColumn: 'B', ascending: false }],
+    } }]))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = (await readWorkbook(downloaded!)).sheets[0]!
+    expect([1, 2, 3, 4].map(row => saved.cells[`B${row}`]?.value)).toEqual(['Score', 4, 1, 3])
+    expect(saved.protection?.allow.sort).toBe(true)
+  } finally { current.view?.dispose() }
+})
+
 it('edits unlocked cells including axis styles without unprotecting the worksheet', async () => {
   const bytes = await applyWorkbookOperations(await fixture(), [
     { kind: 'protectSheet', sheetName: 'Sheet1', protect: false },

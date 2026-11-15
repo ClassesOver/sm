@@ -39,7 +39,7 @@ import { shiftConditionalFormattingXml,overlayConditionalFormattingXml } from '.
 import {parseThemePalette} from './style-read'
 import { shiftSheetNotes } from './notes'
 import { parseRange, parseAddress, formatAddress, columnIndex, rangeCellCount } from './cell-address'
-import { computeSortedRowOrder } from './sort-range'
+import { computeSortedRowOrder, sortKeyOffsets, type SortSpec } from './sort-range'
 import { inheritedCellStyleIndex, isCellUnlocked, parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
 import { readSheetNotes } from './note-read'
 import { assemblePackage, createBufferEntrySource, type MutationPlan } from './zip'
@@ -483,7 +483,7 @@ export async function applyRowColumnOps(
 /// would silently re-target relative references, and note relocation rides
 /// the grid path where the move payload preserves authors.
 export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
-  spec: { range: string; byColumn: string; ascending: boolean; hasHeader: boolean }): Promise<Uint8Array> {
+  spec: SortSpec): Promise<Uint8Array> {
   const model = await readWorkbook(sourceBytes)
   const sheet = model.sheets.find(entry => entry.name === sheetName)
   if (!sheet) throw new Error(`workbook.xml 中找不到工作表 "${sheetName}"。`)
@@ -499,8 +499,7 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
       }
     }
   }
-  const keyColumn = columnIndex(spec.byColumn)
-  if (keyColumn < bounds.startColumn || keyColumn > bounds.endColumn) throw new Error(`Sort column ${spec.byColumn} is outside the range ${spec.range}.`)
+  const [first, ...thenBy] = sortKeyOffsets(spec, bounds)
   const inRange = (row: number, column: number) => row >= bounds.startRow && row <= bounds.endRow && column >= bounds.startColumn && column <= bounds.endColumn
   for (const [address, cell] of Object.entries(sheet.cells)) {
     if (!cell.formula) continue
@@ -522,7 +521,7 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) cells.push(sheet.cells[formatAddress(row, column)]?.value ?? null)
     rows.push(cells)
   }
-  const order = computeSortedRowOrder(rows, keyColumn - bounds.startColumn, spec.ascending)
+  const order = computeSortedRowOrder(rows, first!.offset, first!.ascending, thenBy)
 
   const workbookXml = await source.readText('xl/workbook.xml')
   const parts = await sheetPartsOf(source, workbookXml)

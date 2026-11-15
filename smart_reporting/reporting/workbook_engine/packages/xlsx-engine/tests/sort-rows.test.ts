@@ -48,6 +48,21 @@ it('sortRangeRows permutes full cell records so styles move with values', async 
   expect(sheet.cells.C4?.value).toBe('range外')
 })
 
+it('sorts a protected range by multiple keys while preserving the header and ties', async () => {
+  const values = [['Group', 'Score', 'Record'], ['B', 3, 'B3'], ['A', 1, 'A1'], ['A', 4, 'A4-first'], ['A', 4, 'A4-second'], ['A', null, 'blank']]
+  const bytes = await applyCellEdits(await createBlankWorkbook(), values.flatMap((cells, row) => cells.map((value, column) => ({
+    sheetName: 'Sheet1', row, column, writeValue: true, cell: { value }, style: { protectionLocked: false },
+  }))))
+  const source = await protectSheet(bytes, 'Sheet1', true, { sort: true })
+  const spec = { range: 'A1:C6', byColumn: 'A', ascending: true, hasHeader: true, thenBy: [{ byColumn: 'B', ascending: false }] }
+  const sorted = await sortRangeRows(source, 'Sheet1', spec)
+  const sheet = (await readWorkbook(sorted)).sheets[0]!
+  expect([1, 2, 3, 4, 5, 6].map(row => sheet.cells[`C${row}`]?.value))
+    .toEqual(['Record', 'A4-first', 'A4-second', 'A1', 'blank', 'B3'])
+  await expect(sortRangeRows(source, 'Sheet1', { ...spec, thenBy: [{ byColumn: 'D', ascending: true }] }))
+    .rejects.toThrow('outside the range')
+})
+
 it('keeps inherited cell styles attached to rows moved by a protected sort', async () => {
   let bytes = await applyCellEdits(await createBlankWorkbook(), [
     { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 2 }, style: { protectionLocked: false, bold: true } },

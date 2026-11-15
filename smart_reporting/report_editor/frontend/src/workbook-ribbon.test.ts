@@ -803,8 +803,8 @@ it('offers only authorized actions in the protected Sort and Filter menu', () =>
   const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="sort-filter"]')!
   expect(select.disabled).toBe(false)
   expect(Array.from(select.options).filter(option => !option.disabled).map(option => option.value))
-    .toEqual(['', 'sort:asc', 'sort:desc'])
-  select.value = 'sort-custom-open'; select.dispatchEvent(new Event('change'))
+    .toEqual(['', 'sort:asc', 'sort:desc', 'sort-custom-open'])
+  select.value = 'filter-toggle'; select.dispatchEvent(new Event('change'))
   expect(command).not.toHaveBeenCalled()
   select.value = 'sort:desc'; select.dispatchEvent(new Event('change'))
   expect(command).toHaveBeenCalledWith('sort:desc')

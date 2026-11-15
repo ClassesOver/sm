@@ -1138,7 +1138,7 @@ export function mountWorkbookRibbon(
       const protection = view.protection?.().sheet
       const sortMenu = menu.id === 'sort' || menu.id === 'sort-filter'
       const allowsProtectedChoice = (command: string | undefined) =>
-        (protection?.allowSort === true && (command === 'sort:asc' || command === 'sort:desc')) ||
+        (protection?.allowSort === true && (command === 'sort:asc' || command === 'sort:desc' || command === 'sort-custom-open')) ||
         (protection?.allowFilter === true && (command === 'filter-clear' || command === 'filter-reapply'))
       const blockedByProtection = protection?.protected && (!sortMenu || !menu.choices.some(choice => allowsProtectedChoice(choice.command)))
       const disabledReason = !editable ? '当前工作簿不可编辑或正在保存'
