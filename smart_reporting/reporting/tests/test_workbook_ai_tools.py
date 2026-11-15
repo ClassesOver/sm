@@ -24,6 +24,55 @@ from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
 @pytest.mark.anyio
+async def test_source_axis_dimensions_round_trip_through_xlsx():
+    book = Workbook()
+    book.active['A1'] = '=2+3'
+    book.create_sheet('Other').row_dimensions[3].height = 12
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}, {'name': 'Other'}]},
+                              scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_row_height', 'sheetId': 'Sheet', 'row': 3, 'count': 2, 'heightPoints': 30.3},
+        {'op': 'set_col_width', 'sheetId': 'Sheet', 'column': 'B', 'widthPx': 124.5},
+    ], '调整表格尺寸')
+    saved = load_workbook(BytesIO(written))
+    sheet = saved['Sheet']
+    assert [sheet.row_dimensions[row].height for row in (3, 4)] == [30, 30]
+    assert 'A' not in sheet.column_dimensions and 'C' not in sheet.column_dimensions
+    assert round(sheet.column_dimensions['B'].width * 7 + 5) == 125
+    assert sheet['A1'].value == '=2+3' and saved['Other'].row_dimensions[3].height == 12
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'fields', 'error'), [
+    ('workbook', {'row': 1048576, 'count': 2, 'heightPoints': 20}, 'axis_size_invalid'),
+    ('workbook', {'column': 'XFD', 'count': 2, 'widthPx': 100}, 'axis_size_invalid'),
+    ('workbook', {'column': 'A', 'widthPx': True}, 'axis_size_invalid'),
+    ('workbook', {'column': 'A', 'widthPx': 2000}, 'column_width_exceeds_xlsx_limit'),
+    ('range', {'row': 1, 'heightPoints': 20}, 'selection_mismatch'),
+])
+async def test_source_axis_dimensions_reject_invalid_arguments_or_scope(scope, fields, error):
+    async def preview(_):
+        pytest.fail('Invalid axis size proposal reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope=scope,
+                              selection={'sheetName': 'Sheet'}, preview=preview)
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([{
+            'op': 'set_row_height' if 'row' in fields else 'set_col_width',
+            'sheetId': 'Sheet', **fields,
+        }], '调整表格尺寸')
+
+
+@pytest.mark.anyio
 async def test_source_refresh_pivot_uses_current_data_for_the_named_host():
     book = Workbook()
     book.active.title = 'Data'

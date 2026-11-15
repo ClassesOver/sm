@@ -22,9 +22,11 @@ from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
 from .workbook_ai_page_setup import page_setup_patch
 from .workbook_ai_structure import (
+    AXIS_SIZE_SOURCE_OPS,
     ROW_COLUMN_SOURCE_OPS,
     SHEET_LIFECYCLE_OPS,
     SHEET_SOURCE_OPS,
+    translate_axis_size,
     translate_row_column_operation,
     translate_sheet_operation,
 )
@@ -407,6 +409,9 @@ class WorkbookAIToolkit(Toolkit):
                 '整簿授权下用 {op:set_hyperlink,sheetId,address,target} 设置链接。'
                 'target 是网址或同工作簿工作表引用；传 null 移除。'
                 '用 {op:set_note,sheetId,address,text} 设置单元格旧式备注，传 null 删除。'
+                '用 {op:set_row_height,sheetId,row,count,heightPoints} 调整行高（磅），'
+                '用 {op:set_col_width,sheetId,column,count,widthPx} 调整列宽（像素，上限 1790）。'
+                '起始行号从 1 开始，列使用字母，count 缺省为 1，需要工作簿权限。'
                 '用 {op:set_freeze,sheetId,rows,columns} 从工作表左上角冻结行列，'
                 '行数和列数均为 0–100 的整数；同时传 0 取消冻结。'
                 '用 set_page_setup(sheetId,orientation?,paperSize?,scale?,fitToWidth?,fitToHeight?,margins?,'
@@ -500,6 +505,11 @@ class WorkbookAIToolkit(Toolkit):
             row, _, column, _ = _bounds(_cell_address(operation['address']))
             return {'kind': 'applyNoteSource', 'sheetName': self._sheet(sheet_id)['name'],
                     'row': row, 'column': column, 'text': text}
+        if op in AXIS_SIZE_SOURCE_OPS:
+            sheet_id = operation.get('sheetId')
+            if not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError('workbook_ai_axis_size_invalid')
+            return translate_axis_size(operation, self._sheet(sheet_id)['name'])
         if op == 'refresh_pivot':
             sheet_id = operation.get('sheetId')
             if set(operation) != {'op', 'sheetId'} or not isinstance(sheet_id, str) or not sheet_id:

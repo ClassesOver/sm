@@ -6,6 +6,7 @@ and translates inputs, and never edits a workbook itself.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -17,6 +18,7 @@ ROW_COLUMN_SOURCE_OPS = {
 }
 SHEET_LIFECYCLE_OPS = {'add_sheet', 'rename_sheet', 'delete_sheet'}
 SHEET_SOURCE_OPS = SHEET_LIFECYCLE_OPS | {'move_sheet'}
+AXIS_SIZE_SOURCE_OPS = {'set_row_height', 'set_col_width'}
 
 
 def translate_sheet_operation(operation: dict[str, Any], order: list[str]) -> dict[str, Any]:
@@ -83,3 +85,39 @@ def translate_row_column_operation(operation: dict[str, Any], sheet_name: str) -
         raise ValueError('workbook_ai_structure_invalid')
     return {'kind': 'applyRowColumnOps', 'sheetName': sheet_name,
             'ops': [{'kind': ROW_COLUMN_SOURCE_OPS[op], 'index': index, 'count': count}]}
+
+
+def translate_axis_size(operation: dict[str, Any], sheet_name: str) -> dict[str, Any]:
+    rows = operation['op'] == 'set_row_height'
+    axis, size_key = ('row', 'heightPoints') if rows else ('column', 'widthPx')
+    required = {'op', 'sheetId', axis, size_key}
+    error = 'workbook_ai_axis_size_invalid'
+    if set(operation) - {'count'} != required:
+        raise ValueError(error)
+    start, size = operation[axis], operation[size_key]
+    count = operation.get('count', 1)
+    lo, hi = (2, 409) if rows else (10, 2000)
+    if (type(count) is not int or not 1 <= count <= (500 if rows else 100)
+            or type(size) not in (int, float) or not lo <= size <= hi):
+        raise ValueError(error)
+    if rows:
+        if type(start) is not int:
+            raise ValueError(error)
+    elif isinstance(start, str) and re.fullmatch(r'[A-Z]{1,3}', start):
+        start = column_index_from_string(start)
+    else:
+        raise ValueError(error)
+    if not 1 <= start <= start + count - 1 <= (1048576 if rows else 16384):
+        raise ValueError(error)
+    # Source op-executor rounds positive dimensions to whole pixels before applying them.
+    if rows:
+        key, kind = 'heightPoints', 'applyRowHeights'
+        stored = math.floor(size * 96 / 72 + 0.5) * 72 / 96
+    else:
+        key, kind = 'widthChars', 'applyColumnWidths'
+        # Inverse of the web engine's columnWidthToPixels display convention.
+        stored = (math.floor(size + 0.5) - 5) / 7
+        if stored > 255:
+            raise ValueError('workbook_ai_column_width_exceeds_xlsx_limit')
+    return {'kind': kind, 'sheetName': sheet_name,
+            'entries': [{'index': index, key: stored} for index in range(start - 1, start + count - 1)]}

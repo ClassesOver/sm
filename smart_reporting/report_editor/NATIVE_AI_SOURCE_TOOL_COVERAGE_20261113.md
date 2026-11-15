@@ -60,6 +60,8 @@ XLSX `set_note` 在整簿授权下更新 Excel 旧式单元格备注，`null` �
 
 XLSX `refresh_pivot` 接到按工作表限定的原生刷新。透视表从操作重放时的源数据更新，其他工作表的独立缓存和输出保留。跨表共享缓存会拒绝单表刷新。现有全簿刷新继续可用；无法在编辑器内重建输出的外部透视表仍沿用 Excel 打开时重算的缓存路径。
 
+XLSX `set_row_height` 和 `set_col_width` 在整簿授权下复用原生尺寸写入器。行号从 1 开始，列号使用字母，省略 `count` 时只调整一行或一列。尺寸按源执行器取整到像素。网页版 XLSX 写入器最多保存 255 字符列宽，对应 1790 像素，源 DSL 接受的超限值会明确拒绝。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。
