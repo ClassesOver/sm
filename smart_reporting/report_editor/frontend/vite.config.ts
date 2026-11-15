@@ -87,6 +87,10 @@ export default defineConfig({
         onlyExplicitManualChunks: true,
         chunkFileNames: 'assets/lazy-[name]-[hash].js',
         manualChunks(id) {
+          // Desktop UI entries stay independent of host editor/dialog chunks.
+          const desktopUI = id.match(/\/packages\/office-desktop-ui\/src\/(docs|sheets|slides|pdf)\//)
+          if (desktopUI) return `office-desktop-${desktopUI[1]}-ui`
+
           // Shared preference widgets load only when personal document settings open.
           const antComponent = id.match(/\/node_modules\/antd\/es\/([^/]+)\//)
           if (antComponent) return 'preferences-ant'

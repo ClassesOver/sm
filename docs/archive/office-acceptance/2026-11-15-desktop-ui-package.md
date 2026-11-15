@@ -30,3 +30,21 @@ expectations disagree with existing presenter/bitmap-icon behavior. They are
 not counted as passing validation of this migration. Tests intentionally
 changed here cover canonical source markup/group order and retain behavior
 assertions.
+
+Verification for the package cutover:
+
+- 44 package/theme migration checks passed across scoped runs; the repaired
+  explicit theme switch is checked for Word/PDF/Excel.
+- Existing command, keyboard and protection tests were run by editor; the five
+  reproduced baseline failures described above remain documented separately.
+- TypeScript no-emit check and production Vite build passed after merging
+  remote PR245 changes. Build asset budgets passed without raising thresholds.
+- New UI runtime chunks are separated by app. PDF source SVG strings are
+  generated ahead of time; the UI package does not run a React server renderer
+  in the browser.
+- Chromium PDF smoke passed against the final built assets, including source
+  asset hashes, ribbon visibility, no model picker, real Agno read calls,
+  page-two navigation, close/reopen follow behavior and unchanged source/draft.
+  Evidence: `/workspace/scratch/pr245-desktop-isolated-browser/`.
+- Chromium Sheets sweep checked nine ribbon tabs at 1280px: every band is 80px,
+  controls remain visible, and horizontal overflow scrolls.
