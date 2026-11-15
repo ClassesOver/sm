@@ -141,6 +141,39 @@ it('uses the GenOffice border presets and the chosen color without writing on co
   ribbon.dispose()
 })
 
+it('accepts GenOffice typed font sizes and steps through its Excel size ladder', () => {
+  const command = vi.fn()
+  let fontSize: FormatValue<number> = { kind: 'value', value: 13.5 }, protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0, format: () => ({ ...selectedWorkbookFormat(null), fontSize }),
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const size = document.querySelector<HTMLInputElement>('[data-ribbon-control="font-size"]')!
+  expect(size.tagName).toBe('INPUT')
+  expect(size.value).toBe('13.5')
+  expect(Array.from(size.list!.options, option => option.value)).toEqual(['9', '10', '11', '12', '13.5', '14', '16', '18', '22', '26'])
+  const change = (text: string) => { size.value = text; size.dispatchEvent(new Event('change')) }
+  change('27,5'); expect(command).toHaveBeenLastCalledWith('font-size:27.5')
+  change('409'); expect(command).toHaveBeenLastCalledWith('font-size:409')
+  change('410'); expect(command).toHaveBeenCalledTimes(2)
+  expect(size.value).toBe('13.5')
+  const grow = document.querySelector<HTMLButtonElement>('[data-ribbon-control="font-size-increase"]')!
+  const shrink = document.querySelector<HTMLButtonElement>('[data-ribbon-control="font-size-decrease"]')!
+  grow.click(); expect(command).toHaveBeenLastCalledWith('font-size:14')
+  shrink.click(); expect(command).toHaveBeenLastCalledWith('font-size:12')
+  fontSize = { kind: 'mixed' }; ribbon.refreshState()
+  expect(size.placeholder).toBe('混合')
+  expect(size.disabled).toBe(false)
+  grow.click(); expect(command).toHaveBeenLastCalledWith('font-size:12')
+  const setFontSize = vi.fn()
+  const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => ({ setFontSize }) }) }) } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
+  expect(applyWorkbookRibbonCommand('font-size:409', workbook)).toBe(true)
+  expect(setFontSize).toHaveBeenCalledExactlyOnceWith(409)
+  protectedSheet = true; ribbon.refreshState()
+  expect(size.disabled).toBe(true); expect(grow.disabled).toBe(true); expect(shrink.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()
   const open = (editable: boolean) => {

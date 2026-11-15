@@ -514,7 +514,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(button('适合宽度', () => fitScale('width'), false), 'home.pageZoom.fitWidth')
   sourceCommand(button('适合页面', () => fitScale('page'), false), 'home.pageZoom.fitPage')
   commandGroup = ribbon.group('home', 'Search, Print & Properties')
-  const searchPrintGroup = commandGroup
   const printButton = documentElement('button', 'pdf-tool pdf-ribbon-big')
   printButton.type = 'button'; printButton.append(createPdfRibbonIcon('print', 22))
   const printLabel = documentElement('span'); printLabel.textContent = pdfRibbonLabel('打印'); printButton.append(printLabel)
@@ -532,30 +531,57 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     unavailable: printUnavailable,
     print: pages => { void printPdf(pages).catch(showError) } })
   sourceCommand(printButton, 'home.print.print')
+  let searchOpen = false
+  const findBar = documentElement('div', 'pdf-find-bar')
+  findBar.hidden = true
+  findBar.setAttribute('role', 'search')
+  findBar.setAttribute('aria-label', 'PDF 查找')
+  root.insertBefore(findBar, layout)
+  const homeSearch = button('搜索', toggleSearch, false)
+  sourceCommand(homeSearch, 'home.search.toggle')
+  homeSearch.setAttribute('aria-expanded', 'false')
   const search = documentElement('input', 'pdf-search')
   search.type = 'search'; search.placeholder = '搜索文字'; search.setAttribute('aria-label', '搜索 PDF 文字')
   sourceCommand(search, 'home.search.search')
-  searchPrintGroup.append(search)
+  findBar.append(search)
   search.addEventListener('input', () => { currentSearch = search.value.trim(); scheduleSearch() })
-  function openSearch() {
-    root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="home"]')?.click()
-    search.focus(); search.select()
+  function setSearchOpen(open: boolean) {
+    searchOpen = open
+    findBar.hidden = !open
+    homeSearch.setAttribute('aria-expanded', String(open))
+    focusSearch.setAttribute('aria-expanded', String(open))
+    if (open) {
+      runSearch(false, false)
+      search.focus()
+      search.select()
+    } else {
+      searchJumpPending = false
+      runSearch(false)
+      viewport.focus()
+    }
   }
+  function toggleSearch() { setSearchOpen(!searchOpen) }
   search.addEventListener('keydown', event => {
     if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
     if (event.key === 'Enter') { event.preventDefault(); stepSearch(event.shiftKey ? -1 : 1) }
-    else if (event.key === 'Escape') { event.preventDefault(); search.value = ''; currentSearch = ''; runSearch(false); viewport.focus() }
   })
   window.document.addEventListener('keydown', event => {
     if (event.isComposing || event.keyCode === 229 || event.defaultPrevented) return
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') { event.preventDefault(); openSearch() }
+    if (root.ownerDocument.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      event.preventDefault()
+      if (searchOpen) { search.focus(); search.select() }
+      else setSearchOpen(true)
+    } else if (searchOpen && event.key === 'Escape') {
+      event.preventDefault()
+      setSearchOpen(false)
+    }
   }, { signal: abort.signal })
   const matchCase = button('区分大小写', () => { searchMatchCase = !searchMatchCase; matchCase.setAttribute('aria-pressed', String(searchMatchCase)); scheduleSearch() }, false)
   sourceCommand(matchCase, 'search.matchCase'); matchCase.setAttribute('aria-pressed', 'false')
   const wholeWord = button('全词匹配', () => { searchWholeWord = !searchWholeWord; wholeWord.setAttribute('aria-pressed', String(searchWholeWord)); scheduleSearch() }, false)
   sourceCommand(wholeWord, 'search.wholeWord'); wholeWord.setAttribute('aria-pressed', 'false')
   const searchCount = documentElement('span', 'pdf-search-count'); searchCount.setAttribute('role', 'status'); searchCount.setAttribute('aria-label', '搜索匹配计数')
-  searchPrintGroup.append(matchCase, wholeWord, searchCount)
   const stepSearch = (direction: -1 | 1) => {
     if (searchTimer !== undefined) runSearch(false)
     if (!searchMatches.length) return
@@ -566,7 +592,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(previousSearch, 'home.search.previousMatch')
   const nextSearch = button('下一处', () => stepSearch(1), false)
   sourceCommand(nextSearch, 'home.search.nextMatch')
-  searchPrintGroup.append(previousSearch, nextSearch, printButton)
+  const closeSearch = documentElement('button', 'pdf-tool')
+  closeSearch.type = 'button'
+  closeSearch.setAttribute('aria-label', '关闭搜索')
+  closeSearch.textContent = '×'
+  closeSearch.addEventListener('click', () => setSearchOpen(false))
+  findBar.append(matchCase, wholeWord, searchCount, previousSearch, nextSearch, closeSearch)
   let metadataEditor:ReturnType<typeof bindPdfMetadata>|undefined
   const propertiesButton = button(PDF_HOME_READ_ONLY_COMMANDS[0].label, () => metadataEditor?.open(), false)
   sourceCommand(propertiesButton, 'home.properties.documentProperties')
@@ -643,8 +674,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   commandGroup = viewNavigation
   sourceCommand(toggleThumbnails, 'view.navigation.thumbnails')
   viewNavigation.append(toggleThumbnails)
-  const focusSearch = button('搜索', openSearch, false)
+  const focusSearch = button('搜索', toggleSearch, false)
   sourceCommand(focusSearch, 'view.navigation.search')
+  focusSearch.setAttribute('aria-expanded', 'false')
   commandGroup = viewNavigation
   const outlineToggle = button('目录大纲', () => {
     setSidebar(sidebar === 'outline' ? null : 'outline')
@@ -2264,6 +2296,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     }
   }
   function scheduleSearch() {
+    if (!searchOpen) return
     if (searchTimer !== undefined) window.clearTimeout(searchTimer)
     searchCount.textContent = currentSearch ? '正在搜索…' : ''
     searchTimer = window.setTimeout(() => runSearch(true), 200)
@@ -2272,6 +2305,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (searchTimer !== undefined) window.clearTimeout(searchTimer)
     searchTimer = undefined
     if (disposed || !document) return
+    if (!searchOpen) { markSearch(); return }
     const surviving = new Set(state().map(page => page.pageId))
     searchMatches = searchInIndex(searchIndex, currentSearch, { matchCase: searchMatchCase, wholeWord: searchWholeWord })
       .map(match => ({ pageId: searchPageIds[match.pageIndex], rects: match.rects })).filter(match => surviving.has(match.pageId))
@@ -2299,10 +2333,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     updateControls(); renderTextPanel(true)
   }
   function markSearch() {
-    searchCount.textContent = !currentSearch ? '' : searchLoading ? '正在建立搜索索引…' : searchMatches.length ? `${searchPosition + 1} / ${searchMatches.length}${searchMatches.length === 1000 ? '（最多 1000 处）' : ''}` : '无匹配；扫描页需 OCR'
-    previousSearch.disabled = nextSearch.disabled = !searchMatches.length || searchLoading
+    searchCount.textContent = !searchOpen || !currentSearch ? '' : searchLoading ? '正在建立搜索索引…' : searchMatches.length ? `${searchPosition + 1} / ${searchMatches.length}${searchMatches.length === 1000 ? '（最多 1000 处）' : ''}` : '无匹配；扫描页需 OCR'
+    previousSearch.disabled = nextSearch.disabled = !searchOpen || !searchMatches.length || searchLoading
     for (const [pageId, node] of pageNodes) {
       node.querySelector('.pdf-search-overlays')?.remove()
+      if (!searchOpen) continue
       const holder = node.querySelector<HTMLElement>('.pdf-page-content'), page = state().find(item => item.pageId === pageId)
       if (!holder?.querySelector('canvas') || !page) continue
       const original = pagesCached.get(previewDocument ? state().findIndex(item => item.pageId === pageId) : page.index)

@@ -9,7 +9,7 @@ import pytest
 from PIL import Image
 from pptx import Presentation
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_SHAPE
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 from smart_reporting.report_editor.native_office import (
     _pptx_arguments,
@@ -140,6 +140,24 @@ def test_unsaved_shape_kind_change_writes_only_the_final_inserted_geometry():
     assert (reopened[-1].left, reopened[-1].top, reopened[-1].width, reopened[-1].height) == tuple(
         dimensions * 9525 for dimensions in geometry.values()
     )
+
+
+def test_unsaved_shape_styles_write_native_fill_and_outline():
+    content, _ = _presentation()
+    shape = {'slideIndex': 0, 'kind': 'hexagon', 'geometry': {'x': 12, 'y': 24, 'width': 80, 'height': 40}}
+    styled = {**shape, 'fill': '#123456', 'stroke': {'color': '#224466', 'widthPt': 2.25}}
+    clear = {**shape, 'fill': 'none', 'stroke': None}
+    updated = patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [styled, clear]}])
+    slides = Presentation(BytesIO(updated)).slides
+    first, second = list(slides[0].shapes)[-2:]
+    assert str(first.fill.fore_color.rgb) == '123456'
+    assert str(first.line.color.rgb) == '224466'
+    assert first.line.width == Pt(2.25)
+    assert second._element.xpath('./p:spPr/a:noFill')
+    assert second._element.xpath('./p:spPr/a:ln') == []
+    for invalid in ({**styled, 'fill': 'transparent'}, {**styled, 'kind': 'line'}):
+        with pytest.raises(ValueError):
+            patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [invalid]}])
 
 
 def _patch(content, **operation):

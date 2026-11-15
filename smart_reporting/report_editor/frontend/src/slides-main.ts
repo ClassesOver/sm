@@ -29,7 +29,7 @@ import { applyTransitionToAll, restoredTransitions, SLIDE_TRANSITIONS, type Slid
 import { SMARTART_GALLERY, SMARTART_MAX_ITEMS, type SmartArtGalleryLayout } from './vendor/genoffice-slides/components/smartart-gallery-data'
 import { CHART_GALLERY, chartSampleData, type ChartGalleryKind } from './vendor/genoffice-slides/components/chart-gallery-data'
 import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart-presets'
-import { LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS, SHAPE_PRESETS } from './vendor/genoffice-slides/components/shape-gallery-data'
+import { DEFAULT_SHAPE_FILL, LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS, SHAPE_PRESETS } from './vendor/genoffice-slides/components/shape-gallery-data'
 import { PARAGRAPH_LIST_COMMANDS, BULLET_GLYPHS, paragraphCommandPatch, projectParagraphs, uniformParagraphValue, type ParagraphFormatting, type ParagraphSourceFormatting, type ParagraphList } from './slides-paragraph'
 import { createElement, ArrowDown, ArrowUp, Copy, Download, Redo2, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
 import { binaryRefreshLock, mountOfficeReportRefresh } from './binary-refresh'
@@ -103,7 +103,7 @@ type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 /** 固定源 Shape Format 填充/轮廓（setFill / setStroke） */
 type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; stroke?: { color: string; widthPt: number } | null }
-type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number }; flipH?: boolean; flipV?: boolean; draftKey?: string }
+type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number }; flipH?: boolean; flipV?: boolean; draftKey?: string; fill?: string; stroke?: ShapeStyleEdit['stroke'] }
 type SlidesPreviewSlide = RenderSlide & {
   slideIndex: number; slideIdentity?: string; mediaSources?: SlideMediaSource[]; modelSources?: ModelSource[]
   draftShapeSources?: { draftKey: string; sourceId: string }[]
@@ -354,7 +354,41 @@ const geometryPane = native ? createSlidesGeometryPane((geometry, target) => {
   commitNativeChanges(changes)
 }) : undefined
 if(geometryPane){const heading=root.querySelector<HTMLElement>('.geometry-heading')!;heading.before(geometryPane.element);heading.style.display='none';root.querySelector<HTMLElement>('.geometry-grid')!.style.display='none'}
-const shapeFormatPane = native ? createSlidesShapeFormatPane(()=>({slideIndex:selectedSlide,element:selectedObjects.size===1?currentElement():undefined,changes:slideChanges(),reason:locked()||pendingGroup(selectedSlide)||isNewSlide(selectedSlide)?'请先完成当前修订或保存结构修改':undefined}),commitNativeChanges,root) : undefined
+function shapeFormatContext() {
+  const element = selectedObjects.size === 1 ? currentElement() : undefined
+  const changes = slideChanges()
+  const reason = locked() || pendingGroup(selectedSlide) || isNewSlide(selectedSlide) ? '请先完成当前修订或保存结构修改' : undefined
+  const draft = element && draftShapeCanChange(element, selectedSlide) ? draftShapeFor(element.id, selectedSlide) : undefined
+  if (!element || !draft) return { slideIndex: selectedSlide, element, changes, reason }
+  // Only the pane sees this adapter. Save the resulting style on the insertion record.
+  if (draft.fill !== undefined || draft.stroke !== undefined) changes.shapeStyles = [
+    ...(changes.shapeStyles ?? []), { slideIndex: selectedSlide, elementId: element.id,
+      ...(draft.fill !== undefined ? { fill: draft.fill } : {}), ...(draft.stroke !== undefined ? { stroke: draft.stroke } : {}) },
+  ]
+  return {
+    slideIndex: selectedSlide, changes, reason,
+    element: { ...element, type: 'shape', brushSource: { supported: true, shape: { fill: DEFAULT_SHAPE_FILL, stroke: null } } },
+  }
+}
+function commitShapeFormat(changes: SlideChanges) {
+  const selected = currentElement()
+  if (selected && draftShapeCanChange(selected, selectedSlide)) {
+    const draft = draftShapeFor(selected.id, selectedSlide)!
+    const isDraftStyle = (style: ShapeStyleEdit) => style.slideIndex === selectedSlide && style.elementId === selected.id
+    const style = changes.shapeStyles?.find(isDraftStyle)
+    changes = { ...changes, shapeStyles: changes.shapeStyles?.filter(item => !isDraftStyle(item)),
+      shapes: shapeEdits.map(item => {
+        if (item !== draft) return item
+        const { fill: _fill, stroke: _stroke, ...base } = item
+        return { ...base, ...(style?.fill !== undefined ? { fill: style.fill } : {}),
+          ...(style?.stroke !== undefined ? { stroke: style.stroke } : {}) }
+      }),
+    }
+    if (!changes.shapeStyles?.length) delete changes.shapeStyles
+  }
+  commitNativeChanges(changes)
+}
+const shapeFormatPane = native ? createSlidesShapeFormatPane(shapeFormatContext, commitShapeFormat, root) : undefined
 if(shapeFormatPane)arrangeSelection.after(shapeFormatPane.element)
 /** 固定源 Insert ▸ SmartArt：待插入布局与节点文字（可在待保存清单改写，每行一个节点）。 */
 const smartArtEdits: SmartArtEdit[] = []
@@ -2193,10 +2227,15 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   if (!Array.isArray(restoredTables) || restoredTables.length > 100 || restoredTables.some(item => !item || Object.keys(item).sort().join() !== 'cols,rows,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex) || ![item.rows, item.cols].every(value => Number.isInteger(value) && value >= 1 && value <= 75))) throw new Error('草稿中的新增表格无效；原草稿已保留')
   const restoredShapes = changes.shapes ?? []
   if (!Array.isArray(restoredShapes) || restoredShapes.length > 500 || restoredShapes.some(item =>
-    !item || Object.keys(item).some(key => !['geometry', 'kind', 'slideIndex', 'flipH', 'flipV', 'draftKey'].includes(key)) ||
+    !item || Object.keys(item).some(key => !['geometry', 'kind', 'slideIndex', 'flipH', 'flipV', 'draftKey', 'fill', 'stroke'].includes(key)) ||
     (item.draftKey !== undefined && (typeof item.draftKey !== 'string' || !/^[0-9a-f-]{36}$/.test(item.draftKey))) ||
     !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length ||
     restoredDeleted.includes(item.slideIndex) || !SHAPE_PRESETS.includes(item.kind) ||
+    ((item.fill !== undefined || item.stroke !== undefined) && LINE_SHAPE_KINDS.includes(item.kind)) ||
+    (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) ||
+    (item.stroke !== undefined && item.stroke !== null && (
+      typeof item.stroke !== 'object' || Object.keys(item.stroke).sort().join() !== 'color,widthPt' ||
+      !hex(item.stroke.color) || !Number.isFinite(item.stroke.widthPt) || item.stroke.widthPt < 0.01 || item.stroke.widthPt > 100)) ||
     !item.geometry || (LINE_SHAPE_KINDS.includes(item.kind)
       ? !(item.geometry.width >= 0 && item.geometry.height >= 0 && (item.geometry.width > 0 || item.geometry.height > 0))
       : !(item.geometry.width >= 1 && item.geometry.height >= 1)) ||

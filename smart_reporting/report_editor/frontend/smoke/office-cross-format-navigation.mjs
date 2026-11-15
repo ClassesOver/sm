@@ -67,7 +67,7 @@ export async function inspectPdfNavigation(page, { output, phase, waitCount, wai
   const search=page.getByLabel('搜索 PDF 文字'), count=page.getByLabel('搜索匹配计数'), cases=[], before=await ops()
   for(const [width,height] of viewports){
     await page.setViewportSize({width,height}); await page.evaluate(()=>document.fonts.ready); await page.locator('[data-pdf-ribbon-tab=home]').click()
-    await search.fill('cat'); await waitCount('1 / 6'); await search.focus(); const protections=[]
+    await page.keyboard.press('Control+f'); await search.fill('cat'); await waitCount('1 / 6'); await search.focus(); const protections=[]
     for(const key of ['Enter','Escape'])for(const protection of ['composition','legacy','handled'])for(const shiftKey of [false,true]){
       const state=await protectedKey(search,key,protection,{shiftKey}); assert.ok(state.focused&&state.connected); assert.equal(state.prevented,protection==='handled'); assert.equal(await search.inputValue(),'cat'); assert.equal(await count.textContent(),'1 / 6'); protections.push({target:'search',key,protection,shiftKey,...state})
     }
@@ -92,7 +92,7 @@ export async function inspectPdfNavigation(page, { output, phase, waitCount, wai
     }
     const view=page.locator('[data-pdf-ribbon-tab=view]'); await view.focus(); await view.evaluate(node=>{const consume=event=>{if(event.key.toLowerCase()!=='f')return;event.preventDefault();node.removeEventListener('keydown',consume,true)};node.addEventListener('keydown',consume,true)}); await view.press('Control+f'); assert.ok(await view.evaluate(node=>node===document.activeElement))
     await view.press('Control+f'); assert.ok(await search.evaluate(node=>node===document.activeElement)); await search.press('Escape'); await waitCount(''); assert.ok(await page.locator('.pdf-document-pages').evaluate(node=>node===document.activeElement))
-    await search.fill('cat'); await waitCount('1 / 6')
+    await page.keyboard.press('Control+f'); assert.equal(await search.inputValue(),'cat'); await waitCount('1 / 6')
     const axe=await new AxeBuilder({page}).include('.pdf-ribbon').analyze(); assert.deepEqual(axe.violations,[])
     await page.screenshot({path:join(output,`navigation-${phase}-${width}x${height}.png`)})
     assert.deepEqual(await ops(),before); cases.push({phase,width,height,protections,states,axe:axe.violations,ordinarySearchPageAndShortcut:true,draftUnchanged:true})

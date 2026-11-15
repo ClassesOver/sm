@@ -91,11 +91,11 @@ type Input = {
   /** 固定源 onAddSlide → addBlankSlide：每项新建一张空白页，沿用 layoutFrom 来源页的版式；新页索引为 来源页数 + k。 */
   newSlides?: ({ layoutFrom: number } | { duplicateOf: number } | { withLayout: string })[]
   /** 固定源 Insert ▸ Shapes（onPickShape）：预设形状，几何为 96dpi 像素；线条为 1pt 黑色连接符，其他为出厂填充色。 */
-  shapes?: { slideIndex: number; kind: string; geometry: Geometry; flipH?: boolean; flipV?: boolean; draftKey?: string }[]
+  shapes?: (ShapeColors & { slideIndex: number; kind: string; geometry: Geometry; flipH?: boolean; flipV?: boolean; draftKey?: string })[]
   /** 固定源 Insert ▸ Table（insertTable + table-insert.ts）：行列数；位置按固定源规格由幻灯片尺寸计算。 */
   tables?: { slideIndex: number; rows: number; cols: number }[]
   /** 固定源 Shape Format ▸ Shape Fill / Shape Outline（setFill / setStroke）：纯色或无填充；描边颜色与线宽（pt）或无轮廓。 */
-  shapeStyles?: { slideIndex: number; elementId: string; fill?: string; stroke?: { color: string; widthPt: number } | null }[]
+  shapeStyles?: (ShapeColors & { slideIndex: number; elementId: string })[]
   /** 固定源 Shape Format ▸ Change Shape（changeShape → setShapePresetGeometry）：仅形状（非线条、非文本框），保留位置、填充、轮廓与文字。 */
   shapeKinds?: { slideIndex: number; elementId: string; kind: string }[]
   /** 固定源 onAddSection（addSection）：在指定页（与 order 相同的编号）之前新增节；在重排与删页之后按最终位置执行。 */
@@ -193,6 +193,13 @@ type Input = {
 const numberingTypes = ['arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'alphaUcPeriod', 'alphaLcParenR', 'alphaLcPeriod', 'romanLcPeriod', 'circleNumDbPlain', 'ea1ChsPeriod']
 const maxParagraphEmu = 51206400 // ECMA-376 ST_TextMargin/ST_TextIndent, 56 inches.
 const colorPattern = /^#[0-9a-fA-F]{6}$/
+type ShapeColors = { fill?: string; stroke?: { color: string; widthPt: number } | null }
+function validShapeColors({ fill, stroke }: ShapeColors) {
+  return (fill === undefined || fill === 'none' || (typeof fill === 'string' && colorPattern.test(fill))) &&
+    (stroke == null || (typeof stroke === 'object' && Object.keys(stroke).sort().join() === 'color,widthPt' &&
+      typeof stroke.color === 'string' && colorPattern.test(stroke.color) &&
+      Number.isFinite(stroke.widthPt) && stroke.widthPt >= 0.01 && stroke.widthPt <= 100))
+}
 const deletableTypes = new Set(['text', 'shape', 'picture'])
 const validSlideIndex = (value: unknown, count: number): value is number =>
   Number.isInteger(value) && (value as number) >= 0 && (value as number) < count
@@ -734,8 +741,7 @@ if (request.action === 'inspect') {
   for (const style of request.shapeStyles ?? []) {
     if (!style || typeof style !== 'object' || Object.keys(style).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || !validSlideIndex(style.slideIndex, slideCount) || typeof style.elementId !== 'string' || !style.elementId
       || (style.fill === undefined && style.stroke === undefined)
-      || (style.fill !== undefined && style.fill !== 'none' && (typeof style.fill !== 'string' || !colorPattern.test(style.fill)))
-      || (style.stroke !== undefined && style.stroke !== null && (typeof style.stroke !== 'object' || Object.keys(style.stroke).some(key => !['color', 'widthPt'].includes(key)) || typeof style.stroke.color !== 'string' || !colorPattern.test(style.stroke.color) || !Number.isFinite(style.stroke.widthPt) || style.stroke.widthPt <= 0 || style.stroke.widthPt > 100))
+      || !validShapeColors(style)
       || touchesDeleted(style.slideIndex, style.elementId) || styled.has(`${style.slideIndex}:${style.elementId}`)) throw new Error('shape_style_invalid')
     styled.add(`${style.slideIndex}:${style.elementId}`)
   }
@@ -792,8 +798,9 @@ if (request.action === 'inspect') {
   if ((request.shapes ?? []).length > 500) throw new Error('shapes_invalid')
   const shapeKeys = new Set<string>()
   for (const shape of request.shapes ?? []) {
-    if (!shape || typeof shape !== 'object' || Object.keys(shape).some(key => !['slideIndex', 'kind', 'geometry', 'flipH', 'flipV', 'draftKey'].includes(key)) ||
+    if (!shape || typeof shape !== 'object' || Object.keys(shape).some(key => !['slideIndex', 'kind', 'geometry', 'flipH', 'flipV', 'draftKey', 'fill', 'stroke'].includes(key)) ||
         !validSlideIndex(shape.slideIndex, slideCount) || typeof shape.kind !== 'string' || !shapePresets.presets.includes(shape.kind) || !validGeometry(shape.geometry, shapePresets.lines.includes(shape.kind)) ||
+        !validShapeColors(shape) || (shapePresets.lines.includes(shape.kind) && (shape.fill !== undefined || shape.stroke !== undefined)) ||
         (['flipH', 'flipV'] as const).some(key => shape[key] !== undefined && (!shapePresets.lines.includes(shape.kind) || typeof shape[key] !== 'boolean'))) {
       throw new Error('shape_invalid')
     }
@@ -1093,8 +1100,12 @@ if (request.action === 'inspect') {
       offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
       flipH: shape.flipH,
       flipV: shape.flipV,
-      ...(line ? { stroke: { color: '#000000', widthEmu: 12700 } } : { fillColor: '#C43E1C' }),
+      ...(line ? { stroke: { color: '#000000', widthEmu: 12700 } } : {
+        fillColor: shape.fill === 'none' ? undefined : shape.fill ?? '#C43E1C',
+        ...(shape.stroke ? { stroke: { color: shape.stroke.color, widthEmu: Math.round(shape.stroke.widthPt * 12700) } } : {}),
+      }),
     })
+    if (shape.fill === 'none' && !setElementFill(opened, slide, inserted.id, 'none')) throw new Error('shape_fill_failed')
     const spid = elementSpid(inserted)
     if (shape.draftKey && spid !== null) draftShapes.push({ path: slide.path, draftKey: shape.draftKey, spid })
   }

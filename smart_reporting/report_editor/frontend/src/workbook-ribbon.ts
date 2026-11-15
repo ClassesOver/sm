@@ -577,7 +577,20 @@ const FONT_FAMILIES = ['Arial', 'Aptos', 'Calibri', 'Cambria', 'Times New Roman'
   { value: 'SimSun', label: '宋体（系统字体）' }, { value: 'SimHei', label: '黑体（系统字体）' },
   { value: 'Microsoft YaHei', label: '微软雅黑（系统字体）' }, { value: 'KaiTi', label: '楷体（系统字体）' }, { value: 'FangSong', label: '仿宋（系统字体）' },
 ]
-const FONT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72]
+const FONT_SIZES = [9, 10, 11, 12, 14, 16, 18, 22, 26]
+const FONT_SIZE_LADDER = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 26, 28, 36, 48, 72]
+let fontSizeListSequence = 0
+
+function fontSizeFromText(text: string): number | undefined {
+  const size = Number(text.replace(',', '.'))
+  return Number.isFinite(size) && size >= 1 && size <= 409 ? size : undefined
+}
+
+function stepFontSize(current: number, direction: 1 | -1): number {
+  return direction === 1
+    ? FONT_SIZE_LADDER.find(size => size > current) ?? FONT_SIZE_LADDER.at(-1)!
+    : FONT_SIZE_LADDER.findLast(size => size < current) ?? FONT_SIZE_LADDER[0]!
+}
 const RIBBON_BORDERS = [
   { id: 'all', label: '所有框线', type: BorderType.ALL },
   { id: 'outer', label: '外侧框线', type: BorderType.OUTSIDE },
@@ -868,8 +881,8 @@ export function applyWorkbookRibbonCommand(
     return true
   }
   if (name === 'font-size') {
-    const size = Number(value)
-    if (!Number.isFinite(size) || size < 1 || size > 400) throw new Error('字号须在 1–400 磅之间')
+    const size = fontSizeFromText(value ?? '')
+    if (size === undefined) throw new Error('字号须在 1–409 磅之间')
     range.setFontSize(size)
     return true
   }
@@ -1342,7 +1355,25 @@ export function mountWorkbookRibbon(
     }
     if (!format) return
     updateSelect('font-family', format.fontFamily, editable)
-    updateSelect('font-size', format.fontSize, editable)
+    const size = body.querySelector<HTMLInputElement>('[data-ribbon-control="font-size"]')
+    if (size) {
+      const state = format.fontSize
+      const current = state.kind === 'value' ? String(state.value) : ''
+      const previous = size.dataset.currentSize ?? ''
+      const reason = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域'
+        : view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : state.kind === 'unavailable' ? state.reason : undefined
+      if (document.activeElement !== size || size.value === previous || reason) size.value = current
+      size.dataset.currentSize = current
+      size.dataset.formatState = state.kind
+      size.placeholder = state.kind === 'value' ? '' : stateText(state)
+      size.disabled = !!reason
+      size.title = reason ?? '字号'
+      const options = state.kind === 'value' && !FONT_SIZES.includes(state.value)
+        ? [...FONT_SIZES, state.value].sort((a, b) => a - b) : FONT_SIZES
+      if (current !== previous) size.list?.replaceChildren(...options.map(value => new Option(String(value))))
+      body.querySelectorAll<HTMLButtonElement>('[data-ribbon-control="font-size-increase"], [data-ribbon-control="font-size-decrease"]')
+        .forEach(button => { button.disabled = size.disabled })
+    }
     for (const [control, key] of [['font-color', 'fontColor'], ['fill', 'fillColor']] as const) {
       const input = body.querySelector<HTMLInputElement>(`[data-ribbon-control="${control}"]`)
       if (!input) continue
@@ -1481,15 +1512,51 @@ export function mountWorkbookRibbon(
         }
       }
       if (active === 'Home' && group.title === '字体') {
-        for (const [control, label, choices] of [['font-family', '字体', FONT_FAMILIES], ['font-size', '字号', FONT_SIZES]] as const) {
-          const select = document.createElement('select')
-          select.className = `workbook-ribbon-select${control === 'font-size' ? ' workbook-ribbon-size' : ''}`
-          select.setAttribute('aria-label', label); select.dataset.ribbonControl = control
-          const unknown = document.createElement('option'); unknown.value = ''; unknown.textContent = '不可判定'; unknown.disabled = true; unknown.dataset.formatOption = 'true'
-          select.append(unknown, ...choices.map(choice => { const option = document.createElement('option'); option.value = typeof choice === 'object' ? choice.value : String(choice); option.textContent = typeof choice === 'object' ? choice.label : String(choice); return option }))
-          select.value = ''
-          select.addEventListener('change', () => { if (!select.disabled && select.value) onCommand(`${control}:${select.value}` as RibbonCommand) })
-          section.append(select)
+        const family = document.createElement('select')
+        family.className = 'workbook-ribbon-select'
+        family.setAttribute('aria-label', '字体')
+        family.dataset.ribbonControl = 'font-family'
+        const unknown = new Option('不可判定', '')
+        unknown.disabled = true; unknown.dataset.formatOption = 'true'
+        family.append(unknown, ...FONT_FAMILIES.map(choice => typeof choice === 'object'
+          ? new Option(choice.label, choice.value) : new Option(choice, choice)))
+        family.addEventListener('change', () => { if (!family.disabled && family.value) onCommand(`font-family:${family.value}`) })
+        const size = document.createElement('input')
+        const sizes = document.createElement('datalist')
+        sizes.id = 'workbook-font-sizes-' + ++fontSizeListSequence
+        sizes.append(...FONT_SIZES.map(value => new Option(String(value))))
+        size.type = 'text'; size.inputMode = 'decimal'; size.autocomplete = 'off'
+        size.setAttribute('list', sizes.id)
+        size.setAttribute('aria-label', '字号')
+        size.className = 'workbook-ribbon-select workbook-ribbon-size'
+        size.dataset.ribbonControl = 'font-size'
+        size.disabled = true
+        const commitSize = () => {
+          const value = fontSizeFromText(size.value), current = size.dataset.currentSize ?? ''
+          size.value = current
+          if (!size.disabled && value !== undefined && String(value) !== current) onCommand(`font-size:${value}`)
+        }
+        size.addEventListener('change', commitSize)
+        size.addEventListener('keydown', event => {
+          if (event.isComposing || (event.key !== 'Enter' && event.key !== 'Escape')) return
+          event.preventDefault()
+          if (event.key === 'Enter') commitSize()
+          else size.value = size.dataset.currentSize ?? ''
+          size.blur()
+        })
+        section.append(family, size, sizes)
+        for (const [direction, label, glyph] of [[1, '增大字号', 'A↑'], [-1, '减小字号', 'A↓']] as const) {
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.dataset.ribbonControl = direction === 1 ? 'font-size-increase' : 'font-size-decrease'
+          button.setAttribute('aria-label', label)
+          button.title = label
+          button.disabled = true
+          button.innerHTML = workbookCommandIcon('', glyph) ?? ''
+          button.addEventListener('click', () => {
+            if (!button.disabled) onCommand(`font-size:${stepFontSize(fontSizeFromText(size.dataset.currentSize ?? '') ?? 11, direction)}`)
+          })
+          section.append(button)
         }
         for (const [control, label] of [['font-color', '字体颜色'], ['fill', '填充颜色']] as const) {
           const wrapper = document.createElement('label')

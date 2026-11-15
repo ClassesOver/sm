@@ -559,7 +559,18 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
                or (not _slide_index(next(iter(item.values()))) if 'withLayout' not in item else not _layout_path(item['withLayout'])) for item in new_slides)
         or (new_slides and order is None)):
         raise ValueError('native_office_operations_invalid')
-    shapes = _records(operation, 'shapes', {'slideIndex', 'kind', 'geometry'}, {'flipH', 'flipV', 'draftKey'})
+    def valid_shape_colors(item):
+        fill, stroke = item.get('fill'), item.get('stroke')
+        return (
+            ('fill' not in item or fill == 'none' or isinstance(fill, str) and _HEX_COLOR.fullmatch(fill))
+            and (stroke is None or (
+                isinstance(stroke, dict) and set(stroke) == {'color', 'widthPt'}
+                and isinstance(stroke['color'], str) and _HEX_COLOR.fullmatch(stroke['color'])
+                and _number(stroke['widthPt'], 0.01, 100)
+            ))
+        )
+
+    shapes = _records(operation, 'shapes', {'slideIndex', 'kind', 'geometry'}, {'flipH', 'flipV', 'draftKey', 'fill', 'stroke'})
     shape_keys = set()
     for item in shapes:
         geometry = item['geometry']
@@ -567,6 +578,8 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or set(geometry) != {'x', 'y', 'width', 'height'} or any(not _number(geometry[key], -100_000, 100_000) for key in ('x', 'y'))
             or any(not _number(geometry[key], 0 if item['kind'] in _LINE_PRESETS else 1, 100_000) for key in ('width', 'height'))
             or not (geometry['width'] or geometry['height'])
+            or (item['kind'] in _LINE_PRESETS and ('fill' in item or 'stroke' in item))
+            or not valid_shape_colors(item)
             or any(key in item and (item['kind'] not in _LINE_PRESETS or not isinstance(item[key], bool))
                    for key in ('flipH', 'flipV'))):
             raise ValueError('native_office_operations_invalid')
@@ -580,11 +593,8 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
         raise ValueError('native_office_operations_invalid')
     shape_styles = _records(operation, 'shapeStyles', {'slideIndex', 'elementId'}, {'fill', 'stroke'})
     for item in shape_styles:
-        fill, stroke = item.get('fill'), item.get('stroke', ...)
         if (not isinstance(item['elementId'], str) or not item['elementId'] or ('fill' not in item and 'stroke' not in item)
-            or ('fill' in item and fill != 'none' and (not isinstance(fill, str) or not _HEX_COLOR.fullmatch(fill)))
-            or (stroke is not ... and stroke is not None and (not isinstance(stroke, dict) or set(stroke) != {'color', 'widthPt'}
-                or not isinstance(stroke['color'], str) or not _HEX_COLOR.fullmatch(stroke['color']) or not _number(stroke['widthPt'], 0.01, 100)))):
+            or not valid_shape_colors(item)):
             raise ValueError('native_office_operations_invalid')
     shape_kinds = _records(operation, 'shapeKinds', {'slideIndex', 'elementId', 'kind'})
     if any(not isinstance(item['elementId'], str) or not item['elementId'] or not isinstance(item['kind'], str)

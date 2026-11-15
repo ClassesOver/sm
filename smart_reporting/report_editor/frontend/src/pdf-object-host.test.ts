@@ -52,10 +52,35 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
  const create=async()=>{const view=await createPdfEditorView({editor:root,save:saveButton} as unknown as EditorShell,{api,context,draft,flushForFileOperation:options.flushForFileOperation});views.push(view);return view}
  return {root,draft,create,api,saveButton}
 }
+it('toggles the source Find bar and preserves the query and selected result after closing', async () => {
+ const f=await fixture({text:'cat dog cat'});await f.create()
+ const find=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.search.toggle"]')!
+ const bar=f.root.querySelector<HTMLElement>('.pdf-find-bar')!
+ const input=bar.querySelector<HTMLInputElement>('.pdf-search')!
+ const count=bar.querySelector('.pdf-search-count')!
+ const key=(target:EventTarget,key:string,extra:KeyboardEventInit={})=>target.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,...extra}))
+ expect(bar.hidden).toBe(true)
+ find.click()
+ await vi.waitFor(()=>expect(document.activeElement).toBe(input))
+ expect(find.getAttribute('aria-expanded')).toBe('true')
+ input.value='cat';input.dispatchEvent(new Event('input',{bubbles:true}))
+ await vi.waitFor(()=>expect(count.textContent).toBe('1 / 2'))
+ key(input,'Enter');expect(count.textContent).toBe('2 / 2')
+ bar.querySelector<HTMLButtonElement>('[aria-label="关闭搜索"]')!.click()
+ await vi.waitFor(()=>expect(bar.hidden).toBe(true))
+ expect(f.root.querySelector('.pdf-search-match')).toBeNull()
+ expect(input.value).toBe('cat')
+ key(f.root,'f',{metaKey:true})
+ expect(document.activeElement).toBe(input)
+ expect(count.textContent).toBe('2 / 2')
+ key(input,'Escape');expect(bar.hidden).toBe(true)
+ expect(document.activeElement).toBe(f.root.querySelector('.pdf-document-pages'))
+ expect(f.draft.operations).toEqual([])
+})
 it.each(['composition','legacy','handled'])('PDF页码与搜索保留受保护按键，不清草稿或移走焦点：%s',async protection=>{
  const f=await fixture();await f.create()
  const key=(node:HTMLElement,key:string,extra:KeyboardEventInit={})=>{const event=new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,isComposing:protection==='composition',keyCode:protection==='legacy'?229:0,...extra});if(protection==='handled')event.preventDefault();node.dispatchEvent(event);return event}
- const search=f.root.querySelector<HTMLInputElement>('.pdf-search')!;search.value='尚未确认的查询';search.focus()
+ const search=f.root.querySelector<HTMLInputElement>('.pdf-search')!;document.dispatchEvent(new KeyboardEvent('keydown',{key:'f',ctrlKey:true,cancelable:true}));search.value='尚未确认的查询';search.focus()
  for(const name of ['Enter','Escape']){const event=key(search,name);expect(search.value).toBe('尚未确认的查询');expect(document.activeElement).toBe(search);expect(event.defaultPrevented).toBe(protection==='handled')}
  const jump=f.root.querySelector<HTMLInputElement>('.pdf-view-page-input')!;jump.value='9';jump.focus();key(jump,'Enter');expect(jump.value).toBe('9');expect(document.activeElement).toBe(jump)
  const tab=f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="view"]')!;tab.focus();key(tab,'f',{ctrlKey:true});expect(document.activeElement).toBe(tab)

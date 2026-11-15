@@ -114,6 +114,25 @@ it('keeps pen state without mutating document until a source gallery command is 
  controls.dispose()
 })
 import { docxOperations, replayDocxOperations, type DocxAnchor } from './docx-operations'
+import { createDocxRibbon } from './docx-ribbon'
+it('routes GenOffice Home borders inside a table to the shared cell border pen',()=>{
+ const f=setup()
+ const anchors:DocxAnchor[]=f.anchors.map(anchor=>({...anchor,editable:false,cells:anchor.cells.map(row=>row.map(cell=>({...cell,expectedObjectSha256:'cell-hash',editable:false})))}))
+ f.select(0,0)
+ const ribbon=createDocxRibbon(f.editor,true,undefined,undefined,undefined,anchors)
+ document.body.append(ribbon)
+ const get=(action:string)=>ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!
+ expect(get('para-borders').disabled).toBe(false)
+ flushSync(()=>get('para-borders').click())
+ expect(get('para-border-top')).not.toBeNull()
+ expect(ribbon.querySelector('[data-action="para-border-width-0.5"]')).toBeNull()
+ flushSync(()=>get('para-border-top').click())
+ const normalized=normalizeDocxCellBorders(f.baseline,f.editor.getJSON() as DocxPmNode,f.anchors)
+ expect(normalized.operations[0]!.steps).toEqual([{range:{fromCellId:'00',toCellId:'00'},mode:'top',pen:{style:'single',szEighths:4,color:'000000'}}])
+ expect(normalized.current).toEqual(f.baseline)
+ ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableDesign"]')!.click()
+ expect(get('table-border-apply-last').title).toContain('上框线')
+})
 it('integrates strict ordinary diff and draft replay without enabling rich-cell text rewrite',()=>{
  const f=setup(),anchors:DocxAnchor[]=f.anchors.map(anchor=>({...anchor,editable:false,cells:anchor.cells.map(row=>row.map(cell=>({...cell,expectedObjectSha256:'cell-hash',editable:false})))}))
  f.select(1);applyDocxCellBorders(f.editor,'bottom',pen,anchors)
