@@ -139,13 +139,13 @@ async def test_pdf_preview_maps_rotated_page_selection_into_text_coordinates():
         "channel", "grant", "rotated", "1", hashlib.sha256(original).hexdigest(),
         DocumentFormat.PDF,
     )
-    selection = ({"page": 0, "rect": [0.76, 0.1, 0.9, 0.25]},)
+    selection = ({"page": 0, "rect": [0.76, 0.1, 0.9, 0.5]},)
 
     async def source(_):
         return original
 
     async def propose(_):
-        return ({"page": 0, "rect": [0.76, 0.1, 0.9, 0.25], "note": "Review"},)
+        return ({"page": 0, "rect": [0.76, 0.1, 0.9, 0.5], "note": "Review"},)
 
     engine = PdfAnnotationPreviewEngine(source, propose)
     request = DocumentCandidateRequest(scope, "rotated-one", "Annotate", selection)
