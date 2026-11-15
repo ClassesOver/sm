@@ -85,7 +85,10 @@ class PdfAnnotationPreviewEngine:
                     bounds.x0 + x0 * bounds.width, bounds.y0 + y0 * bounds.height,
                     bounds.x0 + x1 * bounds.width, bounds.y0 + y1 * bounds.height,
                 )
-                words = page.get_text("words", clip=rect)
+                # Selection rectangles use rendered (rotated) page geometry,
+                # while PyMuPDF text extraction expects unrotated page space.
+                # Derotate the clip to avoid showing unrelated/missing context.
+                words = page.get_text("words", clip=rect * page.derotation_matrix)
                 changes.append({
                     "page": page_index, "rect": list(item["rect"]),
                     "note": item["note"],
