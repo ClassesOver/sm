@@ -65,4 +65,7 @@ class PptxTextPreviewEngine:
                 "slide_id": key[0], "shape_id": key[1],
                 "before": shape.text, "after": operation["text"],
             })
+        # Text extraction may be slow; never publish a preview for a stale deck.
+        if hashlib.sha256(await self._load_source(request.scope)).hexdigest() != request.scope.source_sha256:
+            raise PermissionError("document_source_changed")
         return {"status": "preview_ready", "accepted": False, "changes": changes}
