@@ -86,6 +86,7 @@ async function open(source: Uint8Array, draft: NativeDraft, save: (request: Nati
   const transport = createNativeOfficeTransport({ api: { save } as never, context: context as never, draft })
   const view = await createWorkbookEditorView(shell, { native: true, draft, request: transport.workbook,
     file: async () => ({ bytes: source.slice().buffer as ArrayBuffer, sha256: identity.sourceSha256 }) })
+  if (!view) throw new Error('XLSX editor fixture did not open')
   return { shell, view }
 }
 const sheet = () => grid.api.getActiveWorkbook().getActiveSheet()
