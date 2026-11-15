@@ -9,7 +9,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from .document_candidate_contract import (
-    DocumentCandidateRequest, DocumentFormat, DocumentScope,
+    DocumentCandidateRequest,
+    DocumentFormat,
+    DocumentScope,
 )
 from .document_candidate_xlsx_targets import validate_xlsx_selection
 
