@@ -975,7 +975,7 @@ export function mountWorkbookRibbon(
     theme?(): { colorName?: string; fontName?: string; reason?: string; fontsReason?: string } | undefined
     definedNames?(): readonly string[]
     /// 审阅▸保护：当前工作表与工作簿结构的有效保护状态；reason 为不可切换原因（密码保护）。
-    protection?(): { sheet: { protected: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
+    protection?(): { sheet: { protected: boolean; allowFilter?: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
     /// 公式▸计算：当前工作表公式视图与计算模式（编辑器状态）。
     outlineSummary?(): { below: boolean; right: boolean }
     calculation?(): { formulaView: boolean; manual: boolean }
@@ -1170,7 +1170,8 @@ export function mountWorkbookRibbon(
         button.disabled = !editable || !view.chart() || !!protection?.sheet.protected
         button.title = !editable ? '当前工作簿不可编辑或正在保存' : protection?.sheet.protected ? PROTECTED_SHEET_REASON : !view.chart() ? '请先选择要操作的图表' : button.textContent ?? ''
       }
-      if (protection?.sheet.protected && !button.disabled && !PROTECTED_SHEET_RIBBON.has(id)) { button.disabled = true; button.title = PROTECTED_SHEET_REASON }
+      const allowedFilter = protection?.sheet.allowFilter && (id === 'filter-clear' || id === 'filter-reapply')
+      if (protection?.sheet.protected && !button.disabled && !PROTECTED_SHEET_RIBBON.has(id) && !allowedFilter) { button.disabled = true; button.title = PROTECTED_SHEET_REASON }
       if (id === 'split-window') {
         const active = !!view.splitPane?.().active
         button.disabled = !editable || !active || !!protection?.sheet.protected

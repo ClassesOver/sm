@@ -116,7 +116,7 @@ import { readWorkbookThemeSource, themeOperation, type ThemeCommandKind, type Wo
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
 import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
-import { assertProtectionRespected, planProtection, protectionBlockReason, PROTECTED_SHEET_REASON } from './workbook-protection'
+import { assertProtectionRespected, planProtection, protectedFilterAllowed, protectionBlockReason, PROTECTED_SHEET_REASON } from './workbook-protection'
 import { readWorkbookEditableRanges, protectedValueCommandContext, type EditableRange } from './workbook-editable-ranges'
 import { installCalculation, type CalculationControl } from './workbook-calculation'
 import { installDataTable } from './workbook-data-table'
@@ -733,8 +733,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   }
   const protectionView = () => {
     const sheetId = activeSheetId(), password = originalSheet(sheetId)?.protection?.hasPassword
+    const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet?.() ?? undefined
     return {
-      sheet: { protected: sheetProtected(sheetId), reason: password ? '此工作表受密码保护，暂不支持撤销或修改其保护' : undefined },
+      sheet: { protected: sheetProtected(sheetId), allowFilter: protectedFilterAllowed(originalSheet(sheetId), sheet,
+        'sheet.command.clear-filter-criteria', undefined), reason: password ? '此工作表受密码保护，暂不支持撤销或修改其保护' : undefined },
       workbook: { locked: structureLocked(), reason: currentModel?.workbookProtection?.hasPassword ? '工作簿结构受密码保护，暂不支持撤销或修改其保护' : undefined },
     }
   }
@@ -3068,8 +3070,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       if (reason) { command.cancel = true; feedback.textContent = reason; return }
     }
     if (!loading) {
-      const target = (command.params as { subUnitId?: string } | undefined)?.subUnitId ?? activeSheetId()
-      const targetSheet = target ? runtime.univerAPI.getActiveWorkbook()?.getSheetBySheetId(target) : undefined
+      const params = command.params as { unitId?: string; subUnitId?: string } | undefined
+      const target = params?.subUnitId ?? activeSheetId()
+      const activeWorkbook = runtime.univerAPI.getActiveWorkbook()
+      const targetSheet = target ? activeWorkbook?.getSheetBySheetId(target) : undefined
       const selection = targetSheet?.getSelection()
       const fallback = selection?.getActiveRangeList?.().length === 1 ? selection.getActiveRange()?.getRange() : undefined
       const ranges = editableRanges.get(originalSheet(target)?.name ?? '') ?? []
@@ -3081,7 +3085,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           range.startRow <= table.range.startRow && range.endRow >= table.range.startRow && range.startColumn <= table.range.endColumn && range.endColumn >= table.range.startColumn))
         if (header) { command.cancel = true; feedback.textContent = '工作表受保护，表头更名涉及表格定义，请先撤销工作表保护'; return }
       }
-      const reason = protectionBlockReason(command.id, sheetProtected(target), structureLocked(), context)
+      const protectedSheet = sheetProtected(target)
+      const filterAllowed = protectedSheet && (params?.unitId === undefined || params.unitId === activeWorkbook?.getId())
+        && protectedFilterAllowed(originalSheet(target), targetSheet ?? undefined, command.id, params)
+      const reason = protectionBlockReason(command.id, protectedSheet, structureLocked(), context, filterAllowed)
       if (reason) { command.cancel = true; feedback.textContent = reason; return }
       // 官方键盘附带字体patch；保护区域只授权值/公式。缺少s时原生merge保留原始格式。
       if (context && sheetProtected(target)) (command.params as { value: unknown }).value = context.safeValue
