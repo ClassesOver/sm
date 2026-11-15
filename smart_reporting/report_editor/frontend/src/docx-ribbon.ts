@@ -1,3 +1,4 @@
+import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import {stepFontSize as sourceStepFontSize} from './vendor/genoffice-docs/apps/docs/src/renderer/font-sizes'
 import {getLang} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/locale'
 import { zh as ribbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/zh'
@@ -42,7 +43,7 @@ import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconStoryView, IconReadMode, IconWholePage, IconCellAlign } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconStoryView, IconReadMode, IconWholePage, IconCellAlign, IconWatermark, IconCaret } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { closeHistory } from '@tiptap/pm/history'
@@ -165,7 +166,7 @@ export interface DocxPageBorderControls { current(): Pick<SectionSettings, 'page
 export interface DocxPageColorControls { current(): string | null; reason(): string | null; apply(color: string | null): void }
 export interface DocxTableGridlinesControls { readonly visible: boolean; reason(): string | null; toggle(): void }
 /** 固定源 Design ▸ Watermark：当前生效水印、来源模型、不可用原因与应用回调（草稿写入由宿主负责）。 */
-export interface DocxWatermarkControls { current(): DocxWatermarkValue | null; source: DocxWatermarkModel; reason(): string | null; apply(spec: DocxWatermarkValue | null): void; snapshot?(): unknown; pageBox?(): import("./docx-watermark-dialog-source").WatermarkPageBox }
+export interface DocxWatermarkControls { current(): DocxWatermarkValue | null; source: DocxWatermarkModel; hasSourcePicture?(): boolean; reason(): string | null; apply(spec: DocxWatermarkValue | null): void; snapshot?(): unknown; pageBox?(): import("./docx-watermark-dialog-source").WatermarkPageBox }
 
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
@@ -186,6 +187,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeFontDialog: (() => void) | undefined
   let closeParagraphDialog: (() => void) | undefined
   let closePageBorderDialog: (() => void) | undefined
+  let closeWatermarkMenu: (() => void) | undefined
   let closeWatermarkDialog: (() => void) | undefined
   let closeSpecialIndent: (() => void) | undefined
   const contextTabs = new Map<string, HTMLButtonElement>()
@@ -687,22 +689,50 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           // 固定源水印菜单：预设文字、“自定义水印…”、“删除水印”。
           const wrap = document.createElement('div'), trigger = document.createElement('button'), menu = document.createElement('div')
           wrap.className = 'rb-split-wrap'
-          trigger.type = 'button'; trigger.className = 'rb-icon docx-ribbon-command'; trigger.dataset.action = 'watermark'; trigger.textContent = label
+          trigger.type = 'button'; trigger.className = 'rb-big docx-ribbon-command'; trigger.dataset.action = 'watermark'
+          const icon = document.createElement('span'), caption = document.createElement('span')
+          icon.className = 'rb-big-icon'
+          icon.innerHTML = renderToStaticMarkup(createElement(IconWatermark, { size: 28 })) + renderToStaticMarkup(createElement(IconCaret))
+          caption.textContent = ribbonZh.ribbonWatermark
+          trigger.append(icon, caption)
           trigger.setAttribute('aria-label', label); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-haspopup', 'true')
           menu.className = 'layout-menu docx-watermark-menu'; menu.hidden = true; menu.dataset.rbPanel = ''; menu.setAttribute('role', 'group'); menu.setAttribute('aria-label', '水印')
-          const close = () => { menu.hidden = true; trigger.setAttribute('aria-expanded', 'false') }
-          const apply = (spec: DocxWatermarkValue | null) => { try { watermark.apply(spec) } catch (error) { reportError?.(error) } close(); syncWatermark() }
-          wrap.addEventListener('mousedown', event => { if (!(event.target instanceof HTMLInputElement)) event.preventDefault() })
+          let dismiss: (() => void) | undefined
+          const close = () => {
+            menu.hidden = true
+            trigger.setAttribute('aria-expanded', 'false')
+            dismiss?.()
+            dismiss = undefined
+            closeWatermarkMenu = undefined
+          }
+          const apply = (spec: DocxWatermarkValue | null) => {
+            if (trigger.disabled) return
+            try { watermark.apply(spec) } catch (error) { reportError?.(error) }
+            close()
+            syncWatermark()
+            trigger.focus()
+          }
           trigger.addEventListener('click', () => {
-            menu.hidden = !menu.hidden; trigger.setAttribute('aria-expanded', String(!menu.hidden))
-            if (!menu.hidden) menu.style.setProperty('--docx-watermark-menu-height', `${Math.max(48, innerHeight - trigger.getBoundingClientRect().bottom - 12)}px`)
+            if (!menu.hidden) { close(); return }
+            menu.hidden = false
+            trigger.setAttribute('aria-expanded', 'true')
+            menu.style.setProperty('--docx-watermark-menu-height', Math.max(48, innerHeight - trigger.getBoundingClientRect().bottom - 12) + 'px')
+            closeWatermarkMenu = close
+            dismiss = installPopoverDismiss(close, { inside: () => [wrap] })
+          })
+          wrap.addEventListener('keydown', event => {
+            if (event.key !== 'Escape' || event.isComposing || menu.hidden) return
+            event.stopPropagation()
+            close()
+            trigger.focus()
           })
           for (const text of DOCX_WATERMARK_PRESETS) {
             const item = document.createElement('button'); item.type = 'button'; item.textContent = text; item.dataset.action = `watermark-preset-${text}`
             item.addEventListener('click', () => apply({ text })); menu.append(item)
           }
-          const custom = document.createElement('button'); custom.type = 'button'; custom.textContent = '自定义水印…'; custom.dataset.action = 'watermark-custom'
+          const custom = document.createElement('button'); custom.type = 'button'; custom.textContent = ribbonZh.ribbonWatermarkCustom; custom.dataset.action = 'watermark-custom'
           custom.addEventListener('click', () => {
+            if (trigger.disabled) return
             close(); const value = watermark.current(), snapshot = watermark.snapshot?.()
             const current = value && 'image' in value ? { text: null, style: null, picture: value } : { text: value?.text ?? null, style: value ? (({ text: _text, ...style }) => style)(value) : null, picture: null }
             closeWatermarkDialog?.()
@@ -713,7 +743,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
               watermark.apply(spec); syncWatermark()
             }, trigger)
           })
-          const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = '删除水印'; remove.dataset.action = 'watermark-remove'
+          const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = ribbonZh.ribbonWatermarkRemove; remove.dataset.action = 'watermark-remove'
           remove.addEventListener('click', () => apply(null))
           menu.append(custom, remove); wrap.append(trigger, menu); items.append(wrap)
           continue
@@ -1019,6 +1049,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
+    closeWatermarkMenu?.()
     if (id !== 'design' && pageColorRoot) {
       pageColorRoot.unmount()
       pageColorRoot = undefined
@@ -1446,10 +1477,19 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (!trigger || !watermark) return
     const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : watermark.reason()
     const current = watermark.current()
+    const hasWatermark = !!current || (watermark.hasSourcePicture?.() ?? watermark.source.picture)
     trigger.disabled = reason !== null
-    trigger.title = reason ?? (current ? ('image' in current ? '水印：图片水印' : `水印：${current.text}`) : watermark.source.picture ? '水印：图片水印（可替换为文字水印或删除）' : '水印：无')
-    trigger.classList.toggle('active', !!current || (watermark.source.picture && !trigger.title.includes('无')))
-    for (const item of body.querySelectorAll<HTMLButtonElement>('[data-action^="watermark-preset-"]')) item.classList.toggle('active', !!current && !('image' in current) && current.text === item.textContent && Object.keys(current).length === 1)
+    trigger.title = reason ?? ribbonZh.ribbonWatermarkTip
+    if (trigger.disabled) closeWatermarkMenu?.()
+    trigger.classList.toggle('active', hasWatermark)
+    for (const item of body.querySelectorAll<HTMLButtonElement>('[data-action^="watermark-preset-"], [data-action="watermark-remove"]')) {
+      const selected = item.dataset.action === 'watermark-remove'
+        ? !hasWatermark
+        : !!current && !('image' in current) && current.text === item.textContent
+      item.disabled = trigger.disabled
+      item.classList.toggle('active', selected)
+      item.setAttribute('aria-pressed', String(selected))
+    }
   }
   const refreshSelection = () => {
     if(tools?.files)for(const button of body.querySelectorAll<HTMLButtonElement>('[data-file-action]')){const kind=button.dataset.fileAction as 'new'|'save-as'|'save',reason=kind==='save'?tools.files.saveReason():tools.files.reason(kind);button.disabled=reason!==null;button.title=reason??(kind==='save-as'?'将当前已保存修订另存为独立文档':button.textContent??'')}
@@ -1519,7 +1559,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
-    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); cellBorderControls?.dispose(); numberingValueControl.destroy()
+    disposed = true; closeWatermarkMenu?.(); closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); cellBorderControls?.dispose(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)

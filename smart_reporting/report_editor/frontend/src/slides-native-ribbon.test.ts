@@ -860,6 +860,17 @@ it('enables the Shape Format fill and outline controls with their source actions
   host.querySelector<HTMLButtonElement>('[data-command="shapeNoOutline"]')!.click()
   expect(onAction).toHaveBeenCalledWith('shapeFill', '#2e7d32')
   expect(onAction).toHaveBeenCalledWith('shapeNoOutline')
+  const stylesMenu = host.querySelector<HTMLButtonElement>('[data-command="shapeStyleMenu"]')!
+  expect(stylesMenu.dataset.sourceAction).toBe('onShapeStyle')
+  outlineMenu.click()
+  stylesMenu.click()
+  expect(outlineMenu.getAttribute('aria-expanded')).toBe('false')
+  const styles = host.querySelectorAll<HTMLButtonElement>('[data-shape-style-preset]')
+  expect(styles).toHaveLength(32)
+  expect(styles[24].getAttribute('aria-label')).toBe('#FFFFFF / #5A5A5A (dash)')
+  styles[24].click()
+  expect(onAction).toHaveBeenCalledWith('shapeStylePreset', 24)
+  expect(stylesMenu.getAttribute('aria-expanded')).toBe('false')
   const change = host.querySelector<HTMLButtonElement>('button[data-command="changeShape"]')!
   expect(change.disabled).toBe(false)
   change.click()

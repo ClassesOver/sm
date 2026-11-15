@@ -23,7 +23,8 @@ import { createNativeChartGallery, type NativeChartGalleryState } from './slides
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 import iconTransparency from './vendor/genoffice-slides/components/icon-transparency.png'
 import iconCrop from './vendor/genoffice-slides/components/icon-crop.png'
-import { IconFillColor, IconPageBorders } from './vendor/genoffice-slides/components/icons'
+import { IconFillColor, IconPageBorders, IconShapeStyle } from './vendor/genoffice-slides/components/icons'
+import { RIBBON_SHAPE_STYLES } from './vendor/genoffice-slides/components/shape-style-presets'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import { ShapePreview } from './vendor/genoffice-docs/packages/ui/src/shape-gallery'
 import { STANDARD_COLORS, THEME_COLORS, THEME_COLOR_SHADES } from './vendor/genoffice-slides/ui/color-picker'
@@ -329,6 +330,7 @@ const tabs: Tab[] = [
   { id: 'shapeFormat', label: 'Shape Format', context: 'shape', groups: [
     { label: 'Shapes', controls: [{ id: 'changeShape', label: 'Change Shape', sourceActionId: 'onChangeShape' }] },
     { label: 'Size', controls: [{ id: 'shapeGeometry', label: 'Position and Size' }] },
+    { label: 'Shape Styles', controls: [] },
     { label: 'Fill', controls: [
       { id: 'shapeFill', label: 'Fill', caption: '颜色', kind: 'color', sourceActionId: 'onShapeFill' },
       { id: 'shapeNoFill', label: 'No Fill', sourceActionId: 'onShapeFill' },
@@ -524,14 +526,15 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       const pictureOutline = tab.id === 'pictureFormat' && groupDefinition.label === 'Outline'
       const shapeFill = tab.id === 'shapeFormat' && groupDefinition.label === 'Fill'
       const shapeOutline = tab.id === 'shapeFormat' && groupDefinition.label === 'Outline'
-      if (pictureOutline || shapeFill || shapeOutline) {
+      const shapeStyle = tab.id === 'shapeFormat' && groupDefinition.label === 'Shape Styles'
+      if (pictureOutline || shapeFill || shapeOutline || shapeStyle) {
         const trigger = document.createElement('button')
         trigger.type = 'button'
         trigger.disabled = locked || pictureOutline
-        const id = pictureOutline ? 'pictureOutlineMenu' : shapeFill ? 'shapeFillMenu' : 'shapeOutlineMenu'
+        const id = pictureOutline ? 'pictureOutlineMenu' : shapeFill ? 'shapeFillMenu' : shapeStyle ? 'shapeStyleMenu' : 'shapeOutlineMenu'
         trigger.dataset.command = id
-        trigger.dataset.sourceAction = shapeFill ? 'onShapeFill' : 'onPictureStroke'
-        trigger.innerHTML = renderToStaticMarkup(reactElement(shapeFill ? IconFillColor : IconPageBorders, { size: 15 }))
+        trigger.dataset.sourceAction = shapeFill ? 'onShapeFill' : shapeStyle ? 'onShapeStyle' : 'onPictureStroke'
+        trigger.innerHTML = renderToStaticMarkup(reactElement(shapeFill ? IconFillColor : shapeStyle ? IconShapeStyle : IconPageBorders, { size: 15 }))
         trigger.append(document.createTextNode(groupLabel + ' ▾'))
         controls.set(id, [trigger])
         let updateGradients: (() => void) | undefined
@@ -545,6 +548,27 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         })
         group.append(trigger, menu)
         controlHost = menu
+        if (shapeStyle) {
+          const grid = document.createElement('div')
+          grid.className = 'slides-shape-style-grid'
+          RIBBON_SHAPE_STYLES.forEach((preset, index) => {
+            const swatch = document.createElement('button')
+            swatch.type = 'button'
+            swatch.dataset.shapeStylePreset = String(index)
+            swatch.style.backgroundColor = preset.fill
+            swatch.style.borderColor = preset.stroke
+            swatch.style.borderStyle = preset.dash ? 'dashed' : 'solid'
+            swatch.setAttribute('aria-label', preset.fill + ' / ' + preset.stroke + (preset.dash ? ' (' + preset.dash + ')' : ''))
+            swatch.setAttribute('aria-pressed', 'false')
+            swatch.addEventListener('click', () => {
+              if (trigger.disabled || menu.hidden || swatch.disabled) return
+              close(true)
+              options.onAction('shapeStylePreset', index)
+            })
+            grid.append(swatch)
+          })
+          menu.append(grid)
+        }
         if (shapeFill) {
           const appendSwatches = (colors: readonly { hex: string; name: string }[]) => {
             const grid = document.createElement('div')

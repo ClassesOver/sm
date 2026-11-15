@@ -1,4 +1,5 @@
 import {afterEach,beforeEach,expect,it,vi} from 'vitest'
+import {act} from 'react'
 import {createEditorShell} from './shell'
 import {createSlidesEditorView} from './slides-main'
 import {NativeDraft} from './native-draft'
@@ -183,7 +184,10 @@ it('changes, formats and deletes an unsaved drawn shape using its insertion iden
   await vi.waitFor(()=>expect(app.request.mock.calls.some(([path])=>path==='save')).toBe(true))
   expect(JSON.parse(app.request.mock.calls.find(([path])=>path==='save')![1]!.body as string).operations[0].shapes)
    .toEqual([styled])
- }finally{app.view.dispose()}
+ }finally{
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true)
+  await act(async()=>{app.view.dispose()})
+ }
 })
 it('裁切与frame一次撤销重做，刷新恢复并保持源SHA进入保存payload',async()=>{
  const draft=newDraft();let app=await open(draft)

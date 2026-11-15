@@ -3054,6 +3054,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         } else patch.borderPreset=command === 'tableAllBorders' ? 'all' : 'none'
         tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview(); break
       }
+      case 'shapeStylePreset':
       case 'shapeFill':
       case 'shapeFillGradient':
       case 'shapeNoFill':

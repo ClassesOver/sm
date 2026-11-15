@@ -146,10 +146,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   root.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
     if (event.target instanceof HTMLElement && event.target.closest('input,textarea,select,[contenteditable],dialog')) return
-    if (ordinaryImagePlacement()) {
+    if (ordinaryImagePlacement() || signaturePlacement()) {
       if (root.ownerDocument.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return
       event.preventDefault()
-      cancelImagePlacement()
+      if (signaturePlacement()) cancelSignaturePlacement()
+      else cancelImagePlacement()
       return
     }
     if (!(mode === 'draw' && drawShape === 'measure') && !measureRecalibrate) return
@@ -987,10 +988,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   annotateDrawGroup.append(redactTool, redactionFinder, clearRedaction, applyRedaction)
   // 固定源 SignatureDialog：手写（矢量笔迹）或键入（按所选字体栅格化为图像），再在页面上拖出放置区域。
   commandGroup = ribbon.group('annotate', 'Signature & Protection')
-  const signButton = button('签名', () => openSignature(), true)
+  const signButton = button('签名', () => {
+    if (signaturePlacement()) cancelSignaturePlacement()
+    else openSignature()
+  }, true)
   sourceCommand(signButton, 'annotate.signature.sign'); signButton.dataset.pdfDrawShape = 'signature'
   signButton.title = '签名：手写、键入或选择图片，可保存后复用；这是可视签名，不是证书数字签名'
-  drawButtons.set('signature' as PdfDrawingShape, signButton)
   const SIGN_COLOR: [number, number, number] = [...PDF_DRAW_COLORS[4]!.rgb]
   let pendingSignature: { paths: number[][]; width: number; height: number } | undefined
   const signatures = bindPdfSignatureDialog({owner:root.ownerDocument,scope:draft.identity.scope,
@@ -1022,6 +1025,19 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
     }
   })
+  function signaturePlacement() {
+    return mode === 'draw' && ((drawShape as string) === 'signature' && !!pendingSignature
+      || drawShape === 'image' && pendingImageIsSignature && !!pendingImage)
+  }
+  function cancelSignaturePlacement() {
+    imagePickGeneration++
+    pendingSignature = undefined
+    pendingImage = ''
+    pendingImageSize = undefined
+    pendingImageIsSignature = false
+    setMode('select')
+    status.textContent = '已取消放入签名'
+  }
   function signatureUnavailable() {
     return disposed || !document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || draft.saving || mutationBlocked?.()
       ? '当前 PDF 正在读取、预览或保存，请稍后签名' : null
@@ -1435,7 +1451,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const insertImage = button('插入图像', openOrCancelImagePicker)
   sourceCommand(insertImage, 'edit.objects.insertImage'); insertImage.dataset.pdfDrawShape = 'image'
   insertImage.title = imageInsertTitle
-  drawButtons.set('image', insertImage)
   function canPickImage() {
     return !!document && !disposed && !locked && !previewing && !printing && !previewDocument
       && response.editingEnabled && !draft.closed && !draft.saving && !mutationBlocked?.()
@@ -1977,7 +1992,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument;
     const textEditing = String(mode === 'text')
     homeTextEdit.setAttribute('aria-pressed', textEditing); textEditButton?.setAttribute('aria-pressed', textEditing)
-    for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); fillFormImage.setAttribute('aria-pressed', String(ordinaryImagePlacement())); syncDrawingCanvases(); syncLinkLayers() }
+    for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact'))
+    const imagePlacement = String(ordinaryImagePlacement())
+    insertImage.setAttribute('aria-pressed', imagePlacement)
+    fillFormImage.setAttribute('aria-pressed', imagePlacement)
+    signButton.setAttribute('aria-pressed', String(signaturePlacement()))
+    syncDrawingCanvases()
+    syncLinkLayers()
+  }
   function canChangePendingDrawings() {
     return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
   }

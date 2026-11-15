@@ -707,7 +707,7 @@ it('signs the active visible form signature field without asking for a placement
  expect(document.querySelector('.pdf-sign-target-dialog')).toBeNull()
  expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('Second signature')
 })
-it('signature dialog imports a normalized image and starts image placement',async()=>{
+it.each(['ribbon','Escape'])('visual signature image belongs to the Sign command until placement or %s cancellation',async(cancelWith)=>{
  const close=vi.fn(),drawImage=vi.fn(),f=await fixture();await f.create()
  vi.stubGlobal('createImageBitmap',vi.fn(async()=>({width:3200,height:800,close})))
  vi.stubGlobal('Image',class{naturalWidth=3200;naturalHeight=800;onload:(()=>void)|null=null;onerror:(()=>void)|null=null;set src(_value:string){queueMicrotask(()=>this.onload?.())}})
@@ -727,7 +727,14 @@ it('signature dialog imports a normalized image and starts image placement',asyn
  await act(async()=>dialog.querySelector<HTMLButtonElement>('.pdf-modal-btn.primary')!.click())
  expect(document.querySelector('.pdf-signature-source-dialog')).toBeNull();expect(f.root.dataset.pdfMode).toBe('draw')
  expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('请在页面上拖出签名放置区域');expect(close).toHaveBeenCalledOnce()
- expect(f.root.querySelector<HTMLButtonElement>('[data-pdf-draw-shape="image"]')?.getAttribute('aria-pressed')).toBe('true')
+ expect(sign.getAttribute('aria-pressed')).toBe('true')
+ expect(f.root.querySelector<HTMLButtonElement>('[data-pdf-draw-shape="image"]')?.getAttribute('aria-pressed')).toBe('false')
+ if (cancelWith === 'ribbon') sign.click()
+ else f.root.querySelector<HTMLElement>('.pdf-document-pages')!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+ await vi.waitFor(()=>expect(f.root.dataset.pdfMode).toBe('select'))
+ expect(sign.getAttribute('aria-pressed')).toBe('false')
+ expect(document.querySelector('.pdf-signature-source-dialog')).toBeNull()
+ expect(f.draft.operations).toEqual([])
 })
 it('signature image ignores stale decoder completions and reports current decode errors',async()=>{
  const f=await fixture();await f.create();const pending=new Map<string,{resolve:(value:{width:number;height:number;close:()=>void})=>void;reject:(reason?:unknown)=>void}>()

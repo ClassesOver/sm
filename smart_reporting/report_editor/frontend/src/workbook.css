@@ -13,6 +13,7 @@
 .workbook-ribbon-group:last-child { border-right:0; }
 .workbook-ribbon-check-column { grid-row:span 3; display:grid; grid-template-rows:repeat(3,var(--office-control-height)); gap:4px; align-items:center; }
 .workbook-ribbon-check-column > span { padding-inline:8px; }
+.workbook-ribbon-check-column-view { grid-template-columns:repeat(2,max-content); column-gap:12px; }
 .workbook-ribbon-group .workbook-ribbon-check-column > button { justify-content:flex-start; }
 .workbook-ribbon-check-mark { width:14px; height:14px; display:inline-grid; place-items:center; border:1px solid var(--color-border-strong); border-radius:2px; }
 .workbook-ribbon-check-mark svg { width:12px; height:12px; }

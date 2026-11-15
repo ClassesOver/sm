@@ -398,7 +398,7 @@ it('exposes the native right-to-left view action with current direction', () => 
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
   const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-right-to-left"]')!
   expect(button.disabled).toBe(false)
-  expect(button.getAttribute('aria-pressed')).toBe('true')
+  expect(button.getAttribute('aria-checked')).toBe('true')
   button.click(); expect(command).toHaveBeenCalledWith('toggle-right-to-left')
   ribbon.dispose()
 })
@@ -411,10 +411,10 @@ it('toggles headings as a view action and reflects the current state', () => {
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
   const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-headings"]')!
   expect(button.disabled).toBe(false)
-  expect(button.getAttribute('aria-pressed')).toBe('true')
+  expect(button.getAttribute('aria-checked')).toBe('true')
   button.click(); expect(command).toHaveBeenCalledWith('toggle-headings')
   visible = false; ribbon.refreshState()
-  expect(button.getAttribute('aria-pressed')).toBe('false')
+  expect(button.getAttribute('aria-checked')).toBe('false')
   ribbon.dispose()
 })
 
@@ -1187,14 +1187,37 @@ it('offers GenOffice Notes commands in source order and dispatches only enabled 
   expect(onCommand.mock.calls).toEqual([['note-show-all'], ['note-pictures-pane-toggle']])
 })
 
+it('renders GenOffice Show as five checked view toggles in source order', () => {
+  const command = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => false, rotation: () => undefined,
+    gridlines: () => ({ visible: true, available: true }),
+    formulaBar: () => ({ visible: false, available: true }),
+    headings: () => ({ visible: true, available: true }),
+    rightToLeft: () => ({ active: false, available: true }),
+    crossHighlight: () => ({ active: true, available: true }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const options = Array.from(document.querySelectorAll<HTMLButtonElement>('.workbook-ribbon-check-column-view [role="checkbox"]'))
+  expect(options.map(option => [option.getAttribute('aria-label'), option.getAttribute('aria-checked')])).toEqual([
+    ['网格线', 'true'], ['编辑栏', 'false'], ['标题', 'true'], ['从右到左', 'false'], ['突出显示活动行和列', 'true'],
+  ])
+  for (const button of options) {
+    expect(button.disabled).toBe(false)
+    button.click()
+    expect(command).toHaveBeenLastCalledWith(button.dataset.ribbonCommand)
+  }
+  ribbon.dispose()
+})
+
 it('renders GenOffice View controls with a live gridline toggle and explicit unavailable states', () => {
   document.body.innerHTML = '<main></main>'
   mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
   const expected = new Map([
-    ['toggle-page-break-preview', '分页预览'], ['toggle-gridlines', '显示网格线'],
-    ['toggle-formula-bar', '编辑栏'], ['toggle-headings', '显示标题'],
+    ['toggle-page-break-preview', '分页预览'], ['toggle-gridlines', '网格线'],
+    ['toggle-formula-bar', '编辑栏'], ['toggle-headings', '标题'],
     ['toggle-right-to-left', '从右到左'], ['toggle-cross-highlight', '突出显示活动行和列'],
     ['zoom-reset', '100%'], ['zoom-to-selection', '缩放到选定区域'],
     ['zoom-in', '放大'], ['zoom-out', '缩小'],
@@ -1203,7 +1226,8 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   ])
   for (const [id, label] of expected) {
     const button = buttons.find(candidate => candidate.dataset.ribbonCommand === id)
-    expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
+    const caption = button?.getAttribute('role') === 'checkbox' ? button.getAttribute('aria-label') : button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent
+    expect(caption, id).toBe(label)
   }
   expect(buttons.find(button => button.dataset.ribbonCommand === 'toggle-gridlines')?.disabled).toBe(false)
   for (const [id, reason] of [
@@ -1582,10 +1606,10 @@ it('toggles the session formula bar on readonly and protected sheets while refle
   try {
     document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
     const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-formula-bar"]')!
-    expect(button.disabled).toBe(false); expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(button.disabled).toBe(false); expect(button.getAttribute('aria-checked')).toBe('true')
     button.click(); expect(onCommand).toHaveBeenLastCalledWith('toggle-formula-bar')
     visible = false; ribbon.refreshState()
-    expect(button.getAttribute('aria-pressed')).toBe('false')
+    expect(button.getAttribute('aria-checked')).toBe('false')
     available = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
     button.click(); expect(onCommand).toHaveBeenCalledTimes(1)
   } finally { ribbon.dispose() }
@@ -1651,8 +1675,8 @@ it('reflects cross-highlight reading preference and allows it on protected reado
  const controller=mountWorkbookRibbon(document.querySelector('main')!,run,{rotation:()=>undefined,editable:()=>false,crossHighlight:()=>({active,available}),protection:()=>({sheet:{protected:true},workbook:{locked:true}})})
  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
  const button=document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-cross-highlight"]')!
- expect(button.disabled).toBe(false);expect(button.getAttribute('aria-pressed')).toBe('false')
- button.click();expect(run).toHaveBeenCalledWith('toggle-cross-highlight');expect(button.getAttribute('aria-pressed')).toBe('true')
+ expect(button.disabled).toBe(false);expect(button.getAttribute('aria-checked')).toBe('false')
+ button.click();expect(run).toHaveBeenCalledWith('toggle-cross-highlight');expect(button.getAttribute('aria-checked')).toBe('true')
  available=false;controller.refreshState();expect(button.disabled).toBe(true)
  controller.dispose()
 })

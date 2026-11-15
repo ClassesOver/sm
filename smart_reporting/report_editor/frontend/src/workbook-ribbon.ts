@@ -545,11 +545,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
   ],
   View: [
     { title: '工作簿视图', actions: [action('普通', 'normal-view', 'normal-view'), action('分页预览', 'toggle-page-break-preview', 'toggle-page-break-preview')] },
-    { title: '显示', actions: [
-      action('网格线', 'toggle-gridlines', 'toggle-gridlines'), action('编辑栏', 'toggle-formula-bar', 'toggle-formula-bar'),
-      action('标题', 'toggle-headings', 'toggle-headings'), action('从右到左', 'toggle-right-to-left', 'toggle-right-to-left'),
-      action('突出显示活动行和列', 'toggle-cross-highlight', 'toggle-cross-highlight'),
-    ] },
+    { title: '显示', actions: [] },
     { title: '缩放', actions: [
       action('100%', 'zoom-reset', 'zoom-reset'), action('缩放到选定区域', 'zoom-to-selection', 'zoom-to-selection'), action('自定义缩放', 'zoom-open', 'zoom-open'),
       action('放大', 'zoom-in', 'zoom-in'), action('缩小', 'zoom-out', 'zoom-out'),
@@ -1206,24 +1202,24 @@ export function mountWorkbookRibbon(
         const state = view.crossHighlight?.()
         button.disabled = !state?.available
         button.title = button.disabled ? '工作簿正在加载或保存' : button.textContent ?? ''
-        button.setAttribute('aria-pressed', String(state?.active ?? false))
+        button.setAttribute('aria-checked', String(state?.active ?? false))
       }
       if (id === 'toggle-gridlines' && view.gridlines) {
         const state = view.gridlines()
         button.disabled = !state.available
         button.title = button.disabled ? '工作表视图尚未就绪' : '网格线'
-        button.setAttribute('aria-pressed', String(state.visible))
+        button.setAttribute('aria-checked', String(state.visible))
       }
       if (id === 'toggle-formula-bar' || id === 'toggle-headings') {
         const state = id === 'toggle-formula-bar' ? view.formulaBar?.() : view.headings?.()
         button.disabled = !state?.available
         button.title = button.disabled ? '工作簿正在加载或保存' : button.textContent ?? ''
-        button.setAttribute('aria-pressed', String(state?.visible ?? true))
+        button.setAttribute('aria-checked', String(state?.visible ?? true))
       }
       if (id === 'toggle-right-to-left') {
         const state = view.rightToLeft?.()
         button.disabled = !state?.available
-        button.setAttribute('aria-pressed', String(state?.active ?? false))
+        button.setAttribute('aria-checked', String(state?.active ?? false))
         button.title = button.disabled ? '工作簿正在加载或保存' : button.textContent ?? ''
       }
       if (['zoom-to-selection', 'zoom-open', 'zoom-reset', 'zoom-in', 'zoom-out'].includes(id)) {
@@ -1451,6 +1447,22 @@ export function mountWorkbookRibbon(
       number.title = reason ?? (state.kind === 'value' ? state.value : '数字格式')
     }
   }
+  const sheetCheckbox = (caption: string, command: RibbonCommand, label = caption, detail = label) => {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.dataset.ribbonCommand = command
+    button.title = detail
+    button.setAttribute('role', 'checkbox')
+    button.setAttribute('aria-label', label)
+    button.setAttribute('aria-checked', 'false')
+    const mark = document.createElement('span')
+    mark.className = 'workbook-ribbon-check-mark'
+    mark.setAttribute('aria-hidden', 'true')
+    mark.innerHTML = workbookCommandIcon('', '✓') ?? ''
+    button.append(mark, caption)
+    button.addEventListener('click', () => { if (!button.disabled) onCommand(command) })
+    return button
+  }
   const render = () => {
     visibleTabs = view?.table?.() ? [...tabs, 'Table Design'] : tabs
     if (!visibleTabs.includes(active)) active = 'Home'
@@ -1663,20 +1675,8 @@ export function mountWorkbookRibbon(
           title.textContent = label
           column.append(title)
           for (const [caption, command, detail] of [['查看', viewCommand, label], ['打印', printCommand, printTitle]] as const) {
-            const button = document.createElement('button')
-            button.type = 'button'
-            button.dataset.ribbonCommand = command
+            const button = sheetCheckbox(caption, command, caption + label, detail)
             button.dataset.sheetOption = detail
-            button.title = detail
-            button.setAttribute('role', 'checkbox')
-            button.setAttribute('aria-label', caption + label)
-            button.setAttribute('aria-checked', 'false')
-            const mark = document.createElement('span')
-            mark.className = 'workbook-ribbon-check-mark'
-            mark.setAttribute('aria-hidden', 'true')
-            mark.innerHTML = workbookCommandIcon('', '✓') ?? ''
-            button.append(mark, caption)
-            button.addEventListener('click', () => { if (!button.disabled) onCommand(command) })
             column.append(button)
           }
           section.append(column)
@@ -1710,6 +1710,17 @@ export function mountWorkbookRibbon(
           if (name && !select.disabled) onCommand(`use-in-formula:${name}` as RibbonCommand)
         })
         section.append(select)
+      }
+      if (active === 'View' && group.title === '显示') {
+        const controls = document.createElement('div')
+        controls.className = 'workbook-ribbon-check-column workbook-ribbon-check-column-view'
+        controls.setAttribute('role', 'group')
+        controls.setAttribute('aria-label', group.title)
+        for (const [label, command] of [
+          ['网格线', 'toggle-gridlines'], ['编辑栏', 'toggle-formula-bar'], ['标题', 'toggle-headings'],
+          ['从右到左', 'toggle-right-to-left'], ['突出显示活动行和列', 'toggle-cross-highlight'],
+        ] as const) controls.append(sheetCheckbox(label, command))
+        section.append(controls)
       }
       if (active === 'View' && group.title === '窗口') {
         const wrapper = document.createElement('label')

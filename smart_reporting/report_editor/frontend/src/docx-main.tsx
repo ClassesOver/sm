@@ -1274,6 +1274,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     },
   } : undefined, watermarkModel ? {
     current: () => effectiveDocxWatermark(nativeOperations(), watermarkModel),
+    hasSourcePicture: () => watermarkModel.picture && !nativeOperations().some(operation => operation.kind === 'setWatermark'),
     source: watermarkModel,
     reason: () => saving || draft.saving || draft.closed || !context.editingEnabled ? '当前文档不可编辑或正在保存' : watermarkModel.editable ? null : watermarkModel.readOnlyReason ?? '此文档的水印不能修改',
     snapshot: () => JSON.stringify([editor.getJSON(), nativeOperations(), activeSection]),

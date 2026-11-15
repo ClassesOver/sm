@@ -5,12 +5,13 @@ import { SlidesFormatColorWell } from './slides-chart-format-pane'
 import type { BrushSource } from './slides-format-brush'
 import { isOutlineDash, type ShapeStroke } from '../../../reporting/slides_engine/bridge/pptx-outline'
 import { isShapeGradient, type ShapeFill } from '../../../reporting/slides_engine/bridge/pptx-shape-fill'
+import { RIBBON_SHAPE_STYLES } from './vendor/genoffice-slides/components/shape-style-presets'
 import './slides-shape-format-pane.css'
 
 type Style = { slideIndex: number; elementId: string; fill?: ShapeFill; stroke?: ShapeStroke | null }
 type Draft = { shapeStyles?: Style[] }
 type Context<T extends Draft> = { slideIndex: number; element?: { id: string; type: string; brushSource?: BrushSource }; changes: T; reason?: string }
-const commands = new Set(['shapeFill','shapeFillGradient','shapeNoFill','shapeOutline','shapeOutlineWidth','shapeOutlineDash','shapeNoOutline','shapeResetFill','shapeResetStroke'])
+const commands = new Set(['shapeStylePreset','shapeFill','shapeFillGradient','shapeNoFill','shapeOutline','shapeOutlineWidth','shapeOutlineDash','shapeNoOutline','shapeResetFill','shapeResetStroke'])
 const hex = (value: unknown): value is string => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 function values<T extends Draft>(context: Context<T>) {
@@ -21,7 +22,13 @@ function values<T extends Draft>(context: Context<T>) {
 /** 旧像素编辑器保留原行为；原生调用方先核对独立的来源能力，再构建相同wire。 */
 export function shapeStyleForCommand(command: string, value: unknown, previous: Style): Style | undefined {
   const style = { ...previous }, outline = style.stroke ?? { color:'#000000',widthPt:1 }
-  if (command === 'shapeFill') { if (!hex(value)) return; style.fill = value.toUpperCase() }
+  if (command === 'shapeStylePreset') {
+    const preset = typeof value === 'number' ? RIBBON_SHAPE_STYLES[value] : undefined
+    if (!preset) return
+    style.fill = preset.fill
+    style.stroke = { color: preset.stroke, widthPt: outline.widthPt, ...(preset.dash ? { dash: preset.dash } : {}) }
+  }
+  else if (command === 'shapeFill') { if (!hex(value)) return; style.fill = value.toUpperCase() }
   else if (command === 'shapeFillGradient') { if (!isShapeGradient(value)) return; style.fill = value }
   else if (command === 'shapeNoFill') style.fill = 'none'
   else if (command === 'shapeOutline') { if (!hex(value)) return; style.stroke = { ...outline,color:value.toUpperCase() } }
@@ -40,17 +47,24 @@ export function planSlidesShapeStyle<T extends Draft>(context: Context<T>, comma
   const element = context.element
   if (context.reason) throw new Error(context.reason)
   if (!element || !['text','shape'].includes(element.type) || element.brushSource?.supported !== true) throw new Error('此来源对象暂不支持安全修改形状格式')
-  const { source, patch, fill, stroke } = values(context), field = command.includes('Fill') ? 'fill' : 'stroke'
+  const { source, patch, fill, stroke } = values(context)
+  const fields: ReadonlyArray<'fill' | 'stroke'> = command === 'shapeStylePreset'
+    ? ['fill', 'stroke'] : [command.includes('Fill') ? 'fill' : 'stroke']
   const reset = command.startsWith('shapeReset')
-  if (!reset && (field === 'fill' ? fill : stroke) === undefined) throw new Error(field === 'fill' ? '来源填充未能安全摘要；渐变、图片或透明填充保持只读' : '来源轮廓未能安全摘要；虚线、箭头、透明色或继承缺省保持只读')
   const next: Style = { ...patch,slideIndex:context.slideIndex,elementId:element.id }
-  if (reset) delete next[field]
-  else {
-    const merged = shapeStyleForCommand(command,value,{...next,...(stroke !== undefined ? {stroke:stroke ?? source?.stroke ?? null} : {})})
-    if (!merged) throw new Error(field === 'fill' ? '填充颜色请输入六位十六进制颜色' : '轮廓颜色须为六位颜色，粗细须大于0且不超过100磅')
-    if (field === 'fill') next.fill = merged.fill
-    else next.stroke = merged.stroke
-    if (equal(next[field],source?.[field])) delete next[field]
+  if (!reset) {
+    if (fields.includes('fill') && fill === undefined) throw new Error('来源填充未能安全摘要；渐变、图片或透明填充保持只读')
+    if (fields.includes('stroke') && stroke === undefined) throw new Error('来源轮廓未能安全摘要；虚线、箭头、透明色或继承缺省保持只读')
+  }
+  const merged = reset ? undefined : shapeStyleForCommand(command,value,{...next,...(stroke !== undefined ? {stroke:stroke ?? source?.stroke ?? null} : {})})
+  if (!reset && !merged) {
+    if (command === 'shapeStylePreset') throw new Error('形状样式预设无效')
+    throw new Error(fields[0] === 'fill' ? '填充颜色请输入六位十六进制颜色' : '轮廓颜色须为六位颜色，粗细须大于0且不超过100磅')
+  }
+  for (const field of fields) {
+    if (field === 'fill') next.fill = merged?.fill
+    else next.stroke = merged?.stroke
+    if (reset || equal(next[field],source?.[field])) delete next[field]
   }
   if (equal(next.fill,patch?.fill) && equal(next.stroke,patch?.stroke)) return
   const styles = [...(context.changes.shapeStyles ?? []).filter(item => item.slideIndex !== context.slideIndex || item.elementId !== element.id)]
@@ -123,6 +137,16 @@ export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => C
   function syncRibbon() {
     const current = values(context)
     const unavailableFill = locked || !!context.reason || context.element?.brushSource?.supported !== true || current.fill === undefined
+    const unavailableStyle = unavailableFill || current.stroke === undefined
+    const styleMenu = ribbonHost?.querySelector<HTMLButtonElement>('[data-command="shapeStyleMenu"]')
+    if (styleMenu) styleMenu.disabled = unavailableStyle
+    const currentDash = current.stroke?.dash ?? 'solid'
+    for (const swatch of ribbonHost?.querySelectorAll<HTMLButtonElement>('[data-shape-style-preset]') ?? []) {
+      const preset = RIBBON_SHAPE_STYLES[Number(swatch.dataset.shapeStylePreset)]
+      swatch.disabled = unavailableStyle
+      swatch.setAttribute('aria-pressed', String(!!preset && hex(current.fill) && preset.fill === current.fill.toUpperCase()
+        && preset.stroke === current.stroke?.color.toUpperCase() && (preset.dash ?? 'solid') === currentDash))
+    }
     for (const swatch of ribbonHost?.querySelectorAll<HTMLButtonElement>('[data-shape-fill-swatch]') ?? []) {
       swatch.disabled = unavailableFill
       swatch.setAttribute('aria-pressed', String(hex(current.fill) && swatch.dataset.shapeFillSwatch === current.fill.toUpperCase()))

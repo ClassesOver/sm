@@ -3,6 +3,15 @@ import { act } from 'react'
 import { createSlidesShapeFormatPane, planSlidesShapeStyle, shapeStyleForCommand } from './slides-shape-format-pane'
 const base = { slideIndex: 0, element: { id:'shape', type:'shape', brushSource:{supported:true,shape:{fill:'#123456',stroke:{color:'#345678',widthPt:2.25}}} }, changes:{shapeStyles:[] as any[],edits:[{slideIndex:0,elementId:'shape',text:'保留'}]} }
 let pane:ReturnType<typeof createSlidesShapeFormatPane> | undefined
+it('writes a GenOffice shape style as one fill and outline patch, preserving line weight', () => {
+ const dashed=planSlidesShapeStyle(base,'shapeStylePreset',24)!
+ expect(dashed.shapeStyles).toEqual([{slideIndex:0,elementId:'shape',fill:'#FFFFFF',stroke:{color:'#5A5A5A',widthPt:2.25,dash:'dash'}}])
+ expect(dashed.edits).toEqual(base.changes.edits)
+ expect(planSlidesShapeStyle({...base,changes:dashed},'shapeStylePreset',24)).toBeUndefined()
+ expect(planSlidesShapeStyle({...base,changes:dashed},'shapeStylePreset',0)?.shapeStyles[0].stroke).toEqual({color:'#5A5A5A',widthPt:2.25})
+ const unsupported={...base,element:{...base.element,brushSource:{supported:true,shape:{fill:'#123456'}}}}
+ expect(()=>planSlidesShapeStyle(unsupported,'shapeStylePreset',0)).toThrow(/轮廓/)
+})
 afterEach(()=>{act(()=>pane?.dispose());pane=undefined;vi.useRealTimers();document.body.innerHTML='';(globalThis as any).IS_REACT_ACT_ENVIRONMENT=false})
 it('来源轮廓改色保留实际粗细，改粗细保留颜色，返回来源时只删对应patch',()=>{
  const colored=planSlidesShapeStyle(base,'shapeOutline','#abcdef')!
@@ -82,6 +91,24 @@ it('功能区任意来源线宽回填，锁定解锁后仍保留来源能力限�
  act(()=>pane!.setLocked(false));expect(width.disabled).toBe(false)
  delete (context.element.brushSource.shape as any).stroke;act(()=>pane!.update())
  width.disabled=false;act(()=>pane!.setLocked(false));expect(width.disabled).toBe(true)
+})
+it('marks the selected gallery preset and locks the gallery when one format is unavailable', () => {
+ (globalThis as any).IS_REACT_ACT_ENVIRONMENT=true
+ const host=document.createElement('div')
+ host.innerHTML='<button data-command="shapeStyleMenu"></button><button data-shape-style-preset="0"></button><button data-shape-style-preset="24"></button>'
+ const context={...base,changes:planSlidesShapeStyle(base,'shapeStylePreset',24)!}
+ pane=createSlidesShapeFormatPane(()=>context,vi.fn(),host)
+ act(()=>pane!.update())
+ expect(host.querySelector('[aria-pressed="true"]')?.getAttribute('data-shape-style-preset')).toBe('24')
+ act(()=>pane!.setLocked(true))
+ expect(host.querySelectorAll('button:disabled')).toHaveLength(3)
+ act(()=>pane!.setLocked(false))
+ expect(host.querySelectorAll('button:disabled')).toHaveLength(0)
+ context.changes={...base.changes,shapeStyles:[]}
+ context.element={...base.element,brushSource:{supported:true,shape:{...base.element.brushSource.shape}}}
+ Reflect.deleteProperty(context.element.brushSource.shape,'stroke')
+ act(()=>pane!.update())
+ expect(host.querySelectorAll('button:disabled')).toHaveLength(3)
 })
 
 it('填充和轮廓使用原生可辨识分组',()=>{
