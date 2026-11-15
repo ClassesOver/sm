@@ -89,8 +89,11 @@ export class OfficeAssistantController<Input, Job> {
     this.requestId = ''; this.taskId = ''
     this.terminalObserved = false
     const turn = this.generation
-    const current = this.queueCleanup(requestId, taskId)
-    const completion = this.cleanupAll([...new Set([...current, ...this.cleanups.values()])]).finally(() => {
+    // The map preserves insertion order: retry older failed cancellations
+    // before the task being cancelled now. Previously placing current first
+    // could dispatch an old task *after* the new one, confusing task ownership.
+    this.queueCleanup(requestId, taskId)
+    const completion = this.cleanupAll([...this.cleanups.values()]).finally(() => {
       if (this.pendingCancel?.promise === completion) this.pendingCancel = undefined
     })
     this.pendingCancel = { generation: turn, promise: completion }
