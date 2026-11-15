@@ -37,3 +37,5 @@ select_range/create_document、其余结构/格式DSL、稳定sheet身份、完�
 远端推进至c86e29a2，新增set_range、clear_range（含大范围稀疏清空）、delete_visual和其他格式UI。只在workbook_ai_tools.py发生冲突，已保留两边实现：图表删除导入、源范围帮助函数/清空处理、CELL_SOURCE_OPS和clearCellRange授权/预算，以及本批结构适配器/分批检查。新增set_range/clear_range与结构混批的四个拒绝节点，均在预览前失败。
 
 重新构建实际bridge后，9份受影响Python文件227项通过（52.18秒），5份引擎文件68项通过，typecheck通过。新增同表公式断言4节点此前独立通过。Ruff、Node语法、diff检查通过；未重复完整项目测试。
+
+推送前远端又增加103af39b（大范围清空后的条件写入状态），自动合并无冲突。仅重跑受影响的结构、工具和前置条件三份文件，98项通过（28.51秒）；保留源clear_range顺序条件语义，Ruff/diff检查通过。
