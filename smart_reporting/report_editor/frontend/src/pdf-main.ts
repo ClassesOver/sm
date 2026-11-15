@@ -1243,6 +1243,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const layoutActions = documentElement('div', 'pdf-link-actions')
   layoutDialog.append(layoutTitle, layoutHint, layoutBody, layoutError, layoutActions); root.append(layoutDialog)
   const layoutCancel = documentElement('button'); layoutCancel.type = 'button'; layoutCancel.textContent = '取消'; layoutCancel.addEventListener('click', () => layoutDialog.close())
+  let layoutEntry: HTMLButtonElement | undefined
+  layoutDialog.addEventListener('close', () => {
+    if (layoutEntry && !disposed) focusRibbonEntry(layoutEntry)
+    layoutEntry = undefined
+  })
   function pageLayoutUnavailable(kind?: string) {
     if (!document || locked || previewing || printing || !!previewDocument || draft.closed || !response.editingEnabled) return '请先打开 PDF 并退出预览'
     if (draft.operations.length) return PDF_PAGE_LAYOUT_ALONE_REASON
@@ -1258,10 +1263,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     layoutDialog.close(); await refresh(); await previewDraft()
   }
   function openLayoutDialog(kind: 'mergePages' | 'splitPages') {
+    if (layoutDialog.open) return
     const reason = pageLayoutUnavailable(kind)
     if (reason) { status.textContent = reason; return }
     layoutError.textContent = ''; layoutBody.replaceChildren(); layoutActions.replaceChildren(layoutCancel)
     const total = state().length
+    layoutEntry = pageButtons.get('genoffice.pdf.page.' + kind)
     layoutDialog.setAttribute('aria-label', kind === 'mergePages' ? '合并页面' : '拆分页面')
     layoutTitle.textContent = kind === 'mergePages' ? '合并页面' : '拆分页面'
     const fail = (error: unknown) => { layoutError.textContent = error instanceof Error ? error.message : String(error) }
@@ -1269,20 +1276,38 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       layoutHint.textContent = `把每 N 个连续页面缩放排到一张纸上（共 ${total} 页）。纸张取第 1 页尺寸，2 合 1 时横向；批注、绘图与表单外观转为静态内容；交互、书签与附件不保留。保存为新修订，来源修订不变。`
       const countLabel = documentElement('label'); countLabel.textContent = '每张页数（2–16）'
       const count = documentElement('input'); count.inputMode = 'numeric'; count.value = '2'; count.setAttribute('aria-label', '每张页数'); countLabel.append(count)
-      const directionLabel = documentElement('label'); directionLabel.textContent = '排列顺序'
-      const direction = documentElement('select'); direction.setAttribute('aria-label', '排列顺序')
-      for (const [value, label] of [['vertical', '纵向（先上下，再左右）'], ['horizontal', '横向（先左右，再上下）']] as const) { const option = documentElement('option'); option.value = value; option.textContent = label; direction.append(option) }
-      directionLabel.append(direction)
+      const directionGroup = documentElement('fieldset', 'pdf-layout-directions')
+      const directionTitle = documentElement('legend'); directionTitle.textContent = '排列顺序'
+      directionGroup.append(directionTitle)
+      for (const [value, label] of [['horizontal', '横向（先左右，再上下）'], ['vertical', '纵向（先上下，再左右）']] as const) {
+        const direction = documentElement('input'); direction.type = 'radio'; direction.name = 'pdf-merge-direction'; direction.value = value
+        direction.checked = value === 'vertical'
+        const option = documentElement('label'); option.append(direction, label); directionGroup.append(option)
+      }
       const separatorLabel = documentElement('label', 'pdf-layout-check'); const separator = documentElement('input'); separator.type = 'checkbox'; separator.setAttribute('aria-label', '绘制分隔线')
       separatorLabel.append(separator, '绘制分隔线')
-      layoutBody.append(countLabel, directionLabel, separatorLabel)
+      layoutBody.append(countLabel, directionGroup, separatorLabel)
       const apply = documentElement('button'); apply.type = 'button'; apply.textContent = '确定'
-      apply.addEventListener('click', () => {
-        try {
-          const perSheet = Number(count.value.trim())
-          if (!/^\d+$/.test(count.value.trim()) || perSheet < 2 || perSheet > 16) throw new Error('每张页数须为 2–16 的整数')
-          void applyPageLayout(pdfMergePagesOperation(perSheet, direction.value as 'horizontal' | 'vertical', separator.checked)).catch(error => { fail(error); showError(error) })
-        } catch (error) { fail(error) }
+      function applyMerge() {
+        const perSheet = Number(count.value.trim())
+        if (!Number.isInteger(perSheet) || perSheet < 2 || perSheet > 16) {
+          count.setAttribute('aria-invalid', 'true')
+          fail(new Error('每张页数须为 2–16 的整数'))
+          count.focus()
+          return
+        }
+        const direction = directionGroup.querySelector<HTMLInputElement>('input:checked')?.value === 'horizontal' ? 'horizontal' : 'vertical'
+        void applyPageLayout(pdfMergePagesOperation(perSheet, direction, separator.checked)).catch(error => { fail(error); showError(error) })
+      }
+      apply.addEventListener('click', applyMerge)
+      count.addEventListener('input', () => {
+        count.removeAttribute('aria-invalid')
+        layoutError.textContent = ''
+      })
+      count.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+        event.preventDefault()
+        applyMerge()
       })
       layoutActions.append(apply)
     } else {
@@ -1294,6 +1319,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
     }
     layoutDialog.showModal()
+    layoutBody.querySelector<HTMLElement>('input, [data-pdf-split-pages]')?.focus()
   }
   function displayViewport(original: PDFPageProxy, page: PdfPageIdentity, scale: number) {
     return previewDocument ? original.getViewport({ scale, rotation: page.rotation }) : pdfPageViewport(original, page, scale)

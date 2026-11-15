@@ -430,7 +430,7 @@ try {
     await page.locator('[data-ribbon-tab="transitions"]').click()
     await page.locator('[data-transition-effect="wipe"][data-source-action="onTransition"]').click()
     await page.locator('[data-ribbon-tab="animations"]').click()
-    await page.locator('[data-command="animationEffect"][data-source-action="onApplyAnimation"]').selectOption('flyIn')
+    await page.locator('[data-command="animationEffect"][data-source-action="onAddAnimation"]').selectOption('flyIn')
     await page.locator('[data-command="animationDirection"]').selectOption('right')
     await page.locator('[data-command="animationTrigger"][data-source-action="onAnimTiming"]').selectOption('afterPrev')
     await page.locator('[data-command="animationDuration"]').fill('1250')

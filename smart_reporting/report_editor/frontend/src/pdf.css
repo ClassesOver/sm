@@ -230,6 +230,9 @@
 .pdf-static-text-dialog button { min-height: 34px; padding: 4px 12px; margin-right: 8px; font: inherit; }
 .native-pdf-editor[data-pdf-mode=staticText] .pdf-page-content { cursor: text; }
 .pdf-layout-body { display: flex; flex-wrap: wrap; gap: 8px; flex-direction: column; }
+.pdf-layout-directions { display:flex; flex-wrap:wrap; gap:8px 16px; margin:0; padding:4px 0; border:0; }
+.pdf-layout-directions label { display:flex; gap:6px; align-items:center; }
+.pdf-layout-dialog .pdf-layout-directions input[type=radio] { inline-size:auto; min-height:0; padding:0; accent-color:var(--office-accent); }
 .pdf-layout-body > button { min-height: var(--office-control-height); padding: 0 12px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: #fff; color: var(--office-ink); font: inherit; cursor: pointer; }
 .pdf-layout-body > button:hover { background: var(--office-hover-bg); border-color: var(--office-hover-border); }
 .pdf-layout-body > button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }

@@ -891,7 +891,10 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     pageColor:()=>effectiveDocxPageColor(nativeOperations(),pageColorModel),
     story:{setActive:active=>{if(!editor.isDestroyed)editor.commands.setStoryViewActive(active)}},
     onViewChange:()=>{if(!ready)return;if(readingMode)options.onSelectionChange?.([]);webMode=view.mode==='web'||view.mode==='story';columnLayoutReady=false;currentColumnLayout=null;scheduleColumns();ruler.refresh();navigation.refresh();editor.commands.setMeta('native-view-state',true)},
-    onPaginationPreview: showPaginationPreview, onZoomChange: () => { ruler.refresh(); navigation.refresh(); split.refreshLayout() }, navigation, outline, gridlines, ruler, split })
+    onPaginationPreview: showPaginationPreview, onZoomChange: () => {
+      ruler.refresh(); navigation.refresh(); split.refreshLayout()
+      if (ready && !editor.isDestroyed) editor.commands.setMeta('native-view-state', true)
+    }, navigation, outline, gridlines, ruler, split })
   const legacyHeaderFooter: DocxHeaderFooterController | undefined = hfModel ? {
     get editable() { return context.editingEnabled && !readingMode && !saving && !draft.saving && !draft.closed },
     anchor: hfAnchor,

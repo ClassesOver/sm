@@ -59,7 +59,7 @@ import { mountSlidesGuides } from './slides-guides'
 import { showSlidesSettingsDialog } from './slides-settings-dialog'
 import { formatClock } from './vendor/genoffice/renderer/slideshow-utils'
 import { equationTextBox, openSlidesEquationDialog } from './slides-equation'
-import { EFFECT_LABELS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
+import { EFFECT_LABELS, SEQUENCE_EFFECTS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, itemElementId, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceEffect, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 import { openSlidesFindReplace } from './slides-find-replace'
 import { pickSlideImage, prepareSlideImage } from './slides-native-images'
@@ -593,6 +593,11 @@ function paragraphCount(element: DeckElement) {
 function sourceAnimations(): SourceAnimation[] { return isNewSlide(selectedSlide) ? [] : deck.slides[selectedSlide]?.animations ?? [] }
 /** 新增页保存重开前没有可寻址对象，不能编辑动画。 */
 function animationUnavailable() { return locked() || isNewSlide(selectedSlide) || selectedObjects.size!==1 }
+function animationGalleryTarget(element: DeckElement | undefined) {
+  if (!element || isNewSlide(selectedSlide) || selectedObjects.size !== 1) return null
+  if (element.mediaKind) return 'media'
+  return element.editable && ['text', 'shape'].includes(element.type) ? 'shape' : null
+}
 /** 当前页的动画列表：已有整页序列则用它，否则由来源动画与尚未保存的逐条修改推导（不写入草稿）。 */
 function currentSequence(): SequenceItem[] {
   return animationSequences.get(selectedSlide) ?? initialSequence(sourceAnimations(), animationEdits.filter(item => item.slideIndex === selectedSlide).map(({ slideIndex: _slideIndex, ...rest }) => rest))
@@ -2616,6 +2621,10 @@ function renderInspector() {
     nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
   }
   nativeRibbon?.setValue('animationEffect', animationEffect.value)
+  const galleryTarget = animationGalleryTarget(element)
+  nativeRibbon?.setAnimationGallery(galleryTarget, galleryTarget
+    ? currentSequence().find(item => itemElementId(item, sourceAnimations()) === element?.id)?.effect ?? ''
+    : '')
   nativeRibbon?.setValue('animationTrigger', animationTrigger.value)
   nativeRibbon?.setValue('animationDuration', animationDuration.value)
   nativeRibbon?.setValue('animationDelay', animationDelay.value)
@@ -3309,6 +3318,22 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         for (let index = animationEdits.length - 1; index >= 0; index--) if (animationEdits[index]!.slideIndex === selectedSlide && animationEdits[index]!.elementId === target.id) animationEdits.splice(index, 1)
         updateSequence(items => removeElementAnimations(items, sourceAnimations(), target.id))
         if (before === currentSequence().length) statusMessage.textContent = '所选对象没有动画'
+        break
+      }
+      case 'applyAnimationEffect': {
+        const target = currentElement(), targetType = animationGalleryTarget(target)
+        if (!target || !targetType || animationUnavailable() || typeof value !== 'string'
+          || value === 'motionPath' || !SEQUENCE_EFFECTS.includes(value as SequenceEffect)
+          || value.startsWith('media') !== (targetType === 'media')) break
+        const source = sourceAnimations()
+        const count = animationByParagraph && targetType === 'shape' ? paragraphCount(target) : 0
+        updateSequence(items => {
+          const kept = removeElementAnimations(items, source, target.id)
+          if (kept.length + Math.max(1, count) > 500) throw new Error('动画序列已达到 500 项，请减少动画后重试')
+          selectedAnimationRow = -1
+          return appendAnimation(kept, { elementId: target.id, effect: value as SequenceEffect,
+            trigger: 'onClick', durationMs: defaultAnimationDuration(value), delayMs: 0 }, count)
+        })
         break
       }
       case 'motionPathRight': case 'motionPathDown': case 'motionPathDiagonal': case 'motionPathCircle': case 'motionPathZigzag': {

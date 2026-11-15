@@ -670,15 +670,28 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   animationTab.click()
   const animationPanel = host.querySelector<HTMLElement>('[data-ribbon-panel="animations"]')!
   const animationGroup = animationPanel.querySelector<HTMLElement>('[aria-label="Animation"]')!
-  const animationCommands = [...animationPanel.querySelectorAll<HTMLElement>('[data-command]')]
+  const advancedGroup = animationPanel.querySelector<HTMLElement>('[aria-label="Advanced Animation"]')!
+  const animationCommands = [...animationPanel.querySelectorAll<HTMLElement>('[data-command]:not([data-animation-effect])')]
   expect(animationCommands.map(control => control.dataset.command)).toEqual([
     'animationPreview', 'animationNone', 'animationEffect', 'animationDirection',
     'addAnimation', 'toggleAnimationPane', 'animationByParagraph',
     'motionPathRight', 'motionPathDown', 'motionPathDiagonal', 'motionPathCircle', 'motionPathZigzag',
     'animationTrigger', 'animationDuration', 'animationDelay',
   ])
-  expect(animationGroup.querySelector('[data-source-action="onApplyAnimation"]')).not.toBeNull()
-  expect(animationGroup.querySelector<HTMLElement>('[data-source-action="onAddAnimation"]')?.dataset.command).toBe('addAnimation')
+  const effects = [...animationGroup.querySelectorAll<HTMLButtonElement>('[data-animation-effect]')]
+  expect(effects.map(button => button.dataset.animationEffect)).toEqual(['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'mediaPlay', 'mediaPause', 'mediaStop'])
+  expect(effects.every(button => button.disabled && button.dataset.sourceAction === 'onApplyAnimation' && !!button.querySelector('svg'))).toBe(true)
+  ribbon.setAnimationGallery('shape', 'flyIn')
+  expect(animationGroup.querySelector('[data-animation-effect][aria-pressed="true"]')).toBe(effects[2])
+  effects[2].click()
+  expect(onAction).toHaveBeenCalledWith('applyAnimationEffect', 'flyIn')
+  expect(effects[19].disabled).toBe(true)
+  ribbon.setAnimationGallery('media', 'mediaPlay')
+  expect(effects[2].disabled).toBe(true)
+  expect(effects[19].disabled).toBe(false)
+  ribbon.setLocked(true); expect(effects[19].disabled).toBe(true)
+  ribbon.setLocked(false); expect(effects[19].disabled).toBe(false)
+  expect(advancedGroup.querySelector<HTMLElement>('[data-command="addAnimation"]')?.dataset.sourceAction).toBe('onAddAnimation')
   expect(animationPanel.querySelector<HTMLElement>('[data-source-action="onAnimTiming"]')?.dataset.command).toBe('animationTrigger')
   expect(animationPanel.querySelector('[data-command="animationPreview"]')?.getAttribute('data-unavailable')).toBeNull()
   // 整页动画序列接通后：无、动画窗格、按段与五条动作路径均可用，并派发各自命令
@@ -690,8 +703,8 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   }
   expect(animationPanel.querySelector<HTMLElement>('[data-command="motionPathZigzag"]')?.dataset.sourceAction).toBe('onApplyMotionPath')
   ribbon.setValue('toggleAnimationPane', 'true'); ribbon.setValue('animationByParagraph', 'true')
-  expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('aria-pressed')).toBe('true')
-  expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('aria-pressed')).toBe('true')
+  expect(advancedGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('aria-pressed')).toBe('true')
+  expect(advancedGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('aria-pressed')).toBe('true')
 
   transitions.find(button => button.dataset.transitionEffect === 'wipe')!.click()
   expect(onAction).toHaveBeenCalledWith('transition', 'wipe')

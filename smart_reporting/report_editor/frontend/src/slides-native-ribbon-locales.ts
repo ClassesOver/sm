@@ -1,6 +1,7 @@
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 
 const simplifiedChineseLabels: Record<string, string> = {
+  'Advanced Animation': '高级动画',
   Gradient: '渐变', 'No Gradient': '无渐变', 'Light Variations': '浅色变体', 'Dark Variations': '深色变体',
   'Linear Down': '线性向下', 'Linear Right': '线性向右', 'Linear Diagonal': '线性对角', 'From Center': '射线',
   'Theme Colors': '主题颜色', 'Standard Colors': '标准颜色',

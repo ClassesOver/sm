@@ -822,6 +822,31 @@ it('keeps text and paragraph animation targets coherent in one undo snapshot', a
   view.dispose()
 })
 
+it('applies the GenOffice animation gallery as a replacement, preserving other targets and undo', async () => {
+  const source = { ...deck, slides: [{ ...deck.slides[0],
+    elements: [...deck.slides[0].elements, { ...deck.slides[0].elements[0], id: 'other' }],
+    animations: [
+      { elementId: 'title', spid: 2, effect: 'fade', trigger: 'onClick', durationMs: 500, delayMs: 0 },
+      { elementId: 'other', spid: 3, effect: 'appear', trigger: 'onClick', durationMs: 0, delayMs: 0 },
+    ],
+  }] }
+  const draft = new NativeDraft(draftIdentity, draftStore())
+  const { shell, view } = await openDraft(draft, { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })
+  const pulse = shell.editor.querySelector<HTMLButtonElement>('[data-animation-effect="pulse"]')!
+  const fade = shell.editor.querySelector<HTMLButtonElement>('[data-animation-effect="fade"]')!
+  expect(fade.getAttribute('aria-pressed')).toBe('true')
+  pulse.click()
+  expect(draft.operations[0]).toMatchObject({ animationSequences: [{ slideIndex: 0, items: [
+    { source: 1, spid: 3, effect: 'appear' },
+    { elementId: 'title', effect: 'pulse', trigger: 'onClick', durationMs: 1000, delayMs: 0 },
+  ] }] })
+  expect(pulse.getAttribute('aria-pressed')).toBe('true')
+  shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+  expect(fade.getAttribute('aria-pressed')).toBe('true')
+  expect(draft.operations).toEqual([])
+  view.dispose!()
+})
+
 it('builds By Paragraph animations from pending expanded text rather than source paragraph count', async()=>{
   const draft=new NativeDraft(draftIdentity,draftStore())
   const {shell,view}=await openDraft(draft,{preview:vi.fn(async()=>({model:deck})),renderTree:vi.fn(async()=>({slides:[]}))})

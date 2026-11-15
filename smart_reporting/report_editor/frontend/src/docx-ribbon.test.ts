@@ -1255,6 +1255,8 @@ it.each([['网格线', 'gridlines-toggle', 'onShowGrid'], ['标尺', 'ruler-togg
     const button = ribbon.querySelector<HTMLButtonElement>('[data-action="'+action+'"]')!
     expect(button).not.toBeNull(); expect(button.disabled).toBe(false)
     expect(button.dataset.sourceAction).toBe(source); expect(button.getAttribute('aria-pressed')).toBe('false')
+    expect(button.matches('.rb-big')).toBe(true)
+    expect(button.querySelector('.rb-big-icon svg')?.getAttribute('width')).toBe('28')
     const down = new MouseEvent('mousedown',{cancelable:true}); button.dispatchEvent(down); expect(down.defaultPrevented).toBe(true)
     button.click(); expect(commands.run).toHaveBeenCalledWith(label); expect(button.getAttribute('aria-pressed')).toBe('true')
     button.click(); expect(button.getAttribute('aria-pressed')).toBe('false')

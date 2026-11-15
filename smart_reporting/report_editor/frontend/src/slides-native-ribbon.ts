@@ -3,6 +3,8 @@ import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
 import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
 import { SLIDE_TRANSITIONS } from './slides-transitions'
+import { AnimEffectIcon } from './vendor/genoffice-slides/components/icons'
+import { EFFECT_LABELS, type SequenceEffect } from './slides-animation-sequence'
 import { IconApplyAll, IconTransCircle, IconTransCover, IconTransDissolve, IconTransFade, IconTransMorph, IconTransNone, IconTransPull, IconTransPush, IconTransRandom, IconTransSplit, IconTransWipe, IconTransZoom } from './vendor/genoffice-slides/components/icons'
 import { SMARTART_GALLERY } from './vendor/genoffice-slides/components/smartart-gallery-data'
 import { CHART_GALLERY } from './vendor/genoffice-slides/components/chart-gallery-data'
@@ -108,6 +110,7 @@ export interface NativeSlidesRibbon {
   setAIEditEnabled(enabled: boolean, reason?: string): void
   setTransitionEditEnabled(enabled: boolean, reason?: string): void
   setTransitionApplyAllEnabled(enabled: boolean, reason?: string): void
+  setAnimationGallery(target: 'shape' | 'media' | null, effect: string): void
   setLocked(locked: boolean): void
   dispose(): void
 }
@@ -124,6 +127,19 @@ const transitionCards = {
   circle: ['Circle', IconTransCircle], cover: ['Cover', IconTransCover], pull: ['Uncover', IconTransPull],
   dissolve: ['Dissolve', IconTransDissolve], zoom: ['Zoom', IconTransZoom], random: ['Random', IconTransRandom],
 } as const
+
+// Pinned GenOffice Slides Ribbon.tsx ANIM_EFFECTS order and English locale labels.
+const animationCards = [
+  ['appear', 'Appear'], ['fade', 'Fade'], ['flyIn', 'Fly In'], ['wipe', 'Wipe'],
+  ['wipeDown', 'Wipe Down'], ['splitIn', 'Split'], ['bounce', 'Bounce'], ['flipIn', 'Flip'],
+  ['zoom', 'Zoom'], ['pulse', 'Pulse'], ['spin', 'Spin'], ['grow', 'Grow/Shrink'],
+  ['teeter', 'Teeter'], ['disappear', 'Disappear'], ['fadeOut', 'Fade Out'], ['flyOut', 'Fly Out'],
+  ['wipeOut', 'Wipe Out'], ['shrink', 'Shrink & Turn'], ['zoomOut', 'Zoom Out'],
+  ['mediaPlay', 'Play'], ['mediaPause', 'Pause'], ['mediaStop', 'Stop'],
+] as const satisfies ReadonlyArray<readonly [SequenceEffect, string]>
+const animationCardChineseLabels: Partial<Record<SequenceEffect, string>> = {
+  flipIn: '翻转式', shrink: '缩小旋转', mediaPlay: '播放', mediaPause: '暂停', mediaStop: '停止',
+}
 
 const noWrite = (operation: string) => `${operation} 尚无受支持的 editSlides 写回操作。`
 const PICTURE_TRANSPARENCY_PRESETS = ['0', '15', '30', '50', '65', '80', '95']
@@ -274,7 +290,9 @@ const tabs: Tab[] = [
     { label: 'Preview', controls: [{ id: 'animationPreview', label: 'Preview', sourceActionId: 'onAnimPreview' }] },
     { label: 'Animation', controls: [
       { id: 'animationNone', label: 'None', sourceActionId: 'onApplyAnimation' },
-      { id: 'animationEffect', label: 'Effect', kind: 'select', sourceActionId: 'onApplyAnimation', options: ['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'mediaPlay', 'mediaPause', 'mediaStop'] },
+    ] },
+    { label: 'Advanced Animation', controls: [
+      { id: 'animationEffect', label: 'Effect', kind: 'select', sourceActionId: 'onAddAnimation', options: animationCards.map(([kind]) => kind) },
       { id: 'animationDirection', label: 'Direction', kind: 'select', options: ['top', 'bottom', 'left', 'right'] },
       { id: 'addAnimation', label: 'Add Animation', sourceActionId: 'onAddAnimation' },
       { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane' },
@@ -472,6 +490,17 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       ;(button as HTMLButtonElement).disabled = locked || !transitionApplyAllReady
       button.title = transitionApplyAllReady ? '将当前页转场效果应用到全部保留页面；各页自动换片时间保留' : transitionApplyAllReason ?? '请先打开可编辑的演示文稿；一次最多支持 500 页'
     }
+  }
+  let animationTarget: 'shape' | 'media' | null = null
+  let appliedAnimation = ''
+  const updateAnimationGallery = () => {
+    for (const element of controls.get('applyAnimationEffect') ?? []) {
+      const button = element as HTMLButtonElement
+      const kind = button.dataset.animationEffect!
+      button.disabled = locked || !animationTarget || (kind.startsWith('media') !== (animationTarget === 'media'))
+      button.setAttribute('aria-pressed', String(kind === appliedAnimation))
+    }
+    for (const button of controls.get('animationNone') ?? []) (button as HTMLButtonElement).disabled = locked || !animationTarget
   }
   const selectTab = (id: string) => {
     if (id !== 'chartDesign') chartGallery?.close()
@@ -858,6 +887,24 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         } else if (control.id === 'shapeNoFill') controlHost.prepend(element)
         else controlHost.append(element)
       }
+      if (tab.id === 'animations' && groupDefinition.label === 'Animation') {
+        group.classList.add('slides-effect-gallery')
+        controls.set('applyAnimationEffect', animationCards.map(([kind, label]) => {
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.dataset.command = 'applyAnimationEffect'
+          button.dataset.sourceAction = 'onApplyAnimation'
+          button.dataset.animationEffect = kind
+          button.innerHTML = renderToStaticMarkup(reactElement(AnimEffectIcon, { kind, size: 24 }))
+          button.append(document.createTextNode(document.documentElement.lang.toLowerCase().startsWith('zh')
+            ? animationCardChineseLabels[kind] ?? EFFECT_LABELS[kind] ?? label : label))
+          button.addEventListener('click', () => {
+            if (!button.disabled) options.onAction('applyAnimationEffect', kind)
+          })
+          group.append(button)
+          return button
+        }))
+      }
       if (tab.id === 'chartDesign' && groupDefinition.label === 'Chart Styles') {
         chartGallery = createNativeChartGallery(group, (command, value) => options.onAction(command, value))
         chartGallery.setLocked(locked)
@@ -874,6 +921,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   updateSlideOrientationState()
   updateTransitionApplyAll()
   updateTransitionEdit()
+  updateAnimationGallery()
   updateCommentEdit()
   updateAIEdit()
 
@@ -908,6 +956,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     setAIEditEnabled(enabled, reason) { aiEditReady = enabled; aiEditReason = reason; updateAIEdit() },
     setTransitionEditEnabled(enabled, reason) { transitionEditReady = enabled; transitionEditReason = reason; updateTransitionEdit() },
     setTransitionApplyAllEnabled(enabled, reason) { transitionApplyAllReady = enabled; transitionApplyAllReason = reason; updateTransitionApplyAll() },
+    setAnimationGallery(target, effect) { animationTarget = target; appliedAnimation = effect; updateAnimationGallery() },
     setSlideOrientationEnabled(enabled) {
       hasWritableSlideSize = enabled
       updateSlideOrientationState()
@@ -991,6 +1040,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateSlideOrientationState()
       updateTransitionApplyAll()
       updateTransitionEdit()
+      updateAnimationGallery()
       updateCommentEdit()
       updateAIEdit()
     },

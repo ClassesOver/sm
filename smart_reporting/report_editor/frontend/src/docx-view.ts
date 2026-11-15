@@ -181,6 +181,7 @@ export function createDocxViewCommands(options: {
     },
     active(label) {
       if (label === '拆分') return !disposed && !!options.split?.visible
+      if (label === '100%') return !disposed && zoom === 100
       return !disposed && (label === '深色模式' ? dark : label === '阅读视图' ? reading : label === 'Web 版式' ? web : label === '标尺' ? !!options.ruler?.visible : label === '网格线' ? !!options.gridlines?.visible : label === '导航窗格' ? !!options.navigation?.visible : label === '故事' ? story : label === '大纲' ? viewMode() === 'outline' : label === '页面视图' ? !reading && viewMode() === 'page' : false)
     },
     run(label) {

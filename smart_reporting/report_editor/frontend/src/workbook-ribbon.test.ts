@@ -1251,29 +1251,36 @@ it('dispatches the four GenOffice Freeze Panes choices and guards the selection-
     editable: () => editable, rotation: () => 0, hasSelection: () => selected,
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
-  const freeze = document.querySelector<HTMLSelectElement>('[data-ribbon-control="freeze-panes"]')!
-  expect([...freeze.options].slice(1).map(option => [option.value, option.textContent])).toEqual([
+  const freeze = document.querySelector<HTMLButtonElement>('[data-ribbon-control="freeze-panes"]')!
+  expect(freeze.tagName).toBe('BUTTON')
+  expect(freeze.getAttribute('aria-haspopup')).toBe('listbox')
+  const choices = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="冻结窗格"] [role="option"]'))
+  expect(choices().map(option => [option.dataset.menuCommand, option.textContent])).toEqual([
     ['freeze-here', '在所选位置冻结窗格'], ['freeze-top-row', '冻结首行'],
     ['freeze-first-col', '冻结首列'], ['unfreeze', '取消冻结窗格'],
   ])
-  const select = (value: string) => {
-    freeze.value = value
-    freeze.dispatchEvent(new Event('change'))
-    expect(freeze.value).toBe('')
-  }
-  for (const option of [...freeze.options].slice(1)) {
-    select(option.value)
-    expect(command).toHaveBeenLastCalledWith(option.value)
+  for (const option of choices()) {
+    freeze.click()
+    option.click()
+    expect(command).toHaveBeenLastCalledWith(option.dataset.menuCommand)
+    expect(freeze.getAttribute('aria-expanded')).toBe('false')
   }
   selected = false; ribbon.refreshState()
-  expect(freeze.options[1]!.disabled).toBe(true)
-  select('freeze-here')
+  freeze.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+  expect(choices()[0]!.disabled).toBe(true)
+  expect(document.activeElement).toBe(choices()[1])
+  choices()[0]!.click()
   expect(command).toHaveBeenCalledTimes(4)
-  select('freeze-top-row')
+  choices()[1]!.click()
   expect(command).toHaveBeenCalledTimes(5)
+  freeze.click()
+  choices()[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  expect(freeze.getAttribute('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(freeze)
+  freeze.click()
   editable = false; ribbon.refreshState()
   expect(freeze.disabled).toBe(true)
-  select('unfreeze')
+  expect(freeze.getAttribute('aria-expanded')).toBe('false')
   expect(command).toHaveBeenCalledTimes(5)
   ribbon.dispose()
 })
@@ -1338,8 +1345,8 @@ it('offers all source zoom presets and the full dialog while respecting view rea
   const dialog = document.querySelector<HTMLButtonElement>('[data-ribbon-command="zoom-open"]')!
   expect(dialog.disabled).toBe(false)
   dialog.click(); expect(command).toHaveBeenLastCalledWith('zoom-open')
-  const presets = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')!
-  expect([...presets.options].map(option => option.value)).toEqual(['', '50', '75', '100', '125', '150', '200'])
+  const presets = document.querySelector<HTMLButtonElement>('[data-ribbon-menu="zoom"]')!
+  expect(presets.tagName).toBe('BUTTON')
   expect(presets.disabled).toBe(false)
   expect(presets.getAttribute('aria-label')).toBe('缩放')
   expect(presets.title).toBe('缩放工作表')
@@ -1358,9 +1365,15 @@ it('offers all source zoom presets and the full dialog while respecting view rea
   expect(reset!.title).toBe('重置缩放')
   expect(reset!.disabled).toBe(false)
   reset!.click(); expect(command).toHaveBeenLastCalledWith('zoom-reset')
-  presets.value = '125'; presets.dispatchEvent(new Event('change'))
+  presets.click()
+  const options = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="缩放"] [role="option"]'))
+  expect(options.map(option => option.textContent)).toEqual(['50%', '75%', '100%', '125%', '150%', '200%'])
+  options[3]!.click()
   expect(command).toHaveBeenLastCalledWith('zoom:125')
-  expect(presets.value).toBe('')
+  expect(presets.getAttribute('aria-expanded')).toBe('false')
+  presets.click()
+  document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+  expect(presets.getAttribute('aria-expanded')).toBe('false')
   ready = false; ribbon.refreshState()
   expect(dialog.disabled).toBe(true); expect(presets.disabled).toBe(true)
 })

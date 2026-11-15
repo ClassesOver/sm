@@ -1,3 +1,4 @@
+import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import { createOfficeAIEntry } from './office-ai-entry'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { HOME_TABLE_STYLE_PRESETS, type HomeTableStylePreset } from './workbook-table-create'
@@ -573,6 +574,7 @@ const FONT_FAMILIES = ['Arial', 'Aptos', 'Calibri', 'Cambria', 'Times New Roman'
 const FONT_SIZES = [9, 10, 11, 12, 14, 16, 18, 22, 26]
 const FONT_SIZE_LADDER = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 26, 28, 36, 48, 72]
 let fontListSequence = 0
+let viewMenuSequence = 0
 
 function fontFamilyFromText(text: string): string | undefined {
   const family = text.trim()
@@ -999,6 +1001,7 @@ export function mountWorkbookRibbon(
   const disposeScroll = bindOfficeRibbonScroll(container.querySelector<HTMLElement>('.workbook-ribbon')!)
   let active: RibbonTab = 'Home', borderColor = '#000000'
   let visibleTabs = tabs
+  let closeLargeViewMenu: ((focus?: boolean) => void) | undefined
 
   const stateText = (state: FormatValue<unknown>) => state.kind === 'mixed' ? '混合' : state.kind === 'unavailable' ? '不可判定' : String(state.value)
   type FontField = 'font-family' | 'font-size'
@@ -1347,17 +1350,20 @@ export function mountWorkbookRibbon(
         String(pageState?.[key] ?? 0))
     }
     // 页面布局动作下拉依赖页面设置读模型；选择性粘贴下拉由上方剪贴板状态单独管理。
-    const zoomMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')
+    const zoomMenu = body.querySelector<HTMLButtonElement>('button[data-ribbon-menu="zoom"]')
     if (zoomMenu) {
       zoomMenu.disabled = view.zoomSelectionAvailable?.() === false
       zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放工作表'
+      if (zoomMenu.disabled && zoomMenu.getAttribute('aria-expanded') === 'true') closeLargeViewMenu?.()
     }
-    const freezeMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-control="freeze-panes"]')
+    const freezeMenu = body.querySelector<HTMLButtonElement>('button[data-ribbon-control="freeze-panes"]')
     if (freezeMenu) {
       freezeMenu.disabled = !editable
       freezeMenu.title = editable ? '冻结行和列' : '当前工作簿不可编辑或正在保存'
       freezeMenu.setAttribute('aria-description', freezeMenu.title)
-      freezeMenu.options[1]!.disabled = !selected
+      const freezeHere = freezeMenu.parentElement?.querySelector<HTMLButtonElement>('[data-menu-command="freeze-here"]')
+      if (freezeHere) freezeHere.disabled = !selected
+      if (freezeMenu.disabled && freezeMenu.getAttribute('aria-expanded') === 'true') closeLargeViewMenu?.()
     }
     const notes = body.querySelector<HTMLSelectElement>('[data-ribbon-control="notes"]')
     if (notes) for (const option of Array.from(notes.options).slice(1)) {
@@ -1463,8 +1469,8 @@ export function mountWorkbookRibbon(
     button.addEventListener('click', () => { if (!button.disabled) onCommand(command) })
     return button
   }
-  const largeViewMenu = (label: string, iconCommand: string, select: HTMLSelectElement) => {
-    const wrapper = document.createElement('label')
+  const largeViewMenu = (label: string, iconCommand: string, detail: string, choices: readonly (readonly [RibbonCommand, string])[]) => {
+    const wrapper = document.createElement('div')
     wrapper.className = 'workbook-ribbon-chart-menu workbook-ribbon-large-menu'
     const icons = document.createElement('span')
     icons.className = 'workbook-ribbon-large-menu-icons'
@@ -1477,10 +1483,81 @@ export function mountWorkbookRibbon(
     caption.textContent = label
     icons.setAttribute('aria-hidden', 'true')
     caption.setAttribute('aria-hidden', 'true')
-    wrapper.append(icons, caption, select)
-    return wrapper
+    const trigger = document.createElement('button')
+    trigger.type = 'button'
+    trigger.title = detail
+    trigger.setAttribute('aria-label', label)
+    trigger.setAttribute('aria-haspopup', 'listbox')
+    trigger.setAttribute('aria-expanded', 'false')
+    const menu = document.createElement('div')
+    menu.className = 'workbook-ribbon-view-menu'
+    menu.id = 'workbook-view-menu-' + ++viewMenuSequence
+    menu.hidden = true
+    menu.setAttribute('popover', 'manual')
+    menu.setAttribute('role', 'listbox')
+    menu.setAttribute('aria-label', label)
+    trigger.setAttribute('aria-controls', menu.id)
+    let dismiss: (() => void) | undefined
+    const enabledChoices = () => Array.from(menu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+    const close = (focus = false) => {
+      if (menu.hidden) return
+      dismiss?.()
+      dismiss = undefined
+      menu.hidePopover?.()
+      menu.hidden = true
+      trigger.setAttribute('aria-expanded', 'false')
+      closeLargeViewMenu = undefined
+      if (focus) trigger.focus()
+    }
+    const open = () => {
+      if (trigger.disabled || !menu.hidden) return
+      closeLargeViewMenu?.()
+      menu.hidden = false
+      menu.showPopover?.()
+      trigger.setAttribute('aria-expanded', 'true')
+      const anchor = trigger.getBoundingClientRect(), rectangle = menu.getBoundingClientRect()
+      menu.style.left = Math.max(8, Math.min(anchor.left, innerWidth - rectangle.width - 8)) + 'px'
+      menu.style.top = Math.max(8, Math.min(anchor.bottom + 4, innerHeight - rectangle.height - 8)) + 'px'
+      dismiss = installPopoverDismiss(close, { inside: () => [wrapper] })
+      closeLargeViewMenu = close
+      enabledChoices()[0]?.focus({ preventScroll: true })
+    }
+    trigger.addEventListener('click', () => menu.hidden ? open() : close())
+    trigger.addEventListener('keydown', event => {
+      if (event.key !== 'ArrowDown' || event.isComposing) return
+      event.preventDefault()
+      open()
+    })
+    menu.addEventListener('keydown', event => {
+      if (event.isComposing) return
+      if (event.key === 'Escape') { event.preventDefault(); close(true); return }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+      event.preventDefault()
+      const choices = enabledChoices(), current = choices.indexOf(document.activeElement as HTMLButtonElement)
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? choices.length - 1
+        : (current + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length
+      choices[next]?.focus()
+    })
+    for (const [command, text] of choices) {
+      const option = document.createElement('button')
+      option.type = 'button'
+      option.dataset.menuCommand = command
+      option.setAttribute('role', 'option')
+      option.setAttribute('aria-selected', 'false')
+      option.textContent = text
+      option.addEventListener('click', () => {
+        if (!option.disabled && !trigger.disabled && !menu.hidden) {
+          close(true)
+          onCommand(command)
+        }
+      })
+      menu.append(option)
+    }
+    wrapper.append(icons, caption, trigger, menu)
+    return { wrapper, trigger }
   }
   const render = () => {
+    closeLargeViewMenu?.()
     visibleTabs = view?.table?.() ? [...tabs, 'Table Design'] : tabs
     if (!visibleTabs.includes(active)) active = 'Home'
     nav.replaceChildren(...visibleTabs.map(tab => {
@@ -1740,28 +1817,15 @@ export function mountWorkbookRibbon(
         section.append(controls)
       }
       if (active === 'View' && group.title === '窗口') {
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'
-        select.setAttribute('aria-label', '冻结窗格')
-        select.dataset.ribbonControl = 'freeze-panes'
-        select.title = '冻结行和列'
-        select.append(new Option('冻结窗格', ''), ...FREEZE_CHOICES.map(([id, label]) => new Option(label, id)))
-        select.addEventListener('change', () => {
-          const option = select.selectedOptions[0]
-          select.value = ''
-          if (option?.value && !option.disabled && !select.disabled) onCommand(option.value as RibbonCommand)
-        })
-        section.append(largeViewMenu('冻结窗格', 'freeze-panes', select))
+        const { wrapper, trigger } = largeViewMenu('冻结窗格', 'freeze-panes', '冻结行和列', FREEZE_CHOICES)
+        trigger.dataset.ribbonControl = 'freeze-panes'
+        section.append(wrapper)
       }
       if (active === 'View' && group.title === '缩放') {
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '缩放'); select.dataset.ribbonMenu = 'zoom'
-        const title = document.createElement('option'); title.value = ''; title.textContent = '缩放'
-        select.append(title, ...[50, 75, 100, 125, 150, 200].map(percent => {
-          const option = document.createElement('option'); option.value = String(percent); option.textContent = `${percent}%`; return option
-        }))
-        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`zoom:${Number(value)}`) })
-        section.append(largeViewMenu('缩放', 'zoom-open', select))
+        const { wrapper, trigger } = largeViewMenu('缩放', 'zoom-open', '缩放工作表',
+          [50, 75, 100, 125, 150, 200].map(percent => [`zoom:${percent}`, percent + '%']))
+        trigger.dataset.ribbonMenu = 'zoom'
+        section.append(wrapper)
       }
       for (const item of group.actions) {
         if (active === 'Home' && item.id === 'cell-style') continue
@@ -1897,7 +1961,7 @@ export function mountWorkbookRibbon(
   }
   nav.addEventListener('keydown', onTabKeyDown)
   render()
-  return { refreshState, dispose() { disposeScroll(); nav.removeEventListener('keydown', onTabKeyDown); container.replaceChildren() } }
+  return { refreshState, dispose() { closeLargeViewMenu?.(); disposeScroll(); nav.removeEventListener('keydown', onTabKeyDown); container.replaceChildren() } }
 }
 
 /** Public FRange composed style access preserves inherited row/column rotation. */

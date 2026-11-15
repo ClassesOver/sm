@@ -429,6 +429,29 @@ it.each([false,true])('document properties close restores a visible entry or cur
  const close=panel.querySelector<HTMLButtonElement>('[data-metadata-cancel]');expect(close).not.toBeNull();close!.focus();close!.click()
  expect(panel.open).toBe(false);expect(document.activeElement).toBe(changed?tab:entry);expect(f.draft.operations).toEqual([])
 })
+it('submits merger settings with Enter and the selected source direction radio', async () => {
+ const f=await fixture({pages:3});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
+ const open=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.mergePages"]')!
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="合并页面"]') ?? f.root.querySelector<HTMLDialogElement>('dialog:has(.pdf-layout-body)')!
+ open.focus();open.click()
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ const count=dialog.querySelector<HTMLInputElement>('[aria-label="每张页数"]')!
+ const enter=(options:KeyboardEventInit={})=>count.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,...options}))
+ const horizontal=dialog.querySelector<HTMLInputElement>('input[type=radio][value=horizontal]')!
+ const vertical=dialog.querySelector<HTMLInputElement>('input[type=radio][value=vertical]')!
+ expect(document.activeElement).toBe(count)
+ expect(vertical.checked).toBe(true);horizontal.click();expect(vertical.checked).toBe(false)
+ dialog.querySelector<HTMLInputElement>('input[type=checkbox]')!.click()
+ count.value='1';enter({isComposing:true});expect(count.hasAttribute('aria-invalid')).toBe(false)
+ enter();expect(count.getAttribute('aria-invalid')).toBe('true');expect(dialog.open).toBe(true)
+ count.value='3';count.dispatchEvent(new Event('input',{bubbles:true}));expect(count.hasAttribute('aria-invalid')).toBe(false)
+ enter()
+ const operation={kind:'mergePages',perSheet:3,direction:'horizontal',separator:true}
+ await vi.waitFor(()=>expect(f.draft.operations).toEqual([operation]))
+ expect(document.activeElement).toBe(open)
+ await vi.waitFor(()=>expect(f.api.preview).toHaveBeenCalledWith(expect.objectContaining({operations:[operation]}),expect.anything()))
+})
 it('shows the source paper presets and applies the chosen size to the current page set', async () => {
  const f=await fixture({pages:3,capabilities:{pageSize:true}});await f.create()
  f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
