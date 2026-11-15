@@ -7,6 +7,7 @@ ephemeral and process-local; no acceptance or saving API is provided.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import io
 import json
@@ -57,6 +58,8 @@ class XlsxLiteralPreviewEngine:
         source = await self._verified_source(request.scope)
         operations = await self._propose(request)
         validate_xlsx_operations(request.selection, operations)
+        # A proposal may take seconds; reject a stale snapshot before publishing.
+        await self._verified_source(request.scope)
         workbook = load_workbook(io.BytesIO(source), read_only=False, data_only=False)
         try:
             changes = []
@@ -94,4 +97,4 @@ class XlsxLiteralPreviewEngine:
         if entry is None or entry[0] != scope:
             raise PermissionError("document_task_not_accessible")
         await self._verified_source(scope)
-        return dict(entry[2], changes=[dict(item) for item in entry[2]["changes"]])
+        return deepcopy(entry[2])
