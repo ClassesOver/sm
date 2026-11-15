@@ -19,7 +19,7 @@ it('发布邀请、接收连接器回复并安全重试同一条消息', async (
     details.dispatchEvent(new Event('toggle'))
     await vi.waitFor(() => expect(panel.querySelector('li')?.textContent).toContain('<b>合成回复</b>'))
     expect(panel.querySelector('li b')).toBeNull()
-    panel.querySelector('label input')!.value = 'synthetic-subject'
+    panel.querySelector<HTMLInputElement>('label input')!.value = 'synthetic-subject'
     const [invite, revoke, send] = panel.querySelectorAll('button')
     invite.click()
     const link = panel.querySelector<HTMLInputElement>('input[readonly]')!
