@@ -89,6 +89,10 @@ def create_report_channel_router(
         bound = acp_conversations.get((channel, identity))
         if bound is None and acp is not None:
             bound = await acp.restore(channel, identity)
+            if bound is not None:
+                # Keep the restored conversation in this worker. In-memory mode
+                # relies on this instance for its session and message receipts.
+                acp_conversations[(channel, identity)] = bound
         if bound is None:
             raise HTTPException(403, "report_channel_membership_required")
         try:
