@@ -46,6 +46,10 @@ class ChannelWordCandidateAdapter:
         draft = await self._word._draft(request.scope.channel)
         if draft.source_sha256 != request.scope.source_sha256:
             raise PermissionError("document_source_changed")
+        # The unified request must not silently discard the requested selection.
+        # Word currently edits only the host-authorized draft selection.
+        if list(request.selection) != draft.selection:
+            raise ValueError("document_selection_mismatch")
         result = await self._word.start(
             request.scope.channel,
             identity,
