@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from ..external_word_transport import ExternalWordTransport
 from ..reporting.models import ReportingError
 from ..task_execution.models import AttemptOutcome, TaskExecutionScope, TaskState
 from ..task_execution.native_word_contracts import (
@@ -116,15 +118,23 @@ class WordTaskDispatcher:
         await self._current_editor(ref, session_reference, base)
         return NativeWordAIProposal.model_validate(receipt['proposal'])
 
-    async def execute(self, ref):
+    @staticmethod
+    async def _require_authorization(authorization_check):
+        if authorization_check is not None and not await authorization_check():
+            raise _invalid('native_permission_denied')
+
+    async def execute(self, ref, *, authorization_check: Callable[[], Awaitable[bool]] | None = None):
         self.require_available()
+        await self._require_authorization(authorization_check)
         task = await self.repository.get_task_snapshot(ref.scope.external_run_id)
         if task is None or task.scope != ref.scope:
             raise _invalid()
         if task.state is TaskState.COMPLETED:
-            return await self._completed_proposal(ref)
+            result = await self._completed_proposal(ref)
+            await self._require_authorization(authorization_check)
+            return result
         async with TaskSession(self.repository, ref.scope) as task_session:
-            return await self._execute_claim(ref, task_session)
+            return await self._execute_claim(ref, task_session, authorization_check=authorization_check)
 
     async def _completed_proposal(self, ref):
         receipt = await self.repository.get_completed_native_word_candidate(ref.scope,
@@ -158,11 +168,14 @@ class WordTaskDispatcher:
             # failure, retry the model, or acquire authority via scope-only cancel.
             return
 
-    async def _execute_claim(self, ref, task_session):
+    async def _execute_claim(self, ref, task_session, *, authorization_check=None):
         task_id = ref.scope.external_run_id
         session_reference = ref.word_input.binding.server_session_reference
         bridge = None
+        ticket = None
+        external = self.transport if isinstance(self.transport, ExternalWordTransport) else None
         try:
+            await self._require_authorization(authorization_check)
             task = await self.repository.get_task_snapshot(task_id)
             if task.state is TaskState.NEW:
                 task, _ = await self.repository.open_initial(task_id, task_session.lease, task.state_version)
@@ -184,6 +197,7 @@ class WordTaskDispatcher:
                                  session.expires_at.timestamp(), task.deadline_at.timestamp())
                 ticket = self.codec.issue(principal, expires_at=expires_at)
                 async def authorize():
+                    await self._require_authorization(authorization_check)
                     task_session.assert_alive()
                     current = await self.repository.get_task_snapshot(task_id)
                     if current is None or current.state_version != principal['stateVersion']:
@@ -194,6 +208,9 @@ class WordTaskDispatcher:
                     # TaskSession.assert_alive alone is only a local lease snapshot.
                     await self.repository.read_native_word_input(**self._fence(ref, task_session, current))
                     task_session.assert_alive()
+                    if external is not None:
+                        external.assert_authorized(task_id, ticket=ticket)
+                    await self._require_authorization(authorization_check)
                     return principal
                 selected = ref.word_input.model_dump(mode='json', by_alias=True)['selectedParagraphs']
                 bridge = WordTaskMcpBridge(selected=selected, principal=principal, authorize=authorize,
@@ -203,15 +220,23 @@ class WordTaskDispatcher:
                 instruction = await self.repository.attempt_instruction(task_id, task.current_attempt_no)
                 if hashlib.sha256(instruction.encode()).hexdigest() != ref.word_input.instruction_sha256:
                     raise _invalid()
-                final = await self.transport.run(server=bridge.server, ticket=ticket,
+                transport_args = dict(server=bridge.server, ticket=ticket,
                     task_id=task_id, instruction=instruction)
+                if external is not None:
+                    transport_args['registered_proposal'] = lambda: bridge.registered_proposal
+                await self._require_authorization(authorization_check)
+                final = await self.transport.run(**transport_args)
                 parsed = await bridge.reconcile(final, ticket=ticket)
                 task_session.assert_alive()
                 await self._current_editor(ref, session_reference)
+                if external is not None:
+                    external.assert_authorized(task_id, ticket=ticket)
+                await self._require_authorization(authorization_check)
                 receipt = await self.repository.commit_native_word_candidate(
                     proposal=parsed.model_dump(mode='json'),
                     registered_proposal=bridge.registered_proposal,
                     **self._fence(ref, task_session, task))
+            await self._require_authorization(authorization_check)
             task = await self.repository.get_task_snapshot(task_id)
             if task.state is not TaskState.FINISHING:
                 task = await self.repository.request_finish(task_id, task_session.lease,
@@ -220,7 +245,9 @@ class WordTaskDispatcher:
             await self.repository.finalize_finish(task_id, task_session.lease, task.state_version,
                 agno_status='receipt-recovered' if bridge is None else 'completed')
 
-            return await self._completed_proposal(ref)
+            result = await self._completed_proposal(ref)
+            await self._require_authorization(authorization_check)
+            return result
         except BaseException as error:
             if bridge is not None:
                 bridge.cancel()
@@ -230,6 +257,9 @@ class WordTaskDispatcher:
                 if owner is not None and owner.cancelling():
                     raise asyncio.CancelledError() from None
             raise
+        finally:
+            if external is not None and ticket is not None:
+                external.revoke(task_id, ticket=ticket)
 
     async def cancel(self, ref):
         return await self.repository.cancel_and_reject(ref.scope)

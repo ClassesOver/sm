@@ -142,6 +142,13 @@ class WordTaskMcpBridge:
 
         @self.server.tool
         async def propose_operations(task_id: str, summary: str, operations: list[dict[str, Any]]) -> dict:
+            """Register a candidate after reading each affected block with read_blocks.
+
+            For paragraph replacement, send operations as a nonempty JSON array of
+            flat objects, for example [{"kind":"replaceParagraph","blockId":"<exact
+            blockId returned by get_document_context>","text":"New paragraph"}].
+            Use kind, blockId, and text at the same level.
+            """
             await self._authorize(task_id)
             if self._registered is not None:
                 raise _error()

@@ -36,6 +36,7 @@ export interface NativeContextResponse {
   pdfTextEnabled?: boolean
   officeReadAIEnabled?: boolean
   wordReadAIEnabled?: boolean
+  reportChannelEnabled?: boolean
   pdfReadAIEnabled?: boolean
   pdfReviewAIEnabled?: boolean
   pdfFormAIEnabled?: boolean
@@ -46,6 +47,7 @@ export type NativeAISelection = {blockId: string; cellId?: string} | {pageId: st
 type NativeSkippedOperation = {operationIndex: number; kind: string; pageId: string; reason: string}
 export interface NativeAIJob {
   editId: string
+  accepted?: boolean
   status: 'running' | 'succeeded' | 'failed' | 'cancelled'
   snapshotSha256: string
   proposal?: {
@@ -198,6 +200,16 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
   return {
     newWord: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/new',payload)).json(),
     saveWordAs: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/save-as',payload)).json(),
+    readReportChannel: async (after: number, signal: AbortSignal): Promise<{sequence:number; sender:string; text:string}[]> =>
+      (await request(`channels/editor-messages?after=${after}`, undefined, signal)).json(),
+    postReportChannel: async (message_id: string, text: string, signal: AbortSignal): Promise<void> => {
+      await request('channels/editor-messages', {message_id, text}, signal)
+    },
+    inviteReportConnector: async (subject: string): Promise<{url: string}> =>
+      (await request('channels/invitations', {connector:'dsh', subject})).json(),
+    revokeReportConnector: async (subject: string): Promise<void> => {
+      await request('channels/revoke', {connector:'dsh', subject})
+    },
     context: async (signal?: AbortSignal): Promise<NativeContextResponse> => (await request('context', undefined, signal)).json(),
     imagePixels: async (target: {sourceSha256: string; pageId: string; imageId: string; expectedImageSha256: string}, signal?: AbortSignal): Promise<{sourceSha256:string;imageId:string;expectedImageSha256:string;pageId:string;image:string;width:number;height:number;sha256:string}> => (await request('image-pixels', target, signal)).json(),
     imageBackground: async (target: {sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};pxWidth:number}, signal?:AbortSignal): Promise<{sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};image:string;width:number;height:number;sha256:string}> => (await request('image-background',target,signal)).json(),

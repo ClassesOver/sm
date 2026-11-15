@@ -103,6 +103,102 @@ describe('shared Office task control',()=>{
   await controller.cancel();expect(cancel).toHaveBeenCalledTimes(2);expect(cancel).toHaveBeenLastCalledWith('task')
  })
 
+ it('follow resumes an existing task and observes its terminal state',async()=>{
+  const status=vi.fn(async()=>({id:'existing',status:'completed'}))
+  const start=vi.fn(async()=>({id:'new',status:'completed'}))
+  const controller=new OfficeAssistantController({start,status,cancel:async()=>{},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  expect(await controller.follow('existing')).toEqual({id:'existing',status:'completed'})
+  expect(status).toHaveBeenCalledWith('existing',expect.any(AbortSignal))
+  expect(start).not.toHaveBeenCalled()
+ })
+ it('follow cancellation cleans a task returned after local abort',async()=>{
+  const delayed=deferred<Job>(),cancel=vi.fn(async()=>{}),cancelRequest=vi.fn(async()=>{})
+  const controller=new OfficeAssistantController({start:async()=>({id:'other',status:'completed'}),status:()=>delayed.promise,cancel,cancelRequest,id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  const following=controller.follow('existing')
+  await controller.cancel()
+  delayed.resolve({id:'existing',status:'running'})
+  expect(await following).toBeUndefined()
+  expect(cancel).toHaveBeenCalledWith('existing')
+  expect(cancelRequest).not.toHaveBeenCalled()
+ })
+
+ it('cancels a followed task before the initial status request resolves',async()=>{
+  const waiting=deferred<Job>(),cancel=vi.fn(async()=>{}),cancelRequest=vi.fn(async()=>{})
+  const controller=new OfficeAssistantController({
+    start:async()=>({id:'unused',status:'completed'}),status:()=>waiting.promise,
+    cancel,cancelRequest,id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  const resumed=controller.follow('known-task')
+  await controller.cancel()
+  expect(cancel).toHaveBeenCalledTimes(1)
+  expect(cancel).toHaveBeenCalledWith('known-task')
+  expect(cancelRequest).not.toHaveBeenCalled()
+  waiting.resolve({id:'known-task',status:'completed'})
+  expect(await resumed).toBeUndefined()
+  expect(cancel).toHaveBeenCalledTimes(1)
+ })
+
+ it('refuses a different task identity when following an existing task',async()=>{
+  const cancel=vi.fn(async()=>{}),progress=vi.fn()
+  const controller=new OfficeAssistantController({
+    start:async()=>({id:'unused',status:'completed'}),
+    status:async()=>({id:'unrelated',status:'completed'}),cancel,
+    id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  await expect(controller.follow('authorized-task',progress)).rejects.toThrow('office_task_identity_mismatch')
+  expect(progress).not.toHaveBeenCalled()
+  expect(cancel).toHaveBeenCalledWith('authorized-task')
+  expect(cancel).not.toHaveBeenCalledWith('unrelated')
+ })
+ it('rejects task ID changing during polling without adopting the unrelated task',async()=>{
+  const cancel=vi.fn(async()=>{})
+  const status=vi.fn().mockResolvedValueOnce({id:'authorized-task',status:'running'})
+    .mockResolvedValueOnce({id:'unrelated',status:'completed'})
+  const controller=new OfficeAssistantController({
+    start:async()=>({id:'unused',status:'completed'}),status,cancel,
+    id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  await expect(controller.follow('authorized-task')).rejects.toThrow('office_task_identity_mismatch')
+  expect(cancel).toHaveBeenCalledWith('authorized-task')
+  expect(cancel).not.toHaveBeenCalledWith('unrelated')
+ })
+
+ it('new task cancellation does not wait on a stalled older cancellation',async()=>{
+  let finishOld!:()=>void
+  const oldCleanup=new Promise<void>(resolve=>{finishOld=resolve})
+  const cancel=vi.fn().mockImplementationOnce(()=>oldCleanup).mockResolvedValue(undefined)
+  const start=vi.fn().mockResolvedValueOnce({id:'old',status:'completed'})
+    .mockResolvedValueOnce({id:'new',status:'completed'})
+  const controller=new OfficeAssistantController({
+    start,status:async()=>({id:'unused',status:'completed'}),cancel,
+    id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  await controller.run({},'old-request')
+  const pendingOld=controller.cancel()
+  await controller.run({},'new-request')
+  await controller.cancel()
+  expect(cancel).toHaveBeenCalledTimes(2)
+  expect(cancel).toHaveBeenNthCalledWith(1,'old')
+  expect(cancel).toHaveBeenNthCalledWith(2,'new')
+  finishOld()
+  await pendingOld
+ })
+
+ it('never cancels unrelated task ID in late status response after follow cancellation',async()=>{
+  const waiting=deferred<Job>(),cancel=vi.fn(async()=>{})
+  const controller=new OfficeAssistantController({
+    start:async()=>({id:'unused',status:'completed'}),status:()=>waiting.promise,
+    cancel,id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  const following=controller.follow('authorized-task')
+  await controller.cancel()
+  waiting.resolve({id:'unrelated-task',status:'running'})
+  expect(await following).toBeUndefined()
+  expect(cancel).toHaveBeenCalledTimes(1)
+  expect(cancel).toHaveBeenCalledWith('authorized-task')
+  expect(cancel).not.toHaveBeenCalledWith('unrelated-task')
+ })
+
  it('retries a failed late-start task cancellation and exposes retry failures',async()=>{
   const started=deferred<Job>(),attempts:string[]=[]
   const controller=new OfficeAssistantController({start:()=>started.promise,status:async()=>({id:'unused',status:'completed'}),cancel:async id=>{attempts.push(id);if(attempts.length<3)throw new Error(attempts.length===1?'late cancel offline':'retry offline')},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
@@ -121,7 +217,7 @@ describe('shared Office task control',()=>{
   rejectCleanup(new Error('old late cancel offline'));expect(await old).toBeUndefined()
   await expect(controller.run({name:'third'},'third')).rejects.toThrow('office_task_busy')
   replacement.resolve({id:'new',status:'completed'});expect(await next).toEqual({id:'new',status:'completed'})
-  await controller.cancel();expect(attempts).toEqual(['old','new','old'])
+  await controller.cancel();expect(attempts.filter(id=>id==='old')).toHaveLength(2);expect(attempts.filter(id=>id==='new')).toHaveLength(1)
  })
  it('shares in-flight late-start cleanup across repeated cancellation and retries after failure',async()=>{
   const started=deferred<Job>(),cleanupStarted=deferred<void>(),attempts:string[]=[]
@@ -169,9 +265,10 @@ describe('shared Office task control',()=>{
   await expect(controller.run({name:'third'},'third')).rejects.toThrow('office_task_busy')
   const second=controller.cancel(),third=controller.cancel(),outcomes=Promise.allSettled([first,second,third])
   expect(attempts).toEqual(['old','new']);rejectOld(new Error('old cancel offline'))
-  expect((await outcomes).map(r=>r.status)).toEqual(['rejected','rejected','rejected']);expect(attempts).toEqual(['old','new'])
+  // The old caller observes its error; replacement cancellation stays independent.
+  expect((await outcomes).map(r=>r.status)).toEqual(['rejected','fulfilled','fulfilled']);expect(attempts).toEqual(['old','new'])
   oldStatus.resolve({id:'old',status:'completed'});newStatus.resolve({id:'new',status:'completed'});expect(await old).toBeUndefined();expect(await next).toBeUndefined()
-  await controller.cancel();expect(attempts).toEqual(['old','new','old'])
+  await controller.cancel();expect(attempts.filter(id=>id==='old')).toHaveLength(2);expect(attempts.filter(id=>id==='new')).toHaveLength(1)
  })
  it('active cancellation shares status-error cleanup with a replacement and retains its failure',async()=>{
   const newStatus=deferred<Job>(),attempts:{kind:string;id:string}[]=[],polls:string[]=[]
@@ -181,7 +278,7 @@ describe('shared Office task control',()=>{
   const next=controller.run({name:'new'},'new-request');await vi.waitFor(()=>expect(polls).toContain('new'))
   expect(attempts.filter(a=>a.id.startsWith('old'))).toEqual([{kind:'request',id:'old-request'},{kind:'task',id:'old'}])
   await expect(controller.run({name:'third'},'third')).rejects.toThrow('office_task_busy')
-  const cancellation=controller.cancel(),failure=expect(cancellation).rejects.toThrow('old cleanup offline');rejectOld(new Error('old cleanup offline'));await failure
+  const cancellation=controller.cancel();rejectOld(new Error('old cleanup offline'));await cancellation
   newStatus.resolve({id:'new',status:'completed'});expect(await next).toBeUndefined()
   await controller.cancel();expect(attempts.filter(a=>a.kind==='task'&&a.id==='old')).toHaveLength(2)
   expect(attempts.filter(a=>a.kind==='request'&&a.id==='old-request')).toHaveLength(1)

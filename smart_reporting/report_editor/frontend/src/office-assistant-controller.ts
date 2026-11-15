@@ -23,7 +23,14 @@ export class OfficeAssistantController<Input, Job> {
   private pendingCancel: { generation: number; promise: Promise<void> } | undefined
   constructor(private readonly transport: OfficeTaskTransport<Input, Job>) {}
   get signal() { return this.abort.signal }
-  async run(input: Input, requestId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
+  run(input: Input, requestId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
+    return this.track(signal => this.transport.start(input, signal), requestId, onStart)
+  }
+  follow(taskId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
+    return this.track(signal => this.transport.status(taskId, signal), '', onStart, taskId)
+  }
+  private async track(load: (signal: AbortSignal) => Promise<Job>, requestId: string,
+    onStart?: (job: Job, signal: AbortSignal) => void, knownTaskId = ''): Promise<Job | undefined> {
     if (this.busy || this.accepting) throw new Error('office_task_busy')
     const previousRequest = this.requestId, previousTask = this.taskId
     if (previousRequest || previousTask) void this.cleanup(previousRequest, previousTask).catch(() => {})
@@ -31,22 +38,33 @@ export class OfficeAssistantController<Input, Job> {
     this.terminalObserved = false
     this.abort.abort(); this.abort = new AbortController()
     const signal = this.abort.signal
-    this.requestId = requestId; this.taskId = ''; this.busy = true
+    // A followed task already exists on the server even while status is pending.
+    // Record its identity before awaiting so cancel() can reach it immediately.
+    this.requestId = requestId; this.taskId = knownTaskId; this.busy = true
     try {
-      let job = await this.transport.start(input, signal)
+      let job = await load(signal)
       if (turn !== this.generation) {
         // An aborted HTTP request may still have created a server-side task.
         // A late task is independent of the active run. Keep its cleanup handle
         // until cancellation succeeds, without restoring it over a replacement.
-        await this.cleanup(this.transport.cancel ? '' : requestId, this.transport.cancel ? this.transport.id(job) : '')
+        // A followed task was already identified by the caller. A late status
+        // response must never authorize cancelling a different task ID.
+        // cancel() queued cleanup for knownTaskId before this await finished.
+        if (!knownTaskId) {
+          const returnedTaskId = this.transport.id(job)
+          await this.cleanup(this.transport.cancel ? '' : requestId, this.transport.cancel ? returnedTaskId : '')
+        }
         return undefined
       }
-      this.taskId = this.transport.id(job)
+      const expectedTaskId = knownTaskId || this.transport.id(job)
+      if (!expectedTaskId || this.transport.id(job) !== expectedTaskId) throw new Error('office_task_identity_mismatch')
+      this.taskId = expectedTaskId
       onStart?.(job, signal)
       if (turn !== this.generation) return undefined
       while (this.transport.running(job)) {
-        job = await this.transport.status(this.taskId, signal)
+        job = await this.transport.status(expectedTaskId, signal)
         if (turn !== this.generation) return undefined
+        if (this.transport.id(job) !== expectedTaskId) throw new Error('office_task_identity_mismatch')
       }
       this.terminalObserved = true
       return job
@@ -72,8 +90,13 @@ export class OfficeAssistantController<Input, Job> {
     this.requestId = ''; this.taskId = ''
     this.terminalObserved = false
     const turn = this.generation
+    // Retry older records without making cancellation of the current task
+    // depend on a previous server endpoint that may remain unresponsive.
+    const earlier = [...this.cleanups.values()]
     const current = this.queueCleanup(requestId, taskId)
-    const completion = this.cleanupAll([...new Set([...current, ...this.cleanups.values()])]).finally(() => {
+    const previous = earlier.filter(record => !current.includes(record))
+    if (current.length) void this.cleanupAll(previous).catch(() => {})
+    const completion = this.cleanupAll(current.length ? current : previous).finally(() => {
       if (this.pendingCancel?.promise === completion) this.pendingCancel = undefined
     })
     this.pendingCancel = { generation: turn, promise: completion }

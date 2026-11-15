@@ -50,13 +50,14 @@ export function bindNativeAI(container: HTMLElement, options: {
   const tasks = new OfficeAssistantController({start:options.api.aiStart,status:options.api.aiStatus,cancel:options.api.aiCancel,cancelRequest:options.api.aiCancelRequest,id:(value: NativeAIJob)=>value.editId,running:(value: NativeAIJob)=>value.status==='running'})
   let noteBeforeText: string | undefined
   let wordTarget: string | undefined
+  // Report-channel handoffs must preserve the trusted draft scope.
   let presetScope: 'selection' | 'document' | undefined, presetStale=false
   let activeRequestId: string | undefined
   const currentWordTarget = () => JSON.stringify({instruction:input.value.trim(),selection,operations:options.draft.operations})
   const editable = () => !disposed && !options.draft.closed && !options.draft.saving && !options.locked?.()
   function update() {
     start.disabled = !editable() || busy || accepting || !selection.length || presetStale
-    accept.disabled = !editable() || busy || accepting || job?.status !== 'succeeded'
+    accept.disabled = !editable() || busy || accepting || job?.status !== 'succeeded' || job.accepted === true
     cancel.disabled = disposed || !job && !busy
     options.onStateChange?.()
   }
@@ -117,7 +118,7 @@ export function bindNativeAI(container: HTMLElement, options: {
     finally { if (turn === generation) { busy = false; update() } }
   }
   accept.onclick = async () => {
-    if (!editable() || busy || accepting || job?.status !== 'succeeded') return
+    if (!editable() || busy || accepting || job?.status !== 'succeeded' || job.accepted === true) return
     try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
     if(!editable() || busy || accepting || presetStale) {update();return}
     if(options.format==='docx' && wordTarget!==currentWordTarget()) {clearCandidate();status.textContent='修改要求、选区或草稿已变化，请重新生成建议。';update();return}
@@ -170,6 +171,30 @@ export function bindNativeAI(container: HTMLElement, options: {
     update,
     get accepting() { return accepting },
     open() { if(disposed)return;panelView?.beforeOpen();panel.hidden=false;panel.scrollIntoView?.({block:'nearest'}); input.focus({preventScroll:true}) },
+    async followWordTask(taskId: string) {
+      if (options.format !== 'docx' || !editable() || busy || accepting || job) return
+      const turn = ++generation
+      wordTarget = currentWordTarget()
+      busy = true
+      status.textContent = '正在读取频道编辑任务'
+      update()
+      try {
+        const result = await tasks.follow(taskId, (started, signal) => {
+          if (turn !== generation || disposed) return
+          progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, started.editId, signal,
+            () => editable() && turn === generation)
+          show(started)
+        })
+        if (result && turn === generation && !disposed) {
+          show(result)
+          details.open = !!result.proposal
+        }
+      } catch (error) {
+        if (turn === generation && !disposed) status.textContent = error instanceof Error ? error.message : '频道任务读取失败'
+      } finally {
+        if (turn === generation) { busy = false; update() }
+      }
+    },
     close,
     openPreset(instruction:string, targets:{blockId:string;cellId?:string}[], scope:'selection'|'document') {
       if(!editable() || options.format!=='docx' || !targets.length || targets.length>100)return

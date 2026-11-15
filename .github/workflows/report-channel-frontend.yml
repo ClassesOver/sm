@@ -1,0 +1,70 @@
+name: Report channel frontend integration
+
+on:
+  push:
+    branches:
+      - review/report-channel-acp
+    paths:
+      - "smart_reporting/report_editor/frontend/src/native-ai.ts"
+      - "smart_reporting/report_editor/frontend/src/native-api.ts"
+      - "smart_reporting/report_editor/frontend/src/office-assistant-controller.ts"
+      - "smart_reporting/report_editor/frontend/src/native-ai.test.ts"
+      - "smart_reporting/report_editor/frontend/src/report-channel-share.test.ts"
+      - "smart_reporting/report_editor/frontend/src/docx-mail-merge.ts"
+      - "smart_reporting/reporting/doc_engine/**"
+      - "smart_reporting/reporting/workbook_engine/**"
+      - "smart_reporting/reporting/slides_engine/**"
+      - "smart_reporting/report_editor/frontend/src/office-assistant-controller.test.ts"
+      - ".github/workflows/report-channel-frontend.yml"
+  pull_request:
+    paths:
+      - "smart_reporting/report_editor/frontend/src/native-ai.ts"
+      - "smart_reporting/report_editor/frontend/src/native-api.ts"
+      - "smart_reporting/report_editor/frontend/src/office-assistant-controller.ts"
+      - "smart_reporting/report_editor/frontend/src/native-ai.test.ts"
+      - "smart_reporting/report_editor/frontend/src/office-assistant-controller.test.ts"
+      - "smart_reporting/report_editor/frontend/src/report-channel-share.test.ts"
+      - "smart_reporting/report_editor/frontend/src/docx-mail-merge.ts"
+      - "smart_reporting/reporting/doc_engine/**"
+      - "smart_reporting/reporting/workbook_engine/**"
+      - "smart_reporting/reporting/slides_engine/**"
+      - ".github/workflows/report-channel-frontend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: smart_reporting/report_editor/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: smart_reporting/report_editor/frontend/package-lock.json
+      - name: Install locked engine workspace dependencies
+        run: |
+          npm ci --prefix ../../reporting/slides_engine --no-audit --no-fund
+          npm ci --prefix ../../reporting/doc_engine --no-audit --no-fund
+          npm ci --prefix ../../reporting/workbook_engine --no-audit --no-fund
+      - name: Install locked frontend dependencies
+        run: npm ci --no-audit --no-fund
+      - name: TypeScript type check
+        id: typecheck
+        run: npx tsc --noEmit
+      - name: Focused Word task and channel integration tests
+        if: ${{ success() || (failure() && steps.typecheck.outcome == 'failure') }}
+        run: npx vitest run src/native-ai.test.ts src/office-assistant-controller.test.ts src/report-channel-share.test.ts --reporter=junit --outputFile=report-channel-frontend-junit.xml
+      - name: Upload focused test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-channel-frontend-junit
+          path: smart_reporting/report_editor/frontend/report-channel-frontend-junit.xml
+          if-no-files-found: ignore

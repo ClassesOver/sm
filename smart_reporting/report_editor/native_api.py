@@ -261,6 +261,7 @@ def create_native_editor_router(
     static_dir: str | Path | None = None,
     download_service: Any = None,
     ai_enabled: bool = False,
+    report_channel_enabled: bool = False,
 ) -> APIRouter:
     router = APIRouter()
     root = Path(static_dir) if static_dir else Path(__file__).with_name("static")
@@ -427,6 +428,7 @@ def create_native_editor_router(
             ),
             "pdfReadAIEnabled": ai_enabled and context.format == "pdf",
             "wordReadAIEnabled": ai_enabled and context.format == "docx",
+            "reportChannelEnabled": report_channel_enabled and context.format == "docx" and editor.docx_enabled,
             "officeReadAIEnabled": ai_enabled and context.format in {"xlsx", "pptx"},
             "pdfFormAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled,
             "pdfReviewAIEnabled": ai_enabled and context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled,
