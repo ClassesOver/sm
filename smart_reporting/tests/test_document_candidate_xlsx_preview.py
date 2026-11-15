@@ -42,6 +42,8 @@ async def test_xlsx_preview_diff_does_not_modify_original_or_accept():
     preview = await engine.status(scope, task_id)
     assert preview["status"] == "preview_ready"
     assert preview["accepted"] is False
+    assert preview["formulaCount"] == 1
+    assert preview["requiresFormulaRecalculation"] is True
     assert preview["changes"] == [{"sheet": "Sheet1", "cell": "A1", "before": 12, "after": 15}]
     assert original == workbook_bytes()
     assert await engine.prepare(request) == task_id
