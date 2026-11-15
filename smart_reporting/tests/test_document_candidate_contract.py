@@ -128,3 +128,10 @@ def test_selection_nested_json_is_fingerprint_safe():
         ({"metadata": {"z": 1, "a": {"b": "value"}}},),
     )
     assert json.dumps(request.selection, sort_keys=True, ensure_ascii=False)
+
+
+def test_selection_rejects_circular_dict_without_hanging():
+    circular = {}
+    circular["self"] = circular
+    with pytest.raises(ValueError, match="document_selection_invalid"):
+        DocumentCandidateRequest(scope(), "id", "Edit", (circular,))
