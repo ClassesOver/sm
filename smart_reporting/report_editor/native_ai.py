@@ -17,6 +17,7 @@ from uuid import uuid4
 from loguru import logger
 from pydantic import Field, ValidationError
 
+from ..office.native_access import check as check_office_access
 from ..reporting.contract import StrictModel
 from ..reporting.models import ReportingError
 from ..reporting.structured_output.execution import (
@@ -566,6 +567,9 @@ class NativeAIService:
         try:
             await self._require_job_authorization(job)
             await job.event_log.emit("phase", label="正在生成候选")
+            await check_office_access(context.document_id, write=True)
+            if job.status != "running":
+                return
             if job.word_task_reference is not None:
                 planned = await asyncio.wait_for(
                     self.word_task_dispatcher.execute(job.word_task_reference), timeout=self.timeout_seconds)
@@ -621,6 +625,9 @@ class NativeAIService:
             if job.status != "running":
                 return
             await self._require_job_authorization(job)
+            if job.status != "running":
+                return
+            await check_office_access(context.document_id, write=True)
             if job.status != "running":
                 return
             job.proposal = {
