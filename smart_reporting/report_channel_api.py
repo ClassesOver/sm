@@ -173,7 +173,7 @@ def create_report_channel_router(
                     "document_request_id_invalid", "document_instruction_invalid",
                     "document_selection_invalid", "document_selection_mismatch",
                     "document_task_id_invalid",
-                    "xlsx_selection_required", "xlsx_target_invalid",
+                    "xlsx_selection_required", "xlsx_target_invalid", "xlsx_target_duplicate",
                     "xlsx_target_out_of_bounds", "xlsx_sheet_invalid",
                     "xlsx_range_reversed", "xlsx_operations_invalid",
                     "xlsx_operation_invalid", "xlsx_operation_target_unapproved",
