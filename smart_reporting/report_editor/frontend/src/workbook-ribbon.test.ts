@@ -334,7 +334,7 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
   expect(equation.dataset.unavailableReason).toBeUndefined()
   equation.click(); expect(onCommand).toHaveBeenLastCalledWith('insert-equation')
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
-  const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
+  const rotation = document.querySelector<HTMLSelectElement>('[data-ribbon-control="text-orientation"]')!
   expect(rotation.disabled).toBe(false)
   expect(rotation.title).not.toContain('does not capture text rotation')
   ribbon.dispose()

@@ -886,9 +886,9 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     onVisibilityChange:()=>{editor.commands.setMeta('native-view-state',true)},onError:reportError})
   const view = createDocxViewCommands({ root: host, scroller: host.querySelector<HTMLElement>('.editor-scroll')!, page: editor.view.dom,
     pageSize: () => { const current = docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection)); return { width: px(current.pageWidth), height: px(current.pageHeight) } },
-    reading:{setActive(active){if(!ready||editor.isDestroyed){readingMode=active;return}flushPendingEdits();readingMode=active;editor.setEditable(context.editingEnabled&&!active&&!documentToolModels.protection?.contentLocked&&!saving&&!draft.saving&&!draft.closed,false);pendingHfEditor?.setEditable(editor.isEditable);editor.commands.setMeta('native-view-state',true)}},
+    reading:{setActive(active){if(!ready||editor.isDestroyed){readingMode=active;return}flushPendingEdits();readingMode=active;editor.setEditable(context.editingEnabled&&!active&&!documentToolModels.protection?.contentLocked&&!saving&&!draft.saving&&!draft.closed,false);pendingHfEditor?.setEditable(editor.isEditable)}},
     pageColor:()=>effectiveDocxPageColor(nativeOperations(),pageColorModel),
-    onViewChange:()=>{if(!ready)return;if(readingMode)options.onSelectionChange?.([]);webMode=view.mode==='web';columnLayoutReady=false;currentColumnLayout=null;scheduleColumns();ruler.refresh();navigation.refresh()},
+    onViewChange:()=>{if(!ready)return;if(readingMode)options.onSelectionChange?.([]);webMode=view.mode==='web';columnLayoutReady=false;currentColumnLayout=null;scheduleColumns();ruler.refresh();navigation.refresh();editor.commands.setMeta('native-view-state',true)},
     onPaginationPreview: showPaginationPreview, onZoomChange: () => { ruler.refresh(); navigation.refresh(); split.refreshLayout() }, navigation, outline, gridlines, ruler, split })
   const legacyHeaderFooter: DocxHeaderFooterController | undefined = hfModel ? {
     get editable() { return context.editingEnabled && !readingMode && !saving && !draft.saving && !draft.closed },

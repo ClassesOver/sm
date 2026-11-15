@@ -166,11 +166,12 @@ export function createDocxViewCommands(options: {
       if (!disposed && label === '拆分' && options.split) return null
       if (!disposed && label === '阅读视图' && options.reading) return null
       if (!disposed && ['大纲', '页面视图'].includes(label) && options.outline) return options.outline.reason(label)
+      if (label === '分页预览' && (reading || web || options.outline?.mode === 'outline')) return '分页预览仅在页面视图中可用'
       return !disposed && handled.has(label) ? null : '此视图命令尚未与原生 Word 画布对齐'
     },
     active(label) {
       if (label === '拆分') return !disposed && !!options.split?.visible
-      return !disposed && (label === '深色模式' ? dark : label === '阅读视图' ? reading : label === 'Web 版式' ? web : label === '标尺' ? !!options.ruler?.visible : label === '网格线' ? !!options.gridlines?.visible : label === '导航窗格' ? !!options.navigation?.visible : label === '大纲' ? options.outline?.mode === 'outline' : label === '页面视图' ? !web && (!options.outline || options.outline.mode === 'page') : false)
+      return !disposed && (label === '深色模式' ? dark : label === '阅读视图' ? reading : label === 'Web 版式' ? web : label === '标尺' ? !!options.ruler?.visible : label === '网格线' ? !!options.gridlines?.visible : label === '导航窗格' ? !!options.navigation?.visible : label === '大纲' ? options.outline?.mode === 'outline' : label === '页面视图' ? !reading && !web && (!options.outline || options.outline.mode === 'page') : false)
     },
     run(label) {
       if (commands.reason(label) !== null) return
@@ -181,9 +182,12 @@ export function createDocxViewCommands(options: {
       }
       if (label === '阅读视图') { setReading(!reading); return }
       if (['大纲', '页面视图', 'Web 版式'].includes(label)) {
-        options.outline?.run(label === 'Web 版式' ? '页面视图' : label)
-        web = label === 'Web 版式'
+        // GenOffice ViewTab toggles Web and Outline back to Print; Print also exits Reading.
+        const showOutline = label === '大纲' && options.outline?.mode !== 'outline'
+        web = label === 'Web 版式' && !web
         options.root.classList.toggle('docx-view-web', web)
+        options.outline?.run(showOutline ? '大纲' : '页面视图')
+        if (label === '页面视图' && reading) { setReading(false); return }
         options.onViewChange?.(); return
       }
       if (label === '标尺') { options.ruler!.toggle(); return }

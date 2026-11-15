@@ -36,7 +36,7 @@ import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconReadMode, IconWholePage } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { closeHistory } from '@tiptap/pm/history'
@@ -74,6 +74,7 @@ const tabs = [
 ]
 const migrating = '迁移中：当前 DOCX 保存协议不支持此命令'
 const tableUnavailable = 'DOCX 表格操作尚未接入严格写回协议'
+const viewModeIcons = { '页面视图': IconPrintLayout, 'Web 版式': IconWebLayout, '大纲': IconOutlineView, '阅读视图': IconReadMode, '分页预览': IconWholePage } as const
 const pendingGroups: Record<string, [string, string[]][]> = {
   file: [['文件', ['新建', '打开', '保存', '另存为']]],
   draw: [['绘图工具', ['选择', '笔', '荧光笔', '橡皮擦']], ['清除', ['全部清除']]],
@@ -207,8 +208,19 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     flushSync(() => pictureSizeRoot!.render(createElement(DocxPictureSizeSource, { controls })))
   }
   const refreshView = () => {
+    if (!viewCommands) return
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-view-command]')) {
-      button.setAttribute('aria-pressed', String(viewCommands?.active?.(button.dataset.viewCommand!) ?? false))
+      const label = button.dataset.viewCommand!, reason = viewCommands.reason(label)
+      button.disabled = reason !== null
+      button.title = reason ?? label
+      button.setAttribute('aria-label',label)
+      if (reason) button.setAttribute('aria-description',reason)
+      else button.removeAttribute('aria-description')
+      if (label !== '分页预览') {
+        const active = viewCommands.active?.(label) ?? false
+        button.classList.toggle('active',active)
+        button.setAttribute('aria-pressed',String(active))
+      }
     }
   }
   const layout = document.createElement('div')
@@ -827,17 +839,29 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if (!available) command.setAttribute('aria-description', reason ?? migrating)
         if (actionId) command.dataset.action = actionId
         else if (available) command.dataset.action = view && label !== '分页预览' ? `view-${label}` : 'pagination-preview'
-        if (view && available && ['标尺', '导航窗格', '大纲', '页面视图', '网格线', '拆分'].includes(label)) {
+        const modeIcon = view ? viewModeIcons[label as keyof typeof viewModeIcons] : undefined
+        if (modeIcon) {
+          command.className = 'rb-big'
+          const graphic = document.createElement('span'), caption = document.createElement('span')
+          graphic.className = 'rb-big-icon'
+          graphic.innerHTML = renderToStaticMarkup(createElement(modeIcon,{size:28}))
+          caption.textContent = label
+          command.replaceChildren(graphic, caption)
+        }
+        if (view && (modeIcon || ['标尺', '导航窗格', '网格线', '拆分'].includes(label))) {
           command.dataset.action = label === '标尺' ? 'ruler-toggle' : label === '网格线' ? 'gridlines-toggle' : label === '导航窗格' ? 'navigation-toggle' : label === '大纲' ? 'view-outline' : label === '拆分' ? 'split-view-toggle' : 'view-page'
+          if (label === 'Web 版式' || label === '阅读视图') command.dataset.action = 'view-' + label
+          if (label === '分页预览') command.dataset.action = 'pagination-preview'
           command.dataset.viewCommand = label
-          command.setAttribute('aria-pressed', String(view.active?.(label) ?? false))
         }
         if (structure && tableCommands) {
           command.dataset.sourceAction = actionId
           command.addEventListener('mousedown', event => event.preventDefault())
           command.addEventListener('click', () => tableCommands.run(actionId))
-        } else if (view && available) {
+        } else if (view && (available || command.dataset.viewCommand)) {
           command.dataset.sourceAction = label === '标尺' ? 'onShowRuler' : label === '网格线' ? 'onShowGrid' : label === '导航窗格' ? 'onShowNav' : label === '拆分' ? 'onSplitView' : label === '大纲' || label === '页面视图' ? 'onViewMode' : label === '页宽' || label === '整页' ? 'onZoomFit' : label === '缩放' ? 'onZoomDialog' : label === '分页预览' ? 'onPagePreview' : 'onZoom'
+          if (label === 'Web 版式') command.dataset.sourceAction = 'onViewMode'
+          if (label === '阅读视图') command.dataset.sourceAction = 'onReadMode'
           command.addEventListener('mousedown', event => event.preventDefault())
           command.addEventListener('click', () => { if (label === '导航窗格' || label === '拆分') command.focus({ preventScroll: true }); view.run(label); refreshView() })
         } else if (available) command.addEventListener('click', onPaginationPreview!)
@@ -955,6 +979,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     fillDocxCommandIcons(content)
     syncPictureFormatButtons(content)
     body.append(content)
+    if (id === 'view') refreshView()
     refreshPictureWrap()
     refreshPictureSize()
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }

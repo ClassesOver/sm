@@ -5,10 +5,17 @@ import { createEditorShell } from './shell'
 import { NativeDraft } from './native-draft'
 
 const zoom = vi.hoisted(() => ({ get: vi.fn(() => 0.5), set: vi.fn() }))
-vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {}, getZoom: zoom.get, setZoom: zoom.set }) }))
+vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: (_host: HTMLElement, onZoomChange: (value: number) => void) => {
+  onZoomChange(0.5)
+  return { update() {}, destroy() {}, getZoom: zoom.get, setZoom(value: number | null) {
+    zoom.set(value)
+    onZoomChange(value ?? 0.5)
+  } }
+} }))
 vi.mock('./vendor/genoffice/renderer/SlideThumb', () => ({ SlideThumb: ({ slide }: { slide: { nodes: { text?: string }[] } }) => <figure data-source-thumbnail>{slide.nodes.map(node => node.text).join('')}</figure> }))
 const views: ReturnType<typeof createSlidesEditorView>[] = []
 beforeEach(() => {
+  zoom.set.mockClear()
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 })
 afterEach(() => { views.splice(0).forEach(view => view.dispose()); document.body.replaceChildren(); vi.unstubAllGlobals() })
@@ -167,4 +174,33 @@ it('routes View zoom to the canvas and leaves the presentation draft untouched',
   expect(zoom.set.mock.calls).toEqual([[0.66], [0.33], [1], [null]])
   expect(app.draft.operations).toEqual([])
   expect(app.request.mock.calls.some(([path]) => path === 'save')).toBe(false)
+})
+
+it('toggles thumbnails without hiding the outline and controls zoom from the status bar', async () => {
+  const app = await fixture()
+  const button = (id: string) => app.control<HTMLButtonElement>('[data-command="' + id + '"]')
+  button('normalView').click()
+  await vi.waitFor(() => expect(app.control('.slides-status-zoom').hidden).toBe(false))
+  const thumbnails = button('thumbnailPane')
+  const sidebar = app.control('.slides-sidebar')
+  expect(thumbnails.getAttribute('aria-pressed')).toBe('true')
+  thumbnails.click()
+  expect(sidebar.hidden).toBe(true)
+  expect(thumbnails.getAttribute('aria-pressed')).toBe('false')
+  button('outlineView').click()
+  expect(sidebar.hidden).toBe(false)
+  button('normalView').click()
+  expect(sidebar.hidden).toBe(true)
+  thumbnails.click()
+
+  const status = app.control('.slides-status-zoom')
+  expect(status.querySelector('output')!.value).toBe('50%')
+  status.querySelector<HTMLButtonElement>('[data-zoom-step="1"]')!.click()
+  expect(zoom.set).toHaveBeenLastCalledWith(0.6)
+  const slider = status.querySelector<HTMLInputElement>('input')!
+  slider.value = '150'
+  slider.dispatchEvent(new Event('input', { bubbles: true }))
+  expect(zoom.set).toHaveBeenLastCalledWith(1.5)
+  expect(status.querySelector('output')!.value).toBe('150%')
+  expect(app.draft.operations).toEqual([])
 })

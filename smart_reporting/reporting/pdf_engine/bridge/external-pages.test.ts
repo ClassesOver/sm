@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { PDFDocument, PDFName, PDFString, degrees } from 'pdf-lib'
 import { patchExternalPages } from './external-pages'
 import { inspectNativeText } from './text-operations'
+import { inspectPdf, patchPdfWithReceipt } from './operations'
 const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 async function pdf(prefix: string, count: number) {
   const doc = await PDFDocument.create(); doc.setCreationDate(new Date('2020-01-01T00:00:00Z')); doc.setModificationDate(new Date('2020-01-02T00:00:00Z'))
@@ -23,6 +24,18 @@ test('external PDF insert and noncontiguous replacement preserve actual page con
   }
   assert.deepEqual(await texts(source),['source 1','source 2','source 3'])
 })
+test('external insertion and replacement address the current page positions after saving edits', async () => {
+  const original=await pdf('source',3), external=await pdf('external',1)
+  const model=await inspectPdf(original)
+  const [first,second,third]=model.pages
+  const saved=await patchPdfWithReceipt(original,[{kind:'deletePage',pageId:second.pageId},{kind:'reorderPages',pageIds:[third.pageId,first.pageId]}],model.sourceSha256)
+  const inserted=await patchExternalPages(saved.bytes,op(saved.bytes,external,'insert',{afterPageIndex:0}),saved.sha256)
+  assert.deepEqual(await texts(inserted.bytes),['source 3','external 1','source 1'])
+  const replaced=await patchExternalPages(saved.bytes,op(saved.bytes,external,'replace',{pages:[0]}),saved.sha256)
+  assert.deepEqual(await texts(replaced.bytes),['external 1','source 1'])
+  assert.deepEqual(await texts(original),['source 1','source 2','source 3'])
+})
+
 test('strict external page options reject wrong hashes, implicit clipping and arbitrary paths',async()=>{
   const source=await pdf('source',3),external=await pdf('external',1)
   for(const patch of [{sourceSha256:'f'.repeat(64)},{externalSha256:'f'.repeat(64)},{afterPageIndex:3},{afterPageIndex:-2},{afterPageIndex:0.5},{afterPageIndex:true},{path:'/tmp/foreign.pdf'},{bytesBase64:Buffer.from(external).toString('base64')+' '},{action:'replace',pages:[0,0],afterPageIndex:undefined},{action:'replace',pages:[3],afterPageIndex:undefined},{action:'replace',pages:[true],afterPageIndex:undefined}]) await assert.rejects(patchExternalPages(source,op(source,external,'insert',patch),sha(source)))

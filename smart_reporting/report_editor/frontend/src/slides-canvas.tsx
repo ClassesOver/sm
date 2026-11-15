@@ -137,7 +137,7 @@ function SlideCanvas({ state, width }: { state: SlidesCanvasState; width: number
   </Stage>
 }
 
-export function mountSlidesCanvas(host: HTMLElement) {
+export function mountSlidesCanvas(host: HTMLElement, onZoomChange?: (zoom: number) => void) {
   const root = createRoot(host)
   let state: SlidesCanvasState | undefined
   let width = host.clientWidth || 960
@@ -149,7 +149,12 @@ export function mountSlidesCanvas(host: HTMLElement) {
     const fit = Math.min(width / state.slide.widthPx, height / state.slide.heightPx)
     return Math.min(1.5, Math.max(ZOOM_MIN, fit))
   }
-  const render = () => { if (state) root.render(<SlideCanvas state={state} width={state.slide.widthPx * getZoom()} />) }
+  const render = () => {
+    if (!state) return
+    const zoom = getZoom()
+    root.render(<SlideCanvas state={state} width={state.slide.widthPx * zoom} />)
+    onZoomChange?.(zoom)
+  }
   const observer = new ResizeObserver(([entry]) => {
     const viewport = entry?.contentRect
     if (!viewport?.width) return

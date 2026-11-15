@@ -31,18 +31,37 @@ it('routes exactly the six fixed-source rotation values through the registered U
 })
 it('refreshes active, mixed, no-selection and saving states without replacing the clicked control', () => {
   const host = document.createElement('div'), callback = vi.fn()
-  let rotation: number | 'mixed' | undefined = 135, editable = true
-  const ribbon = mountWorkbookRibbon(host, callback, { rotation: () => rotation, editable: () => editable })
-  const button = host.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:-45"]')!
-  expect(button.getAttribute('aria-pressed')).toBe('true')
-  button.click(); expect(callback).toHaveBeenCalledWith('rotate:-45')
+  let rotation: number | 'mixed' | undefined = 135, editable = true, protectedSheet = false
+  const ribbon = mountWorkbookRibbon(host, callback, {
+    rotation: () => rotation, editable: () => editable,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const select = host.querySelector<HTMLSelectElement>('[data-ribbon-control="text-orientation"]')!
+  expect(select).not.toBeNull()
+  expect(select.closest('label')?.previousElementSibling?.getAttribute('data-ribbon-command')).toBe('wrap')
+  const option = (id: string) => select.querySelector<HTMLOptionElement>('[value="' + id + '"]')!
+  expect(Array.from(select.options, entry => [entry.value, entry.text])).toEqual([
+    ['', '方向'], ['rotate:45', '逆时针角度'], ['rotate:-45', '✓ 顺时针角度'], ['rotate:vertical', '竖排文字'],
+    ['rotate:90', '向上旋转文字'], ['rotate:-90', '向下旋转文字'], ['rotate:0', '清除旋转'],
+  ])
+  for (const entry of Array.from(select.options).slice(1)) {
+    select.value = entry.value
+    select.dispatchEvent(new Event('change'))
+    expect(callback).toHaveBeenLastCalledWith(entry.value)
+    expect(select.value).toBe('')
+  }
   rotation = 'mixed'; ribbon.refreshState()
-  expect(button.getAttribute('aria-pressed')).toBe('mixed'); expect(button.disabled).toBe(false)
-  editable = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
-  editable = true; rotation = undefined; ribbon.refreshState(); expect(button.disabled).toBe(true)
+  expect(select.dataset.formatState).toBe('mixed')
+  expect(option('rotate:-45').text).toBe('顺时针角度')
+  expect(select.disabled).toBe(false)
+  editable = false; ribbon.refreshState(); expect(select.disabled).toBe(true)
+  editable = true; rotation = undefined; ribbon.refreshState(); expect(select.disabled).toBe(true)
   rotation = 255; ribbon.refreshState()
-  expect(host.querySelector('[data-ribbon-command="rotate:vertical"]')!.getAttribute('aria-pressed')).toBe('true')
-  expect(host.querySelector('[data-ribbon-command="rotate:-45"]')).toBe(button)
+  expect(select.dataset.formatState).toBeUndefined()
+  expect(option('rotate:vertical').text).toBe('✓ 竖排文字')
+  expect(host.querySelector('[data-ribbon-control="text-orientation"]')).toBe(select)
+  protectedSheet = true; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
   ribbon.dispose()
 })
 it('reads composed per-cell styles so mixed ranges never borrow the first cell active state', () => {
@@ -71,8 +90,10 @@ it('roundtrips source/default/stacked rotation through import, readback, existin
 it('refuses rotation affordances for unmodeled inherited source styles even with a selected cell', () => {
   const host = document.createElement('div'), callback = vi.fn()
   const ribbon = mountWorkbookRibbon(host, callback, { rotation: () => 0, editable: () => true, unavailableReason: () => 'inherited source style' })
-  const button = host.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:0"]')!
-  expect(button.disabled).toBe(true); expect(button.title).toContain('inherited source style')
-  button.click(); expect(callback).not.toHaveBeenCalled()
+  const select = host.querySelector<HTMLSelectElement>('[data-ribbon-control="text-orientation"]')!
+  expect(select.disabled).toBe(true); expect(select.title).toContain('inherited source style')
+  select.value = 'rotate:0'
+  select.dispatchEvent(new Event('change'))
+  expect(callback).not.toHaveBeenCalled()
   ribbon.dispose()
 })

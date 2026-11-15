@@ -11,7 +11,7 @@ const simplifiedChineseLabels: Record<string, string> = {
   'Chart Elements': '图表元素',
   Group: '组合', Ungroup: '取消组合', 'From Current Slide': '从当前页开始',
   'Bring to Front': '置于顶层', 'Bring Forward': '上移一层', 'Send Backward': '下移一层', 'Send to Back': '置于底层',
-  'Zoom In': '放大', 'Zoom Out': '缩小', 'Fit to Window': '适应窗口',
+  'Zoom In': '放大', 'Zoom Out': '缩小', 'Fit to Window': '适应窗口', 'Thumbnail Pane': '缩略图窗格',
   File: '文件', Open: '打开…', Export: '导出', Print: '打印', 'Export PDF': '导出 PDF', 'Export as PNG': '导出为 PNG…', 'Export as JPG': '导出为 JPG…', Save: '保存', 'Save Revision': '保存修订版', 'Save As': '另存为', 'Name with AI…': '用 AI 命名…',
   Home: '开始', Clipboard: '剪贴板', 'Format Painter': '格式刷', Slides: '幻灯片', 'New Slide': '新建幻灯片', 'New Slide with Layout': '新建指定版式幻灯片', 'Change Layout': '更改版式', 'Reset Layout': '重置版式', 'Add Section': '添加节', 'Move Earlier': '上移', 'Move Later': '下移',
   Font: '字体', Text: '文本', Bold: '加粗', Italic: '斜体', Underline: '下划线', Strikethrough: '删除线', 'Font Size (pt)': '字号（磅）', 'Increase Font Size': '增大字号', 'Decrease Font Size': '减小字号', 'Font Family': '字体', 'Font Color': '字体颜色',

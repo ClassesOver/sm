@@ -1,4 +1,5 @@
 import {act} from 'react'
+import {webcrypto} from 'node:crypto'
 import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {NativeDraft,type NativeOperation} from './native-draft'
 import {createPdfEditorView,type PdfEditorHandle} from './pdf-main'
@@ -179,6 +180,42 @@ it.each(['verified','stale'])('prints the verified saved page bytes after saving
   expect(print).not.toHaveBeenCalled();expect(pdfMock.printed).toEqual([])
  }
  expect(events).toEqual(['save','/reports/v1/native/open/print-save','/reports/v1/native/pdf-object-host/2/api/context','/reports/v1/native/pdf-object-host/2/api/file'])
+})
+it.each([['insertPdf','insert'],['replace','replace']])('binds external pages to the authorized post-save revision: %s', async (command,action) => {
+ const events:string[]=[]
+ const nextSha='b'.repeat(64)
+ const flush=vi.fn(async ():Promise<NativeSaveResponse> => {
+  events.push('save')
+  return {documentId:'pdf-object-host',revision:2,parentRevision:1,revisionRegistered:true,artifacts:{pdf:{sha256:nextSha}},editor:{openUrl:'/reports/v1/native/open/external-save'},validation:{ok:false,issues:[]}}
+ })
+ const f=await fixture({exportPages:3,restored:{kind:'deletePage',pageId:'sha256:'+sourceSha256+':page:1'},flushForFileOperation:flush});await f.create()
+ vi.stubGlobal('crypto',webcrypto)
+ vi.stubGlobal('fetch',async (input:string|URL,init?:RequestInit) => {
+  const path=new URL(String(input),window.location.href).pathname
+  events.push(path)
+  if(path==='/reports/v1/native/open/external-save')return new Response('authorized')
+  if(path.endsWith('/2/api/context'))return Response.json({csrfToken:'new-csrf',context:{documentId:'pdf-object-host',revision:2,format:'pdf',sourceFile:{sha256:nextSha},scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}})
+  if(path.endsWith('/2/api/external-pages')){
+   expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('new-csrf')
+   expect(JSON.parse(String(init?.body))).toMatchObject({expectedSha256:nextSha,action,...(action==='insert'?{afterPage:2}:{pages:[2]})})
+   return Response.json({validation:{ok:false,issues:[{code:'review',message:'仍需验收'}]},artifacts:{pdf:{downloadUrl:'/reviews/external.pdf'}}})
+  }
+  throw Error('Unexpected path '+path)
+ })
+ const button=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.'+command+'"]')!
+ expect(button.disabled).toBe(false);button.click()
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="外部 PDF 页面"]')!
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ const upload=dialog.querySelector<HTMLInputElement>('input[type="file"]')!
+ const content=new TextEncoder().encode('%PDF-fixture')
+ const file=new File([content],'fixture.pdf')
+ Object.defineProperty(file,'arrayBuffer',{value:async()=>content.buffer})
+ Object.defineProperty(upload,'files',{value:[file]})
+ dialog.querySelector<HTMLInputElement>(action==='insert'?'[aria-label="插入父 PDF 页后"]':'[aria-label="替换父 PDF 页码"]')!.value='2'
+ dialog.querySelector<HTMLButtonElement>('[data-pdf-external-pages-apply]')!.click()
+ await vi.waitFor(()=>expect(dialog.querySelector('a')?.getAttribute('href')).toBe('/reviews/external.pdf'))
+ expect(dialog.textContent).toContain('仍需验收')
+ expect(events).toEqual(['save','/reports/v1/native/open/external-save','/reports/v1/native/pdf-object-host/2/api/context','/reports/v1/native/pdf-object-host/2/api/external-pages'])
 })
 it('watermark settings expose both source tabs and current slider values without changing the draft',async()=>{
  const f=await fixture();await f.create()

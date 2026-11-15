@@ -5,6 +5,7 @@ import { NativeDocxCustomList } from './docx-custom-list'
 import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions'
 import { createDocxRibbon } from './docx-ribbon'
 import { createDocxTableGridlines } from './docx-gridlines'
+import { createDocxViewCommands } from './docx-view'
 import { docxOperations, type DocxAnchor } from './docx-operations'
 import { readFileSync } from 'node:fs'
 
@@ -478,6 +479,33 @@ it('routes navigation and outline view controls while readonly and reflects thei
     expect(outlineButton.getAttribute('aria-pressed')).toBe('false')
     expect(editor.getJSON()).toEqual(before); expect(editor.state.selection.from).toBe(selection)
   } finally {editor.destroy()}
+})
+
+it('refreshes GenOffice view buttons and preview after opening or exiting Reading outside the ribbon', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const scroller = host.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: scroller, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: '原文' }] }] } })
+  const preview = vi.fn()
+  const view = createDocxViewCommands({
+    root: host, scroller, page: editor.view.dom, pageSize: () => ({ width: 800, height: 1000 }),
+    onPaginationPreview: preview, reading: { setActive: active => editor.setEditable(!active, false) },
+    onViewChange: () => editor.view.dispatch(editor.state.tr.setMeta('native-view-state',true)),
+  })
+  const ribbon = createDocxRibbon(editor,true,undefined,undefined,undefined,[],undefined,view)
+  host.prepend(ribbon)
+  try {
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-label="视图"]')!.click()
+    const command = (label: string) => ribbon.querySelector<HTMLButtonElement>(`[data-view-command="${label}"]`)!
+    const print = command('页面视图'), web = command('Web 版式'), reading = command('阅读视图'), pagination = command('分页预览')
+    expect(web.querySelector('.rb-big-icon svg')).not.toBeNull()
+    expect(print.getAttribute('aria-pressed')).toBe('true')
+    web.click(); expect(web.getAttribute('aria-pressed')).toBe('true'); expect(pagination.disabled).toBe(true)
+    web.click(); expect(print.getAttribute('aria-pressed')).toBe('true'); expect(pagination.disabled).toBe(false)
+    reading.click(); expect(reading.getAttribute('aria-pressed')).toBe('true'); expect(pagination.disabled).toBe(true)
+    host.querySelector<HTMLButtonElement>('.docx-read-exit')!.click()
+    expect(print.getAttribute('aria-pressed')).toBe('true'); expect(reading.getAttribute('aria-pressed')).toBe('false')
+    pagination.click(); expect(preview).toHaveBeenCalledOnce()
+  } finally { view.dispose(); editor.destroy() }
 })
 
 it('offers source-bound Home formatting and leaves unsupported Ribbon commands disabled', () => {

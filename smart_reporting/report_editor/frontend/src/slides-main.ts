@@ -37,7 +37,7 @@ import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
 import type { mountSlidesCanvas } from './slides-canvas'
-import { nextPreset, prevPreset } from './slides-view-zoom'
+import { nextPreset, notchStep, prevPreset } from './slides-view-zoom'
 import type { createSlidesSorter } from './slides-view-modes'
 import type { createSlidesOutline, createSlidesReading } from './slides-outline-reading'
 import { applyCanvasEdits } from './slides-canvas-model'
@@ -193,7 +193,7 @@ root.innerHTML = `${embedded ? '' : `
     <section class="slides-stage" aria-label="幻灯片预览"><div class="slides-canvas" role="group" aria-label="可编辑幻灯片画布" hidden></div><p class="canvas-status" role="status">画布载入中</p><iframe class="preview-frame" title="幻灯片预览"></iframe></section>
     <aside class="slides-inspector" aria-label="对象编辑"><div class="inspector-heading">对象</div><div class="slide-lineage"><span class="lineage-label">母版</span><span class="slide-master"></span><span class="lineage-label">版式</span><select id="layout-select" aria-label="当前页版式"></select></div><label class="field-label" for="object-select">可编辑对象</label><select id="object-select"></select><label class="field-label" for="object-text">文字</label><textarea id="object-text" rows="7" spellcheck="false"></textarea><div class="geometry-heading">位置与大小</div><div class="geometry-grid"><label>X <input name="x" type="number" min="0" step="1"></label><label>Y <input name="y" type="number" min="0" step="1"></label><label>宽 <input name="width" type="number" min="1" step="1"></label><label>高 <input name="height" type="number" min="1" step="1"></label></div><div class="structure-controls"><label class="field-label" for="background-color">页面背景</label><div class="structure-row"><input id="background-color" type="color" value="#ffffff" aria-label="当前页背景颜色"><button class="background-reset" type="button">恢复原背景</button></div><div class="field-label">页面对象</div><div class="structure-row"><button class="text-add" type="button">新增文本</button><button class="watermark-add" type="button">新增水印</button><button class="object-delete" type="button">删除对象</button></div><ul class="structure-pending" aria-label="待保存的页面结构修改"></ul></div><label class="field-label" for="theme-select">商务主题</label><select id="theme-select"><option value="">保持当前主题</option><option value="executive">执行汇报</option><option value="clinical">临床医疗</option><option value="modern">现代商务</option></select><label class="field-label" for="transition-select">页面转场</label><select id="transition-select"><option value="none">无</option><option value="fade">淡化</option><option value="push">推进</option><option value="wipe">擦除</option><option value="split">分割</option><option value="circle">圆形</option><option value="cover">覆盖</option><option value="pull">拉伸</option><option value="dissolve">溶解</option><option value="zoom">缩放</option><option value="morph">变形</option><option value="random">随机</option></select><div class="animation-controls"><label class="field-label" for="animation-effect">动画效果</label><select id="animation-effect"><option value="fade">淡化</option><option value="appear">出现</option><option value="flyIn">飞入</option><option value="wipe">擦除</option><option value="wipeDown">向下擦除</option><option value="splitIn">分割进入</option><option value="bounce">弹跳</option><option value="flipIn">翻转进入</option><option value="zoom">缩放进入</option><option value="pulse">脉冲</option><option value="spin">旋转</option><option value="grow">放大</option><option value="teeter">摇摆</option><option value="disappear">消失</option><option value="fadeOut">淡出</option><option value="flyOut">飞出</option><option value="wipeOut">擦除退出</option><option value="shrink">缩小退出</option><option value="zoomOut">缩小退出</option><option value="motionPath">路径</option><option value="mediaPlay">播放媒体</option><option value="mediaPause">暂停媒体</option><option value="mediaStop">停止媒体</option></select><label class="field-label" for="animation-trigger">触发方式</label><select id="animation-trigger"><option value="onClick">点击时</option><option value="withPrev">与上一动画同时</option><option value="afterPrev">上一动画后</option></select><div class="animation-timing"><label>持续 <input id="animation-duration" type="number" min="1" max="120000" step="50" value="500"> ms</label><label>延迟 <input id="animation-delay" type="number" min="0" max="120000" step="50" value="0"> ms</label></div><button class="animation-add" type="button">添加对象动画</button></div><p class="animation-state"></p><p class="object-note">未编辑对象会保留在原始 PPTX 中。</p></aside>
   </div>
-  <footer class="slides-statusbar"><span class="status-dot"></span><span class="status-message">读取 PPTX…</span><span class="status-spacer"></span><span>编辑器</span></footer>
+  <footer class="slides-statusbar"><span class="status-dot"></span><span class="status-message">读取 PPTX…</span><span class="status-spacer"></span><div class="slides-status-zoom" role="group" aria-label="画布缩放" hidden><button type="button" data-zoom-step="-1" aria-label="缩小">−</button><input type="range" min="10" max="400" step="5" value="100" aria-label="缩放比例"><button type="button" data-zoom-step="1" aria-label="放大">+</button><output>100%</output></div><span>编辑器</span></footer>
 `
 if (embedded) root.classList.add('slides-embedded')
 if (native) for (const panel of root.querySelectorAll<HTMLElement>('.slides-ai, .slides-image-tools')) { panel.hidden = true; panel.inert = true }
@@ -804,6 +804,7 @@ for (const kind of ['click', 'input', 'change', 'submit']) root.addEventListener
 
 let renderTree: { masterTextParts?: MasterTextRenderPart[]; slides: (RenderSlide & { slideIndex: number; slideIdentity?: string; mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] } | undefined
 let slidesViewMode: 'normal' | 'outline' | 'sorter' | 'reading' = 'normal'
+let showThumbnails = true
 const railNavigation = mountSlidesRailNavigation(list, { enabled: () => native && !disposed && !loading && slidesViewMode === 'normal', current: () => selectedSlide })
 let slideSorter: ReturnType<typeof createSlidesSorter> | undefined
 let slideOutline: ReturnType<typeof createSlidesOutline> | undefined
@@ -820,12 +821,19 @@ root.querySelector<HTMLElement>('.slides-workspace')!.append(readingHost)
 const viewZoomCommands = ['viewZoomIn', 'viewZoomOut', 'viewZoom100', 'viewZoomFit'] as const
 function syncViewZoomControls() {
   const available = !!canvas && !locked() && (slidesViewMode === 'normal' || slidesViewMode === 'outline')
+  root.querySelector<HTMLElement>('.slides-status-zoom')!.hidden = !native || !available
   for (const command of viewZoomCommands) {
     const button = root.querySelector<HTMLButtonElement>('[data-command="' + command + '"]')
     if (button) button.disabled = !available
   }
 }
 function syncSlidesViewMode() {
+  const workspace = root.querySelector<HTMLElement>('.slides-workspace')!
+  const sidebar = root.querySelector<HTMLElement>('.slides-sidebar')!
+  const hideThumbnails = !showThumbnails && slidesViewMode === 'normal'
+  workspace.classList.toggle('slides-thumbnails-hidden', hideThumbnails)
+  sidebar.hidden = hideThumbnails
+  nativeRibbon?.setValue('thumbnailPane', String(showThumbnails))
   syncViewZoomControls()
   for (const [command, mode] of [['normalView', 'normal'], ['outlineView', 'outline'], ['slideSorter', 'sorter'], ['readingView', 'reading']]) nativeRibbon?.setValue(command!, String(slidesViewMode === mode))
 }
@@ -926,6 +934,24 @@ function renderSlideSorter() {
 }
 let inkControls:ReturnType<typeof mountSlidesInk>|undefined
 let canvas: ReturnType<typeof mountSlidesCanvas> | undefined
+const zoomStatus = root.querySelector<HTMLElement>('.slides-status-zoom')!
+const zoomRange = zoomStatus.querySelector<HTMLInputElement>('input')!
+const zoomOutput = zoomStatus.querySelector<HTMLOutputElement>('output')!
+function updateZoomStatus(zoom: number) {
+  const percent = Math.round(zoom * 100)
+  zoomRange.value = String(percent)
+  zoomRange.setAttribute('aria-valuetext', percent + '%')
+  zoomOutput.value = percent + '%'
+}
+function updateZoomFromStatus(next: (zoom: number) => number) {
+  if (!canvas || zoomStatus.hidden || locked()) return
+  canvas.setZoom(next(canvas.getZoom()))
+  ruler.update()
+}
+zoomRange.addEventListener('input', () => updateZoomFromStatus(() => zoomRange.valueAsNumber / 100))
+for (const button of zoomStatus.querySelectorAll<HTMLButtonElement>('[data-zoom-step]')) {
+  button.addEventListener('click', () => updateZoomFromStatus(value => notchStep(value, button.dataset.zoomStep === '-1' ? -1 : 1)))
+}
 let previewSequence = 0
 let previewTimer: ReturnType<typeof setTimeout> | undefined
 // 每个页面最多一个预览请求在途：服务端每次预览要启动两个引擎进程，连续输入时
@@ -2594,6 +2620,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     if(notesPane&&!notesPane.flush())return
     if(command==='print'){void openPrint();return}
     if(command==='notes'){notesPane?.setVisible(!notesVisible);syncNotesVisibility();return}
+    if (command === 'thumbnailPane') { showThumbnails = !showThumbnails; syncSlidesViewMode(); return }
     if (command === 'viewZoomIn' || command === 'viewZoomOut' || command === 'viewZoom100' || command === 'viewZoomFit') {
       if (!canvas || loading || locked() || slidesViewMode === 'sorter' || slidesViewMode === 'reading') return
       const current = canvas.getZoom()
@@ -3679,7 +3706,7 @@ async function start() {
       renderTree = tree
       canvasHost.hidden = false
       preview.hidden = true
-      canvas = mountSlidesCanvas(canvasHost)
+      canvas = mountSlidesCanvas(canvasHost, updateZoomStatus)
       canvasStatus.textContent = '点击对象选择，拖动调整位置，拖动角点缩放'
       renderCanvas()
       if (nativeDraft?.dirty) refreshCanvasPreview()

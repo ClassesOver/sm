@@ -441,9 +441,6 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '对齐方式', actions: [
       action('顶端对齐', 'valign:top', 'valign:top'), action('垂直居中', 'valign:middle', 'valign:middle'),
       action('底端对齐', 'valign:bottom', 'valign:bottom'), action('自动换行', 'wrap', 'wrap'),
-      action('文本逆时针旋转', 'rotate:45', 'rotate:45'), action('文本顺时针旋转', 'rotate:-45', 'rotate:-45'),
-      action('竖排文本', 'rotate:vertical', 'rotate:vertical'), action('向上旋转', 'rotate:90', 'rotate:90'),
-      action('向下旋转', 'rotate:-90', 'rotate:-90'), action('清除旋转', 'rotate:0', 'rotate:0'),
       action('左对齐', 'align:left', 'align:left'),
       action('居中', 'align:center', 'align:center'), action('右对齐', 'align:right', 'align:right'),
       action('增加缩进', 'indent-step:increase', 'indent-step:increase'), action('减少缩进', 'indent-step:decrease', 'indent-step:decrease'),
@@ -617,6 +614,17 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
 }> = [
   { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
+  {
+    tab: 'Home', id: 'text-orientation', label: '方向', group: '对齐方式', after: 'wrap', icon: '⤴', detail: '方向',
+    choices: [
+      { command: 'rotate:45', label: '逆时针角度' },
+      { command: 'rotate:-45', label: '顺时针角度' },
+      { command: 'rotate:vertical', label: '竖排文字' },
+      { command: 'rotate:90', label: '向上旋转文字' },
+      { command: 'rotate:-90', label: '向下旋转文字' },
+      { command: 'rotate:0', label: '清除旋转' },
+    ],
+  },
   {
     tab: 'Home', id: 'merge', label: '合并', group: '对齐方式', after: 'indent-step:decrease', icon: '⇔', detail: '合并单元格',
     choices: [
@@ -992,16 +1000,28 @@ export function mountWorkbookRibbon(
       if (menu.tab !== active) continue
       const select = body.querySelector<HTMLSelectElement>('[data-ribbon-control="' + menu.id + '"]')
       if (!select) continue
-      const disabledReason = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : undefined
+      const orientation = menu.id === 'text-orientation'
+      const selectionReason = (orientation ? reason : undefined)
+        ?? (!selected || (orientation && rotation === undefined) ? '请先选择单元格或区域' : undefined)
+      const disabledReason = !editable ? '当前工作簿不可编辑或正在保存'
+        : selectionReason ?? (view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : undefined)
       select.disabled = !!disabledReason
       select.title = disabledReason ?? menu.detail
-      if (disabledReason) select.setAttribute('aria-description', disabledReason)
+      const mixed = orientation && rotation === 'mixed'
+      if (mixed) select.dataset.formatState = 'mixed'
+      else delete select.dataset.formatState
+      const description = disabledReason ?? (mixed ? '选区的文字方向不一致' : undefined)
+      if (description) select.setAttribute('aria-description', description)
       else select.removeAttribute('aria-description')
       const summary = view.outlineSummary?.()
       for (const choice of menu.choices) {
-        if (!choice.summary) continue
+        if (!choice.summary && !orientation) continue
         const option = select.querySelector<HTMLOptionElement>('[value="' + choice.command + '"]')
-        if (option) option.text = (summary?.[choice.summary] ?? true ? '✓ ' : '') + choice.label
+        if (!option) continue
+        const value = ROTATION_VALUES[choice.command as keyof typeof ROTATION_VALUES]
+        const expectedRotation = value === 'v' ? 255 : value === undefined ? undefined : univerRotationToOoxml({ a: value })
+        const checked = choice.summary ? summary?.[choice.summary] ?? true : rotation !== undefined && rotation === expectedRotation
+        option.text = (checked ? '✓ ' : '') + choice.label
       }
     }
     const cellStyle = body.querySelector<HTMLSelectElement>('[data-ribbon-control="cell-style"]')
@@ -1129,15 +1149,6 @@ export function mountWorkbookRibbon(
     }
     const calcMode = body.querySelector<HTMLSelectElement>('[data-ribbon-control="calc-mode"]')
     if (calcMode) calcMode.value = view.calculation?.().manual ? 'manual' : 'auto'
-    for (const [id, value] of Object.entries(ROTATION_VALUES)) {
-      const button = body.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-      if (!button) continue
-      button.disabled = !editable || rotation === undefined || !!reason
-      const expected = value === 'v' ? 255 : value < 0 ? 90 - value : value
-      button.setAttribute('aria-pressed', rotation === 'mixed' ? 'mixed' : String(rotation === expected))
-      if (button.disabled) { button.title = editable ? reason ?? '请先选择单元格或区域' : '当前工作簿不可编辑或正在保存'; button.setAttribute('aria-description', button.title) }
-      else { button.title = button.textContent ?? ''; button.removeAttribute('aria-description') }
-    }
     const pasteSpecial = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="paste-special"]')
     if (pasteSpecial) {
       pasteSpecial.disabled = !editable || !selected

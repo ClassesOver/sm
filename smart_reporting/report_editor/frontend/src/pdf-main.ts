@@ -27,7 +27,7 @@ import {bindPdfTextMove,PDF_MOVE_TEXT_ALONE_REASON} from './pdf-text-move'
 import {bindPdfPendingText} from './pdf-pending-text'
 import { mountPdfCropCanvas } from './pdf-crop-canvas'
 import { bindPdfExtractDialog } from './pdf-extract-dialog'
-import { authorizeSavedPdfSource } from './pdf-file-source'
+import { authorizeSavedPdfSource, type PdfFileOperation } from './pdf-file-source'
 import { bindPdfPrintDialog } from './pdf-print-dialog'
 import {bindPdfSplitHost} from './pdf-split-host'
 import {bindPdfMergeHost} from './pdf-merge-host'
@@ -592,9 +592,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     addAction('插入 PDF', () => {
       if (afterPageId !== null) activeId = afterPageId
       updateControls()
-      const after = afterPageId === null ? 0 : state().findIndex(page => page.pageId === afterPageId) + 1
+      const after = afterPageId === null ? 0 : pdfFilePageIds().indexOf(afterPageId) + 1
       externalPages.open('insert', after)
-    }, extractionUnavailable() !== null)
+    }, externalPagesUnavailable() !== null)
     addAction('插入空白页', async () => {
       if (disposed || !document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed) return
       const before = new Set(state().map(page => page.pageId))
@@ -1143,7 +1143,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   let savedPdfFileSource: Awaited<ReturnType<typeof authorizeSavedPdfSource>> | undefined
   let savedPdfFilePageIds: string[] | undefined
-  type PdfFileOperation = '提取' | '导出图片' | '打印'
   function pdfFilePageIds() { return savedPdfFilePageIds ?? state().map(page => page.pageId) }
   function pdfFileCurrentPage() { return Math.max(1, pdfFilePageIds().indexOf(activeId) + 1) }
   function pdfFileOperationUnavailable(operation: PdfFileOperation) {
@@ -1190,9 +1189,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const release=beginMutation();locked=true;updateControls()
     return()=>{release();locked=false;if(!disposed)updateControls()}
   }})
-  const externalPages = bindPdfExternalPagesDialog({root,sourceSha256:context.sourceFile.sha256,
-    pageCount:()=>model.pages.length,currentPage:()=>(model.pages.find(page=>page.pageId===activeId)?.index??0)+1,
-    unavailable:extractionUnavailable,submit:payload=>api.externalPages(payload)})
+  const externalPagesUnavailable = () => pdfFileOperationUnavailable('插入或替换页面')
+  const externalPages = bindPdfExternalPagesDialog({
+    root, sourceSha256:context.sourceFile.sha256, pageCount:() => pdfFilePageIds().length, currentPage:pdfFileCurrentPage,
+    unavailable:externalPagesUnavailable, submit:payload => api.externalPages(payload),
+    prepareSource:flushForFileOperation ? async () => {
+      const source = await preparePdfFileSource('插入或替换页面')
+      return { sha256:source.sha256, submit:payload => source.request(target => target.externalPages(payload)) }
+    } : undefined,
+  })
   const protectionUnavailable = () => extractionUnavailable() ?? (model.capabilities?.protectPdf === true ? null : '当前仅支持未加密且不含表单或签名保护结构的 PDF')
   const protection = bindPdfProtectionDialog({root,sourceSha256:context.sourceFile.sha256,unavailable:protectionUnavailable,submit:payload=>api.protectPdf(payload)})
   const [{bindPdfImageExportDialog},{bindPdfConvertOfficeDialog},{bindPdfExportTextDialog}]=await Promise.all([
@@ -2065,7 +2070,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const control of [exportPng, exportJpg]) { control.disabled = imageExportUnavailable() !== null; control.title = imageExportUnavailable() ?? '保存当前修改后导出所选页图片' }
     protectButton.disabled ||= protectionUnavailable() !== null
     protectButton.title = protectionUnavailable() ?? '生成独立密码保护下载；密码不保存在草稿中'
-    for(const id of ['genoffice.pdf.page.insertPdf','genoffice.pdf.page.replace']){const control=pageButtons.get(id)!;control.disabled ||= extractionUnavailable()!==null;control.title=extractionUnavailable()??'上传来源身份绑定的外部 PDF，保存为新修订'}
+    for(const id of ['genoffice.pdf.page.insertPdf','genoffice.pdf.page.replace']){const control=pageButtons.get(id)!;control.disabled=externalPagesUnavailable()!==null;control.title=externalPagesUnavailable()??'先保存当前修改，再将外部页面写入新修订'}
     const crop = pageButtons.get('genoffice.pdf.page.crop')!
     crop.disabled ||= draft.operations.some(op => op.kind === 'setPageSize') || cropApplying || !document || !activeId || model.capabilities?.cropPage !== true || draft.operations.length >= 500
     crop.title = document && model.capabilities?.cropPage === true ? '裁切当前页的可见范围，保留底层内容；不能用于删除敏感信息' : '当前 PDF 引擎未确认裁切写回能力'

@@ -10,6 +10,10 @@ export function clampZoom(z: number): number {
   return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z))
 }
 
+export function notchStep(z: number, direction: 1 | -1): number {
+  return clampZoom(Math.round(z * 100 + direction * 10) / 100)
+}
+
 export function nextPreset(z: number): number {
   return ZOOM_PRESETS.find((p) => p > z + EPS) ?? ZOOM_MAX
 }

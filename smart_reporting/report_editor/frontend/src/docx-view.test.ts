@@ -82,6 +82,33 @@ it('routes heading navigation and outline modes without changing zoom or paper c
   expect(f.view.zoom).toBe(100); expect(f.page.innerHTML).toBe(original)
 })
 
+it('follows GenOffice view toggles and gates pagination preview to print outside reading', () => {
+  let mode = 'page'
+  const outline = { run: vi.fn((label: string) => { mode = label === '大纲' ? 'outline' : 'page' }), reason: () => null, get mode() { return mode } }
+  const reading = { setActive: vi.fn() }
+  const { view, preview, root } = setup({ outline, reading })
+  view.run('Web 版式')
+  expect(view.active?.('Web 版式')).toBe(true)
+  expect(view.reason('分页预览')).not.toBeNull()
+  view.run('分页预览')
+  expect(preview).not.toHaveBeenCalled()
+  view.run('Web 版式')
+  expect(view.active?.('页面视图')).toBe(true)
+  view.run('大纲')
+  expect(view.active?.('大纲')).toBe(true)
+  view.run('大纲')
+  expect(view.active?.('页面视图')).toBe(true)
+  view.run('阅读视图')
+  expect(view.active?.('阅读视图')).toBe(true)
+  expect(view.active?.('页面视图')).toBe(false)
+  expect(view.reason('分页预览')).not.toBeNull()
+  view.run('页面视图')
+  expect(root.classList.contains('docx-read-mode')).toBe(false)
+  expect(reading.setActive.mock.calls).toEqual([[true], [false]])
+  view.run('分页预览')
+  expect(preview).toHaveBeenCalledOnce()
+})
+
 it('routes gridlines as an independent display toggle without changing document or zoom', () => {
   let visible = false
   const gridlines = { toggle: vi.fn(() => { visible = !visible }), get visible() { return visible } }

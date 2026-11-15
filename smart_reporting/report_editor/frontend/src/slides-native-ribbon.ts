@@ -237,7 +237,7 @@ const tabs: Tab[] = [
       { id: 'readingView', label: 'Reading View', kind: 'toggle', sourceIcon: IconReadMode, sourceActionId: 'onViewMode' },
       { id: 'slideMaster', label: 'Slide Master', sourceIcon: IconSlideMaster, sourceActionId: 'onSlideMaster' },
     ] },
-    { label: 'Show', controls: [{ id: 'ruler', label: 'Ruler', kind: 'toggle', sourceActionId: 'onToggleRuler' }, { id: 'grid', label: 'Gridlines', kind: 'toggle', sourceActionId: 'onToggleGrid' }, { id: 'guides', label: 'Guides', kind: 'toggle', sourceActionId: 'onToggleGuides' }, { id: 'notes', label: 'Notes', kind:'toggle', sourceActionId:'onToggleNotes' }] },
+    { label: 'Show', controls: [{ id: 'ruler', label: 'Ruler', kind: 'toggle', sourceActionId: 'onToggleRuler' }, { id: 'grid', label: 'Gridlines', kind: 'toggle', sourceActionId: 'onToggleGrid' }, { id: 'guides', label: 'Guides', kind: 'toggle', sourceActionId: 'onToggleGuides' }, { id: 'notes', label: 'Notes', kind:'toggle', sourceActionId:'onToggleNotes' }, { id: 'thumbnailPane', label: 'Thumbnail Pane', kind: 'toggle', sourceIcon: IconNavPane, sourceActionId: 'onToggleThumbs' }] },
     { label: 'Zoom', controls: [
       { id: 'viewZoomIn', label: 'Zoom In', sourceIcon: IconZoomIn, sourceActionId: 'onZoom' },
       { id: 'viewZoomOut', label: 'Zoom Out', sourceIcon: IconZoomOut, sourceActionId: 'onZoom' },
@@ -598,7 +598,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(alignment === value))
         }
       }
-      if (['normalView', 'outlineView', 'slideSorter', 'readingView', 'toggleAnimationPane', 'animationByParagraph', 'grid', 'ruler', 'guides'].includes(command)) for (const element of controls.get(command) ?? []) element.setAttribute('aria-pressed', value)
+      if (['normalView', 'outlineView', 'slideSorter', 'readingView', 'toggleAnimationPane', 'animationByParagraph', 'grid', 'ruler', 'guides', 'thumbnailPane'].includes(command)) for (const element of controls.get(command) ?? []) element.setAttribute('aria-pressed', value)
       if (command === 'animationEffect') {
         currentAnimationEffect = value
         const direction = (controls.get('animationDirection') ?? [])[0] as HTMLSelectElement | undefined

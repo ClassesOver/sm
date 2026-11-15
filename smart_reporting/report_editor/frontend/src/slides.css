@@ -556,3 +556,44 @@ dialog.slides-find-replace :is(input,button,[tabindex]):focus-visible { outline:
 .slides-canvas > .konvajs-content {
   flex: none;
 }
+
+.slides-workspace.slides-thumbnails-hidden {
+  grid-template-columns: minmax(0, 1fr) 276px;
+}
+.slides-workspace.slides-thumbnails-hidden > .slides-sidebar {
+  display: none;
+}
+.slides-status-zoom:not([hidden]) {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.slides-status-zoom button {
+  min-width: 20px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+}
+.slides-status-zoom button:hover {
+  background: var(--office-hover-bg);
+}
+.slides-status-zoom input {
+  width: clamp(44px, 10vw, 108px);
+  accent-color: var(--office-accent);
+}
+.slides-status-zoom output {
+  min-width: 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 900px) {
+  .slides-workspace.slides-thumbnails-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 600px) {
+  .editor-format-pptx .slides-workspace.slides-thumbnails-hidden {
+    grid-template-rows: minmax(240px, 1fr) auto;
+  }
+}
