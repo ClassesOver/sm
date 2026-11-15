@@ -10,19 +10,26 @@ from smart_reporting.http.request_limits import (
 from smart_reporting.runtime.settings import AgentSettings
 
 
-def test_native_features_are_disabled_independently_by_default():
+# GenOffice Web 以四格式编辑、AI 与上传为主入口，默认开启；PDF 文字编辑仍需显式开启。
+_NATIVE_DEFAULTS = {"docx": True, "pdf": True, "ai": True, "pdf_text": False, "upload": True}
+
+
+def test_native_feature_defaults():
     settings = AgentSettings.from_environment({}, load_env_file=False)
-    for feature in ("docx", "pdf", "ai", "pdf_text", "upload"):
-        assert getattr(settings, f"native_{feature}_enabled") is False
+    for feature, enabled in _NATIVE_DEFAULTS.items():
+        assert getattr(settings, f"native_{feature}_enabled") is enabled
 
 
-@pytest.mark.parametrize("feature", ["docx", "pdf", "ai", "pdf_text", "upload"])
-def test_native_feature_environment_does_not_enable_other_features(feature):
+@pytest.mark.parametrize("feature", list(_NATIVE_DEFAULTS))
+def test_native_feature_environment_does_not_change_other_features(feature):
+    # 每项能力按环境独立开关：把一项设为与默认相反，其余保持默认。
+    flipped = not _NATIVE_DEFAULTS[feature]
     settings = AgentSettings.from_environment(
-        {f"AGENT_NATIVE_{feature.upper()}_ENABLED": "true"}, load_env_file=False
+        {f"AGENT_NATIVE_{feature.upper()}_ENABLED": str(flipped).lower()}, load_env_file=False
     )
-    for candidate in ("docx", "pdf", "ai", "pdf_text", "upload"):
-        assert getattr(settings, f"native_{candidate}_enabled") is (candidate == feature)
+    for candidate, enabled in _NATIVE_DEFAULTS.items():
+        expected = flipped if candidate == feature else enabled
+        assert getattr(settings, f"native_{candidate}_enabled") is expected
 
 
 def test_native_writes_have_json_limit_before_session_parsing():

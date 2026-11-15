@@ -10,6 +10,8 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken
 
 
+# 两项都运行完整应用生命周期（启动时在 PostgreSQL 建表），属于集成用例。
+@pytest.mark.integration
 @pytest.mark.anyio
 async def test_base_app_enables_channel_routes_only_when_supplied():
     from smart_reporting.app import application_context, create_base_app
@@ -32,6 +34,7 @@ async def test_base_app_enables_channel_routes_only_when_supplied():
             assert (await client.get("/reports/channel-mcp", headers={"Accept": "text/event-stream"})).status_code == 405
 
 
+@pytest.mark.integration
 @pytest.mark.anyio
 async def test_agentos_preserves_channel_mcp_handshake():
     from smart_reporting.app import application_context, create_base_app
@@ -41,8 +44,7 @@ async def test_agentos_preserves_channel_mcp_handshake():
     from smart_reporting.runtime.application import create_agentos_app
 
     origin = "https://reports.test"
-    context = replace(application_context, database=None, recalculation_editor=None,
-                      reporting_code_mode_runtime=None, reporting_lsp_process_manager=None,
+    context = replace(application_context,
                       settings=replace(application_context.settings, report_public_base_url=origin))
 
     async def verify_token(bearer):
