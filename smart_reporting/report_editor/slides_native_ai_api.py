@@ -23,6 +23,7 @@ class SlidesNativeAIStartPayload(_DraftPayload):
     instruction: str = Field(min_length=1, max_length=2000)
     selection: list[SlidesAISelection] = Field(default_factory=list, max_length=100)
     scope: Literal["selection", "deck", "notes"] = "selection"
+    resume_edit_id: str | None = Field(default=None, alias="resumeEditId", pattern=r"^[0-9a-f]{64}$")
 
 
     @model_validator(mode="after")
@@ -58,7 +59,8 @@ def create_native_slides_ai_router(grants: Any, *, editor: Any, ai: NativeSlides
         try:
             session = await session_for(request, document_id, revision, write=True)
             return await ai.start_edit(session, client_request_id=payload.client_request_id, instruction=payload.instruction, expected_sha256=payload.expected_sha256,
-                operations=payload.operations, selection=[item.model_dump(by_alias=True, exclude_none=True) for item in payload.selection], scope=payload.scope)
+                operations=payload.operations, selection=[item.model_dump(by_alias=True, exclude_none=True) for item in payload.selection],
+                scope=payload.scope, resume_edit_id=payload.resume_edit_id)
         except ReportingError as error:
             raise _ai_error(error) from None
 

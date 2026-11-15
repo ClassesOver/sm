@@ -1,3 +1,5 @@
+import { NativeApiError } from './native-api'
+import { missingNativeAITask, reconnectNativeAITask, temporaryConnectionFailure } from './native-ai-recovery'
 import { OfficeAssistantController } from './office-assistant-controller'
 import {createElement,Sparkles,CircleStop,Check,X} from 'lucide'
 import {bindOfficeAssistantPanel} from './office-assistant-panel'
@@ -12,7 +14,7 @@ type Scope = 'object' | 'slide' | 'deck' | 'notes' | 'deckNotes'
 type Selection = { slideIndex: number; elementId?: string }
 type Context = { expectedSha256: string; operations: NativeOperation[]; selection: Selection[]; scope: 'selection' | 'deck' | 'notes'; label: string; objects: SlidesAIObject[]; notes?: {slideIndex:number;text:string}[] }
 type Job = { editId: string; status: string; snapshotSha256: string; proposal?: { summary: string; operations: NativeOperation[] }; error?: { message: string } }
-type Start = Pick<Context, 'expectedSha256' | 'operations' | 'selection' | 'scope'> & { instruction: string; clientRequestId: string }
+type Start = Pick<Context, 'expectedSha256' | 'operations' | 'selection' | 'scope'> & { instruction: string; clientRequestId: string; resumeEditId?: string }
 export interface SlidesNativeAIClient {
   start(payload: Start, signal: AbortSignal): Promise<Job>
   status(id: string, signal: AbortSignal): Promise<Job>
@@ -30,9 +32,11 @@ export function createSlidesNativeAIClient(documentId: string, revision: number,
     if (payload !== undefined && !csrfToken) throw new Error('缺少原生 AI 编辑授权，请重新打开')
     const response = await fetch(base + '/' + path, { method: payload === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store', signal, ...(path === 'cancel-request' ? { keepalive: true } : {}),
       ...(payload === undefined ? {} : { headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, body: JSON.stringify(payload) }) })
-    const body = await response.json()
-    if (!response.ok) throw new Error(body.detail?.message ?? ('AI 请求失败 (' + response.status + ')'))
-    return body as T
+    if (!response.ok) {
+      const body = await response.json().catch(() => null)
+      throw new NativeApiError(response.status, body?.detail?.code ?? '', body?.detail?.message ?? ('AI 请求失败 (' + response.status + ')'))
+    }
+    return await response.json() as T
   }
   return { start: (payload, signal) => request('start', payload, signal), status: (id, signal) => request(encodeURIComponent(id) + '?waitMs=20000', undefined, signal), events,
     accept: (id, payload, signal) => request(encodeURIComponent(id) + '/accept', payload, signal), cancel: id => request(encodeURIComponent(id) + '/cancel', {}),
@@ -104,9 +108,18 @@ export function mountSlidesNativeAI(host: HTMLElement, options: { api: SlidesNat
     try {
       quoted = structuredClone(current()); snapshot = identity(quoted)
       if (quoted.scope !== 'deck' && !quoted.selection.length) throw new Error('请选择可编辑文字、表格或图表对象')
-      const job = await tasks.run({ expectedSha256: quoted.expectedSha256, operations: quoted.operations, selection: quoted.selection, scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }, activeRequestId, (started, signal) => {
+      const payload: Start = { expectedSha256: quoted.expectedSha256, operations: quoted.operations, selection: quoted.selection, scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }
+      const job = await tasks.run(payload, activeRequestId, (started, signal) => {
         cancel.hidden = false
         progress.start(options.api.events, started.editId, signal, () => !disposed && turn === generation && !options.locked())
+      }, (started, error, signal) => {
+        if (/^[0-9a-f]{64}$/.test(started.editId) && (missingNativeAITask(error) || temporaryConnectionFailure(error))) {
+          return reconnectNativeAITask(
+            signal => options.api.status(started.editId, signal),
+            signal => options.api.start({...payload, resumeEditId: started.editId}, signal),
+            error, signal,
+          )
+        }
       })
       if (!job || disposed || turn !== generation) return
       if (options.locked() || identity(current()) !== snapshot) throw new Error('完整草稿或授权范围已变化，请重新生成候选。')

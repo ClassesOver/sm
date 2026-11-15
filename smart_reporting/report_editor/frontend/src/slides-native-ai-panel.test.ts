@@ -1,4 +1,5 @@
 import {afterEach,expect,it,vi} from 'vitest'
+import {NativeApiError} from './native-api'
 import {mountSlidesNativeAI} from './slides-native-ai'
 afterEach(()=>document.body.replaceChildren())
 function fixture(){
@@ -27,4 +28,15 @@ it('采纳回执迟到关闭后不得写草稿',async()=>{
  f.view.open();f.submit();await vi.waitFor(()=>expect(f.host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
  f.host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click();f.view.close();finish({operations:[{kind:'editSlides'}]})
  await Promise.resolve();await Promise.resolve();expect(f.apply).not.toHaveBeenCalled();f.view.dispose()
+})
+
+it('恢复请求携带原编辑身份和冻结授权', async () => {
+ const f=fixture(), editId='a'.repeat(64)
+ f.api.start.mockResolvedValueOnce({...f.candidate,editId,status:'running'}).mockResolvedValueOnce({...f.candidate,editId})
+ f.api.status.mockRejectedValueOnce(new NativeApiError(404,'native_ai_job_missing','任务暂不可见'))
+ f.view.open();f.submit()
+ await vi.waitFor(()=>expect(f.host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
+ expect(f.api.start.mock.calls[1][0]).toEqual({...f.api.start.mock.calls[0][0],resumeEditId:editId})
+ expect(f.apply).not.toHaveBeenCalled()
+ f.view.dispose()
 })

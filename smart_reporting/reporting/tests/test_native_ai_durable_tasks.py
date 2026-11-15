@@ -296,3 +296,33 @@ async def test_workbook_resume_is_bound_to_existing_task_and_frozen_input(durabl
     recovered = await second.start_edit(session, **request, resume_edit_id=edit_id)
     assert recovered["editId"] == edit_id
     assert await second.wait_edit_status(session, edit_id) == completed
+
+
+async def test_slides_candidate_survives_service_rebuild(durable):
+    from contextlib import aclosing
+    from smart_reporting.report_editor.slides_ai import SlidesAIProposal
+    from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
+    from smart_reporting.reporting.tests.test_slides_native_ai import Editor
+
+    editor = Editor()
+    editor.context = editor.context.model_copy(update={"scope": durable["context"].scope})
+    editor.workspace = durable["fixture"].workspace
+
+    async def planner(_prompt, **_kwargs):
+        return SlidesAIProposal(summary="Update title", edits=[
+            {"slideIndex": 0, "elementId": "title", "text": "Recovered title"},
+        ], order=[0, 1])
+
+    repository = durable["repository"]
+    async with aclosing(NativeSlidesAIService(editor, planner=planner, enabled=True, task_repository=repository)) as first:
+        initial = await first.start_edit(None, client_request_id=uuid4().hex, instruction="Update title",
+            expected_sha256="a" * 64, operations=[], selection=[{"slideIndex": 0, "elementId": "title"}])
+        candidate = await first.wait_edit_status(None, initial["editId"])
+        assert candidate["status"] == "succeeded", candidate
+
+    async with aclosing(NativeSlidesAIService(editor, planner=never_call, enabled=True, task_repository=repository)) as second:
+        recovered = await second.wait_edit_status(None, initial["editId"])
+        assert recovered == candidate
+        await second.accept_edit(None, initial["editId"], expected_sha256="a" * 64,
+            operations=[], snapshot_sha256=candidate["snapshotSha256"])
+        assert (await second.wait_edit_status(None, initial["editId"]))["accepted"] is True

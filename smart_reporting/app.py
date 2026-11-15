@@ -426,6 +426,8 @@ native_ai = create_native_ai_service(
 )
 native_slides_ai = create_native_slides_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,
+    task_repository=(report_runtime.task_runner.repository
+                     if settings.native_ai_enabled and settings.native_slides_tasks_enabled else None),
 )
 native_workbook_ai = create_native_workbook_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,
