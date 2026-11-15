@@ -3,12 +3,14 @@
 import asyncio
 import hashlib
 import json
+import os
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 from runpy import run_path
 
 import uvicorn
+from agno.agent import Agent
 from agno.models.response import ModelResponse
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +21,9 @@ from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_models import NativeArtifacts
 from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
 from smart_reporting.report_editor.native_workbook_read_ai import AgnoNativeWorkbookReadPlanner
+from smart_reporting.report_editor.workbook_ai import AgnoWorkbookProposalPlanner
+from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
+from smart_reporting.report_editor.workbook_native_ai_api import create_native_workbook_ai_router
 from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 from smart_reporting.reporting.tests.test_native_pdf_extract import extract_fixture
@@ -77,6 +82,10 @@ async def create(directory, port):
             ),
         ],
     )
+    candidate_mode = os.environ.get("WORKBOOK_AI_NAVIGATION_CANDIDATE") == "1"
+    candidate = NativeWorkbookAIService(
+        f.editor, planner=AgnoWorkbookProposalPlanner(Agent(model=model)), enabled=True
+    )
     service = NativeOfficeReadService(
         f.editor, planners={"xlsx": AgnoNativeWorkbookReadPlanner(model)}, enabled=True
     )
@@ -85,6 +94,7 @@ async def create(directory, port):
     async def lifespan(app):
         yield
         await service.aclose()
+        await candidate.aclose()
         await f.workspace.registry.aclose()
 
     app = FastAPI(lifespan=lifespan)
@@ -109,6 +119,12 @@ async def create(directory, port):
             allowed_origin=origin,
         )
     )
+    if candidate_mode:
+        app.include_router(
+            create_native_workbook_ai_router(
+                f.publication.editor_grants, editor=f.editor, ai=candidate, allowed_origin=origin
+            )
+        )
     app.mount("/reports/v1/editor/assets", StaticFiles(directory=static))
     requests = []
 

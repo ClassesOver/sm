@@ -7,7 +7,12 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..reporting.models import ReportingError
-from .native_ai_api import NativeAIAcceptPayload, _ai_error, _DraftPayload, _revalidate_write_session
+from .native_ai_api import (
+    NativeAIAcceptPayload,
+    _ai_error,
+    _DraftPayload,
+    _revalidate_write_session,
+)
 from .native_api import NATIVE_SESSION_COOKIE, _csrf
 from .workbook_native_ai import NativeWorkbookAIService
 
@@ -27,6 +32,7 @@ class WorkbookNativeAIStartPayload(_DraftPayload):
     instruction: str = Field(min_length=1, max_length=2000)
     selection: WorkbookAISelection | None = None
     scope: Literal["range", "workbook"] = "range"
+    navigation_enabled: bool = Field(default=False, alias="navigationEnabled", strict=True)
 
 
 class WorkbookNativeAICancelRequestPayload(BaseModel):
@@ -55,7 +61,7 @@ def create_native_workbook_ai_router(grants: Any, *, editor: Any, ai: NativeWork
             session = await session_for(request, document_id, revision, write=True)
             return await ai.start_edit(session, client_request_id=payload.client_request_id, instruction=payload.instruction, expected_sha256=payload.expected_sha256,
                 operations=payload.operations, selection=payload.selection.model_dump(by_alias=True) if payload.selection else {},
-                scope=payload.scope, resume_edit_id=payload.resume_edit_id)
+                scope=payload.scope, resume_edit_id=payload.resume_edit_id, navigation_enabled=payload.navigation_enabled)
         except ReportingError as error:
             raise _ai_error(error) from None
 

@@ -3,7 +3,7 @@ import type { NativeOperation } from './native-draft'
 import { nativeAIProgressListener, mountNativeAIProgress, type NativeAIProgressListener } from './native-ai-progress'
 import { Sparkles, X, Check, Trash2, Undo2, Redo2, createElement } from 'lucide'
 import { bindOfficeAssistantPanel } from './office-assistant-panel'
-import { NativeApiError } from './native-api'
+import { NativeApiError, type NativeWorkbookNavigation } from './native-api'
 import { missingNativeAITask, reconnectNativeAITask, temporaryConnectionFailure } from './native-ai-recovery'
 import { requireWorkbookTranslation, workbookTranslationPrompt, type WorkbookTranslationLanguage } from './workbook-ai-translation'
 import { formatAddress } from '../../../reporting/workbook_engine/packages/xlsx-engine/src/cell-address'
@@ -24,8 +24,8 @@ function visibilityDescription(operation: NativeOperation): string | undefined {
 }
 export type WorkbookAISelection = { sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number }
 type Context = { expectedSha256: string; operations: NativeOperation[]; selection: WorkbookAISelection; scope: Scope; label: string; cells: Record<string, { value?: unknown; formula?: string }> }
-type Job = { editId: string; status: string; snapshotSha256: string; proposal?: { summary: string; operations: NativeOperation[] }; error?: { message: string } }
-type Start = Pick<Context, 'expectedSha256' | 'operations' | 'selection' | 'scope'> & { instruction: string; clientRequestId: string; resumeEditId?: string }
+type Job = { editId: string; status: string; snapshotSha256: string; proposal?: { summary: string; operations: NativeOperation[]; navigation?: NativeWorkbookNavigation }; error?: { message: string } }
+type Start = Pick<Context, 'expectedSha256' | 'operations' | 'selection' | 'scope'> & { instruction: string; clientRequestId: string; resumeEditId?: string; navigationEnabled?: boolean }
 export interface WorkbookNativeAIClient {
   start(payload: Start, signal: AbortSignal): Promise<Job>
   status(id: string, signal: AbortSignal): Promise<Job>
@@ -54,7 +54,7 @@ export function createWorkbookNativeAIClient(documentId: string, revision: numbe
     cancelRequest: clientRequestId => request('cancel-request', { clientRequestId }) }
 }
 
-export function mountWorkbookNativeAI(host: HTMLElement, options: { api: WorkbookNativeAIClient; context(scope: Scope): Promise<Context>; locked(): boolean; apply(operations: NativeOperation[]): Promise<void>; history?(direction: 'undo' | 'redo'): Promise<void>; accepting?(value: boolean): void }) {
+export function mountWorkbookNativeAI(host: HTMLElement, options: { api: WorkbookNativeAIClient; context(scope: Scope): Promise<Context>; locked(): boolean; navigate?(target: NativeWorkbookNavigation, current: () => boolean): Promise<void>; apply(operations: NativeOperation[]): Promise<void>; history?(direction: 'undo' | 'redo'): Promise<void>; accepting?(value: boolean): void }) {
   const panel = document.createElement('section'); panel.className = 'workbook-ai workbook-native-ai native-ai native-ai-panel'; panel.setAttribute('aria-label', 'XLSX AI 助手')
   panel.hidden = true
   panel.innerHTML = '<form class="native-ai-form"><label>AI 助手<textarea rows="2" maxlength="2000" placeholder="描述要修改的内容；图表请明确指定目标"></textarea></label><label>授权范围<select aria-label="AI 授权范围"><option value="range">当前选区</option><option value="workbook">整份工作簿</option></select></label><p class="native-ai-context"></p><button type="submit">生成候选</button><button class="native-ai-cancel" type="button" hidden>取消任务</button></form><p class="native-ai-status" role="status" aria-live="polite"></p><div class="native-ai-preview" hidden><strong></strong><ul></ul><button class="native-ai-accept" type="button">采纳到草稿</button><button class="native-ai-discard" type="button">放弃候选</button></div><p>选区支持值、公式和格式。整簿还支持工作表、行列、规则、批注、透视表、表格以及已有图表的格式编辑和删除；请明确指定图表，检查候选后采纳并保存。暂不支持 AI 新建图表、替换图表数据、图片、保护与主题。</p><button type="button" class="native-ai-undo">撤销草稿</button><button type="button" class="native-ai-redo">重做草稿</button>'
@@ -131,7 +131,7 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
       snapshot = identity(quoted)
       panel.querySelector<HTMLElement>('.native-ai-context')!.textContent = '本次冻结范围：' + quoted.label
       const payload = { expectedSha256: quoted.expectedSha256, operations: structuredClone(quoted.operations),
-        selection: structuredClone(quoted.selection), scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }
+        selection: structuredClone(quoted.selection), scope: quoted.scope, ...(options.navigate ? {navigationEnabled:true} : {}), instruction: instruction.value.trim(), clientRequestId: activeRequestId }
       const job = await tasks.run(payload, activeRequestId, (started, signal) => {
         cancel.hidden = false
         progress.start(options.api.events, started.editId, signal, () => !disposed && turn === generation && !options.locked())
@@ -147,7 +147,27 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
       if (!job || disposed || turn !== generation) return
       if (job.status === 'succeeded' && job.proposal) {
         if (translation) requireWorkbookTranslation(job.proposal.operations, quoted.selection, quoted.cells)
-        show(job); status.textContent = '候选已经引擎核验，请检查差异后明确采纳。'
+        const hasEdits = job.proposal.operations.length > 0
+        let navigationStatus = ''
+        if (job.proposal.navigation) {
+          try {
+            if (!options.navigate) throw new Error('当前视图不支持定位')
+            const latest = await current()
+            if (disposed || turn !== generation || options.locked()) return
+            if (identity(latest) !== snapshot) throw new Error('完整草稿已变化，定位未执行')
+            if (JSON.stringify(latest.selection) !== JSON.stringify(quoted.selection)) throw new Error('当前视图已变化，定位未执行')
+            const target = job.proposal.navigation
+            await options.navigate(target, () => !disposed && turn === generation && !options.locked() && inputIdentity() === requestInput)
+            if (disposed || turn !== generation || options.locked()) return
+            navigationStatus = `已定位到 ${target.sheetName}!${target.range}。`
+          } catch (error) {
+            if (disposed || turn !== generation) return
+            navigationStatus = '定位未完成：' + message(error) + '。'
+          }
+        }
+        if (hasEdits) show(job)
+        else { tasks.release(); pending = undefined; activeRequestId = ''; preview.hidden = true }
+        status.textContent = navigationStatus + (hasEdits ? '候选已经引擎核验，请检查差异后明确采纳。' : '文档与草稿未修改。')
       }
       else status.textContent = job.error?.message ?? 'AI 任务已取消，人工草稿已保留。'
     } catch (error) { if (!disposed && turn === generation) status.textContent = message(error) }
