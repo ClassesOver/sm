@@ -122,4 +122,20 @@ describe('shared Office task control',()=>{
   expect(cancelRequest).not.toHaveBeenCalled()
  })
 
+ it('cancels a followed task before the initial status request resolves',async()=>{
+  const waiting=deferred<Job>(),cancel=vi.fn(async()=>{}),cancelRequest=vi.fn(async()=>{})
+  const controller=new OfficeAssistantController({
+    start:async()=>({id:'unused',status:'completed'}),status:()=>waiting.promise,
+    cancel,cancelRequest,id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  const resumed=controller.follow('known-task')
+  await controller.cancel()
+  expect(cancel).toHaveBeenCalledTimes(1)
+  expect(cancel).toHaveBeenCalledWith('known-task')
+  expect(cancelRequest).not.toHaveBeenCalled()
+  waiting.resolve({id:'known-task',status:'completed'})
+  expect(await resumed).toBeUndefined()
+  expect(cancel).toHaveBeenCalledTimes(1)
+ })
+
 })
