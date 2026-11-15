@@ -380,3 +380,77 @@ async def test_search_connection_test_does_not_report_empty_or_malformed_respons
     }
     with pytest.raises(OfficeError):
         await service.test(admin, "webSearch", draft)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider",
+    ["serper", "serply", "searchapi", "tavily", "parallel", "exa", "firecrawl", "keenable"],
+)
+async def test_runtime_rejects_malformed_success_but_allows_valid_empty_results(provider):
+    from smart_reporting.office.provider_runtime import ProviderRuntime
+    from smart_reporting.office.provider_http import ProviderHTTP
+    from smart_reporting.office.provider_catalog import SEARCH
+
+    runtime = ProviderRuntime(
+        ProviderHTTP(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json={"message": "quota exhausted"})
+            )
+        )
+    )
+    value = {"provider": provider, "baseUrl": SEARCH[provider]["baseUrl"]}
+    with pytest.raises(OfficeError):
+        await runtime.search(value, "secret", "query", 1)
+    empty = {"organic": [], "organic_results": [], "results": [], "data": {"web": []}}
+    runtime = ProviderRuntime(
+        ProviderHTTP(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=empty)))
+    )
+    assert (await runtime.search(value, "secret", "query", 1))["results"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("excerpts", [None, "not-an-array"])
+async def test_parallel_uses_pinned_source_payload_and_handles_bad_excerpts(excerpts):
+    from smart_reporting.office.provider_runtime import ProviderRuntime
+    from smart_reporting.office.provider_http import ProviderHTTP
+
+    def respond(request):
+        assert json.loads(request.content) == {"search_queries": ["query"], "mode": "fast"}
+        assert "parallel-beta" not in request.headers
+        return httpx.Response(
+            200,
+            json={"results": [{"url": "https://example.com", "title": "A", "excerpts": excerpts}]},
+        )
+
+    result = await ProviderRuntime(ProviderHTTP(transport=httpx.MockTransport(respond))).search(
+        {"provider": "parallel", "baseUrl": "https://api.parallel.ai"}, "secret", "query", 1
+    )
+    assert result["results"][0]["snippet"] == ""
+
+
+@pytest.mark.asyncio
+async def test_serply_requests_requested_result_count():
+    from smart_reporting.office.provider_runtime import ProviderRuntime
+    from smart_reporting.office.provider_http import ProviderHTTP
+
+    def respond(request):
+        assert request.url.params["num"] == "20"
+        return httpx.Response(200, json={"results": []})
+
+    await ProviderRuntime(ProviderHTTP(transport=httpx.MockTransport(respond))).search(
+        {"provider": "serply", "baseUrl": "https://api.serply.io"}, "secret", "query", 20
+    )
+
+
+@pytest.mark.asyncio
+async def test_nonvideo_iso_container_is_not_misrouted_as_video():
+    import base64
+    from smart_reporting.office.provider_runtime import ProviderRuntime
+
+    image = (
+        "data:image/avif;base64,"
+        + base64.b64encode(b"\x00\x00\x00\x18ftypavif" + b"\x00" * 20).decode()
+    )
+    with pytest.raises(OfficeError):
+        await ProviderRuntime().load_media([image])

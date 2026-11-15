@@ -80,7 +80,25 @@ class ProviderRuntime:
             if total > MAX_MEDIA_BYTES:
                 raise invalid("媒体总大小不得超过 20 MiB。")
             # Route on actual signatures, never on URL extensions or claimed MIME.
-            if len(content) >= 12 and content[4:8] == b"ftyp":
+            if (
+                len(content) >= 12
+                and content[4:8] == b"ftyp"
+                and content[8:12]
+                in {
+                    b"isom",
+                    b"iso2",
+                    b"iso3",
+                    b"iso4",
+                    b"iso5",
+                    b"iso6",
+                    b"mp41",
+                    b"mp42",
+                    b"avc1",
+                    b"M4V ",
+                    b"MSNV",
+                    b"dash",
+                }
+            ):
                 mime = "video/mp4"
             elif content.startswith(b"\x1aE\xdf\xa3") and b"webm" in content[:4096]:
                 mime = "video/webm"
@@ -189,8 +207,8 @@ class ProviderRuntime:
         elif provider == "parallel":
             path, headers, body = (
                 "/v1/search",
-                {"x-api-key": key, "parallel-beta": "search-extract-2025-10-10"},
-                {"objective": query, "mode": "one-shot"},
+                {"x-api-key": key},
+                {"search_queries": [query], "mode": "fast"},
             )
         elif provider == "firecrawl":
             path, headers, body = (
@@ -209,7 +227,7 @@ class ProviderRuntime:
                 "GET",
                 "/v1/search",
                 {"X-Api-Key": key, "User-Agent": "genoffice"},
-                {"q": query},
+                {"q": query, "num": limit},
                 None,
             )
         elif provider == "searchapi":
@@ -225,16 +243,18 @@ class ProviderRuntime:
             headers = {"Authorization": "Bearer " + key, "User-Agent": "genoffice"}
         data = await self._json(method, base + path, headers=headers, json=body, params=params)
         if provider == "serper":
-            raw = data.get("organic", [])
-        elif provider in ("searchapi", "serply"):
-            raw = data.get("organic_results", data.get("results", []))
+            raw = data.get("organic")
+        elif provider == "searchapi":
+            raw = data.get("organic_results")
+        elif provider == "serply":
+            raw = data.get("results")
         elif provider == "firecrawl":
-            nested = data.get("data", {})
-            raw = (
-                (nested.get("web") or nested.get("news") or []) if isinstance(nested, dict) else []
-            )
+            nested = data.get("data")
+            raw = nested.get("web") if isinstance(nested, dict) else None
+            if isinstance(nested, dict) and (raw is None or raw == []):
+                raw = nested.get("news", raw)
         else:
-            raw = data.get("results", [])
+            raw = data.get("results")
         if not isinstance(raw, list):
             raise OfficeError("office_provider_response_invalid", "搜索结果格式无效。", 502)
         results = []
@@ -252,7 +272,12 @@ class ProviderRuntime:
                 or item.get("summary")
             )
             if provider == "parallel":
-                snippet = "\n".join(x for x in item.get("excerpts", []) if isinstance(x, str))
+                excerpts = item.get("excerpts")
+                snippet = (
+                    "\n".join(x for x in excerpts if isinstance(x, str))
+                    if isinstance(excerpts, list)
+                    else ""
+                )
             results.append(
                 {
                     "title": text(item.get("title"), 500),
