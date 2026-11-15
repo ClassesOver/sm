@@ -6,11 +6,13 @@ on:
       - review/report-channel-acp
     paths:
       - "smart_reporting/document_candidate_*.py"
+      - "smart_reporting/report_channel_api.py"
       - "smart_reporting/tests/test_document_candidate_*.py"
       - ".github/workflows/document-candidate-previews.yml"
   pull_request:
     paths:
       - "smart_reporting/document_candidate_*.py"
+      - "smart_reporting/report_channel_api.py"
       - "smart_reporting/tests/test_document_candidate_*.py"
       - ".github/workflows/document-candidate-previews.yml"
   workflow_dispatch:
