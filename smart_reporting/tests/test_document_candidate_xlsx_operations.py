@@ -60,3 +60,19 @@ def test_xlsx_operation_rejects_invisible_and_compatibility_formula_prefix(value
         validate_xlsx_operations(
             _SELECTION, ({"sheet": "Sheet1", "range": "A1", "value": value},)
         )
+
+
+def test_xlsx_operation_accepts_equivalent_absolute_cell_reference():
+    validate_xlsx_operations(
+        ({"sheet": "Sheet1", "range": "B2"},),
+        ({"sheet": "Sheet1", "range": "$B$2", "value": 10},),
+    )
+
+
+def test_xlsx_operation_rejects_duplicate_alias_of_same_cell():
+    with pytest.raises(ValueError, match="xlsx_operation_target_unapproved"):
+        validate_xlsx_operations(
+            ({"sheet": "Sheet1", "range": "B2"},),
+            ({"sheet": "Sheet1", "range": "B2", "value": 10},
+             {"sheet": "Sheet1", "range": "$B$2", "value": 11}),
+        )
