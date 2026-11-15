@@ -187,7 +187,13 @@ class OfficeProviders:
         value, version = await self._prepare(actor, capability, document)
         key = self._key(value)
         if capability == "webSearch":
-            await self.runtime.search(value, key, "GenOffice", 1)
+            result = await self.runtime.search(value, key, "GenOffice", 1)
+            if not result["results"]:
+                raise OfficeError(
+                    "office_provider_test_empty",
+                    "提供商未返回可用的搜索结果，无法确认连接有效。",
+                    502,
+                )
         else:
             if not media:
                 raise OfficeError(

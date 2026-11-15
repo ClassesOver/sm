@@ -1,23 +1,24 @@
 import { officeRequest, officeSession, type OfficeUser } from './office-client'
 import { showOfficeAdministration } from './office-administration'
 import { showOfficeSources } from './office-sources'
+import { mountOfficeProviderSettings } from './office-provider-settings'
 import './office.css'
 import './office-settings.css'
 type GlobalSettings = { version: number; modelId: string; imageModel: string; searchEnabled: boolean; integrationsEnabled: boolean }
 const host = document.querySelector<HTMLElement>('#office-admin')!
-let user: OfficeUser, settings: GlobalSettings, baseline = '', section = '模型配置', busy = false
+let user: OfficeUser, settings: GlobalSettings, baseline = '', section = '模型配置', busy = false, providerDirty = false, providerBusy = false
 const labels = ['模型配置', '生图', '媒体', '搜索', '集成', '数据源管理', '用户管理']
 const dirty = () => settings && JSON.stringify(settings) !== baseline
-window.addEventListener('beforeunload', event => { if (dirty()) { event.preventDefault(); event.returnValue = '' } })
-window.addEventListener('genoffice-session-expired', () => { host.textContent = '登录已失效，请返回工作区重新登录。'; settings = undefined! })
+window.addEventListener('beforeunload', event => { if (dirty() || providerDirty || providerBusy) { event.preventDefault(); event.returnValue = '' } })
+window.addEventListener('genoffice-session-expired', () => { host.textContent = '登录已失效，请返回工作区重新登录。'; settings = undefined!; providerDirty = false })
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, text = '') { const node = document.createElement(tag); node.textContent = text; return node }
 function render() {
   host.className = 'office-admin-page'; host.replaceChildren()
-  const header = element('header'), back = element('a', '返回工作区'); back.href = '/office'
+  const header = element('header'), back = element('a', '返回工作区'); back.href = '/office'; back.onclick = event => { if (providerBusy || (providerDirty && !window.confirm('有未保存的提供商修改，是否离开？'))) event.preventDefault() }
   header.append(element('h1', '管理后台'), back); host.append(header)
   const layout = element('div'); layout.className = 'office-admin-layout'
   const nav = element('nav'); nav.setAttribute('aria-label', '全局设置')
-  for (const label of labels) { const button = element('button', label); button.setAttribute('aria-current', String(section === label)); button.onclick = () => { section = label; render() }; nav.append(button) }
+  for (const label of labels) { const button = element('button', label); button.setAttribute('aria-current', String(section === label)); button.onclick = () => { if (busy || providerBusy || (providerDirty && !window.confirm('切换页面将放弃未保存的提供商修改，是否继续？'))) return; providerDirty = false; section = label; render() }; nav.append(button) }
   const content = element('section'); content.append(element('h2', section))
   const status = element('p'); status.setAttribute('role', 'status')
   const form = element('form')
@@ -33,7 +34,15 @@ function render() {
   if (section === '生图') { text('图像模型', 'imageModel'); form.append(element('p', '用于幻灯片 AI 配图，服务地址和凭据沿用已部署的图像提供商。')) }
   if (section === '搜索') flag('启用文件内容搜索和 AI 重排', 'searchEnabled')
   if (section === '集成') flag('允许助手使用已授权的数据源集成', 'integrationsEnabled')
-  if (section === '媒体') content.append(element('p', '当前服务尚未接入音频／视频生成提供商。'))
+  if (section === '媒体' || section === '搜索') {
+    const cards = element('div'); content.append(cards)
+    // Mount after the node is connected; detached results never replace another page.
+    queueMicrotask(() => void mountOfficeProviderSettings(cards, {
+      capabilities: section === '媒体' ? ['imageAnalysis', 'videoAnalysis'] : ['webSearch'],
+      onDirty: value => { if (cards.isConnected) providerDirty = value },
+      onBusy: value => { providerBusy = value; for (const button of host.querySelectorAll<HTMLButtonElement>('nav button')) button.disabled = value; save.disabled = value },
+    }))
+  }
   if (section === '用户管理' || section === '数据源管理') {
     const open = element('button', section === '用户管理' ? '管理用户' : '管理公司数据源')
     open.onclick = async () => { try { if (section === '用户管理') await showOfficeAdministration(host, { user, onChanged: async () => {} }); else await showOfficeSources(host, { admin: true }) } catch (e) { status.textContent = (e as Error).message } }
@@ -42,9 +51,9 @@ function render() {
   const save = element('button', busy ? '保存中…' : '保存全局设置'); save.type = 'submit'; save.disabled = busy
   if (form.childElementCount) form.append(save)
   form.onsubmit = async event => {
-    event.preventDefault(); if (busy || !dirty()) return
+    event.preventDefault(); if (busy || providerBusy || !dirty()) return
     busy = true; status.textContent = '正在保存…'
-    const locked = [...host.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button')]
+    const locked = [...host.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input, button, select')]
     for (const control of locked) control.disabled = true
     try {
       const { version, ...document } = settings

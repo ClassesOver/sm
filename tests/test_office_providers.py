@@ -293,3 +293,90 @@ def image_data():
     output = BytesIO()
     Image.new("RGB", (2, 2), "white").save(output, format="PNG")
     return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode()
+
+
+@pytest.mark.asyncio
+async def test_gemini_video_routing_ephemeral_test_and_clear_key(providers):
+    from smart_reporting.office.provider_runtime import ProviderRuntime
+    from smart_reporting.office.provider_http import ProviderHTTP
+    import base64
+
+    service, admin, user, _ = providers
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        return httpx.Response(
+            200, json={"candidates": [{"content": {"parts": [{"text": "A clip"}]}}]}
+        )
+
+    service.runtime = ProviderRuntime(ProviderHTTP(transport=httpx.MockTransport(respond)))
+    video = (
+        "data:video/mp4;base64,"
+        + base64.b64encode(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 20).decode()
+    )
+    draft = {
+        "enabled": True,
+        "provider": "gemini",
+        "model": "gemini-test",
+        "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+        "apiKey": "gemini-key",
+        "expectedVersion": 0,
+    }
+    assert (await service.test(admin, "videoAnalysis", draft, [video]))["ok"]
+    assert (await service.catalog(admin))["settings"]["videoAnalysis"]["version"] == 0
+    await service.save(admin, "videoAnalysis", draft)
+    assert (await service.analyze(user, [video], "Describe"))["provider"] == "gemini"
+    payload = json.loads(seen[-1].content)
+    assert payload["contents"][0]["parts"][1]["inline_data"]["mime_type"] == "video/mp4"
+    assert seen[-1].headers["x-goog-api-key"] == "gemini-key"
+    assert "gemini-key" not in str(seen[-1].url)
+    await service.save(
+        admin, "videoAnalysis", {**draft, "enabled": False, "apiKey": "", "expectedVersion": 1}
+    )
+    with pytest.raises(OfficeError):
+        await service.analyze(user, [video], "Describe")
+    assert not (await service.catalog(admin))["settings"]["videoAnalysis"]["hasKey"]
+
+
+@pytest.mark.asyncio
+async def test_changing_endpoint_cannot_forward_retained_secret_and_vault_required(providers):
+    from smart_reporting.office.provider_settings import OfficeProviders
+
+    service, admin, _, _ = providers
+    await service.save(admin, "imageAnalysis", config())
+    changed = config()
+    changed.update(baseUrl="https://other.example/v1", apiKey=None, expectedVersion=1)
+    with pytest.raises(OfficeError, match="密钥"):
+        await service.save(admin, "imageAnalysis", changed)
+    unavailable = OfficeProviders(service.office, None)
+    with pytest.raises(OfficeError) as missing:
+        await unavailable.save(admin, "imageAnalysis", {**config(), "expectedVersion": 1})
+    assert missing.value.status == 503
+
+
+@pytest.mark.asyncio
+async def test_search_connection_test_does_not_report_empty_or_malformed_response_as_success(
+    providers,
+):
+    from smart_reporting.office.provider_runtime import ProviderRuntime
+    from smart_reporting.office.provider_http import ProviderHTTP
+
+    service, admin, _, _ = providers
+    service.runtime = ProviderRuntime(
+        ProviderHTTP(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json={"message": "quota exhausted"})
+            )
+        )
+    )
+    draft = {
+        "enabled": True,
+        "provider": "tavily",
+        "model": "",
+        "baseUrl": "https://api.tavily.com",
+        "apiKey": "key",
+        "expectedVersion": 0,
+    }
+    with pytest.raises(OfficeError):
+        await service.test(admin, "webSearch", draft)
