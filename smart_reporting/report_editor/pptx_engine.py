@@ -165,6 +165,7 @@ class PptxEngine:
         hidden_slides: list[dict[str, Any]] | None = None,
         comment_edits: list[dict[str, Any]] | None = None,
         transitions: list[dict[str, Any]] | None = None,
+        advance_times: list[dict[str, Any]] | None = None,
         animations: list[dict[str, Any]] | None = None,
         slide_layouts: list[dict[str, Any]] | None = None,
         backgrounds: list[dict[str, Any]] | None = None,
@@ -274,6 +275,8 @@ class PptxEngine:
                     request["commentAuthor"] = "用户"
                 if transitions:
                     request["transitions"] = transitions
+                if advance_times:
+                    request["advanceTimes"] = advance_times
                 if animations:
                     request["animations"] = animations
                 if slide_layouts:
