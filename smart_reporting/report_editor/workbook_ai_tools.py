@@ -425,6 +425,14 @@ class WorkbookAIToolkit(Toolkit):
                     raise ValueError('workbook_ai_range_invalid')
                 sheet = self._sheet(sheet_id)
                 self._authorized(sheet, (r0, r1, c0, c1))
+                if cell_state is not None:
+                    # Clear only cells known to the frozen or staged model.
+                    # Absent cells already match a null value precondition.
+                    addresses = set(sheet.get('cells', {}))
+                    addresses.update(address for name, address in cell_state if name == sheet_id)
+                    for address in addresses:
+                        if _overlaps(_bounds(address), (r0, r1, c0, c1)):
+                            cell_state[(sheet_id, address)] = {'value': None}
                 start = f'{get_column_letter(c0 + 1)}{r0 + 1}'
                 end = f'{get_column_letter(c1 + 1)}{r1 + 1}'
                 return {'kind': 'clearCellRange', 'sheetName': sheet['name'], 'range': f'{start}:{end}'}
@@ -523,7 +531,7 @@ class WorkbookAIToolkit(Toolkit):
             translated_operations.append({'kind': translated['kind'], 'arguments': {
                 key: value for key, value in translated.items() if key != 'kind'
             }})
-            if 'kind' in operation or operation.get('op') not in _CELL_SOURCE_OPS or translated['kind'] == 'clearCellRange':
+            if 'kind' in operation or operation.get('op') not in _CELL_SOURCE_OPS:
                 # Native and structural operations can move/replace cells. Never
                 # validate a later condition against an unchanged base model.
                 cell_state = None

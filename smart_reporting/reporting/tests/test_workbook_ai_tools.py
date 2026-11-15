@@ -102,18 +102,23 @@ async def test_source_large_clear_replays_on_workbook_with_no_blank_cell_expansi
 
     async def preview(operations):
         nonlocal content
-        assert operations == [{'kind': 'clearCellRange', 'sheetName': 'Sheet', 'range': 'A1:B1200'}]
+        assert operations[1] == {'kind': 'clearCellRange', 'sheetName': 'Sheet', 'range': 'A1:B1200'}
         content = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
         return {'draftSha256': hashlib.sha256(content).hexdigest()}
 
-    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range',
+    model = {'sheets': [{'name': 'Sheet', 'cells': {'A1': {'value': 'old'}}}]}
+    tools = WorkbookAIToolkit(model=model, scope='range',
         selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1199, 'startColumn': 0, 'endColumn': 1},
         preview=preview)
     await tools.propose_operations([
+        {'op': 'set_cell', 'sheetId': 'Sheet', 'address': 'A2', 'value': 'staged'},
         {'op': 'clear_range', 'sheetId': 'Sheet', 'range': 'A1:B1200'},
+        {'op': 'set_cell', 'sheetId': 'Sheet', 'address': 'A2',
+         'expectedValue': None, 'value': 'added after clear'},
     ], '清空旧数据')
     sheet = load_workbook(BytesIO(content)).active
     assert sheet['A1'].value is None and sheet['B1200'].value is None
+    assert sheet['A2'].value == 'added after clear'
     assert (sheet['B1200'].font.bold, sheet['C1200'].value) == (True, 'outside range')
 
 
