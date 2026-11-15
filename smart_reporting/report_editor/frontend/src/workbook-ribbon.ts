@@ -402,9 +402,6 @@ const commandLabels: Record<string, string> = {
   "chart-type-radar": "雷达图",
   "chart-type-doughnut": "圆环图",
   "chart-type-combo": "组合图",
-  "sparkline:line": "折线迷你图",
-  "sparkline:column": "柱形迷你图",
-  "sparkline:stacked": "盈亏迷你图",
   "sparkline:delete": "删除选中迷你图"
   ,"sparkline:edit": "编辑选中迷你图"
 }
@@ -473,7 +470,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '插图', actions: ['insert-picture', 'insert-shape', 'insert-icons', 'insert-screenshot'].map(id => action(id, id, id === 'insert-shape' ? undefined : id as RibbonCommand)) },
     { title: '复选框', actions: [action('复选框', 'insert-checkbox', 'insert-checkbox')] },
     { title: '图表', actions: ['recommended-charts-open', 'insert-chart:column', 'insert-chart:bar', 'insert-chart:line', 'insert-chart:area', 'insert-chart:pie', 'insert-chart:scatter', 'insert-chart:radar', 'insert-chart:doughnut', 'insert-chart:combo'].map(id => action(id, id, id as RibbonCommand)) },
-    { title: '迷你图', actions: (['sparkline:line', 'sparkline:column', 'sparkline:stacked', 'sparkline:edit', 'sparkline:delete'] as const).map(id => action(id, id, id)) },
+    { title: '迷你图', actions: (['sparkline:edit', 'sparkline:delete'] as const).map(id => action(id, id, id)) },
     { title: '筛选器', actions: (['slicer-open', 'timeline-open'] as const).map(id => action(id, id, id)) },
     { title: '链接', actions: [action('link-open', 'link-open', 'link-open')] },
     { title: '批注', actions: [action('批注', 'note-open', 'note-open')] },
@@ -648,6 +645,15 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
       { command: 'autofit-row-height', label: '自动调整行高' },
       { command: 'col-width-open', label: '列宽…' },
       { command: 'autofit-col-width', label: '自动调整列宽' },
+    ],
+  },
+  {
+    tab: 'Insert', id: 'sparkline-insert', label: '迷你图', group: '迷你图', icon: '〜',
+    detail: '单元格内迷你图，每个所选行一个（放在选区右侧）',
+    choices: [
+      { command: 'sparkline:line', label: '折线' },
+      { command: 'sparkline:column', label: '柱形' },
+      { command: 'sparkline:stacked', label: '盈亏' },
     ],
   },
   { ...AUTOSUM_MENU, tab: 'Formulas', group: '函数库', after: 'insert-function-open' },

@@ -35,6 +35,7 @@ type TextEdit = {
   elementId: string
   text?: string
   geometry?: { x: number; y: number; width: number; height: number }
+  pictureTransform?: { rot: number; flipH: boolean; flipV: boolean }
 } & { fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
 type Geometry = { x: number; y: number; width: number; height: number }
 type TextBox = {
@@ -397,7 +398,12 @@ if (request.action === 'inspect') {
         name: element.name ?? '',
         text: textOf(element),
         ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element), ...cellShadingState(element,slide.path) } : {}),
-        ...(element.type === 'picture' ? (() => { const image=pictureImages.find(item=>item.slideIndex===slideIndex&&item.elementId===element.id); return image ? {pictureReplaceable:image.replaceable,pictureReplaceReason:image.readOnlyReason,pictureSha256:image.sha256,pictureSize:image.size} : {} })() : {}),
+        ...(element.type === 'picture' ? (() => { const image=pictureImages.find(item=>item.slideIndex===slideIndex&&item.elementId===element.id); return image ? {pictureReplaceable:image.replaceable,pictureReplaceReason:image.readOnlyReason,pictureSha256:image.sha256,pictureSize:image.size,
+          ...(image.replaceable && !element.media && !element.model3d && /<a:xfrm(?:\s|>)/.test(element.anchor.originalXml) ? {
+            pictureTransform: { rot: ((element.transform.rot ?? 0) % 21600000 + 21600000) % 21600000,
+              flipH: element.transform.flipH === true, flipV: element.transform.flipV === true },
+          } : {}),
+        } : {} })() : {}),
         ...(element.type === 'picture' ? inspectPictureCrop(opened,slideIndex,element.id) : {}),
         ...(element.type === 'picture' ? inspectPictureOpacity(opened, slideIndex, element.id) : {}),
         ...inspectGroupCapabilities(opened, slideIndex, element.id),
@@ -796,7 +802,7 @@ if (request.action === 'inspect') {
   applyPictureOpacities(opened, pictureOpacities)
   applyPictureCrops(opened,pictureCrops)
   for (const edit of request.edits ?? []) {
-    if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
+    if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'pictureTransform', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
       throw new Error('element_edit_invalid')
     }
     if (edit.fontSizePt !== undefined && (!Number.isFinite(edit.fontSizePt) || edit.fontSizePt < 1 || edit.fontSizePt > 400)) throw new Error('text_format_font_invalid')
@@ -808,7 +814,7 @@ if (request.action === 'inspect') {
     }
     const element = opened.deck.slides[edit.slideIndex]!.elements.find((candidate) => candidate.id === edit.elementId)
     if (!element || !['text','shape','picture'].includes(element.type)) throw new Error('element_not_editable')
-    if (element.type === 'picture' && Object.keys(edit).some(key => !['slideIndex','elementId','geometry'].includes(key))) throw new Error('element_not_editable')
+    if (element.type === 'picture' && Object.keys(edit).some(key => !['slideIndex','elementId','geometry','pictureTransform'].includes(key))) throw new Error('element_not_editable')
     if (edit.text !== undefined) {
       if (element.type !== 'text' && element.type !== 'shape') throw new Error('element_not_editable')
       if (!element.text?.paragraphs.length) throw new Error('element_text_missing')
@@ -817,6 +823,19 @@ if (request.action === 'inspect') {
         edit.text.split(/\r?\n/).map((text) => ({ runs: [{ text }] })),
       )
       element.dirty = true
+    }
+    if (edit.pictureTransform !== undefined) {
+      const transform = edit.pictureTransform
+      if (element.type !== 'picture' || element.media || element.model3d || !element.mediaRef ||
+          !/<a:xfrm(?:\s|>)/.test(element.anchor.originalXml) ||
+          !transform || Object.keys(transform).sort().join() !== 'flipH,flipV,rot' ||
+          !Number.isInteger(transform.rot) || transform.rot < 0 || transform.rot >= 21600000 ||
+          typeof transform.flipH !== 'boolean' || typeof transform.flipV !== 'boolean')
+        throw new Error('picture_transform_invalid')
+      // GenOffice flips by updating the existing transform and writing its dirty slot.
+      // OOXML rotates the picture about the center of the preserved offset and extents.
+      element.transform = { ...element.transform, ...transform }
+      element.dirtyTransform = true
     }
     if (edit.geometry) {
       const { x, y, width, height } = edit.geometry
@@ -828,8 +847,8 @@ if (request.action === 'inspect') {
         cy: Math.round(height * 9525),
       }
       element.dirtyTransform = true
-      updateConnectorsForMoved(opened.deck.slides[edit.slideIndex]!,[element.id])
     }
+    if (edit.geometry || edit.pictureTransform) updateConnectorsForMoved(opened.deck.slides[edit.slideIndex]!, [element.id])
   }
   applyPictureReplacements(opened,pictureReplacements)
   for (const image of [...(request.images ?? []), ...(request.nativeImages ?? [])]) {

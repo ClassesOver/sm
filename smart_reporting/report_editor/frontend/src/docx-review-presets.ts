@@ -5,10 +5,11 @@ import {docxAIReadSelection} from './docx-ai-read-selection'
 import type {DocxAnchor} from './docx-operations'
 import {TRANSLATE_LANGS} from './vendor/genoffice-docs/apps/docs/src/renderer/components/translate-langs'
 import {zh} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/zh'
+import {zh as aiZh} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ai/zh'
 
 export type DocxPresetSelection = {blockId:string;cellId?:string}[]
 export type DocxPresetScope = 'selection'|'document'
-/** Source ReviewTab presets; execution and explicit adoption remain in Native AI. */
+/** GenOffice Home and Review presets with the same source-bound authorization. */
 export function createDocxReviewPresets(options:{
  editor:Editor;source:PmNode;anchors:readonly DocxAnchor[];reason():string|null
  open(instruction:string,selection:DocxPresetSelection,scope:DocxPresetScope):void
@@ -20,7 +21,7 @@ export function createDocxReviewPresets(options:{
  const menu=document.createElement('div');menu.className='layout-menu';menu.setAttribute('role','menu');menu.setAttribute('aria-label','翻译目标语言');menu.hidden=true
  translate.setAttribute('aria-haspopup','menu');translate.setAttribute('aria-expanded','false')
  function dismiss(){menu.hidden=true;translate.setAttribute('aria-expanded','false')}
- function run(language?:typeof TRANSLATE_LANGS[number]){
+ function run(promptForScope:(scope:DocxPresetScope)=>string){
   dismiss()
   try{
    const reason=options.reason();if(reason)throw new Error(reason)
@@ -35,18 +36,19 @@ export function createDocxReviewPresets(options:{
     if(!editable)throw new Error('此范围含只读对象，请重新选择可编辑正文；未跳过目标或扩大授权。')
    }
    if(scope==='document'&&!(options.confirm??window.confirm)(`将授权 AI 处理整篇正文的 ${targets.length} 个段落／整表。不含页眉页脚、脚注尾注及图片。生成会消耗模型额度；候选仍需显式采纳。是否继续？`))return
-   const prompt=language?(scope==='selection'?zh.ribbonTranslateSelectionPrompt:zh.ribbonTranslatePrompt).replace('{lang}',zh[`ribbonLang${language.key}`]):scope==='selection'?zh.ribbonEditorSelectionPrompt:zh.ribbonEditorPrompt
+   const prompt=promptForScope(scope)
    options.open(prompt+'\n仅处理明确授权的段落／单元格；选中部分文字按整段／整格处理，保持结构不变。',targets,scope)
   }catch(error){options.onError(error)}
  }
- editorButton.onclick=()=>run()
+ const polish=()=>run(scope=>scope==='selection'?aiZh.aiPolishSelectionPrompt:aiZh.aiPolishPrompt)
+ editorButton.onclick=()=>run(scope=>scope==='selection'?zh.ribbonEditorSelectionPrompt:zh.ribbonEditorPrompt)
  translate.onclick=()=>{if(options.reason())return;menu.hidden=!menu.hidden;translate.setAttribute('aria-expanded',String(!menu.hidden))}
- for(const language of TRANSLATE_LANGS){const item=button('review-translate-'+language.code,zh.ribbonTranslateTo.replace('{lang}',zh[`ribbonLang${language.key}`]));item.dataset.language=language.code;item.setAttribute('role','menuitem');item.onclick=()=>run(language);menu.append(item)}
+ for(const language of TRANSLATE_LANGS){const item=button('review-translate-'+language.code,zh.ribbonTranslateTo.replace('{lang}',zh[`ribbonLang${language.key}`]));item.dataset.language=language.code;item.setAttribute('role','menuitem');item.onclick=()=>run(scope=>(scope==='selection'?zh.ribbonTranslateSelectionPrompt:zh.ribbonTranslatePrompt).replace('{lang}',zh[`ribbonLang${language.key}`]));menu.append(item)}
  const wrap=document.createElement('div');wrap.className='rb-split-wrap';wrap.append(translate,menu);element.append(editorButton,wrap)
  const keydown=(event:KeyboardEvent)=>{if(event.key==='Escape'&&!menu.hidden){event.preventDefault();dismiss();translate.focus()}}
  const outside=(event:Event)=>{if(event.target instanceof globalThis.Node&&!element.contains(event.target))dismiss()}
  element.addEventListener('keydown',keydown);document.addEventListener('pointerdown',outside,true)
  const refresh=()=>{const reason=options.reason();for(const control of [editorButton,translate]){control.disabled=reason!==null;control.title=reason??`${control.textContent}：选中部分文字按整段／整格处理；先预览再采纳`}if(reason)dismiss()}
  options.editor.on('transaction',refresh);refresh()
- return {element,refresh,dispose(){options.editor.off('transaction',refresh);document.removeEventListener('pointerdown',outside,true);element.remove()}}
+ return {element,refresh,reason:options.reason,polish,dispose(){options.editor.off('transaction',refresh);document.removeEventListener('pointerdown',outside,true);element.remove()}}
 }

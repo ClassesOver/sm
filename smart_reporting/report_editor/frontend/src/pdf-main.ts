@@ -29,6 +29,7 @@ import { mountPdfCropCanvas } from './pdf-crop-canvas'
 import { bindPdfExtractDialog } from './pdf-extract-dialog'
 import { authorizeSavedPdfSource, type PdfFileOperation } from './pdf-file-source'
 import { bindPdfPrintDialog } from './pdf-print-dialog'
+import { bindPdfRedactionConfirm } from './pdf-redaction-confirm'
 import {bindPdfSplitHost} from './pdf-split-host'
 import {bindPdfMergeHost} from './pdf-merge-host'
 import { bindPdfProtectionDialog } from './pdf-protection'
@@ -830,6 +831,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   sourceCommand(redactTool, 'annotate.drawTools.redact'); redactTool.dataset.pdfRedactTool = ''
   redactTool.title = '涂黑：在页面上拖出要永久移除的区域；保存时写入新修订，区域内文字、图像与路径被删除并以黑块覆盖'
   const redactionCount = () => draft.operations.filter(op => op.kind === 'redact').length
+  const redactionConfirm = bindPdfRedactionConfirm(root)
   const clearRedaction = button('清除涂黑', () => {
     const count = redactionCount()
     if (!count) { status.textContent = '当前没有待应用的涂黑标记'; return }
@@ -842,7 +844,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     const count = redactionCount()
     if (!count) { status.textContent = '请先用“涂黑”工具标记要移除的区域'; return }
     if (shell.save.disabled) { status.textContent = `${count} 处涂黑待保存；当前不能保存：${shell.save.title || '请稍后重试'}`; return }
-    setMode('select'); status.textContent = `正在保存新修订并永久应用 ${count} 处涂黑…`; shell.save.click()
+    shell.save.click()
   }, true)
   sourceCommand(applyRedaction, 'annotate.drawTools.applyRedaction')
   applyRedaction.title = '应用涂黑：保存新修订并永久移除标记区域内的内容（来源修订不变）'
@@ -2048,6 +2050,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const control of root.querySelectorAll<HTMLButtonElement>('[data-pdf-note-editable]')) control.disabled = locked || previewing || printing || !!previewDocument || !response.editingEnabled || draft.closed || control.dataset.pdfNoteEditable !== 'true'
     commentsToggle.disabled = attachmentsToggle.disabled = compareToggle.disabled = !document || previewing || printing
     redactionFinder.disabled = findingRedactions || !canFindRedactions()
+    applyRedaction.hidden = clearRedaction.hidden = redactionCount() === 0
     comparison?.sync()
     noteInput.disabled = locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
     textObjects.disabled = (exclusiveDraft&&!textDraftControl(homeTextEdit)) || draft.operations.some(op=>op.kind==='setPageSize') || locked || previewing || !!previewDocument || draft.closed
@@ -2759,13 +2762,24 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   async function prepareSave(): Promise<{ confirmedPreviewDigest?: string }> {
     const incomplete = metadataEditor?.incompleteReason() ?? bates?.incompleteReason() ?? staticText?.incompleteReason() ?? textMove?.incompleteReason() ?? staticFill?.incompleteReason() ?? existingImagePanel?.incompleteReason() ?? stamps.incompleteReason() ?? measurement.incompleteReason() ?? signatures.incompleteReason(); if (incomplete) throw new Error(incomplete)
     if (hasUnstagedText()) throw new Error('请先点击“加入文字修改”，再预览并保存')
-    if (!draft.operations.some(op => PDF_REVIEW_KINDS.includes(op.kind))) return {}
-    if (previewing) throw new Error('正在生成实际 PDF 预览，请稍后保存')
-    const confirmedPreviewDigest = review.confirmedDigest(draft.operations)
-    if (confirmedPreviewDigest) return { confirmedPreviewDigest }
-    if (!review.isPrepared(draft.operations)) await previewDraft()
-    reviewPanel.scrollIntoView({ block: 'nearest' })
-    throw new Error('请核对实际 PDF 预览与未执行清单，勾选确认后再次保存')
+    let confirmedPreviewDigest: string | undefined
+    if (draft.operations.some(op => PDF_REVIEW_KINDS.includes(op.kind))) {
+      if (previewing) throw new Error('正在生成实际 PDF 预览，请稍后保存')
+      confirmedPreviewDigest = review.confirmedDigest(draft.operations)
+      if (!confirmedPreviewDigest) {
+        if (!review.isPrepared(draft.operations)) await previewDraft()
+        reviewPanel.scrollIntoView({ block: 'nearest' })
+        throw new Error('请核对实际 PDF 预览与未执行清单，勾选确认后再次保存')
+      }
+    }
+    const count = redactionCount()
+    if (count) {
+      const snapshot = JSON.stringify(draft.operations)
+      if (!await redactionConfirm.open(count)) throw new Error('已取消应用涂黑，待处理标记已保留')
+      if (disposed || snapshot !== JSON.stringify(draft.operations)) throw new Error('草稿已变化，请重新确认涂黑范围')
+      setMode('select')
+    }
+    return confirmedPreviewDigest ? { confirmedPreviewDigest } : {}
   }
   function thumbnailForPage(original: PDFPageProxy, page: PdfPageIdentity) {
     const doc = document!
@@ -3232,7 +3246,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   await refresh()
   return { refresh, prepareSave, flushPendingEdits, get mutationPending() { return pendingMutations > 0 }, setSaving(saving) { locked = saving; if (saving) linkNavigationGeneration++; updateControls() }, dispose() {
     for(const cancel of thumbnailImageJobs)cancel();thumbnailImageJobs.clear()
-    digitalSignatures.dispose();signatures.dispose();measurement.dispose();stamps.dispose();printDialog.dispose();saveReading(); comparison?.dispose();formDetection?.dispose()
+    digitalSignatures.dispose();signatures.dispose();measurement.dispose();stamps.dispose();printDialog.dispose();redactionConfirm.dispose();saveReading(); comparison?.dispose();formDetection?.dispose()
     formSelection.ids.clear();formSelection.pageId=undefined;clearFormCanvases()
     outlineEditor?.dispose();pdfAIDock.dispose();replacementStyle.dispose(); imageExport.dispose(); officeConversion.dispose(); textExport.dispose();splitPdf.dispose();mergePdf.dispose()
     metadataEditor?.dispose();bates?.dispose();pendingText?.dispose();textMove?.dispose();staticText?.dispose();staticFill?.dispose(); textPropertiesPanel?.dispose(); radioExtensionPanel?.dispose(); existingImagePanel?.dispose(); formCreatePanel?.dispose(); formDesignPanel?.dispose(); extraction.dispose(); externalPages.dispose(); protection.dispose(); clearCropCanvas(); pdfFormAI?.dispose(); pdfReview?.dispose(); pdfAssistant?.dispose(); clearDrawingCanvases(); pendingDrawingDialog?.close(); if (readingTimer !== undefined) window.clearTimeout(readingTimer); disposed = true; clearLinkLayers(); sidebarSizing.dispose(); thumbnailObserver?.disconnect(); for (const entry of thumbnailSlots.values()) entry.hide(); thumbnailSlots.clear(); if (sidebarRasterFrame !== undefined) cancelAnimationFrame(sidebarRasterFrame); for (const task of thumbnailTasks) task.cancel(); thumbnailTasks.clear(); if (fitFrame !== undefined) cancelAnimationFrame(fitFrame); fitObserver?.disconnect(); attachmentsGeneration++; attachmentCache.clear(); for (const [url, timer] of attachmentDownloads) { window.clearTimeout(timer); URL.revokeObjectURL(url) }; attachmentDownloads.clear(); commentsGeneration++; annotationCache.clear(); if (searchTimer !== undefined) window.clearTimeout(searchTimer); searchCache.clear(); indexGeneration++; cleanupPrint(); onSelectionChange?.([]); abort.abort(); observer?.disconnect(); for (const task of tasks) task.cancel(); for (const layer of textLayers) layer.cancel(); void loading.destroy(); void previewLoading?.destroy(); ribbon.dispose(); root.replaceChildren()

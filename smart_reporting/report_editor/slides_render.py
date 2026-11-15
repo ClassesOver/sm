@@ -39,8 +39,8 @@ def validate_slide_edits(edits: Any) -> list[dict[str, Any]]:
     for edit in edits:
         if (
             not isinstance(edit, dict)
-            or not set(edit).issubset({"slideIndex", "elementId", "text", "geometry"})
-            or not ({"text", "geometry"} & set(edit))
+            or not set(edit).issubset({"slideIndex", "elementId", "text", "geometry", "pictureTransform"})
+            or not ({"text", "geometry", "pictureTransform"} & set(edit))
             or not isinstance(edit.get("slideIndex"), int)
             or isinstance(edit.get("slideIndex"), bool)
             or edit["slideIndex"] < 0
@@ -49,6 +49,12 @@ def validate_slide_edits(edits: Any) -> list[dict[str, Any]]:
             or ("text" in edit and (not isinstance(edit["text"], str) or len(edit["text"]) > _MAX_SLIDE_EDIT_TEXT))
         ):
             raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
+        if "pictureTransform" in edit:
+            transform = edit["pictureTransform"]
+            if (not isinstance(transform, dict) or set(transform) != {"rot", "flipH", "flipV"}
+                or type(transform["rot"]) is not int or not 0 <= transform["rot"] < 21600000
+                or not all(type(transform[key]) is bool for key in ("flipH", "flipV"))):
+                raise ReportingError("report_slides_edit_invalid", "图片旋转或翻转无效。")
         if "geometry" in edit:
             geometry = edit["geometry"]
             if (

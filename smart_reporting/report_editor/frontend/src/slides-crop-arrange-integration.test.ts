@@ -12,7 +12,7 @@ const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5
     { id: 'two', type: 'shape', name: '二', text: '二', editable: true, deletable: true, arrangeEditable: true, geometry: geometry(200, 90) },
     { id: 'three', type: 'shape', name: '三', text: '', editable: true, deletable: true, arrangeEditable: true, geometry: geometry(400, 150) },
     { id: 'picture', type: 'picture', name: '图片', text: '', editable: false, deletable: true, arrangeEditable: true, pictureCropEditable: true,
-      pictureReplaceable: true, pictureSha256: 'b'.repeat(64), pictureSize: 68, srcRect: null, geometry: geometry(40, 200, 200, 100) },
+      pictureTransform: { rot: 0, flipH: false, flipV: false }, pictureReplaceable: true, pictureSha256: 'b'.repeat(64), pictureSize: 68, srcRect: null, geometry: geometry(40, 200, 200, 100) },
   ] },
   { slideIndex: 1, elements: [{ id: 'other', type: 'text', name: '其他页', text: '其他页', editable: true, arrangeEditable: true, geometry: geometry(40, 40) }] },
 ] }
@@ -69,4 +69,30 @@ it('分布需至少三项，切换页面后不沿用上页选择', async () => {
   expect(app.shell.editor.querySelectorAll('[data-arrange-object]:checked')).toHaveLength(1)
   expect(app.draft.operations).toEqual([])
   app.view.dispose()
+})
+
+it('stages picture rotation and flips from the ribbon with one undo step per command', async () => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  const app = await open()
+  try {
+    const rotate = app.command('rotatePictureRight')
+    expect(rotate.disabled).toBe(true)
+    const select = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    select.value = 'picture'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(rotate.disabled).toBe(false)
+    rotate.click()
+    app.command('flipPictureH').click()
+    app.command('flipPictureV').click()
+    expect(app.draft.operations[0]?.edits).toEqual([
+      { slideIndex: 0, elementId: 'picture', pictureTransform: { rot: 5400000, flipH: true, flipV: true } },
+    ])
+    app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+    expect(app.draft.operations[0]?.edits).toEqual([
+      { slideIndex: 0, elementId: 'picture', pictureTransform: { rot: 5400000, flipH: true, flipV: false } },
+    ])
+  } finally {
+    app.view.dispose()
+    vi.unstubAllGlobals()
+  }
 })

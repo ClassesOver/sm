@@ -41,7 +41,7 @@ import { nextPreset, notchStep, prevPreset } from './slides-view-zoom'
 import { createWheelPager, createZoomWheelClassifier } from './docx-view-wheel'
 import type { createSlidesSorter } from './slides-view-modes'
 import type { createSlidesOutline, createSlidesReading } from './slides-outline-reading'
-import { applyCanvasEdits } from './slides-canvas-model'
+import { applyCanvasEdits, type PictureTransform } from './slides-canvas-model'
 import { createSlidesChartTools } from './slides-chart-tools'
 import { createSlidesNativeRibbon, stepNativeFontSize, type NativeSlidesContext, type NativeSlidesRibbon } from './slides-native-ribbon'
 import { slidesLayoutLabel } from './slides-native-ribbon-locales'
@@ -74,7 +74,7 @@ import { captureSlidesBrush, planSlidesBrushApply, type BrushSource } from './sl
 import { validateSlidesClipboardDraft, captureSlidesClipboard, planSlidesClipboardPaste } from './slides-native-clipboard'
 import { validateSlidesLinkDraft, openSlidesLink } from './slides-native-link'
 
-type DeckElement = { model3d?:ModelSource; mediaKind?:'video'|'audio'; id: string; type: string; name: string; text: string; editable: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { model3d?:ModelSource; mediaKind?:'video'|'audio'; id: string; type: string; name: string; text: string; editable: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureTransform?: PictureTransform; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = SourceAnimation
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
@@ -87,6 +87,7 @@ type Edit = {
   elementId: string
   text?: string
   geometry?: { x: number; y: number; width: number; height: number }
+  pictureTransform?: PictureTransform
 }
 type TextFormatting = { slideIndex: number; elementId: string; fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
 type BusinessTheme = 'executive' | 'clinical' | 'modern'
@@ -1821,6 +1822,28 @@ async function openPictureCutout(){
  }catch(error){if(!disposed&&generation===cutoutGeneration)statusMessage.textContent=error instanceof Error?error.message:'去背景未打开，原图片保留'}
 }
 
+function transformSelectedPicture(command: 'rotatePictureRight' | 'rotatePictureLeft' | 'flipPictureH' | 'flipPictureV') {
+  const element = currentElement()
+  if (!nativeDraft || locked() || mutationPending || selectedObjects.size !== 1 ||
+      !element?.pictureTransform || pendingGroup(selectedSlide)) return
+  const key = editKey(selectedSlide, element.id)
+  const change = edits.get(key)
+  const current = change?.pictureTransform ?? element.pictureTransform
+  const next = { ...current }
+  if (command === 'flipPictureH') next.flipH = !next.flipH
+  else if (command === 'flipPictureV') next.flipV = !next.flipV
+  else next.rot = (next.rot + (command === 'rotatePictureRight' ? 5400000 : 16200000)) % 21600000
+  const changes = slideChanges()
+  changes.edits = [...edits.values()].filter(edit => editKey(edit.slideIndex, edit.elementId) !== key)
+  const retained = { ...change, slideIndex: selectedSlide, elementId: element.id }
+  delete retained.pictureTransform
+  if (next.rot !== element.pictureTransform.rot || next.flipH !== element.pictureTransform.flipH ||
+      next.flipV !== element.pictureTransform.flipV) {
+    changes.edits.push({ ...retained, pictureTransform: next })
+  } else if (retained.geometry) changes.edits.push(retained)
+  commitNativeChanges(changes)
+}
+
 async function chooseNativePicture(replace: boolean) {
   const slideIndex=selectedSlide, element=currentElement(), sourceSha=deck.sha256
   const snapshot=JSON.stringify(slideChanges())
@@ -2497,6 +2520,8 @@ function renderInspector() {
     ['removeBackground',!cutoutReason(),cutoutReason()??''],
     ['cropPicture',!cropReason(),cropReason()??''],
     ['pictureOpacity', !opacityReason(), opacityReason() ?? '图片透明度（0–100%）：0 为不透明'],
+    ...(['rotatePictureRight', 'rotatePictureLeft', 'flipPictureH', 'flipPictureV'].map(command =>
+      [command, selectedObjects.size === 1 && !!element?.pictureTransform && !pendingGroup(selectedSlide), '请选择支持旋转或翻转的来源图片'] as const)),
     ['replacePicture',selectedObjects.size===1&&!element?.mediaKind&&element?.pictureReplaceable===true&&!pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id),pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id)?'请先保存或撤回此图片裁切':element?.pictureReplaceReason??'请选择已核验身份的来源图片'],
     ['chartData',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全编辑数据'],
     ['chartType',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全更改类型'],
@@ -2728,6 +2753,12 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'insertPicture': void chooseNativePicture(false); return
       case 'removeBackground': void openPictureCutout(); return
       case 'replacePicture': void chooseNativePicture(true); return
+      case 'rotatePictureRight':
+      case 'rotatePictureLeft':
+      case 'flipPictureH':
+      case 'flipPictureV':
+        transformSelectedPicture(command)
+        return
       case 'pictureOpacity': {
         // 固定源 onPictureOpacity：控件输入的是透明度百分比，写回不透明度（1 − 透明度）。
         const target = currentElement(), reason = opacityReason()

@@ -66,3 +66,21 @@ def test_duplicate_and_deleted_targets_are_rejected():
                       {'pictureOpacities': [record], 'deletions': [{'slideIndex': 0, 'elementId': record['elementId']}]}):
         with pytest.raises(ValueError):
             patch_office('pptx', content, [{'kind': 'editSlides', **operation}])
+
+def test_native_picture_rotation_and_flip_preserve_center_and_media():
+    content, _ = _presentation()
+    target_name = _target(content)['name']
+    before = next(shape for shape in Presentation(BytesIO(content)).slides[0].shapes if shape.name == target_name)
+    transform = {'rot': 90 * 60000, 'flipH': True, 'flipV': False}
+    edited = patch_office('pptx', content, [{'kind': 'editSlides', 'edits': [
+        {'slideIndex': 0, 'elementId': _target(content)['id'], 'pictureTransform': transform},
+    ]}])
+    after = next(shape for shape in Presentation(BytesIO(edited)).slides[0].shapes if shape.name == target_name)
+    assert after.rotation == 90
+    assert (after.left, after.top, after.width, after.height) == (before.left, before.top, before.width, before.height)
+    assert after.image.blob == before.image.blob
+    assert after._element.xpath('.//a:xfrm')[0].get('flipH') == '1'
+    assert _target(edited)['pictureTransform'] == transform
+    assert [shape.rotation for shape in Presentation(BytesIO(edited)).slides[0].shapes if shape.name != target_name] == [
+        shape.rotation for shape in Presentation(BytesIO(content)).slides[0].shapes if shape.name != target_name
+    ]

@@ -6,6 +6,7 @@ import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer
 import { createDocxRibbon } from './docx-ribbon'
 import { createDocxTableGridlines } from './docx-gridlines'
 import { createDocxViewCommands } from './docx-view'
+import { createDocxReviewPresets } from './docx-review-presets'
 import { StoryViewExtension, storyViewKey } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/story-view'
 import { docxOperations, type DocxAnchor } from './docx-operations'
 import { readFileSync } from 'node:fs'
@@ -187,6 +188,33 @@ it('routes GenOffice Home AI summary with the source prompt only for a nonempty 
     button().click()
     expect(documentSummary).toHaveBeenCalledOnce()
   } finally {f.editor.destroy()}
+})
+
+it('uses the original GenOffice Home polish button and source-bound callback, disabling while read-only', () => {
+  const host=document.body.appendChild(document.createElement('div'))
+  const editor=new Editor({element:host,extensions:[Doc,Paragraph,Text],content:{type:'doc',content:[
+    {type:'docParagraph',attrs:{docxIndex:0},content:[{type:'text',text:'需要润色'}]},
+  ]}})
+  const anchors=[{docxIndex:0,blockId:'p0',expectedObjectSha256:'a'.repeat(64),editable:true}]
+  const open=vi.fn(), onError=vi.fn()
+  const presets=createDocxReviewPresets({editor,source:editor.state.doc,anchors,reason:()=>null,open,onError})
+  const review={open:vi.fn(),applyAll:vi.fn(),batchReason:()=>null,presets}
+  const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,anchors,undefined,undefined,undefined,undefined,undefined,undefined,[],review)
+  document.body.append(ribbon)
+  try {
+    editor.commands.setTextSelection({from:1,to:3})
+    const button=()=>ribbon.querySelector<HTMLButtonElement>('[data-action="word-ai-polish"]')!
+    expect(button().querySelector('.ai-feature-icon svg')).not.toBeNull()
+    expect(button().textContent).toBe('AI 润色')
+    button().click()
+    expect(open).toHaveBeenCalledWith(expect.stringContaining('润色选中的内容'),[{blockId:'p0'}],'selection')
+    editor.setEditable(false)
+    editor.view.dispatch(editor.state.tr.setMeta('read-only',true))
+    expect(button().disabled).toBe(true)
+    button().click()
+    expect(open).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+  } finally {presets.dispose();editor.destroy()}
 })
 
 it('connects Table Layout gridlines to the screen-only table grid controller', () => {

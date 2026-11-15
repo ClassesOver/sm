@@ -41,8 +41,9 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
  const attachmentModel=options.attachments?{attachmentsEditable:true,attachments:[{key:'stored',name:'keep.txt',description:'保留附件',size:3,contentSha256:'b'.repeat(64),attachmentId:'c'.repeat(64),expectedAttachmentSha256:'d'.repeat(64)}]}:{}
  const api={exportImages:vi.fn(async()=>{throw new Error('test request observed')}),file:async()=>new Uint8Array(options.sourceSize??2).buffer,preview:vi.fn(async()=>({sourceSha256,model:{...model,...attachmentModel,...staticModel,...(options.digitalSignatures?{digitalSignatures:[],signatureVerification:{scope:"basic-integrity-only",trustPolicy:"none",readable:true,issues:[],revocationChecked:false,timestampsVerified:false}}:{})}})),previewFile:vi.fn(async()=>new Uint8Array([3,4]).buffer)} as unknown as ReturnType<typeof createNativeApi>
  const context={context:{documentId:identity.documentId,revision:1,format:'pdf',scope:identity.scope,sourceFile:{sha256:sourceSha256,path:'source.pdf'}},editingEnabled:options.editingEnabled??true,pdfTextEnabled:false,capabilities:{}} as NativeContextResponse
- const create=async()=>{const view=await createPdfEditorView({editor:root,save:document.createElement('button')} as unknown as EditorShell,{api,context,draft,flushForFileOperation:options.flushForFileOperation});views.push(view);return view}
- return {root,draft,create,api}
+ const saveButton=document.createElement('button')
+ const create=async()=>{const view=await createPdfEditorView({editor:root,save:saveButton} as unknown as EditorShell,{api,context,draft,flushForFileOperation:options.flushForFileOperation});views.push(view);return view}
+ return {root,draft,create,api,saveButton}
 }
 it.each(['composition','legacy','handled'])('PDF页码与搜索保留受保护按键，不清草稿或移走焦点：%s',async protection=>{
  const f=await fixture();await f.create()
@@ -216,6 +217,32 @@ it.each([['insertPdf','insert'],['replace','replace']])('binds external pages to
  await vi.waitFor(()=>expect(dialog.querySelector('a')?.getAttribute('href')).toBe('/reviews/external.pdf'))
  expect(dialog.textContent).toContain('仍需验收')
  expect(events).toEqual(['save','/reports/v1/native/open/external-save','/reports/v1/native/pdf-object-host/2/api/context','/reports/v1/native/pdf-object-host/2/api/external-pages'])
+})
+it('requires permanent redaction confirmation before writing and preserves downloads on failed review', async () => {
+ const op:NativeOperation={kind:'redact',pageId,rect:[20,20,80,90]}
+ const f=await fixture({restored:op}),view=await f.create()
+ const {bindNativeSession}=await import('./native-session')
+ const statusLabel=document.createElement('span')
+ const shell={editor:f.root,save:f.saveButton,exportWord:document.createElement('button'),exportPdf:document.createElement('button'),retry:document.createElement('button'),status:document.createElement('div'),statusLabel} as unknown as EditorShell
+ const marker=document.createElement('div');marker.className='report-meta';f.root.append(marker)
+ const save=vi.fn(async ():Promise<NativeSaveResponse> => ({documentId:'pdf-object-host',revision:2,parentRevision:1,revisionRegistered:true,artifacts:{pdf:{downloadUrl:'/redacted.pdf'}},validation:{ok:false,issues:[{code:'review',message:'待复核'}]}}))
+ const session=bindNativeSession(shell,{draft:f.draft,api:{save,export:save},format:'pdf',view})
+ try {
+  f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="annotate"]')!.click()
+  f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.annotate.drawTools.applyRedaction"]')!.click()
+  const confirm=()=>f.root.querySelector<HTMLDialogElement>('dialog[aria-label="确认应用涂黑"]')
+  await vi.waitFor(()=>expect(confirm()?.open).toBe(true))
+  expect(save).not.toHaveBeenCalled()
+  confirm()!.querySelector<HTMLButtonElement>('[data-pdf-redaction-cancel]')!.click()
+  await vi.waitFor(()=>expect(session.preparing).toBe(false))
+  expect(f.draft.operations).toEqual([op]);expect(save).not.toHaveBeenCalled()
+  f.saveButton.click()
+  await vi.waitFor(()=>expect(confirm()?.open).toBe(true))
+  confirm()!.querySelector<HTMLButtonElement>('[data-pdf-redaction-confirm]')!.click()
+  await vi.waitFor(()=>expect(f.root.querySelector('.native-delivery a')?.getAttribute('href')).toBe(new URL('/redacted.pdf',window.location.origin).href))
+  expect(save).toHaveBeenCalledOnce(); expect(save).toHaveBeenCalledWith(expect.objectContaining({operations:[op]}))
+  expect(f.root.querySelector('.native-delivery')?.textContent).toContain('待复核')
+ } finally { views.splice(views.indexOf(view),1); session.dispose() }
 })
 it('watermark settings expose both source tabs and current slider values without changing the draft',async()=>{
  const f=await fixture();await f.create()

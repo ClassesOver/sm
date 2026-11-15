@@ -1,7 +1,8 @@
 import type { RenderNode, RenderSlide } from '@genoffice/pptx-render'
 
 export type CanvasGeometry = { x: number; y: number; width: number; height: number }
-export type CanvasEdit = { elementId: string; geometry?: CanvasGeometry; text?: string }
+export type PictureTransform = { rot: number; flipH: boolean; flipV: boolean }
+export type CanvasEdit = { elementId: string; geometry?: CanvasGeometry; text?: string; pictureTransform?: PictureTransform }
 
 export function canvasEditable(node: RenderNode, editable: ReadonlySet<string>) {
   return !node.decoration && editable.has(node.sourceId)
@@ -19,8 +20,12 @@ export function canvasGeometryEdit(node: RenderNode, target: { x: number; y: num
 export function applyCanvasEdits(slide: RenderSlide, edits: CanvasEdit[]): RenderSlide {
   return { ...slide, nodes: slide.nodes.map(node => {
     const edit = edits.find(item => item.elementId === node.sourceId)
-    if (!edit?.geometry) return node
+    if (!edit?.geometry && !edit?.pictureTransform) return node
     const geometry = edit.geometry
-    return { ...node, box: { ...node.box, x: geometry.x, y: geometry.y, w: geometry.width, h: geometry.height } }
+    const transform = node.type === 'picture' ? edit.pictureTransform : undefined
+    return { ...node, box: { ...node.box,
+      ...(geometry ? { x: geometry.x, y: geometry.y, w: geometry.width, h: geometry.height } : {}),
+      ...(transform ? { rotationDeg: transform.rot / 60000, flipH: transform.flipH, flipV: transform.flipV } : {}),
+    } }
   }) }
 }
