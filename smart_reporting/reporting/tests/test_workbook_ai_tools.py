@@ -23,6 +23,50 @@ from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(('rows', 'columns', 'expected'), [(2, 1, 'B3'), (1, 0, 'A2'), (0, 2, 'C1'), (0, 0, None)])
+async def test_source_set_freeze_updates_native_sheet_view(rows, columns, expected):
+    book = Workbook()
+    book.active['A1'] = '保留内容'
+    book.active.freeze_panes = 'D4'
+    book.active.sheet_view.showGridLines = False
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_freeze', 'sheetId': 'Sheet', 'rows': rows, 'columns': columns},
+    ], '调整冻结窗格')
+    sheet = load_workbook(BytesIO(written)).active
+    assert sheet.freeze_panes == expected
+    assert sheet['A1'].value == '保留内容' and sheet.sheet_view.showGridLines is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'rows', 'error'), [
+    ('workbook', True, 'freeze_invalid'), ('workbook', 101, 'freeze_invalid'),
+    ('range', 1, 'selection_mismatch'),
+])
+async def test_source_set_freeze_rejects_invalid_counts_and_selection_scope(scope, rows, error):
+    async def preview(_):
+        pytest.fail('Invalid freeze operation reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope=scope,
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0},
+        preview=preview)
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([
+            {'op': 'set_freeze', 'sheetId': 'Sheet', 'rows': rows, 'columns': 0},
+        ], '调整冻结窗格')
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize('target', ['example.com/sales', 'Sheet!B2', None])
 async def test_source_hyperlink_replays_without_overwriting_cell_content(target):
     book = Workbook()

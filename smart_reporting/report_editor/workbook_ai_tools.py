@@ -396,6 +396,8 @@ class WorkbookAIToolkit(Toolkit):
             catalog['layout'] += (
                 '整簿授权下用 {op:set_hyperlink,sheetId,address,target} 设置链接。'
                 'target 是网址或同工作簿工作表引用；传 null 移除。'
+                '用 {op:set_freeze,sheetId,rows,columns} 从工作表左上角冻结行列，'
+                '行数和列数均为 0–100 的整数；同时传 0 取消冻结。'
             )
         if 'charts' in guides:
             catalog['charts'] += (
@@ -455,6 +457,16 @@ class WorkbookAIToolkit(Toolkit):
                 raise ValueError('workbook_ai_hyperlink_invalid')
             return {'kind': 'applyHyperlinkSource', 'sheetName': self._sheet(sheet_id)['name'],
                     'ref': _cell_address(operation['address']), 'target': target}
+        if op == 'set_freeze':
+            if set(operation) != {'op', 'sheetId', 'rows', 'columns'}:
+                raise ValueError('workbook_ai_freeze_invalid')
+            sheet_id, rows, columns = operation['sheetId'], operation['rows'], operation['columns']
+            if (not isinstance(sheet_id, str) or not sheet_id
+                    or any(type(count) is not int or not 0 <= count <= 100 for count in (rows, columns))):
+                raise ValueError('workbook_ai_freeze_invalid')
+            return {'kind': 'applyPageSetups', 'setups': [{
+                'sheetName': self._sheet(sheet_id)['name'], 'frozenRows': rows, 'frozenColumns': columns,
+            }]}
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}

@@ -48,6 +48,8 @@ XLSX `add_table` 接到原生 Excel 表格写入器。表头从操作重放时�
 
 XLSX `set_hyperlink` 接到既有超链接写入器，支持网页地址、工作簿内部位置以及传 `null` 移除链接。沿用手工插入链接的地址规范化和目标校验，保留原值或公式及其他格式，只更新链接本身、字体颜色和下划线。现阶段需要整簿授权。
 
+XLSX `set_freeze` 在整簿授权下复用原生工作表视图写入器。行列从左上角计数，各支持 0–100，两个零取消冻结。独立回读覆盖仅冻结行、仅冻结列、同时冻结和取消冻结，并确认网格线设置和单元格内容仍在。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。
