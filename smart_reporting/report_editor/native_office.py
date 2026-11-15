@@ -30,6 +30,7 @@ from .pptx_model3d import native_model_edits
 _ALLOWED_KEYS = {'customShows', 'backgroundImageReuses', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'zoomInsertions', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'advanceTimes', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
+    'applyTableSource': {'sheetName', 'range', 'name', 'style', 'bandedRows'},
     'clearCellRange': {'sheetName', 'range'},
     'insertPicture': {'sheetName', 'sourceIdentity', 'imageId', 'row', 'column', 'widthPx', 'heightPx', 'picture'},
     'editPicture': {'sheetName', 'sourceIdentity', 'drawingPart', 'pictureId', 'mediaSha256', 'before', 'geometry'},
@@ -812,6 +813,9 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], 
                 allowed = {'kind', *_XLSX_FIELDS[kind]}
                 if kind == 'applySheetOutline':
                     if not {'kind', 'sheetName'} <= set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
+                elif kind == 'applyTableSource':
+                    if not {'kind', 'sheetName', 'range'} <= set(operation) <= allowed:
                         raise ValueError('native_office_operations_invalid')
                 elif kind == 'applyPivotLayoutExpansions':
                     if not {'kind', 'updates'} <= set(operation) <= allowed:

@@ -23,6 +23,36 @@ from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
 @pytest.mark.anyio
+async def test_source_add_table_uses_replayed_headers_and_keeps_cell_styles():
+    book = Workbook()
+    book.active['A1'] = '旧表头'
+    book.active['A1'].font = Font(bold=True)
+    book.active['B2'] = 25
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    model = {'sheets': [{'name': 'Sheet', 'cells': {'A1': {'value': '旧表头'}}}]}
+    tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_cell', 'sheetId': 'Sheet', 'address': 'A1', 'value': '地区'},
+        {'op': 'add_table', 'sheetId': 'Sheet', 'range': 'A1:B2', 'bandedRows': False},
+    ], '更新表头并创建表格')
+    sheet = load_workbook(BytesIO(written)).active
+    table = sheet.tables['Table1']
+    assert table.ref == 'A1:B2'
+    assert [column.name for column in table.tableColumns] == ['地区', 'Column2']
+    assert table.tableStyleInfo.showRowStripes is False
+    assert [sheet[addr].value for addr in ('A1', 'B1', 'B2')] == ['地区', 'Column2', 25]
+    assert sheet['A1'].font.bold
+
+
+@pytest.mark.anyio
 async def test_source_range_writes_formulas_and_clears_content_within_selection():
     book = Workbook()
     book.active['B3'] = '=1+2'

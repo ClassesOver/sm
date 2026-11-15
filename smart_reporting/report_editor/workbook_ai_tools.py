@@ -376,7 +376,9 @@ class WorkbookAIToolkit(Toolkit):
             'writing': 'set_cell(sheetId,address,value,expectedValue可选)、set_formula(sheetId,address,formula以=开头,expectedFormula可选)、clear_cell(sheetId,address)。前置条件精确核对冻结值/公式，纯单元格DSL批次按顺序核对前序写入；混合原生或结构操作之后的条件写入须另起候选，不能按旧快照猜测。原生操作使用{kind,arguments}，applyCellEdits.edits每项sheetName,row,column,writeValue布尔,cell:{value,formula?},style?；行列从0开始。',
             'layout': 'sort_range(sheetId,range,byColumn,order=asc|desc,hasHeader布尔)复用真实引擎排序；有公式或批注时引擎拒绝。merge_cells/unmerge_cells(sheetId,range)保留范围外既有合并。',
             'data': 'set_filter(sheetId,range)、clear_filter(sheetId)、add_defined_name(name,ref)、delete_defined_name(name)。需要复杂筛选可使用原生applySheetFilter。',
-            'table': '原生applyTableAdditions/additions；applyTableEdits/edits每项worksheetSheetName,tableName，可含name,area,columnNames,style,totalsRow,bandedRows,headerRow,remove等；先read_sheet_features核对既有表格。',
+            'table': '整簿授权下用 {op:add_table,sheetId,range,name?,style?,bandedRows?} 创建 Excel 表格。'
+            '范围首行是表头，至少再有一行数据；实际草稿生成表头与默认表名，不提供模型自填列名。'
+            '原生applyTableEdits/edits每项worksheetSheetName,tableName，可含name,area,columnNames,style,totalsRow,bandedRows,headerRow,remove等；先read_sheet_features核对既有表格。',
             'structure': '仅整簿授权。源DSL insert_rows/delete_rows(sheetId,row,count)：row从1开始，count必填1–500；insert_cols/delete_cols(sheetId,column,count)：column为A到XFD大写列名，count必填1–100。结构DSL必须单独成批，不能与单元格、布局或原生操作混合；先预览、显式采纳并保存，再以新修订继续内容修改。原生applySheetEdits/plan、applyRowColumnOps/sheetName/ops、applyCellShift/sheetName/range/shift继续兼容。',
             'pivot': '原生addPivot/addition、refreshPivotCaches/空arguments、applyPivotLayoutExpansions/updates、expandPivotOutputs/expansions；复用引擎验证来源和输出。',
             'charts': '仅整簿授权；先read_sheet_features读取冻结草稿中charts的chartPath/title/kind/anchor/series引用。多图须按用户明确目标匹配，不能按数组顺序猜测，不明确时请求澄清而不提交。applyChartEdits.arguments.edits每项含真实唯一chartPath，可改title、chartType(column/bar/line/area/pie/doughnut)、legend、seriesColors、pointColors、dataLabels、dataLabelPosition、dataLabelFormat、axisTitles、grouping、gridlines、valueAxis、gapWidthPct、holeSizePct、explosionPct、pointExplosions；具体值由引擎预览核验。新增使用源DSL {op:add_chart,sheetId,chartType:column|bar|line|area|pie|doughnut|scatter|radar|combo,dataRange,title?,anchorCell?}，先read_range核对最多2000格真实数据。换绑使用{op:edit_chart,chartPath,seriesData:[{index,name?,valuesRange?,categoriesRange?,sheetId?}]}，范围须为单行或单列；支持已有格式字段。引擎从当前草稿生成引用与缓存，禁止传series/seriesSet/values/categories缓存；不与行列或工作表结构操作混批。applyChartDeletions.arguments.deletions每项含所属sheetName和chartPath。只生成候选，显式采纳后仍需保存。',
@@ -426,6 +428,19 @@ class WorkbookAIToolkit(Toolkit):
             if not isinstance(sheet_id, str) or not sheet_id:
                 raise ValueError('workbook_ai_sparkline_invalid')
             return _sparkline_addition(operation, self._sheet(sheet_id)['name'])
+        if op == 'add_table':
+            sheet_id = operation.get('sheetId')
+            if (set(operation) - {'op', 'sheetId', 'range', 'name', 'style', 'bandedRows'}
+                    or not isinstance(sheet_id, str) or not sheet_id):
+                raise ValueError('workbook_ai_table_source_invalid')
+            sheet = self._sheet(sheet_id)
+            r0, r1, c0, c1 = _bounds(operation.get('range'))
+            if r0 == r1 or c1 - c0 + 1 > 1000:
+                raise ValueError('workbook_ai_table_range_invalid')
+            start = f'{get_column_letter(c0 + 1)}{r0 + 1}'
+            end = f'{get_column_letter(c1 + 1)}{r1 + 1}'
+            return {'kind': 'applyTableSource', 'sheetName': sheet['name'], 'range': f'{start}:{end}',
+                    **{key: operation[key] for key in ('name', 'style', 'bandedRows') if key in operation}}
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}

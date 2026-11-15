@@ -42,6 +42,8 @@ XLSX 编辑工具接入 `set_range` 和 `clear_range`。矩形写入可使用起
 
 XLSX `add_chart` 接入本地 GenOffice 参考源码 `19a389b3` 的 `columns` 参数。第一列作为分类，后续列按传入顺序作为系列。首行作为表头，列可不相邻，XLSX 引用及缓存由实际工作表生成。回读覆盖分类列 C 和系列 D、B，保持原数据范围决定的默认锚点。
 
+XLSX `add_table` 接到原生 Excel 表格写入器。表头从操作重放时的草稿读取，空白补为 `ColumnN`，重复名补数字后缀，并同步表头格与表格列名。支持默认全簿唯一名称、显式名称、内置样式与隔行底纹。尚无法核实实时计算值的公式表头会保留原样并拒绝该候选。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

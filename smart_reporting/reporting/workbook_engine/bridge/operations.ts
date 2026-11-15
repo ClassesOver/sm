@@ -15,6 +15,7 @@ import { applyChartDeletions } from '../packages/xlsx-engine/src/chart-delete'
 import { applyChartEdits } from '@sheets-web/xlsx-engine'
 import { applyChartAnchors } from '../packages/xlsx-engine/src/chart-anchor'
 import { applyChartSource } from './chart-sources'
+import { applyTableSource } from './table-source'
 import { clearCellRange } from '../packages/xlsx-engine/src/workbook-write'
 import { validateExternalSourceBinding } from '../packages/xlsx-engine/src/external-links-source'
 import { applyExternalLinkCaches } from '../packages/xlsx-engine/src/external-links-update'
@@ -191,6 +192,7 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       case 'applyRowHeights': bytes = await applyRowHeights(bytes, op.sheetName, op.entries); break
       case 'applyPageSetups': bytes = await applyPageSetups(bytes, op.setups); break
       case 'applyTableAdditions': bytes = await applyTableAdditions(bytes, op.additions); break
+      case 'applyTableSource': bytes = await applyTableSource(bytes, op); break
       case 'applyTableEdits': {
         const parsed = z.object({ kind: z.literal('applyTableEdits'), edits: z.array(z.object({
           worksheetSheetName: z.string().min(1).max(31), tableName: z.string().min(1).max(255),
