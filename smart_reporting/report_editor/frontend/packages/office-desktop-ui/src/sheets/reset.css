@@ -1,0 +1,11 @@
+/* Neutralize retired web ribbon geometry before the source desktop rules.
+   :where keeps the reset weaker than scoped upstream class selectors. */
+:where(.workbook-ribbon) :is(.workbook-ribbon-tabs,.workbook-ribbon-body,.workbook-ribbon-group) {
+  grid-template: none;
+  grid-auto-flow: row;
+  width: auto;
+  min-height: 0;
+  max-height: none;
+  border: 0;
+  margin: 0;
+}

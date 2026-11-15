@@ -1046,6 +1046,12 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       caption.className = 'ribbon-group-label'
       caption.textContent = groupLabel
       group.append(caption)
+      if (content.children.length) {
+        const separator = document.createElement('div')
+        separator.className = 'ribbon-sep'
+        separator.setAttribute('aria-hidden', 'true')
+        content.append(separator)
+      }
       content.append(group)
     }
     if(id==='draw'&&tools?.draw){const group=document.createElement('section');group.className='ribbon-group';group.setAttribute('aria-label','绘图工具');group.append(tools.draw);content.append(group)}

@@ -1,0 +1,946 @@
+.ribbon-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* tab-row text ink matches the ribbon band below */
+  color: var(--text-primary);
+  /* same tab-row metrics as PowerPoint's ribbon (slides app): 5px top inset, no
+     bottom padding, no divider line — the row blends into the band below */
+  padding: 5px 10px 0;
+  background: var(--surface);
+  /* the tab row doubles as the frameless-window drag region */
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+/* While a popover is open the row must deliver presses (drag regions swallow
+   them), so outside-press dismissal can see presses on the blank band */
+html.genoffice-popover-open .ribbon-tabs {
+  -webkit-app-region: no-drag;
+}
+
+/* standalone-window chrome insets; in a shell tab (mode=tab) the tab strip
+   above owns the traffic lights / caption buttons */
+.ribbon-tabs-mac {
+  padding-left: 84px;
+}
+
+.ribbon-tabs-win {
+  padding-right: 150px;
+}
+
+.ribbon-tabs > button:not(.qa-btn) {
+  -webkit-app-region: no-drag;
+  position: relative;
+  border: 0;
+  padding: 7px 9px 6px;
+  /* inactive tab ink matches the ribbon band's #232425 (active stays green) */
+  color: inherit;
+  background: transparent;
+  font-size: 13px;
+  /* every tab label is semibold, not just the active one */
+  font-weight: 600;
+  /* transparent border keeps the row height; the visible underline is the
+   * ::after below, sized to the label text rather than the padded button */
+  border-bottom: 2.5px solid transparent;
+  border-radius: 4px 4px 0 0;
+  white-space: nowrap;
+}
+
+.ribbon-tabs-spacer {
+  flex: 1;
+}
+
+.qa-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+  align-self: center;
+}
+
+.ribbon-tabs .qa-btn {
+  -webkit-app-region: no-drag;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* same box and 16px glyph as the slides ribbon's .qa-btn */
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-primary);
+  background: none;
+  cursor: pointer;
+}
+
+.ribbon-tabs .qa-btn svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.ribbon-tabs .qa-btn:hover:not(:disabled) {
+  background: var(--ribbon-hover);
+}
+
+.ribbon-tabs .qa-btn:disabled {
+  color: var(--text-tertiary);
+  /* neutralize the global button:disabled opacity so the glyph reads exactly
+     the shared quick-access gray of the docs and slides buttons */
+  opacity: 1;
+  cursor: default;
+}
+
+/* AutoSave toggle in the tab row — same knob as the docs/slides ribbons,
+   with the Excel-green accent. */
+.autosave-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  margin-left: 4px;
+  margin-right: 4px;
+  -webkit-app-region: no-drag;
+  user-select: none;
+}
+
+.autosave-toggle input {
+  display: none;
+}
+
+.autosave-knob {
+  width: 26px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--border-strong);
+  position: relative;
+  transition: background 0.15s;
+}
+
+.autosave-knob::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--sheets-knob-dot);
+  transition: left 0.15s;
+}
+
+.autosave-toggle.on .autosave-knob {
+  background: var(--accent);
+}
+
+.autosave-toggle.on .autosave-knob::after {
+  left: 14px;
+}
+
+.autosave-text {
+  font-size: 11px;
+  /* same ink as the docs/slides autosave label */
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.workbook-status {
+  max-width: min(360px, 30vw);
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Hovering a tab tints the label, it doesn't paint a box */
+.ribbon-tabs > button:not(.qa-btn):hover {
+  color: var(--accent-dark);
+}
+
+.ribbon-tabs > button:not(.qa-btn).active {
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+
+/* active underline: about the label's width (insets past the tab padding),
+ * ends slightly rounded — same as the slides ribbon */
+.ribbon-tabs > button:not(.qa-btn).active::after {
+  position: absolute;
+  right: 13px;
+  bottom: -2.5px;
+  left: 13px;
+  height: 2.5px;
+  border-radius: 1px;
+  background: var(--accent);
+  content: '';
+}
+
+/* Contextual tabs (Chart Design) stand out even while inactive, with a
+   colored caption. */
+.ribbon-tabs > button:not(.qa-btn).contextual {
+  color: var(--accent-dark);
+  font-weight: 600;
+}
+
+/* Ribbon: compact single band, hairline separators between
+   groups, no group captions. */
+.ribbon {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  /* ribbon text ink, a touch off the app's --text — same shade
+     as the .inline-tools glyphs */
+  color: var(--text-primary);
+  /* band metrics shared with the slides ribbon */
+  height: 80px;
+  /* Groups must never shrink below content (they would paint over each
+     other); anything past the window edge scrolls instead. */
+  /* `scroll`, not `auto`: styled scrollbars are classic (non-overlay), so
+     `scroll` keeps the 5px lane reserved even without overflow — the content
+     area never changes and crossing the overflow threshold cannot cause a
+     vertical layout jump (same reasoning as .ai-attachments). */
+  overflow-x: scroll;
+  overflow-y: hidden;
+  /* Slim visible scrollbar so mouse users can reach overflowed groups
+     (genspark-ai/genoffice#55). Its 5px lane is carved out of the bottom
+     padding, keeping the 80px band and the content area unchanged; Chromium
+     paints a thumb only while the row actually overflows. */
+  padding: 6px 12px 1px;
+  background: var(--surface);
+}
+
+.ribbon::-webkit-scrollbar {
+  height: 5px;
+}
+
+.ribbon::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ribbon::-webkit-scrollbar-thumb {
+  border-radius: 2.5px;
+  background: var(--sheets-scroll-thumb);
+}
+
+.ribbon-group {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+}
+
+/* group separator: a hairline inset from the band's top/bottom, like the slides
+   ribbon's .ribbon-sep (a plain border-right would span the full 80px band).
+   The 2px inset matches the groups' vertical padding, so the line spans exactly
+   the tallest group content (the two 30px rows) — same inset across all three
+   apps. */
+.ribbon-group::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 0;
+  bottom: 2px;
+  width: 1px;
+  background: var(--border);
+}
+
+/* The AI group leads the band in every app: 4px side padding like the
+   docs/slides .ribbon-group, so the Genspark mark sits at the same x. */
+.ribbon-group:has(.ai-entry) {
+  padding: 2px 4px;
+}
+
+.ribbon-group:last-child::after {
+  display: none;
+}
+
+.ribbon-group-content {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  /* Fill the group's height (docs/slides .ribbon-group-items get this via
+     flex: 1 in their column-direction groups): without it this wrapper sits at
+     natural height, so a .large button's own align-self: stretch tops out
+     ~4px short of the other apps' 64px and the whole stack rides higher. */
+  align-self: stretch;
+}
+
+.ribbon-tool {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 58px;
+  /* icon-beside-label rows match the slides ribbon's .rb-small */
+  padding: 3px 8px;
+  border-radius: var(--radius-small);
+}
+
+.ribbon-tool:not(.large):hover {
+  background: var(--ribbon-hover);
+}
+
+/* Icon over label for the tall Insert-tab buttons — same metrics as the
+   slides ribbon's .rb-big. */
+.ribbon-tool.large {
+  flex-direction: column;
+  justify-content: center;
+  /* content-hugged and centered, same box as the docs/slides .rb-big */
+  gap: 4px;
+  padding: 4px 7px 6px;
+  text-align: center;
+}
+
+/* 12px like the docs/slides .rb-big: buttons `font: inherit` and sheets' body
+   has no font-size, so label wrapper spans got a 16px line box. Declared with
+   .as-button so it survives that rule's own later `font: inherit` shorthand. */
+.ribbon-tool.as-button.large {
+  font-size: 12px;
+}
+
+.ribbon-tool.large small {
+  display: none;
+}
+
+.ribbon-tool.large strong {
+  /* labels never wrap, the button hugs its content (slides .rb-big) — a
+     two-line label would push the icon off the shared center line.
+     Default line-height, not a compact 1.1: the label height feeds the
+     icon-row flex, so it must match the docs/slides .rb-big label. */
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* the tall buttons carry the ribbon's big 28px glyph; letterform glyphs
+   (ƒx, $, θ, …) get a 23px face so their cap height (~16.5px) matches the
+   ~17px ink of the drawn 28px svgs beside them, and a regular 400 weight —
+   the base 600 paints ~2.4px stems at this size vs the svgs' 1.5px strokes */
+.ribbon-tool.large .tool-symbol {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  font-size: 23px;
+  font-weight: 400;
+}
+
+.ribbon-tool.large .tool-symbol svg {
+  width: 28px;
+  height: 28px;
+}
+
+/* icon + caret row of tall buttons: stretches across the button like the
+   slides ribbon's .rb-big-icon, so hover/press paint it edge to edge while
+   the label below stays outside */
+.ribbon-tool.large .tool-icon-row {
+  align-self: stretch;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  border-radius: 4px;
+  padding: 3px 4px;
+  margin: 0 -4px;
+}
+
+/* Hovering a tall button tints only its icon row — the label below
+   stays outside the gray (slides .rb-big:hover .rb-big-icon) */
+.ribbon-tool.large:not(.reserved):hover .tool-icon-row {
+  background: var(--ribbon-hover);
+}
+
+.ribbon-tool.large.as-button:disabled:hover .tool-icon-row {
+  background: transparent;
+}
+
+/* The active workbook view (View tab's Normal) shows a pressed state. */
+.ribbon-tool:not(.large).is-current {
+  background: var(--ribbon-active);
+}
+
+.ribbon-tool.large.is-current .tool-icon-row {
+  background: var(--ribbon-active);
+}
+
+.ribbon-tool.accent {
+  min-width: 96px;
+}
+
+/* AI feature buttons next to the entry: purple glyphs, label below */
+.ribbon-tool.ai-entry .ai-feature-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-brand-secondary);
+}
+
+.ribbon-tool.ai-entry .ai-feature-icon svg {
+  /* 24px renders the 24-unit viewBox 1:1, so the 1.5 stroke paints 1.5px,
+     keeping the 1:16 stroke standard */
+  width: 24px;
+  height: 24px;
+}
+
+/* The AI entry buttons read as one piece: hover/press tint the whole button
+   (icon + label together), unlike the other tall buttons where only the icon
+   row is painted. */
+.ribbon-tool.large.ai-entry:not(:disabled):hover {
+  background: var(--ribbon-hover);
+}
+
+/* 4px matches the docs/slides .rb-big.ai-entry radius so the open-state plate
+   reads identically across the three apps. */
+.ribbon-tool.large.as-button.ai-entry {
+  border-radius: 4px;
+}
+
+.ribbon-tool.large.as-button.ai-entry.active {
+  /* neutral gray, shared with the docs/slides Genspark entries */
+  background: var(--ribbon-active);
+}
+
+.ribbon-tool.large.ai-entry:hover .tool-icon-row,
+.ribbon-tool.large.as-button.ai-entry.active .tool-icon-row {
+  background: transparent;
+}
+
+/* ---- Compact ribbon (⌥⌘K / Ctrl+Alt+K), docs parity, see #362 ----
+ * The middle density: the band stays and every command stays reachable, it
+ * just drops the tall buttons to icon-only on a shorter band. The band keeps
+ * its HARD-fixed height (switching tabs, including the contextual chart /
+ * table / shape tabs, never resizes the row) and the horizontal scroll.
+ * Small icon-beside-label rows keep their labels, like the docs compact band.
+ */
+.ribbon-compact .ribbon {
+  /* Two px taller than the docs/slides/pdf band. This header's rows sit on
+     * .5px offsets, and against the 5px classic scrollbar lane Chromium rounds
+     * the scrolled content up: a 45px band offered 40, a 46px band measured
+     * 41 on macOS but still read scrollHeight 43 on Linux, where the Review
+     * tab's letterform glyphs (🧮 U+6587 🗨) sit on font-metric fractions no other
+     * tab hits. 48px gives the rounded content room without moving anything
+     * inside the band. */
+  height: 48px;
+  padding-top: 5px;
+  padding-bottom: 1px;
+  /* Linux fallback fonts carry emoji and CJK glyphs on line boxes up to
+     ~2.5em tall (Noto Color Emoji's win metrics); left at `normal` they poke
+     below the group boxes and read as scrollable overflow in a band that
+     never scrolls vertically. Pinning the line box makes the layout
+     independent of whichever font a distro picks. */
+  line-height: 1.2;
+}
+
+.ribbon-compact .ribbon-tool.large {
+  /* the label is taken out of flow entirely (below), so the button is just
+     the icon row plus its padding; 1px of button padding (not 2) because the
+     28px glyph + plate already fills the 34px content box to the exact px,
+     and the group's .5px centering offsets round scrollHeight a pixel over */
+  gap: 0;
+  padding: 1px 5px;
+}
+
+.ribbon-compact .ribbon-tool.large .tool-icon-row {
+  min-height: 22px;
+  padding: 1px 3px;
+  margin: 0 -2px;
+}
+
+/* Keep the label in the accessibility tree and in the DOM (Playwright's
+ * hasText and getByRole(name) both read it) but take it out of the visual
+ * flow. display: none here would strip the accessible name. */
+.ribbon-compact .ribbon-tool.large > span:not(.tool-icon-row) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Groups centre on the shorter band. */
+.ribbon-compact .ribbon-group {
+  padding: 0 4px;
+}
+
+/* Stacked rows become single rows — the docs treatment of .rb-col: the font
+ * group's two 30px control rows, the cut/copy/format-painter mini column,
+ * the styles/theme row stacks and the Page Layout check columns all fit a
+ * short band only side by side. */
+.ribbon-compact .ribbon-rows,
+.ribbon-compact .row-stack,
+.ribbon-compact .styles-stack,
+.ribbon-compact .check-column {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+
+.ribbon-compact .tool-stack {
+  grid-auto-flow: column;
+}
+
+/* The Insert tab's chart-type cluster is a 3×3 grid of 17px cells (53px
+ * tall); transposed to two rows it fits with room to spare. */
+.ribbon-compact .chart-grid {
+  grid-template-columns: none;
+  grid-template-rows: repeat(2, auto);
+  grid-auto-flow: column;
+}
+
+/* Bare colored ribbon glyphs — no chip background.
+   Icon-beside-label rows use the slides ribbon's .rb-small icon size (14px);
+   the tall .large buttons scale theirs up to 28px below. */
+.tool-symbol {
+  display: grid;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  /* ribbon glyphs share the toolbar ink (was Excel green) */
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.tool-symbol svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Constant rendered stroke instead of proportional scaling: the 24-canvas
+   svgs carry a 1.5-unit strokeWidth attr, so left alone a 28px glyph paints
+   1.75px lines while a 14px row paints 0.875px hairlines. These overrides
+   pin the painted stroke at ~1.5px for 20px+ glyphs and ~1.25px for the
+   small 13-16px ones (a touch lighter so dense glyphs stay legible).
+   stroke-width is in viewBox units: units = 24 / rendered-px × target-px. */
+.tool-symbol svg {
+  stroke-width: 2.15; /* 14px rows → 1.25px */
+}
+
+.ribbon-tool.large .tool-symbol svg {
+  stroke-width: 1.3; /* 28px → ~1.5px */
+}
+
+.chart-grid .tool-symbol svg {
+  stroke-width: 2.2; /* 13px → ~1.2px */
+}
+
+.chev path {
+  stroke-width: 2.6; /* 10px caret → ~1.1px */
+}
+
+/* every inline-row glyph — toggles, dropdown triggers and labeled buttons —
+   shares one size so icons sitting side by side read identically. 20px puts
+   the padded 24-canvas ink (~61%) at ~12.5px, just under the docs ribbon's
+   optical size (16-canvas at 18px ≈ 14px ink), sized to taste. */
+.inline-tools .tool-symbol svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.8; /* 20px → 1.5px */
+}
+
+.ribbon-tool.reserved .tool-symbol {
+  color: var(--text-muted);
+}
+
+.ribbon-tool strong,
+.ribbon-tool small {
+  display: block;
+  white-space: nowrap;
+}
+
+.ribbon-tool strong {
+  /* label weight matches the slides ribbon's .rb-small (regular, not medium) */
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.ribbon-tool small {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+/* Narrow windows: drop the detail line first, before falling back to
+   horizontal scrolling. */
+@media (max-width: 1600px) {
+  .ribbon-tool small {
+    display: none;
+  }
+
+  .ribbon-tool,
+  .ribbon-tool.accent {
+    min-width: 0;
+  }
+
+  .ribbon-tool.compact-icon span:not(.tool-symbol) {
+    display: none;
+  }
+
+  .ribbon {
+    gap: 1px;
+    /* keep the 6px 12px band padding: docs/slides never compact it, and a
+       narrower inset shifts the shared Genspark entry 2px when switching apps */
+  }
+
+  .ribbon-group {
+    padding: 2px 6px;
+  }
+
+  .number-format {
+    min-width: 60px;
+  }
+}
+
+.inline-tools {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  /* inline glyphs, letterforms and trigger labels share one ink color,
+     a touch off the app's --text */
+  color: var(--text-primary);
+}
+
+/* Two stacked control rows inside one group.
+   Row spacing matches the slides ribbon's .rb-col (4px). */
+.ribbon-rows {
+  display: grid;
+  gap: 4px;
+  align-content: center;
+  justify-items: start;
+}
+
+/* Cut / Copy / Format Painter column beside the tall Paste button. */
+.tool-stack {
+  display: grid;
+  align-content: center;
+  gap: 0;
+}
+
+.tool-stack button {
+  display: grid;
+  min-width: 24px;
+  /* 3 stacked mini rows line up with one tall button, as in the slides ribbon's
+     .rb-clip-col (cut / copy / format painter): 24×20 buttons, gap 0, 14px glyph */
+  height: 20px;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-small);
+  font-size: 14px;
+}
+
+.tool-stack button:hover {
+  background: var(--ribbon-hover);
+}
+
+.tool-stack button.is-active,
+.tool-stack button.is-active:hover {
+  background: var(--ribbon-active);
+}
+
+.inline-tools button.labeled {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.select-like,
+.number-format {
+  display: inline-flex;
+  align-items: center;
+  /* control metrics from the slides ribbon's .rb-font-btn: 28px tall,
+     0 7px padding, 13px type */
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-small);
+  padding: 0 7px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.select-like {
+  min-width: 104px;
+}
+
+.select-like.compact {
+  min-width: 44px;
+}
+
+/* font family / size dropdowns share the slides ribbon's fixed widths
+   (.rb-font-name 178px / .rb-font-size 68px) instead of sizing to the
+   longest option */
+.select-like.font-name {
+  width: 178px;
+  min-width: 0;
+}
+
+.select-like.font-size {
+  width: 68px;
+  min-width: 0;
+}
+
+/* the font combos are buttons inside .inline-tools, whose flat-toggle reset
+   (border: none / transparent) outranks the base .select-like chrome — put
+   the combobox border back on just these two; .compact triggers stay flat */
+.select-like.font-name,
+.select-like.font-size {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+
+.number-format {
+  min-width: 76px;
+}
+
+.inline-tools span,
+.inline-tools button {
+  display: grid;
+  /* compact toggle metrics from the slides ribbon's .rb-icon */
+  min-width: 28px;
+  height: 30px;
+  place-items: center;
+  /* UA button padding would widen every 28px toggle; triggers that need
+     horizontal padding get it back via .menu-select > .select-like /
+     .labeled below */
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-small);
+  font-size: 15px;
+}
+
+.inline-tools span:hover,
+.inline-tools button:hover {
+  background: var(--ribbon-hover);
+}
+
+/* Selection echo: the active cell's B/I/U/S state shows as pressed
+   toggles (same neutral pressed gray as the slides ribbon). */
+.inline-tools button.is-active,
+.inline-tools button.is-active:hover {
+  background: var(--ribbon-active);
+}
+
+/* alignment glyphs use the shared 15px inline size (slides .rb-icon) */
+
+/* the glyph span nested inside a toggle / trigger / swatch must not re-apply
+   the 28px toggle box (the `.inline-tools span` rule above also matches it),
+   or every icon button inflates to 28px content + UA button padding ≈ 40px;
+   width auto drops the 20px glyph box so the svg size rules above govern */
+.inline-tools .tool-symbol {
+  min-width: 0;
+  width: auto;
+  height: auto;
+}
+
+/* Color swatches: the glyph is the SAME size as its siblings (15px letter /
+   18px svg) so the row's cap line stays level, and the 16×4 bar hangs below
+   it out of flow (docs' colored-icon pattern) instead of pushing the whole
+   stack taller than the neighbouring glyphs. */
+.inline-tools .swatch-letter {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  height: auto;
+  line-height: 1;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.swatch-letter i {
+  position: absolute;
+  top: calc(100% + 1px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 4px;
+  border-radius: 1px;
+}
+
+/* the 24-canvas svgs carry ~3px of box padding below their ink — tuck the
+   bar into it so it hugs the glyph like it hugs the letterforms */
+.swatch-letter .tool-symbol ~ i {
+  top: calc(100% - 3px);
+}
+
+.ribbon-tool.as-button {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.ribbon-tool.as-button:not(.large):hover {
+  background: var(--ribbon-hover);
+}
+
+.ribbon-tool.as-button:not(.large).active {
+  background: var(--ribbon-active);
+}
+
+.ribbon-tool.large.as-button.active .tool-icon-row {
+  background: var(--ribbon-active);
+}
+
+.ribbon-tool.as-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ribbon-tool.as-button:disabled:hover {
+  background: transparent;
+}
+
+/* Reserved ribbon slots that are not implemented yet. */
+.ribbon-tool.reserved {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ribbon-tool.reserved:hover {
+  background: transparent;
+}
+
+/* dropdown chevron svg (copied from the slides ribbon's RbCaret) */
+.chev {
+  flex-shrink: 0;
+  margin-left: 3px;
+  color: var(--text-muted);
+  vertical-align: -1px;
+}
+
+/* View tab's stacked show/hide checkboxes (the Show group). */
+/* Home Styles group: three stacked dropdown rows. Muted via color, not
+ * opacity — opacity spans the subtree and would render the anchored
+ * .menu-select-drop popups translucent. */
+.styles-stack {
+  display: grid;
+  gap: 1px;
+  color: var(--text-secondary);
+}
+
+.styles-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* row icons keep a compact box so labels stay close, with the slides
+   ribbon's .rb-small 14px svg size; letterform fallbacks match at 13px */
+.styles-row .tool-symbol {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  font-size: 13px;
+}
+
+.styles-row b {
+  font-weight: 400;
+}
+
+/* Stacked small command rows beside a large button (Insert/Formulas tabs). */
+.row-stack {
+  display: grid;
+  gap: 1px;
+  align-content: center;
+  justify-items: start;
+}
+
+/* Clickable rows keep the same small type as reserved ones (the generic
+   .styles-row.as-button rule resets font to the page default). */
+.ribbon .styles-row.as-button {
+  font-size: 12px;
+  padding: 1px 4px;
+  color: inherit;
+}
+
+.ribbon .styles-row.as-button:hover {
+  color: inherit;
+  background: var(--ribbon-hover);
+  border-radius: var(--radius-small);
+}
+
+.styles-row.reserved {
+  opacity: 0.45;
+}
+
+/* Invisible native select stretched over its host, so a styled row or large
+   button gets a real dropdown menu. */
+.cover-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+  appearance: none;
+}
+
+
+.check-column {
+  display: grid;
+  gap: 2px;
+  align-content: center;
+}
+
+/* The View tab's Show group holds five toggles. Stacked in one column they
+   need 83px and the ribbon band has 75px, so the last one — the
+   cross-highlight toggle — was sliced off by the band's overflow clip.
+   Two columns fit with room to spare. */
+.check-column.check-column-view {
+  grid-template-columns: repeat(2, max-content);
+  column-gap: 14px;
+}
+
+/* Page Layout's Gridlines/Headings column captions. */
+.check-head {
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.check-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--text);
+  font-size: 11px;
+  text-align: left;
+}
+
+button.check-item:hover {
+  background: var(--surface-hover);
+}

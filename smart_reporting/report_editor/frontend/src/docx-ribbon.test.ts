@@ -276,7 +276,7 @@ it('routes Review batch commands only for the controller validated supported-bod
 })
 
 it.each([0, 1, 3])('keeps compact Review controls accessible with %i authors', count => {
-  const style = document.body.appendChild(document.createElement('style')); style.textContent = readFileSync('src/docx.css', 'utf8')
+  const style = document.body.appendChild(document.createElement('style')); style.textContent = readFileSync('packages/office-desktop-ui/src/docs/adapter.css', 'utf8')
   const host = document.body.appendChild(document.createElement('div'))
   const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
   const authors = ['Alice', 'Bob', 'Carol'].slice(0, count)
@@ -647,7 +647,7 @@ it('offers source-bound Home formatting and leaves unsupported Ribbon commands d
     expect(ribbon.querySelector<HTMLButtonElement>(`[data-tab-label="${tab}"]`)?.hidden).toBe(true)
   }
   expect(Array.from(ribbon.querySelector('[role=tabpanel]')!.querySelectorAll('.ribbon-group-label')).map(group => group.textContent)).toEqual([
-    'AI 助手', '剪贴板', '字体', '段落', '样式', '编辑', '转换',
+    'AI 助手', '转换', '剪贴板', '字体', '段落', '样式', '编辑',
   ])
   ribbon.querySelector<HTMLButtonElement>('[data-tab-label="插入"]')!.click()
   expect(Array.from(ribbon.querySelectorAll('.docx-ribbon-group-label, .ribbon-group-label')).map(group => group.textContent)).toEqual(['页面', '表格', '插图', '文本', '链接', '批注', '页眉和页脚', '符号'])

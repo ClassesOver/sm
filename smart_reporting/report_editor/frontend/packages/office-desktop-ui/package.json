@@ -1,0 +1,19 @@
+{
+  "name": "@smart-reporting/office-desktop-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "exports": {
+    "./docs.css": "./src/docs/index.css",
+    "./sheets.css": "./src/sheets/index.css",
+    "./slides.css": "./src/slides/index.css",
+    "./pdf.css": "./src/pdf/index.css",
+    "./theme.css": "./src/theme/index.css",
+    "./sheets": "./src/sheets/index.ts",
+    "./slides": "./src/slides/index.ts",
+    "./pdf": "./src/pdf/index.ts"
+  }
+}

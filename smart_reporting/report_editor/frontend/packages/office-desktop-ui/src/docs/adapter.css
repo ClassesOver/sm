@@ -1,0 +1,64 @@
+/* Desktop Word ribbon adapter.
+ * Appearance comes directly from ribbon.css, extracted from
+ * genspark-ai/genoffice f8c17004fb730df11f0f743164ffd8b4281bb38c,
+ * apps/docs/src/renderer/styles.css. See LICENSE.genoffice beside this file.
+ * Do not restyle .ribbon-tab/.rb-icon/.rb-big here: those are source controls.
+ * Only browser mount wrappers and extra native-protocol controls need adapters.
+ */
+.docx-native .docx-ribbon {
+  --ui-cjk: 'PingFang SC', 'Microsoft YaHei';
+  min-width: 0;
+  max-width: 100%;
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, var(--ui-cjk), sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The desktop body directly contains groups; React browser mounts add one
+ * wrapper. Give that wrapper the same flex row without another padded band. */
+.docx-native .docx-ribbon .ribbon-content {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+}
+.docx-native .docx-ribbon .ribbon-body > div:has(> .ribbon-content) {
+  display: flex;
+  flex: 0 0 auto;
+}
+.docx-native .docx-ribbon .ribbon-tabs {
+  min-width: 0;
+  overflow-x: auto;
+}
+.docx-native .docx-ribbon .ribbon-tab { flex-shrink: 0; }
+
+/* These extra review protocol controls have no upstream JSX equivalent. They
+ * occupy the same two control rows inside the original fixed 80px ribbon. */
+.docx-native .docx-ribbon .docx-review-revisions-items {
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  grid-template-rows: repeat(2, 28px);
+  gap: 2px;
+}
+.docx-native .docx-ribbon .docx-review-display-items {
+  display: grid;
+  grid-template-columns: repeat(3, max-content);
+  grid-template-rows: repeat(3, 20px);
+  gap: 0 4px;
+}
+.docx-native .docx-ribbon .docx-review-display-items > label:not(.docx-review-authors) {
+  grid-column: 1;
+  white-space: nowrap;
+}
+.docx-native .docx-ribbon .docx-review-authors {
+  display: flex;
+  flex-direction: column;
+  grid-column: 2;
+  grid-row: 1 / span 3;
+}
+.docx-native .docx-ribbon .docx-review-authors > select { min-height: 0; width: 144px; }
+.docx-native .docx-ribbon .docx-review-display-items > button { grid-column: 3; white-space: nowrap; }
+.docx-native .docx-ribbon [data-action="revision-balloons-unavailable"] { grid-row: 1; }
+.docx-native .docx-ribbon [data-action="track-changes-options-unavailable"] { grid-row: 2; }
+
+/* Browser-hosted tabs are interactive rather than native window drag areas. */
+.docx-native .docx-ribbon .ribbon-tabs { -webkit-app-region:no-drag; }

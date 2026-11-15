@@ -14,6 +14,8 @@ import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart
 export const WORDART_PRESET_LABELS: Record<string, string> = { blue: '填充：蓝色', gold: '填充：金色', red: '填充：深红', purple: '填充：紫色', 'green-italic': '填充：绿色；斜体', 'white-orange': '填充：白色；描边：橙色', 'white-red': '填充：白色；描边：深红', 'gold-brown': '填充：金色；描边：棕色', 'sky-navy': '填充：天蓝；描边：藏青', 'navy-white': '填充：藏青；描边：白色', 'black-gold': '填充：黑色；描边：金色', 'silver-dark': '填充：银色；描边：深灰' }
 import { LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS } from './vendor/genoffice-slides/components/shape-gallery-data'
 import './office-theme.css'
+import '@smart-reporting/office-desktop-ui/slides.css'
+import { desktopRibbonButton, desktopRibbonGroup } from '@smart-reporting/office-desktop-ui/slides'
 import { BULLET_GLYPHS, BULLET_GLYPH_LABELS, BULLET_SYMBOLS, NUMBER_TYPES, BULLET_COLORS, PARAGRAPH_LIST_COMMANDS } from './slides-paragraph'
 import { ArrowDown, ArrowUp, Bold, Download, FolderOpen, Italic, Plus, Strikethrough, Trash2, Underline, createElement } from 'lucide'
 import { createElement as reactElement, type ComponentType } from 'react'
@@ -451,15 +453,16 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   locked?: boolean
 }): NativeSlidesRibbon {
   const root = document.createElement('section')
-  root.className = 'slides-native-ribbon'
+  root.className = 'slides-native-ribbon ribbon'
   const disposeScroll = bindOfficeRibbonScroll(root)
   root.setAttribute('aria-label', 'PowerPoint 功能区')
   const tablist = document.createElement('div')
-  tablist.className = 'slides-native-ribbon-tabs'
+  tablist.className = 'slides-native-ribbon-tabs ribbon-tabs'
   tablist.setAttribute('role', 'tablist')
   const panels = new Map<string, HTMLElement>()
   const tabButtons = new Map<string, HTMLButtonElement>()
   const controls = new Map<string, HTMLElement[]>()
+  const desktopMenus: Array<() => void> = []
   let activeTab = 'home'
   let activeContext: NativeSlidesContext = null
   let chartGallery: ReturnType<typeof createNativeChartGallery> | undefined
@@ -562,6 +565,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     for (const button of controls.get('animationNone') ?? []) (button as HTMLButtonElement).disabled = locked || !animationTarget
   }
   const selectTab = (id: string) => {
+    desktopMenus.forEach(close => close())
     if (id !== 'animations') {
       cancelAnimationHover()
       for (const flyout of animationFlyouts) flyout.close()
@@ -575,6 +579,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       const selected = tab.id === id
       const button = tabButtons.get(tab.id)!
       button.setAttribute('aria-selected', String(selected))
+      button.classList.toggle('active', selected)
       button.tabIndex = selected ? 0 : -1
       panels.get(tab.id)!.hidden = !selected
     }
@@ -585,6 +590,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     button.type = 'button'
     button.id = `slides-native-tab-${tab.id}`
     button.dataset.ribbonTab = tab.id
+    button.className = 'ribbon-tab' + (tab.id === activeTab ? ' active' : '')
     button.textContent = localize(tab.label)
     button.setAttribute('role', 'tab')
     button.setAttribute('aria-controls', `slides-native-panel-${tab.id}`)
@@ -612,19 +618,23 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     const panel = document.createElement('div')
     panel.id = `slides-native-panel-${tab.id}`
     panel.dataset.ribbonPanel = tab.id
+    panel.className = 'ribbon-body'
     panel.setAttribute('role', 'tabpanel')
     panel.setAttribute('aria-labelledby', button.id)
     panel.hidden = tab.id !== activeTab || !!tab.context
     for (const groupDefinition of tab.groups) {
       const group = document.createElement('section')
-      group.className = 'slides-native-ribbon-group'
+      group.className = 'slides-native-ribbon-group ribbon-group'
       group.dataset.ribbonGroup = groupDefinition.label
       const groupLabel = tab.id === 'home' && groupDefinition.label === 'Clipboard' ? clipboardLocale.group : localize(groupDefinition.label)
       group.setAttribute('aria-label', groupLabel)
       const heading = document.createElement('h2')
       heading.textContent = groupLabel
-      group.append(heading)
-      let controlHost: HTMLElement = group
+      heading.className = 'ribbon-group-label'
+      const groupItems = document.createElement('div')
+      groupItems.className = 'ribbon-group-items'
+      group.append(groupItems, heading)
+      let controlHost: HTMLElement = groupItems
       if (tab.id === 'tableDesign' && groupDefinition.label === 'Shading') {
         const palette = document.createElement('fieldset')
         palette.className = 'slides-table-shading'
@@ -648,7 +658,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           })
           palette.append(swatch)
         }
-        group.append(palette)
+        groupItems.append(palette)
         tableShading = { group, heading, palette, enabled: false }
       }
       if (tab.id === 'tableDesign' && groupDefinition.label === 'Table Styles') {
@@ -667,7 +677,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           button.addEventListener('click', () => {
             if (!button.disabled) options.onAction('tableStyle', preset.name)
           })
-          group.append(button)
+          groupItems.append(button)
           return button
         }))
       }
@@ -687,7 +697,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           button.addEventListener('click', () => {
             if (!locked && transitionEditReady) options.onAction('transition', kind)
           })
-          group.append(button)
+          groupItems.append(button)
           return button
         }))
       }
@@ -714,7 +724,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           }
           updateGradients?.()
         })
-        group.append(trigger, menu)
+        groupItems.append(trigger, menu)
         controlHost = menu
         if (shapeStyle) {
           const grid = document.createElement('div')
@@ -790,7 +800,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       }
       if (groupDefinition.label === 'AI 助手') {
         group.classList.add('office-ai-group')
-        group.append(createOfficeAIEntry(options.onAssistant))
+        groupItems.append(createOfficeAIEntry(options.onAssistant))
       }
       for (const control of groupDefinition.controls) {
         const localizedLabel = tab.id === 'home' && groupDefinition.label === 'Clipboard'
@@ -1013,13 +1023,13 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           button.addEventListener('click', () => {
             if (!button.disabled) options.onAction('applyAnimationEffect', kind)
           })
-          group.append(button)
+          groupItems.append(button)
           return button
         }))
       }
       if (tab.id === 'animations' && ['Animation', 'Motion Paths'].includes(groupDefinition.label)) {
         const animation = groupDefinition.label === 'Animation'
-        const items = [...group.children].filter(item => item !== heading)
+        const items = [...groupItems.children]
         const trigger = document.createElement('button')
         trigger.type = 'button'
         trigger.dataset.animationCollapse = animation ? 'animation' : 'motionPaths'
@@ -1031,7 +1041,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           for (const flyout of animationFlyouts) if (flyout.trigger !== trigger) flyout.close()
         }, cancelAnimationHover)
         menu.classList.add('slides-animation-collapsed-flyout')
-        group.append(trigger, menu)
+        groupItems.append(trigger, menu)
         const flyout: typeof animationFlyouts[number] = { group, trigger, close, inlineWidth: 0, foldedWidth: 88, setCollapsed(value) {
           if (value === !trigger.hidden) return
           const focused = document.activeElement
@@ -1040,7 +1050,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           close()
           trigger.hidden = !value
           if (value) menu.append(...items)
-          else for (const item of items) group.insertBefore(item, trigger)
+          else for (const item of items) groupItems.insertBefore(item, trigger)
           if (value && restore) trigger.focus({ preventScroll: true })
           else if (!value && (restore || focused === trigger)) {
             const target = restore ?? items.find(item => item instanceof HTMLButtonElement && !item.disabled)
@@ -1052,8 +1062,28 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         else animationFlyouts.unshift(flyout)
       }
       if (tab.id === 'chartDesign' && groupDefinition.label === 'Chart Styles') {
-        chartGallery = createNativeChartGallery(group, (command, value) => options.onAction(command, value))
+        chartGallery = createNativeChartGallery(groupItems, (command, value) => options.onAction(command, value))
         chartGallery.setLocked(locked)
+      }
+      desktopRibbonGroup(group, groupItems, tab.id, groupDefinition.label)
+      if (tab.id === 'home' && groupDefinition.label === 'Paragraph') {
+        const trigger = document.createElement('button')
+        trigger.type = 'button'
+        trigger.setAttribute('aria-label', groupLabel)
+        trigger.innerHTML = renderToStaticMarkup(reactElement(IconAlignLeft, { size: 28 }))
+        trigger.append(document.createTextNode(groupLabel))
+        desktopRibbonButton(trigger)
+        const { menu, close } = createRibbonPopover(trigger, groupLabel, () => desktopMenus.forEach(close => close()))
+        menu.classList.add('rb-para-drop')
+        menu.append(...groupItems.childNodes)
+        groupItems.append(trigger, menu)
+        desktopMenus.push(close)
+      }
+      if (panel.children.length) {
+        const separator = document.createElement('div')
+        separator.className = 'ribbon-sep'
+        separator.setAttribute('aria-hidden', 'true')
+        panel.append(separator)
       }
       panel.append(group)
     }
@@ -1068,7 +1098,10 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     if (animationPanel.hidden || !animationPanel.clientWidth) return
     const style = getComputedStyle(animationPanel)
     const available = animationPanel.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0)
-    let fullWidth = [...animationPanel.children].reduce((width, group) => width + (group as HTMLElement).offsetWidth, 0)
+    let fullWidth = [...animationPanel.children].reduce((width, group) => {
+      const margins = getComputedStyle(group)
+      return width + (group as HTMLElement).offsetWidth + (parseFloat(margins.marginLeft) || 0) + (parseFloat(margins.marginRight) || 0)
+    }, 0)
     const savings = animationFlyouts.map(flyout => {
       if (flyout.trigger.hidden) flyout.inlineWidth = flyout.group.offsetWidth
       else flyout.foldedWidth = flyout.group.offsetWidth
@@ -1246,7 +1279,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateCommentEdit()
       updateAIEdit()
     },
-    dispose() { animationLayoutObserver?.disconnect(); for (const flyout of animationFlyouts) flyout.close(); cancelAnimationHover(); chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
+    dispose() {
+      desktopMenus.forEach(close => close()); animationLayoutObserver?.disconnect(); for (const flyout of animationFlyouts) flyout.close(); cancelAnimationHover(); chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

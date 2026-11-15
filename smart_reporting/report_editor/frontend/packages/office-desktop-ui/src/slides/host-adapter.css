@@ -1,0 +1,22 @@
+/* Host-only compatibility. Desktop dimensions/colors live in ribbon.scoped.css. */
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .ribbon-body[hidden],
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon [hidden] { display: none; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .ribbon-tabs { overflow-x: auto; overflow-y: hidden; -webkit-app-region: no-drag; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .ribbon-tab { flex-shrink: 0; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .ribbon-tab[aria-selected=true] { background: none; border-bottom-color: transparent; color: var(--accent); }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-big { height: 57px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-big-icon > :is(svg,img) { width: 28px; height: 28px; flex-shrink: 0; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-icon > svg { width: 20px; height: 20px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-col.rb-clip-col .rb-icon > svg { width: 14px; height: 14px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon :is(.rb-icon,.rb-small)[aria-pressed=true] { background: var(--active-bg); color: var(--accent); }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-big[aria-pressed=true] .rb-big-icon { background: var(--active-bg); color: var(--accent); }
+.slides-native-ribbon .desktop-ribbon-sr-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-font-btn { min-height: 0; max-width: none; box-sizing: border-box; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-font-name { width: 178px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-font-size { width: 68px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .desktop-ribbon-extra { display: grid; grid-template-rows: repeat(2, 28px); grid-auto-flow: column; gap: 2px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .desktop-ribbon-extra .rb-big { height: 28px; flex-direction: row; padding: 0 4px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .desktop-ribbon-extra .rb-big-icon { min-height: 0; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .desktop-ribbon-extra .rb-big-icon > svg { width: 16px; height: 16px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .rb-para-drop:not([hidden]) { display: grid; grid-template-columns: repeat(4, max-content); gap: 4px; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon .ribbon-group-items > .office-ai-entry { border: 0; background: none; height: 57px; }

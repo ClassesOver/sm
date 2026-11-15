@@ -1,0 +1,9 @@
+# GenOffice PDF desktop ribbon
+
+Upstream: https://github.com/genspark-ai/genoffice/tree/f8c17004fb730df11f0f743164ffd8b4281bb38c
+
+`styles.css`, `App.tsx.reference`, `icons.tsx`, `AiPanel.tsx.reference`, and `LICENSE` are unmodified upstream files, pinned by SHA-256 in `manifest.json`. Licensed under Apache-2.0; see LICENSE. The reference TSX is not compiled or shipped as application code.
+
+`../source.css` copies the complete ribbon section (before Compact ribbon) and the page/zoom control section (before `.tb-save-error`). Only selectors are prefixed with the PDF ribbon scope; declarations and comments are unchanged. `../adapter.css` clears legacy smart-report layout rules before those declarations. `../../../../../src/pdf-ribbon.ts` adopts the canonical ribbon/group/items/button/icon structure while leaving actions, disabled/hidden states, and permissions on the existing controller elements.
+
+Source Home group order and the single 80px scrollable band are preserved. Semantic group headings remain accessible but visually hidden because the desktop source does not show captions. Smart-report-specific commands remain present, which can widen the horizontal ribbon; the desktop Electron controller, conversion popup, model picker, quick access actions, and compact/collapse behaviors are not imported. Desktop SVG markup is generated from `icons.tsx`; the brand mark is extracted unchanged from the referenced AiPanel. Run `node packages/office-desktop-ui/src/pdf/generate-icons.mjs` from the frontend directory to reproduce `../icons.generated.ts`, or add `--check` to verify it. React server rendering is used only by this generation script, never by the runtime adapter. Local-only commands without an upstream glyph retain their existing icons. Translated command labels remain authoritative.

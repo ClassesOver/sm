@@ -1,0 +1,80 @@
+/* Pinned GenOffice desktop per-app ribbon tokens. Values copied unchanged; selectors scoped to UI. */
+
+.office-ui-theme .pdf-ribbon {
+  --accent: #c43e1c;
+  --pdf-scroll-thumb: rgb(0 0 0 / 25%);
+}
+
+html[data-office-theme='dark'] .office-ui-theme .pdf-ribbon {
+  --accent: #e8663f;
+  --pdf-scroll-thumb: rgb(255 255 255 / 28%);
+}
+
+@media (prefers-color-scheme: dark) {
+html:not([data-office-theme='light']):not([data-office-theme='dark']) .office-ui-theme .pdf-ribbon {
+  --accent: #e8663f;
+  --pdf-scroll-thumb: rgb(255 255 255 / 28%);
+}
+}
+
+.office-ui-theme .slides-native-ribbon {
+  --accent: #c43e1c;
+  --accent-dark: #a33517;
+  --slides-ctl-border: #8a8886;
+  --slides-scroll-thumb: rgb(0 0 0 / 25%);
+  --slides-on-accent: #fff;
+  --slides-copilot-grad: linear-gradient(135deg, #6a5cff 0%, #2b88f8 55%, #29c3a6 120%);
+  --slides-shadow-badge: 0 2px 6px rgb(74 92 255 / 35%);
+  --slides-shadow-badge-soft: 0 2px 6px rgb(74 92 255 / 25%);
+  --slides-shadow-menu: 0 8px 24px rgb(0 0 0 / 18%);
+}
+
+html[data-office-theme='dark'] .office-ui-theme .slides-native-ribbon {
+  --accent: #e8663f;
+  --accent-dark: #d4552f;
+  --slides-ctl-border: #777;
+  --slides-scroll-thumb: rgb(255 255 255 / 28%);
+}
+
+@media (prefers-color-scheme: dark) {
+html:not([data-office-theme='light']):not([data-office-theme='dark']) .office-ui-theme .slides-native-ribbon {
+  --accent: #e8663f;
+  --accent-dark: #d4552f;
+  --slides-ctl-border: #777;
+  --slides-scroll-thumb: rgb(255 255 255 / 28%);
+}
+}
+
+.office-ui-theme .workbook-ribbon {
+  --excel-green: #217346;
+  --excel-green-dark: #185c37;
+  --accent: var(--excel-green);
+  --accent-dark: var(--excel-green-dark);
+  --surface-hover: #edf1ee;
+  --ribbon-hover: var(--color-bg-subtle);
+  --ribbon-active: #eaeaea;
+  --radius-4: 4px;
+  --radius-small: var(--radius-4);
+  --sheets-scroll-thumb: rgb(0 0 0 / 25%);
+  --sheets-knob-dot: #ffffff;
+}
+
+html[data-office-theme='dark'] .office-ui-theme .workbook-ribbon {
+  --accent: #34a853;
+  --accent-dark: #58b380;
+  --surface-hover: #333;
+  --ribbon-hover: #333;
+  --ribbon-active: #454545;
+  --sheets-scroll-thumb: rgb(255 255 255 / 28%);
+}
+
+@media (prefers-color-scheme: dark) {
+html:not([data-office-theme='light']):not([data-office-theme='dark']) .office-ui-theme .workbook-ribbon {
+  --accent: #34a853;
+  --accent-dark: #58b380;
+  --surface-hover: #333;
+  --ribbon-hover: #333;
+  --ribbon-active: #454545;
+  --sheets-scroll-thumb: rgb(255 255 255 / 28%);
+}
+}

@@ -1,0 +1,26 @@
+{
+  "repository": "https://github.com/genspark-ai/genoffice",
+  "revision": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "files": {
+    "styles.css": {
+      "upstream": "apps/pdf/src/renderer/styles.css",
+      "sha256": "0f85d8a88b213b78bfd6b0c4b36f3e0349b8ac7973cc1a74c08022c674194505"
+    },
+    "App.tsx.reference": {
+      "upstream": "apps/pdf/src/renderer/App.tsx",
+      "sha256": "d4480f6d9da4c756473959436fd2f036b83521ce6f43d09bde46f833332b74a9"
+    },
+    "LICENSE": {
+      "upstream": "LICENSE",
+      "sha256": "68e32334df324ef4fc79fad3a26487e5abac36055a484bb6c8d7ecf9d8350885"
+    },
+    "icons.tsx": {
+      "upstream": "apps/pdf/src/renderer/icons.tsx",
+      "sha256": "b78571156532c09e46c6bea4cebd53db6d397d9815b76c4dff51965f66145b70"
+    },
+    "AiPanel.tsx.reference": {
+      "upstream": "apps/pdf/src/renderer/ai/AiPanel.tsx",
+      "sha256": "5ea0c3359441f2f535308e76c3ae983ab2a314c2da1e45d1c6c78d4f4571568a"
+    }
+  }
+}

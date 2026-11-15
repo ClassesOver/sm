@@ -1,4 +1,6 @@
-.docx-native { --surface:#fff; --text:#222; --border:#ddd; --text-secondary:#667085; position:relative; color:#222; }
+@import '@smart-reporting/office-desktop-ui/docs.css';
+
+.docx-native { position:relative; color:#222; }
 .docx-native .modal-card :is(button,input,select,textarea):focus-visible,
 :is(.docx-table-property-dialog,.docx-settings-dialog) :is(button,input,select,textarea):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:2px; }
 :is(.docx-table-property-dialog,.docx-settings-dialog) { padding:20px; font-size:var(--office-font-size); line-height:1.6; }
@@ -78,64 +80,6 @@
 }
 .docx-native .docx-tools { min-width:0; padding:0; background:var(--color-surface); border-bottom:1px solid var(--color-border); }
 .docx-native .docx-tools > [data-action="word-count"] { display:block; width:max-content; margin:4px 12px 6px auto; }
-/* Interface tokens stay inside the ribbon; source document styles are untouched. */
-.docx-native .docx-ribbon { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); min-width:0; max-width:100%; overflow:visible; background:var(--color-surface); color:var(--color-ink); font-family:inherit; font-size:var(--font-size-md); line-height:1.4; }
-.docx-native .docx-ribbon .ribbon-tabs { -webkit-app-region:no-drag; display:flex; align-items:stretch; min-width:0; min-height:var(--office-tabbar-height); margin:0; padding:3px 12px 0; overflow-x:auto; border-bottom:1px solid var(--color-border); background:var(--office-tabbar); scrollbar-width:thin; }
-.docx-native .docx-ribbon .ribbon-tab { position:relative; flex:0 0 auto; min-height:var(--office-tab-height); border:0; border-radius:var(--radius-sm) var(--radius-sm) 0 0; padding:0 14px; background:transparent; color:var(--color-text-muted); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),color var(--motion-fast); }
-.docx-native .docx-ribbon .ribbon-tab:hover:not(:disabled) { background:var(--office-accent-soft); color:var(--office-accent); }
-.docx-native .docx-ribbon .ribbon-tab.active { background:var(--office-chrome); color:var(--office-accent); font-weight:600; }
-.docx-native .docx-ribbon .ribbon-tab.active::after { position:absolute; right:12px; bottom:0; left:12px; height:2px; background:var(--office-accent); content:""; }
-.docx-native .docx-ribbon .ribbon-body { height:auto; min-height:var(--office-body-height); max-height:none; padding:0; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; scrollbar-color:var(--color-border-strong) transparent; }
-.docx-native .docx-ribbon .ribbon-content { display:flex; align-items:stretch; width:max-content; min-width:100%; min-height:var(--office-body-height); padding:6px 12px; box-sizing:border-box; }
-.docx-native .docx-ribbon .ribbon-group { display:flex; flex:0 0 auto; flex-direction:column; align-items:stretch; justify-content:space-between; min-width:64px; gap:6px; margin:0; padding:0 12px; border-right:1px solid var(--office-separator); }
-.docx-native .docx-ribbon .ribbon-group:first-child { padding-left:0; }
-.docx-native .docx-ribbon .ribbon-group:last-child { border-right:0; }
-.docx-native .docx-ribbon .ribbon-group-items { display:flex; flex-wrap:wrap; align-content:flex-start; align-items:center; justify-content:flex-start; gap:4px; }
-.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) { display:grid; grid-template-columns:max-content auto auto; align-items:center; justify-content:start; }
-.docx-native .docx-ribbon .ribbon-group-items > .rb-row { grid-column:1 / -1; }
-.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) > .rb-row { flex-wrap:nowrap; max-width:none; }
-.docx-native .docx-ribbon .ribbon-group-items:has(> .rb-row) > .rb-split-wrap { justify-self:start; }
-.docx-native .docx-ribbon .ribbon-group { position:relative; }
-.docx-native .docx-ribbon .ribbon-group-label { display:block; padding-top:2px; color:var(--color-text-muted); font-size:var(--font-size-xs); font-weight:500; text-align:center; }
-.docx-native .docx-ribbon .ribbon-sep { display:none; }
-.docx-native .docx-ribbon .rb-row { display:flex; align-items:center; gap:4px; }
-.docx-native .docx-ribbon .rb-icon { display:inline-flex; flex:0 0 auto; width:var(--office-control-height); height:var(--office-control-height); align-items:center; justify-content:center; gap:2px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
-.docx-native .docx-ribbon .rb-icon svg { flex-shrink:0; max-width:24px; max-height:24px; }
-.docx-native .docx-ribbon .docx-source-command { width:auto; min-width:var(--office-control-height); padding-inline:6px; white-space:nowrap; }
-.docx-native .docx-source-home .ribbon-group-items:has(> [data-action="find"]) { display:flex; flex-direction:column; align-items:stretch; flex-wrap:nowrap; }
-.docx-native .docx-source-home .ribbon-group-items > [data-action="select"] { min-height:var(--office-control-height); padding:0 6px; color:var(--office-ink-2); }
-.docx-native .docx-ribbon .rb-icon:hover:not(:disabled),
-.docx-native .docx-ribbon .rb-big:hover:not(:disabled) { border-color:var(--office-hover-border); background:var(--office-hover-bg); }
-.docx-native .docx-ribbon .rb-icon.active,
-.docx-native .docx-ribbon button:is([aria-pressed="true"],[aria-expanded="true"]) { border-color:var(--office-pressed-border); background:var(--office-pressed-bg); color:var(--office-pressed-ink); }
-.docx-native .docx-ribbon :disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
-.docx-native .docx-ribbon button:disabled { background:transparent; border-color:transparent; }
-.docx-native .docx-ribbon :is(button,input,select):focus-visible { outline:2px solid var(--office-focus-ring); outline-offset:2px; }
-.docx-native .docx-ribbon :is(.rb-select,.layout-num input,.layout-num select) { height:var(--office-control-height); box-sizing:border-box; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); padding:4px 8px; background:var(--color-surface); color:var(--color-ink); font:inherit; }
-.docx-native .docx-ribbon :is(input,select):disabled { border-color:var(--office-border-soft); }
-.docx-native .docx-ribbon .rb-font-family { width:136px; }
-.docx-native .docx-ribbon .rb-font-size { width:62px; }
-.docx-native .docx-ribbon .rb-color-input { width:var(--office-control-height); height:var(--office-control-height); padding:4px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); cursor:pointer; }
-.docx-native .docx-ribbon .rb-big { display:inline-flex; flex-direction:column; align-items:center; justify-content:center; min-height:var(--office-big-control-height); gap:4px; border:1px solid transparent; border-radius:var(--radius-sm); padding:6px 10px; background:transparent; color:var(--color-ink-2); font:inherit; white-space:pre-line; }
-.docx-native .docx-ribbon .docx-ribbon-command { width:auto; min-width:56px; max-width:110px; height:auto; min-height:32px; padding:4px 8px; font-size:var(--font-size-sm); line-height:1.4; white-space:normal; }
-.docx-native .docx-ribbon .ribbon-group-items.docx-review-revisions-items { display:grid; grid-template-columns:repeat(3,max-content); grid-template-rows:repeat(2,auto); gap:4px; align-items:stretch; }
-.docx-native .docx-ribbon .ribbon-group-items.docx-review-display-items { display:grid; grid-template-columns:repeat(3,max-content); grid-template-rows:repeat(3,var(--office-control-height)); gap:4px 8px; align-items:center; }
-.docx-native .docx-ribbon .docx-review-display-items > label:not(.docx-review-authors) { grid-column:1; white-space:nowrap; }
-.docx-native .docx-ribbon .docx-review-display-items > .docx-review-authors { display:flex; flex-direction:column; align-self:stretch; grid-column:2; grid-row:1 / span 3; gap:2px; white-space:nowrap; }
-.docx-native .docx-ribbon .docx-review-authors > select { flex:1; min-height:0; width:144px; }
-.docx-native .docx-ribbon .docx-review-display-items > button { grid-column:3; white-space:nowrap; }
-.docx-native .docx-ribbon .docx-review-display-items > [data-action="revision-balloons-unavailable"] { grid-row:1; }
-.docx-native .docx-ribbon .docx-review-display-items > [data-action="track-changes-options-unavailable"] { grid-row:2; }
-.docx-native .docx-ribbon .layout-num { display:inline-flex; align-items:center; gap:6px; color:var(--color-ink-2); font-size:var(--font-size-sm); }
-.docx-native .docx-ribbon .layout-num input { width:76px; text-align:right; }
-.docx-native .docx-ribbon .layout-unit { color:var(--color-text-muted); font-size:var(--font-size-xs); }
-.docx-native .docx-ribbon :is(.spacing-menu,.symbol-picker,.symbol-panel,[data-rb-panel]) { border:1px solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-ink); box-shadow:var(--shadow-popover); font:inherit; }
-.docx-native .docx-ribbon :is(.spacing-menu,.symbol-picker,.symbol-panel,[data-rb-panel]) button { min-height:32px; border-radius:var(--radius-sm); color:var(--color-ink-2); font:inherit; }
-.docx-native .docx-ribbon :is(.spacing-menu,.symbol-picker,.symbol-panel,[data-rb-panel]) button:hover:not(:disabled) { background:var(--color-primary-soft); color:var(--color-primary); }
-.docx-native .docx-ribbon :is(.spacing-menu,.symbol-picker,.symbol-panel,[data-rb-panel]) button.active { background:var(--color-primary-soft); color:var(--color-primary); }
-.docx-native .docx-ribbon .docx-style-select { min-width:140px; max-width:220px; }
-.docx-native .docx-ribbon :is(.docx-ribbon-highlight-palette,.docx-ribbon-shading-palette) { border:1px solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-ink); box-shadow:var(--shadow-popover); }
-.docx-native .docx-ribbon :is(.docx-ribbon-highlight-palette,.docx-ribbon-shading-palette) button:focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
 .docx-native .docx-view-status { display:block; padding:4px 14px; border-top:1px solid var(--color-border-soft); background:var(--color-bg-soft); color:var(--color-text-muted); font-size:var(--font-size-xs); text-align:right; }
 /* 查找沿用宿主内的非模态区域，所有内容通过面板滚动访问。 */
 .docx-native .docx-find-replace { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); display:block; position:relative; inset:auto; width:auto; max-width:100%; box-sizing:border-box; border:0; border-top:1px solid var(--color-border); border-radius:0; box-shadow:none; padding:8px 12px; background:var(--color-surface); color:var(--color-ink); font:inherit; font-size:var(--office-font-size); line-height:1.4; scrollbar-width:thin; scroll-padding:4px; }
@@ -221,11 +165,7 @@
 .docx-native .rev-display-simple .docx-review-changed-line::before { content:'';position:absolute;left:-8px;top:0;bottom:0;width:2px;background:var(--docs-paper-rev-ink);pointer-events:none; }
 .editor-format-docx .editor-surface { padding:0; background:var(--office-canvas); }
 .editor-format-docx #report-editor { max-width:none; padding:0; }
-@media(max-width:768px) {
-  .docx-native .docx-ribbon .ribbon-tabs { padding-inline:8px; }
-  .docx-native .docx-ribbon .ribbon-tab { padding-inline:12px; min-height:40px; }
-  .docx-native .docx-ribbon .ribbon-content { padding-inline:8px; }
-}
+
 
 /* Insert ▸ Table 自定义行列表单与错误提示（固定源 picker 样式见 vendor scoped.css .table-picker*） */
 .docx-native .table-picker-form { display: grid; grid-template-columns: auto auto; gap: 6px 8px; align-items: center; padding: 6px 2px 2px; font-size: 12px; }

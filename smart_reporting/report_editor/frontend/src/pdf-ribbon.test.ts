@@ -92,11 +92,11 @@ it('localizes the source ribbon tabs and group titles from the active document l
   expect(group.querySelector('h2')?.textContent).toBe('Organize')
 })
 
-it('places AI first and conversion last in Home keyboard order', () => {
+it('uses the pinned desktop Home group order in keyboard navigation', () => {
   const host = document.body.appendChild(document.createElement('main'))
   const ribbon = createPdfRibbon(host)
   for (const group of ['AI','Markup','Edit','Convert & Export','Page & Zoom','Search, Print & Properties']) ribbon.group('home',group)
   expect([...host.querySelectorAll('[data-pdf-ribbon-panel=home] > section')].map(group => (group as HTMLElement).dataset.ribbonGroup))
-    .toEqual(['AI','Markup','Edit','Page & Zoom','Search, Print & Properties','Convert & Export'])
+    .toEqual(['AI','Markup','Edit','Convert & Export','Page & Zoom','Search, Print & Properties'])
   ribbon.dispose()
 })

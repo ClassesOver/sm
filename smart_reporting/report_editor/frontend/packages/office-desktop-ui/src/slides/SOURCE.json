@@ -1,0 +1,21 @@
+{
+  "repository": "https://github.com/genspark-ai/genoffice",
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "cssSource": "apps/slides/src/renderer/styles.css",
+  "cssRanges": [
+    [
+      438,
+      1208
+    ],
+    [
+      4566,
+      4669
+    ],
+    [
+      4691,
+      4710
+    ]
+  ],
+  "sourceCssSha256": "b678de778bb5694ca42ae3470c2069b03d3b912ba13446babe03528e1e160737",
+  "license": "Apache-2.0"
+}

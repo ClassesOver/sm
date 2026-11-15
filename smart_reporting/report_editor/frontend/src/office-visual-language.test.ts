@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 const read = (name: string) => readFileSync(`src/${name}`, 'utf8')
 const theme = read('style.css')
 const office = read('office-theme.css')
-const uiTokens = read('office-ui-theme.css')
+const uiTokens = readFileSync('packages/office-desktop-ui/src/theme/index.css', 'utf8')
 const sheets = { word: read('docx.css'), workbook: read('workbook.css'), pdf: read('pdf.css') + read('pdf-ribbon.css'), slides: read('slides.css') }
 const ribbonModule = read('slides-native-ribbon.ts')
 
@@ -51,22 +51,11 @@ describe('separated native Office UI theme', () => {
     expect(rootToken('--office-separator')).toBe('#dfe8ef')
   })
 
-  it('gives all four ribbons the same selected-tab, hover, pressed, disabled and focus treatment', () => {
-    expect(rule('.docx-native .docx-ribbon .ribbon-tab.active').color).toBe('var(--office-accent)')
-    expect(rule('.workbook-ribbon-tabs button[aria-selected="true"]').color).toBe('var(--office-accent)')
-    expect(rule(':is(.pdf-ribbon-tabs, .slides-native-ribbon-tabs) [role="tab"][aria-selected="true"]').color).toBe('var(--office-accent)')
-
-    expect(rule('.workbook-ribbon-group button:hover:not(:disabled)').background).toContain('var(--office-hover-bg)')
-    expect(sheets.word).toContain('border-color:var(--office-hover-border); background:var(--office-hover-bg)')
-    expect(office).toContain('border-color: var(--office-hover-border); background: var(--office-hover-bg)')
-
-    for (const css of [sheets.word, sheets.workbook]) expect(css).toContain('var(--office-pressed-bg)')
-    expect(office).toContain('background: var(--office-pressed-bg); color: var(--office-pressed-ink)')
-    for (const css of [sheets.word, sheets.workbook, office]) {
-      expect(css).toMatch(/opacity:\s?var\(--office-disabled-opacity\)/)
-      expect(css).toMatch(/outline:\s?2px solid var\(--office-focus-ring\)/)
-      expect(css).toMatch(/border-right:\s?1px solid var\(--office-separator\)/)
+  it('loads each migrated ribbon through its independent desktop UI package entry', () => {
+    for(const [file,entry] of [['docx.css','docs'],['workbook-ribbon.ts','sheets'],['slides-native-ribbon.ts','slides'],['pdf-ribbon.ts','pdf']]) {
+      expect(read(file)).toContain(`@smart-reporting/office-desktop-ui/${entry}.css`)
     }
+    expect(read('office-ui-theme.css')).toContain('@smart-reporting/office-desktop-ui/theme.css')
   })
 
   it('removes the separate PDF/PPTX teal accent and inline ribbon theme', () => {
@@ -88,7 +77,7 @@ describe('separated native Office UI theme', () => {
 
   it('leaves document content colours alone', () => {
     expect(sheets.pdf).toContain('.pdf-highlight{position:absolute;background:#ffe03c66')
-    expect(sheets.word).toContain('.docx-native { --surface:#fff; --text:#222;')
+    expect(sheets.word).toContain('background:var(--page-bg, white); color:#111;')
   })
 })
 

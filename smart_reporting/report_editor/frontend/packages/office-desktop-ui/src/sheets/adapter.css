@@ -1,0 +1,69 @@
+/* Host-only semantics: native inputs, permission/mixed states, and portals.
+   Ribbon dimensions, spacing, icons, separators and tabs come from upstream. */
+.workbook-ribbon {
+  --excel-green: #217346;
+  --excel-green-dark: #185c37;
+  --excel-green-soft: #e9f3ed;
+  --accent: var(--excel-green);
+  --accent-dark: var(--excel-green-dark);
+  --accent-soft: var(--excel-green-soft);
+  --ribbon-hover: var(--color-bg-subtle);
+  --ribbon-active: #eaeaea;
+  --radius-small: 4px;
+  --sheets-scroll-thumb: rgb(0 0 0 / 25%);
+  min-width: 0;
+  max-width: 100%;
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--text-primary);
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 12px;
+  line-height: normal;
+  -webkit-font-smoothing: antialiased;
+}
+.workbook-ribbon *, .workbook-ribbon *::before, .workbook-ribbon *::after { box-sizing: border-box; }
+.workbook-ribbon .ribbon-tabs { overflow-x: auto; scrollbar-width: thin; }
+.workbook-ribbon .ribbon-tabs > button { flex: 0 0 auto; min-height: 0; cursor: pointer; }
+.workbook-ribbon .ribbon { min-width: 0; max-width: 100%; scrollbar-width: thin; }
+.workbook-ribbon .ribbon-group { width: max-content; border: 0; }
+.workbook-ribbon .ribbon-tool { white-space: nowrap; min-height: 0; }
+.workbook-ribbon .ribbon-tool.as-button { font-size: 12px; }
+.workbook-ribbon .inline-tools { flex-wrap: nowrap; }
+.workbook-ribbon .inline-tools > :is(button,label,select,input,div) { flex: 0 0 auto; }
+.workbook-ribbon .inline-tools > button { width: auto; }
+.workbook-ribbon .inline-tools > button.sheets-icon-only { width: 28px; min-width: 28px; }
+.workbook-ribbon .sheets-icon-only > span:not(.tool-symbol):not(.tool-icon-row) {
+  position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+.workbook-ribbon .tool-stack .ribbon-tool { padding: 0; min-width: 24px; width: 24px; }
+.workbook-ribbon .workbook-ribbon-select, .workbook-ribbon input.select-like {
+  color: inherit; font-family: inherit; max-width: 178px; min-width: 0;
+}
+.workbook-ribbon .workbook-ribbon-chart-menu { display: inline-flex; align-items: center; gap: 3px; position: relative; }
+.workbook-ribbon .workbook-ribbon-chart-menu:not(.large) { height: 28px; }
+.workbook-ribbon .workbook-ribbon-large-menu { align-self: stretch; }
+.workbook-ribbon .workbook-ribbon-large-menu > button { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.workbook-ribbon .workbook-ribbon-large-menu:has(> button:disabled) { opacity: .45; }
+.workbook-ribbon .workbook-ribbon-large-menu-icons > svg { width: 10px; height: 10px; }
+.workbook-ribbon .workbook-ribbon-color { display: inline-flex; align-items: center; gap: 2px; height: 28px; padding: 2px; }
+.workbook-ribbon .workbook-ribbon-color input { width: 22px; height: 22px; min-width: 0; min-height: 0; padding: 0; border: 0; background: transparent; }
+.workbook-ribbon .workbook-ribbon-color-state { max-width: 28px; overflow: hidden; font-size: 9px; white-space: nowrap; text-overflow: ellipsis; }
+.workbook-ribbon .workbook-ribbon-color > button { min-width: 0; height: 24px; font-size: 10px; padding: 0 2px; }
+.workbook-ribbon [data-ribbon-control="border-color"] { width: 28px; height: 28px; padding: 2px; }
+.workbook-ribbon .workbook-ribbon-check-column { flex: 0 0 auto; }
+.workbook-ribbon .check-item { min-height: 0; height: 19px; white-space: nowrap; }
+.workbook-ribbon .workbook-ribbon-check-mark { width: 13px; height: 13px; display: inline-grid; place-items: center; border: 1px solid var(--border-strong); border-radius: 2px; }
+.workbook-ribbon .workbook-ribbon-check-mark svg { width: 11px; height: 11px; }
+.workbook-ribbon [aria-checked="false"] .workbook-ribbon-check-mark svg { visibility: hidden; }
+.workbook-ribbon button:is([aria-pressed="true"],[aria-expanded="true"]):not(.large) { background: var(--ribbon-active); }
+.workbook-ribbon button[aria-pressed="mixed"], .workbook-ribbon [data-format-state="mixed"] { outline: 1px dashed var(--border-strong); outline-offset: -1px; }
+.workbook-ribbon :is(button,input,select):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.workbook-ribbon :is(input,select):disabled { opacity: .45; cursor: default; }
+.workbook-ribbon .workbook-ribbon-view-menu {
+  position: fixed; z-index: 30; inset: auto; margin: 0; padding: 4px; min-width: 112px;
+  border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface); color: var(--text-primary);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+}
+.workbook-ribbon .workbook-ribbon-view-menu:not([hidden]) { display: grid; }
+.workbook-ribbon .workbook-ribbon-view-menu[hidden] { display: none; }
+.workbook-ribbon .workbook-ribbon-view-menu > button { border: 0; background: transparent; color: inherit; padding: 5px 8px; font: inherit; text-align: left; }

@@ -925,7 +925,7 @@ it('renders GenOffice Data Tools in source order with explicit native writeback 
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, { editable: () => editable, rotation: () => 0 })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
   const groups = [...document.querySelectorAll<HTMLElement>('.workbook-ribbon-group')]
-  const groupFor = (title: string) => groups.find(group => group.querySelector('h2')?.textContent === title)
+  const groupFor = (title: string) => groups.find(group => group.getAttribute('aria-label') === title)
   const dataTools = groupFor('数据工具')!
   const ids = [...dataTools.querySelectorAll<HTMLElement>('[data-ribbon-control], [data-ribbon-command]')]
     .map(control => control.dataset.ribbonControl ?? control.dataset.ribbonCommand)
@@ -1079,7 +1079,7 @@ it('renders the GenOffice Formulas Function Library with localized categories an
   for (const [id, label] of expected) {
     const button = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
       .find(candidate => candidate.dataset.ribbonCommand === id)
-    expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
+    expect(button?.querySelector(':scope > span:not(.workbook-ribbon-icon):not(.tool-icon-row)')?.textContent ?? button?.textContent, id).toBe(label)
   }
   const autoSum = document.querySelector<HTMLSelectElement>('[data-ribbon-control="autosum"]')!
   expect(autoSum).not.toBeNull()
@@ -1127,7 +1127,7 @@ it('renders the GenOffice Review Comments and Notes commands with note-specific 
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
   for (const [id, label, reason] of expected) {
     const button = buttons.find(candidate => candidate.dataset.ribbonCommand === id)
-    expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
+    expect(button?.querySelector(':scope > span:not(.workbook-ribbon-icon):not(.tool-icon-row)')?.textContent ?? button?.textContent, id).toBe(label)
     expect(button?.disabled, id).toBe(true)
     expect(button?.title, id).toContain(reason)
     expect(button?.getAttribute('aria-description'), id).toContain(reason)
@@ -1140,7 +1140,7 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
   const groups = [...document.querySelectorAll<HTMLElement>('.workbook-ribbon-group')]
-  expect(groups.map(group => group.querySelector('h2')?.textContent)).toEqual([
+  expect(groups.map(group => group.getAttribute('aria-label'))).toEqual([
     '校对', '语言', '批注', '注释', '保护',
   ])
   const idsByGroup = groups.map(group => [...group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
@@ -1263,7 +1263,7 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   ])
   for (const [id, label] of expected) {
     const button = buttons.find(candidate => candidate.dataset.ribbonCommand === id)
-    const caption = button?.getAttribute('role') === 'checkbox' ? button.getAttribute('aria-label') : button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent
+    const caption = button?.getAttribute('role') === 'checkbox' ? button.getAttribute('aria-label') : button?.querySelector(':scope > span:not(.workbook-ribbon-icon):not(.tool-icon-row)')?.textContent ?? button?.textContent
     expect(caption, id).toBe(label)
   }
   expect(buttons.find(button => button.dataset.ribbonCommand === 'toggle-gridlines')?.disabled).toBe(false)
@@ -1398,7 +1398,7 @@ it('offers all source zoom presets and the full dialog while respecting view rea
   const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
   expect(buttons.slice(0, 2).map(button => button.dataset.ribbonCommand)).toEqual(['zoom-reset', 'zoom-to-selection'])
   const [reset, fit] = buttons
-  expect(reset!.querySelector('span:not(.workbook-ribbon-icon)')?.textContent).toBe('100%')
+  expect(reset!.querySelector(':scope > span:not(.workbook-ribbon-icon):not(.tool-icon-row)')?.textContent).toBe('100%')
   expect(reset!.title).toBe('重置缩放')
   expect(reset!.disabled).toBe(false)
   reset!.click(); expect(command).toHaveBeenLastCalledWith('zoom-reset')

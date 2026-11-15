@@ -21,9 +21,9 @@ it('removes the report toolbar and preserves all four Office ribbons',async()=>{
 })
 it('keeps exact source token declarations and confines theme selectors to Office UI',async()=>{
  const {readFileSync}=await import('node:fs'),{createHash}=await import('node:crypto')
- const original=readFileSync('src/vendor/genoffice-ui/tokens.css')
- const metadata=JSON.parse(readFileSync('src/vendor/genoffice-ui/SOURCE.json','utf8'))
- const scoped=readFileSync('src/vendor/genoffice-ui/tokens.scoped.css','utf8')
+ const original=readFileSync('packages/office-desktop-ui/src/theme/vendor/tokens.css')
+ const metadata=JSON.parse(readFileSync('packages/office-desktop-ui/src/theme/vendor/SOURCE.json','utf8'))
+ const scoped=readFileSync('packages/office-desktop-ui/src/theme/vendor/tokens.scoped.css','utf8')
  expect(createHash('sha256').update(original).digest('hex')).toBe(metadata.sha256)
  expect(scoped.match(/--[\w-]+\s*:[^;]+;/g)).toEqual(original.toString().match(/--[\w-]+\s*:[^;]+;/g))
  expect(scoped).not.toMatch(/(?:^|\n)\s*:root[\s{]/)
@@ -32,7 +32,7 @@ it('keeps exact source token declarations and confines theme selectors to Office
 
 it('themes owned body portals and settings without token self references',async()=>{
  const {readFileSync}=await import('node:fs')
- const css=readFileSync('src/office-ui-theme.css','utf8'),source=readFileSync('src/vendor/genoffice-ui/tokens.scoped.css','utf8')
+ const css=readFileSync('packages/office-desktop-ui/src/theme/index.css','utf8'),source=readFileSync('packages/office-desktop-ui/src/theme/vendor/tokens.scoped.css','utf8')
  const styles=document.head.appendChild(document.createElement('style'));styles.textContent=css.replace(/@import[^;]+;/g,'')
  try {
   for(const name of ['docx-native docx-table-properties-source-host','pdf-formdesign-property-host','editor-account-settings']){

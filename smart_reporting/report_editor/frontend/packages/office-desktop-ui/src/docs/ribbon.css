@@ -1,0 +1,2076 @@
+/* Direct migration from genspark-ai/genoffice f8c17004fb730df11f0f743164ffd8b4281bb38c
+ * apps/docs/src/renderer/styles.css, ribbon section (434–2454) and docs chrome tokens (1–96).
+ * Only selector scoping changed; declarations are unchanged. License: Apache-2.0,
+ * see LICENSE.genoffice in this directory. No document/paper styles are imported. */
+/* Per-app accent (word-blue family) + docs-only tokens.
+ * Chrome tokens (surface/text/border/…, AI panel --color-*) come from
+ * @genoffice/ui/tokens.css; nothing here may shadow those names. */
+.docx-native .docx-ribbon {
+  --word-blue: #185abd;
+  --word-blue-dark: #124a9e;
+  --accent: var(--word-blue);
+  --accent-soft: #e8f1fb;
+  --docs-copilot-bg-a: #f5f0ff;
+  --docs-copilot-bg-b: #eef6ff;
+  --docs-swatch-outline: rgb(0 0 0 / 15%);
+  --docs-scroll-thumb: rgb(0 0 0 / 25%);
+  --docs-shadow-menu: 0 8px 24px rgb(0 0 0 / 18%);
+  --docs-shadow-chip: 0 2px 8px rgb(0 0 0 / 12%);
+  --docs-on-accent: #fff;
+  --docs-badge-gradient: linear-gradient(135deg, #6a5cff 0%, #2b88f8 55%, #29c3a6 120%);
+  --docs-shadow-badge: 0 2px 6px rgb(74 92 255 / 25%);
+  --docs-shadow-badge-strong: 0 2px 6px rgb(74 92 255 / 35%);
+  --docs-table-handle-bg: #ffffff;
+  --docs-table-handle-hover: #f0f0f0;
+  --docs-table-handle-border: #b8bcc4;
+  --docs-table-handle-ink: #444444;
+}
+
+
+/* ================= ribbon ================= */
+
+.docx-native .docx-ribbon {
+  flex-shrink: 0;
+  background: var(--chrome-bg);
+  border-bottom: 1px solid var(--border-strong);
+  user-select: none;
+  /* shared toolbar ink (glyphs, letterforms, labels) — same as sheets/slides */
+  color: var(--text-primary);
+}
+
+.docx-native .docx-ribbon .ribbon-tabs {
+  display: flex;
+  align-items: center;
+  /* same tab-row metrics as PowerPoint's ribbon (slides app): 5px top inset,
+     no bottom padding — the active tab's underline sits on the row's edge */
+  padding: 5px 10px 0;
+  gap: 2px;
+  /* the title-bar row was removed; the tab row doubles as the frameless-window drag area */
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.docx-native .docx-ribbon .ribbon-tabs button,
+.docx-native .docx-ribbon .ribbon-tabs .file-tab-wrap,
+.docx-native .docx-ribbon .ribbon-tabs .autosave-toggle,
+.docx-native .docx-ribbon .ribbon-tabs .qa-btn {
+  -webkit-app-region: no-drag;
+}
+
+/* While a popover is open the row must deliver presses (drag regions swallow
+   them), so outside-press dismissal can see presses on the blank band */
+html.genoffice-popover-open .docx-native .docx-ribbon .ribbon-tabs {
+  -webkit-app-region: no-drag;
+}
+
+.docx-native .docx-ribbon .ribbon-tabs-mac {
+  padding-left: 84px; /* room for traffic lights */
+}
+
+.docx-native .docx-ribbon .ribbon-tabs-win {
+  padding-right: 150px; /* room for windows caption buttons overlay */
+}
+
+.docx-native .docx-ribbon .ribbon-file {
+  max-width: 30%;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-right: 6px;
+}
+
+.docx-native .docx-ribbon .ribbon-tab {
+  position: relative;
+  border: none;
+  background: none;
+  padding: 7px 9px 6px;
+  font-size: 13px;
+  /* every tab label is semibold, not just the active one */
+  font-weight: 600;
+  color: inherit;
+  cursor: pointer;
+  /* transparent border keeps the row height; the visible underline is the
+   * ::after, sized to the label text rather than the padded button */
+  border-bottom: 2.5px solid transparent;
+  border-radius: 4px 4px 0 0;
+}
+
+/* hovering a tab tints the label, it doesn't paint a box */
+.docx-native .docx-ribbon .ribbon-tab:hover {
+  color: var(--word-blue);
+}
+
+.docx-native .docx-ribbon .ribbon-tab.active {
+  color: var(--word-blue);
+  font-weight: 600;
+}
+
+/* active underline: exactly the text width (insets = horizontal padding),
+ * ends slightly rounded — not a full capsule */
+.docx-native .docx-ribbon .ribbon-tab.active::after {
+  content: '';
+  position: absolute;
+  left: 13px;
+  right: 13px;
+  bottom: -2.5px;
+  height: 2.5px;
+  border-radius: 1px;
+  background: var(--word-blue);
+}
+
+.docx-native .docx-ribbon .ribbon-tab-file {
+  color: var(--docs-on-accent);
+  background: var(--word-blue);
+  border-radius: 4px;
+  padding: 6px 16px;
+  margin-right: 6px;
+}
+
+.docx-native .docx-ribbon .ribbon-tab-file:hover,
+.docx-native .docx-ribbon .ribbon-tab-file.open {
+  background: var(--word-blue-dark);
+}
+
+.docx-native .docx-ribbon .file-tab-wrap {
+  position: relative;
+}
+
+.docx-native .docx-ribbon .file-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  left: 0;
+  z-index: 60;
+  min-width: 210px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 5px;
+}
+
+.docx-native .docx-ribbon .file-menu button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 8px 12px;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .file-menu button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .file-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.docx-native .docx-ribbon .file-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.docx-native .docx-ribbon .file-menu-key {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.docx-native .docx-ribbon .ribbon-tabs-spacer {
+  flex: 1;
+}
+
+/* Word-style top-right cluster: Comments toggle + Editing/Reviewing/Viewing mode */
+.docx-native .docx-ribbon .ribbon-mode-cluster {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 6px;
+}
+
+.docx-native .docx-ribbon .ribbon-mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.docx-native .docx-ribbon .ribbon-mode-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .ribbon-mode-btn.on,
+.docx-native .docx-ribbon .ribbon-mode-btn.open {
+  background: var(--active-bg);
+  border-color: var(--border-strong);
+}
+
+.docx-native .docx-ribbon .ribbon-mode-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.docx-native .docx-ribbon .ribbon-mode-caret {
+  font-size: 9px;
+  color: var(--text-dim);
+}
+
+.docx-native .docx-ribbon .mode-menu-wrap {
+  position: relative;
+}
+
+/* Show Comments: the label toggles, the caret picks Contextual / List */
+.docx-native .docx-ribbon .ribbon-mode-split {
+  display: flex;
+}
+
+.docx-native .docx-ribbon .ribbon-mode-split > .ribbon-mode-btn:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.docx-native .docx-ribbon .ribbon-mode-split > .mode-menu-wrap > .ribbon-mode-btn {
+  border-radius: 0 6px 6px 0;
+  border-left: 0;
+  padding: 2px 5px;
+}
+
+.docx-native .docx-ribbon .mode-menu {
+  left: auto;
+  right: 0;
+}
+
+.docx-native .docx-ribbon .mode-menu button {
+  justify-content: flex-start;
+}
+
+.docx-native .docx-ribbon .mode-menu .mode-menu-check {
+  display: inline-block;
+  width: 16px;
+  color: var(--accent);
+}
+
+/* the cluster labels give way before the tabs start overflowing */
+@media (max-width: 1280px) {
+  .docx-native .docx-ribbon .ribbon-mode-text {
+    display: none;
+  }
+
+  .docx-native .docx-ribbon .ribbon-mode-cluster .mode-menu-wrap .ribbon-mode-text {
+    display: inline;
+  }
+}
+
+.docx-native .docx-ribbon .qa-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
+
+.docx-native .docx-ribbon .copilot-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: linear-gradient(135deg, var(--docs-copilot-bg-a), var(--docs-copilot-bg-b));
+  border-radius: 14px;
+  padding: 4px 14px;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .copilot-btn:hover,
+.docx-native .docx-ribbon .copilot-btn.active {
+  border-color: var(--word-blue);
+  color: var(--word-blue);
+}
+
+/* AI entry points share the app icon (used by the Ribbon AI button and the AI panel title) */
+.docx-native .docx-ribbon .app-badge {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  box-shadow: var(--docs-shadow-badge);
+}
+
+/* Genspark brand logo (Ribbon AI button and AI panel title) */
+.docx-native .docx-ribbon .genspark-badge {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+}
+
+.docx-native .docx-ribbon .ai-panel-title .genspark-badge {
+  width: 18px;
+  height: 18px;
+}
+/* ---- ribbon body ---- */
+
+.docx-native .docx-ribbon .ribbon-body {
+  display: flex;
+  align-items: stretch;
+  /* band metrics shared with the slides ribbon; the 5px scrollbar lane below
+     is carved out of the bottom padding so the 80px band stays unchanged */
+  padding: 6px 12px 1px;
+  /* HARD-fixed height, not min-height: the ribbon height stays constant across
+     tabs, so switching tabs or auto-jumping to Table Layout when the cursor
+     enters a table never pushes the editing area below. A tab that outgrows this must
+     compact its own content instead. */
+  height: 80px;
+  /* Groups never shrink below content, so a narrow window overflows the row:
+     scroll it inside the ribbon instead of stretching the document (matching
+     the sheets/slides ribbons). Dropdown panels are NOT clipped by this —
+     they escape the scroll container via anchor positioning (see
+     .rb-split-wrap). */
+  /* `scroll`, not `auto`: styled scrollbars are classic (non-overlay), so
+     `scroll` keeps the 5px lane reserved even without overflow and crossing
+     the overflow threshold cannot cause a vertical layout jump (same
+     reasoning as the sheets ribbon). */
+  overflow-x: scroll;
+  overflow-y: hidden;
+}
+
+/* Slim visible scrollbar so mouse users can reach overflowed groups
+   (genspark-ai/genoffice#55 precedent from the sheets ribbon). */
+.docx-native .docx-ribbon .ribbon-body::-webkit-scrollbar {
+  height: 5px;
+}
+
+.docx-native .docx-ribbon .ribbon-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.docx-native .docx-ribbon .ribbon-body::-webkit-scrollbar-thumb {
+  border-radius: 2.5px;
+  background: var(--docs-scroll-thumb);
+}
+
+.docx-native .docx-ribbon .ribbon-group {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* never shrink below content — squeezed groups paint over each other */
+  flex-shrink: 0;
+  padding: 2px 4px;
+}
+
+.docx-native .docx-ribbon .ribbon-group-items {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+}
+
+/* Word for Mac shows no group captions under the ribbon */
+.docx-native .docx-ribbon .ribbon-group-label {
+  display: none;
+}
+
+.docx-native .docx-ribbon .ribbon-sep {
+  width: 1px;
+  /* the overflowing ribbon row squeezes shrinkable items first — without
+     this the 1px separators collapse to 0 and vanish (slides ribbon parity) */
+  flex-shrink: 0;
+  background: var(--border);
+  /* 2px matches the groups' vertical padding, so the line spans exactly the
+     tallest group content (the clipboard stack / two-row font block) instead
+     of stopping short of it — same inset across all three apps */
+  margin: 2px 6px;
+}
+
+.docx-native .docx-ribbon .ribbon-placeholder {
+  align-self: center;
+  color: var(--text-dim);
+  font-size: 12.5px;
+  padding: 0 14px;
+}
+
+/* big paste button */
+.docx-native .docx-ribbon .rb-big {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  /* PowerPoint-density: minimal side padding (slides ribbon parity) */
+  padding: 4px 7px 6px;
+  font-size: 12px;
+  /* no tab wrapping: wrapping in narrow windows makes the ribbon taller, causing height jumps when switching tabs */
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .rb-big-icon {
+  min-height: 28px;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-primary);
+}
+
+/* hover/open paint only the icon row — the label below
+ * stays outside the gray. The box spans the whole button width (align-self
+ * stretch + horizontal bleed), not just the icon content. Negative margins
+ * cancel the bleed so button layout/alignment is unchanged. */
+.docx-native .docx-ribbon .rb-big .rb-big-icon {
+  align-self: stretch;
+  border-radius: 4px;
+  padding: 3px 4px;
+  margin: 0 -4px;
+}
+
+/* ---- Compact ribbon (⌥⌘K / Ctrl+Alt+K), see #362 ----
+ * The middle density: the band stays and every command stays reachable, it
+ * just drops to icon-only on a shorter band. The three defences above
+ * (nowrap on .rb-big, flex-shrink: 0 on .ribbon-group, overflow-x: scroll on
+ * .ribbon-body) all still apply — icon-only narrows the buttons, so a narrow
+ * window packs more of them in before the row overflows.
+ */
+.docx-native .docx-ribbon .ribbon-compact .ribbon-body {
+  /* Same fixed-height contract as the full band, only shorter: switching tabs
+     (including the auto-jump to Table Layout) must still never resize the row.
+     38px was measured holding 51px of content — the font and size pickers
+     stacked, style cards at 62px, split carets under their buttons — and
+     `overflow-y: hidden` sliced the difference off instead of scrolling it,
+     which is how the font picker ended up cut through the middle. Every tab
+     has been measured since; 45px is the smallest that holds all eight with
+     nothing clipped. */
+  height: 45px;
+  padding-top: 5px;
+  padding-bottom: 1px;
+}
+
+.docx-native .docx-ribbon .ribbon-compact .rb-big {
+  /* The label is taken out of flow entirely (below), so the only things still
+     adding height are the icon, the column gap and the vertical padding. The
+     gap was never dropped here even though the comment claimed it was: the
+     button came out 40px tall inside a 38px band, and `overflow-y: hidden` on
+     `.ribbon-body` sliced the bottom off it — the font and size pickers were
+     cut in half and every icon row lost its lower edge. */
+  gap: 0;
+  padding: 2px 5px;
+}
+
+.docx-native .docx-ribbon .ribbon-compact .rb-big-icon {
+  /* 28px of icon, plus this block's own 3px top and bottom padding, was 34px
+     before the group's borders were counted. */
+  min-height: 22px;
+  flex: none;
+}
+
+/* Keep the label in the accessibility tree and in the DOM (Playwright's
+ * hasText and getByRole(name) both read it) but take it out of the visual
+ * flow. display: none here would strip the accessible name and break the
+ * getByRole('button', { name }) selectors across the e2e suite. */
+.docx-native .docx-ribbon .ribbon-compact .rb-big > span:not(.rb-big-icon) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* the icon row is the whole button now, so let the hover/open paint cover it */
+.docx-native .docx-ribbon .ribbon-compact .rb-big .rb-big-icon {
+  align-self: stretch;
+  /* This padding, not the icon, is what put every button at 38px inside a
+     33px band: the glyph is ~26px and 3px of padding on each side took it to
+     32, which plus the button's own padding is a slice off every icon row. */
+  padding: 1px 3px;
+  margin: 0 -2px;
+}
+
+/* Groups and separators centre on the shorter band. */
+.docx-native .docx-ribbon .ribbon-compact .ribbon-group {
+  padding: 0 3px;
+}
+
+/* The table ribbon groups its tools in .table-tool-group (min-width 66px), not
+ * .ribbon-group — without this they keep the full-band inset and the band ends
+ * up wider than the content it holds. */
+/* Split buttons (Paste Special, font colour, ...) stack a caret under the
+ * button: `.rb-big-split` is a column, so 32 + 17 = 49px and the caret alone
+ * accounts for 17px of the 51px group that was overflowing Home. Compact puts
+ * the caret beside the button, where it was always meant to be. */
+.docx-native .docx-ribbon .ribbon-compact .rb-big-split {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.docx-native .docx-ribbon .ribbon-compact .rb-big-split-caret {
+  margin: 0 0 0 2px;
+  padding: 1px 2px;
+}
+
+/* `.rb-col` is the same shape as `.rb-font-group`: a column of controls that
+ * fits a 38px band only by going side by side. Home and Insert both carry one. */
+.docx-native .docx-ribbon .ribbon-compact .rb-col {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Ink: swatches (16px) stacked over widths (22px) with a 4px gap is 42px. */
+.docx-native .docx-ribbon .ribbon-compact .ink-settings {
+  flex-direction: row;
+  gap: 8px;
+}
+
+/* Pen slots stack a 28px glyph over the stroke bar: 58px in a 40px band. */
+.docx-native .docx-ribbon .ribbon-compact .ink-pen-slot {
+  flex-direction: row;
+  width: auto;
+  height: 32px;
+  padding: 1px 4px;
+  gap: 4px;
+}
+
+.docx-native .docx-ribbon .ribbon-compact .ink-pen-bar {
+  width: 14px;
+}
+
+.docx-native .docx-ribbon .ribbon-compact .ink-pen-slot > .rb-caret-svg {
+  position: static;
+}
+
+/* Page Layout: two columns each stacking two controls, 28 + 5 + 28 = 61px. */
+.docx-native .docx-ribbon .ribbon-compact .layout-para {
+  gap: 6px;
+}
+
+.docx-native .docx-ribbon .ribbon-compact .layout-col {
+  flex-direction: row;
+  gap: 4px;
+}
+
+/* The font and size pickers are two 28px controls stacked in a column, so the
+ * group is 28 + 4 + 28 = 60px before padding — taller than the 38px band on
+ * its own, and the reason the font picker was cut through the middle. Side by
+ * side they are 28px, which is what every compact ribbon does anyway. */
+.docx-native .docx-ribbon .ribbon-compact .rb-font-group {
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+}
+
+.docx-native .docx-ribbon .ribbon-compact .table-tool-group {
+  min-width: 0;
+  padding: 2px 4px;
+}
+
+/* Split buttons stack a caret beside the icon; without the label row the pair
+ * needs to sit on one line. */
+.docx-native .docx-ribbon .ribbon-compact .rb-caret-svg {
+  margin-left: 2px;
+}
+
+/* The table tabs stack two rows of controls (font block, cell size grid), which
+ * cannot compress to 38px. Let that content scroll inside the band instead of
+ * overflowing it and pushing the document down — the band itself keeps its
+ * fixed height, so switching to a table tab still never resizes the row. */
+.docx-native .docx-ribbon .ribbon-compact .table-ribbon-body {
+  overflow-y: auto;
+}
+
+/* the dropdown chevron sits beside the icon (top row), not the label */
+.docx-native .docx-ribbon .rb-caret-svg {
+  flex-shrink: 0;
+}
+
+.docx-native .docx-ribbon .rb-big-icon .rb-caret-svg {
+  display: block;
+  margin-left: 3px;
+  color: var(--text-dim);
+}
+
+.docx-native .docx-ribbon .rb-big-icon-colored {
+  position: relative;
+}
+
+.docx-native .docx-ribbon .rb-big-icon-colored .rb-color-bar {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: -3px;
+  width: auto;
+  border: 1px solid var(--docs-swatch-outline);
+}
+
+/* AI badge marking AI-backed entry points (ribbon buttons and context-menu items), same look as slides */
+.docx-native .docx-ribbon .copilot-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  color: var(--docs-on-accent);
+  background: var(--docs-badge-gradient);
+  box-shadow: var(--docs-shadow-badge-strong);
+}
+
+.docx-native .docx-ribbon .copilot-badge-menu {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.docx-native .docx-ribbon .rb-big:hover:not(:disabled) .rb-big-icon {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-big:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Big split button (Home ▸ Paste): the icon half runs the default action,
+   the label half opens the menu, like Word's Paste. */
+.docx-native .docx-ribbon .rb-big-split {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.docx-native .docx-ribbon .rb-big-split > .rb-big {
+  padding-bottom: 0;
+}
+
+.docx-native .docx-ribbon .rb-big-split-caret {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  margin: 2px 3px 0;
+  padding: 1px 4px 2px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.docx-native .docx-ribbon .rb-big-split-caret:hover:not(:disabled),
+.docx-native .docx-ribbon .rb-big-split-caret.active {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-big-split-caret:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.docx-native .docx-ribbon .paste-menu {
+  min-width: 200px;
+}
+
+.docx-native .docx-ribbon .spacing-menu.paste-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.docx-native .docx-ribbon .spacing-menu.paste-menu button > svg {
+  flex-shrink: 0;
+}
+
+/* Active state paints only the gray icon plate — ink stays the standard #232425 */
+.docx-native .docx-ribbon .rb-big.active .rb-big-icon {
+  background: var(--active-bg);
+}
+
+/* The Genspark AI entry keeps a black label even while the panel is open. */
+.docx-native .docx-ribbon .rb-big.ai-entry.active {
+  color: var(--text);
+}
+
+/* The AI entry buttons read as one piece: hover/press tint the whole button
+   (icon + label together), unlike the other tall buttons where only the icon
+   row is painted. */
+.docx-native .docx-ribbon .rb-big.ai-entry {
+  border-radius: 4px;
+}
+
+.docx-native .docx-ribbon .rb-big.ai-entry:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-big.ai-entry.active {
+  background: var(--active-bg);
+}
+
+.docx-native .docx-ribbon .rb-big.ai-entry:hover:not(:disabled) .rb-big-icon,
+.docx-native .docx-ribbon .rb-big.ai-entry.active .rb-big-icon {
+  background: transparent;
+}
+
+.docx-native .docx-ribbon .rb-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.docx-native .docx-ribbon .rb-small {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: none;
+  border-radius: 3px;
+  padding: 3px 8px;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .rb-small svg {
+  flex-shrink: 0;
+  /* 14px glyphs, matching the slides/sheets clipboard stacks */
+  width: 14px;
+  height: 14px;
+  color: var(--text-primary);
+  /* CSS resizes these below their attr size — re-pin the painted stroke
+     (1.43 units × 14/16 ≈ 1.25px) */
+  stroke-width: 1.43;
+}
+
+.docx-native .docx-ribbon .rb-small:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-small.active {
+  background: var(--active-bg);
+}
+
+.docx-native .docx-ribbon .rb-small:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.docx-native .docx-ribbon .rb-font-group {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  justify-content: center;
+}
+
+.docx-native .docx-ribbon .rb-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.docx-native .docx-ribbon .rb-select {
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface);
+  font-size: 12px;
+  padding: 0 4px;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .rb-select:disabled {
+  opacity: 0.55;
+}
+
+.docx-native .docx-ribbon .rb-font-family {
+  width: 128px;
+}
+
+.docx-native .docx-ribbon .rb-font-size {
+  width: 44px;
+}
+
+/* hide the native number spinner: the grow/shrink font buttons next to the
+   input already cover stepping */
+.docx-native .docx-ribbon .rb-font-size::-webkit-outer-spin-button,
+.docx-native .docx-ribbon .rb-font-size::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* the combobox inputs and their carets render as one bordered control, Word-style */
+.docx-native .docx-ribbon .rb-font-size,
+.docx-native .docx-ribbon .rb-font-family {
+  border-right: none;
+  border-radius: 3px 0 0 3px;
+}
+
+/* double class beats the base .rb-caret rules defined further down */
+.docx-native .docx-ribbon .rb-caret.rb-combo-caret {
+  width: 18px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-left: none;
+  border-radius: 0 3px 3px 0;
+  background: var(--surface);
+}
+
+.docx-native .docx-ribbon .rb-caret.rb-combo-caret:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-icon {
+  min-width: 28px;
+  height: 30px;
+  border: none;
+  background: none;
+  border-radius: 3px;
+  /* letter glyphs (I/U/ab/Aa/A) share 15px/500: matched to the svg icons'
+     1.5px stroke by INTEGRATED ink mass, not run-length — with mac's
+     antialiased font smoothing a text stem's peak alpha sits below a
+     geometric stroke's, so 450 (same nominal width) still reads thinner while
+     500 lands on the svg legs' 1.29–1.38 effective width. <b>B</b> keeps its
+     semantic 700 (pinned below — an inherited weight makes "bolder" overshoot) */
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--text);
+  padding: 0 4px;
+  /* flex-center the content: buttons whose svg is followed by an inline caret
+     (line spacing / shading / borders) otherwise sit on baseline math and land
+     a couple px off the plain icon buttons (align left/center/right/justify) */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.docx-native .docx-ribbon .rb-icon b {
+  font-weight: 700;
+}
+
+.docx-native .docx-ribbon .rb-icon:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-icon.active {
+  background: var(--active-bg);
+}
+
+.docx-native .docx-ribbon .rb-icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.docx-native .docx-ribbon .rb-mini-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 5px;
+}
+
+.docx-native .docx-ribbon .rb-icon svg {
+  display: block;
+  margin: 0 auto;
+}
+
+/* split button: main action + caret dropdown */
+.docx-native .docx-ribbon .rb-split-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* Anchor for the dropdown panels (color-palette / layout-menu / …), which are
+   position: fixed so they escape the ribbon-body scroll clip while tracking
+   their trigger through ribbon scrolling. Every wrap shares the name, so the
+   scope is essential: without it a fixed-position panel (laid out after all
+   in-flow content) would resolve to the LAST wrap in the document instead of
+   its own parent. */
+.docx-native .docx-ribbon .rb-split-wrap,
+.docx-native .docx-ribbon .rb-color-wrap {
+  anchor-name: --rb-drop-wrap;
+  anchor-scope: --rb-drop-wrap;
+}
+
+.docx-native .docx-ribbon .rb-caret {
+  width: 13px;
+  height: 26px;
+  border: none;
+  background: none;
+  border-radius: 0 3px 3px 0;
+  font-size: 8px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0;
+}
+
+.docx-native .docx-ribbon .rb-caret:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-caret:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* True split buttons (icon action + caret dropdown) read as one pill, matching
+   the slides rb-split model: hovering either zone washes both edge to edge,
+   and the zone under the pointer (or whose dropdown is open) darkens a step.
+   :has(> .rb-icon + .rb-caret) keeps the font-family/size comboboxes (input +
+   caret) and lone-button wraps out. */
+.docx-native .docx-ribbon .rb-split-wrap:has(> .rb-icon + .rb-caret) > .rb-icon {
+  border-radius: 3px 0 0 3px;
+}
+
+.docx-native .docx-ribbon .rb-split-wrap:has(> .rb-icon + .rb-caret) > .rb-caret {
+  height: 30px;
+}
+
+.docx-native .docx-ribbon .rb-split-wrap:has(> .rb-icon + .rb-caret):hover > .rb-icon:not(:disabled),
+.docx-native .docx-ribbon .rb-split-wrap:has(> .rb-icon + .rb-caret):hover > .rb-caret:not(:disabled) {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-split-wrap:has(> .rb-icon + .rb-caret) > .rb-icon:hover:not(:disabled),
+.docx-native .docx-ribbon .rb-split-wrap:has(> .rb-icon + .rb-caret) > .rb-caret:hover:not(:disabled),
+.docx-native .docx-ribbon .rb-split-wrap:has(> .rb-icon + .rb-caret) > .rb-caret.active {
+  background: var(--active-bg);
+}
+
+/* same footprint as the plain .rb-caret — a wider zone reads as a gap
+   between the icon and the chevron */
+.docx-native .docx-ribbon .rb-color-caret {
+  width: 14px;
+  height: 30px;
+}
+
+.docx-native .docx-ribbon .rb-caret-inline {
+  font-size: 8px;
+  color: var(--text-dim);
+  margin-left: 2px;
+}
+
+/* font color button with color bar */
+.docx-native .docx-ribbon .rb-color-wrap {
+  position: relative;
+}
+
+.docx-native .docx-ribbon .rb-color-btn {
+  /* just the glyph + a whisker: a wider box pushes the caret visually away */
+  min-width: 26px;
+  height: 30px;
+  line-height: 1;
+}
+
+/* Color swatches (sheets' pattern): the glyph is the SAME size as its row
+   siblings (15px/600 letter / 20px svg) so the cap line stays level, and the
+   16×4 bar hangs below it out of flow instead of pushing the stack taller. */
+.docx-native .docx-ribbon .rb-color-glyph {
+  position: relative;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.docx-native .docx-ribbon .rb-color-bar {
+  width: 16px;
+  height: 4px;
+  margin-top: 1px;
+  border-radius: 1px;
+}
+
+.docx-native .docx-ribbon .rb-color-glyph .rb-color-bar {
+  position: absolute;
+  top: calc(100% + 1px);
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+}
+
+/* the svg box carries ~4px of padding below its ink — tuck the bar into it so
+   both buttons' bars sit on the same line (20px svg bottom is 1.5px below the
+   15px letter's em box + 1px gap) */
+.docx-native .docx-ribbon .rb-color-glyph-svg .rb-color-bar {
+  top: calc(100% - 1.5px);
+}
+
+.docx-native .docx-ribbon .color-palette {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: repeat(6, 20px);
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 8px;
+  box-shadow: var(--docs-shadow-menu);
+}
+
+/* Sharp 20px squares with a faint contour, matching the shared gcp picker */
+.docx-native .docx-ribbon .color-swatch {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--docs-swatch-outline);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.docx-native .docx-ribbon .color-swatch:hover {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.docx-native .docx-ribbon .color-palette-highlight {
+  grid-template-columns: none;
+}
+
+.docx-native .docx-ribbon .color-palette-highlight-word {
+  display: block;
+  width: auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.docx-native .docx-ribbon .color-highlight-title {
+  margin: 0 0 8px;
+}
+
+.docx-native .docx-ribbon .color-highlight-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 20px);
+  gap: 4px;
+}
+
+.docx-native .docx-ribbon .color-highlight-swatch {
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: 0;
+}
+
+.docx-native .docx-ribbon .color-highlight-swatch:hover,
+.docx-native .docx-ribbon .color-highlight-swatch.selected {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.docx-native .docx-ribbon .color-highlight-none {
+  width: 100%;
+  margin-top: 10px;
+  padding: 5px 0;
+  font-size: 12.5px;
+}
+
+/* Selected (no highlight applied) is a quiet filled state, matching the
+   shared picker's auto row — an accent ring reads as a stray focus outline. */
+.docx-native .docx-ribbon .color-highlight-none.selected {
+  background: var(--hover);
+}
+
+/* Anchor positioning for the shared Word-style color panel (@genoffice/ui
+   .gcp-palette draws the chrome; this only places it under its trigger). */
+.docx-native .docx-ribbon .docs-color-pop {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+}
+
+.docx-native .docx-ribbon .color-section-title {
+  margin: 12px 0 6px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.docx-native .docx-ribbon .color-none {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+  font-size: 12px;
+  padding: 4px 0;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .color-none:hover {
+  background: var(--hover);
+}
+
+/* line spacing dropdown */
+/* Home-tab Genspark AI entry: black circular "+" badge with a dropdown caret,
+   brand label below (mirrors the sheets Home ribbon). */
+/* AI feature buttons next to the entry: purple glyphs, label below */
+.docx-native .docx-ribbon .ai-feature-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--color-brand-secondary);
+}
+
+.docx-native .docx-ribbon .ai-feature-icon svg {
+  /* 24px renders the 24-unit viewBox 1:1, so the 1.5 stroke paints 1.5px,
+     keeping the 1:16 stroke standard */
+  width: 24px;
+  height: 24px;
+}
+
+.docx-native .docx-ribbon .spacing-menu {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  min-width: 92px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 4px;
+}
+
+.docx-native .docx-ribbon .spacing-menu button {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .spacing-menu button:hover {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .spacing-menu button.active {
+  background: var(--active-bg);
+}
+
+/* Font size preset list: compact Word-style rows so the whole list fits
+   without scrolling (the viewport cap only kicks in on tiny windows), and the
+   current size gets a leading check instead of a highlight. Placed after the
+   .spacing-menu rules so these overrides win at equal specificity. */
+.docx-native .docx-ribbon .rb-font-size-menu {
+  min-width: 76px;
+  max-height: calc(100vh - 130px);
+  overflow-y: auto;
+}
+
+.docx-native .docx-ribbon .rb-font-size-menu button {
+  position: relative;
+  padding: 3px 16px 3px 28px;
+  font-size: 12.5px;
+}
+
+.docx-native .docx-ribbon .rb-font-size-menu button.active {
+  background: none;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .rb-font-size-menu button.active:hover {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-font-size-menu button.active::before {
+  content: '✓';
+  position: absolute;
+  left: 10px;
+}
+
+/* Font family list: each entry renders in its own typeface (inline style);
+   long list scrolls like Word's */
+.docx-native .docx-ribbon .rb-font-family-menu {
+  min-width: 200px;
+  max-height: calc(100vh - 130px);
+  overflow-y: auto;
+}
+
+.docx-native .docx-ribbon .rb-font-family-menu button {
+  padding: 5px 16px 5px 28px;
+  font-size: 14px;
+  position: relative;
+  white-space: nowrap;
+}
+
+.docx-native .docx-ribbon .rb-font-family-menu button.active {
+  background: none;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .rb-font-family-menu button.active:hover {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-font-family-menu button.active::before {
+  content: '✓';
+  position: absolute;
+  left: 10px;
+  font-family: system-ui;
+}
+
+/* type-ahead / arrow-key highlight, kept distinct from the check on the current font */
+.docx-native .docx-ribbon .rb-font-family-menu button.kbd-focus {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .rb-menu-group-label {
+  padding: 8px 16px 3px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  cursor: default;
+}
+
+.docx-native .docx-ribbon .rb-font-family-menu > div:first-child > .rb-menu-group-label {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 4px;
+}
+
+/* ---- Insert: table size picker ---- */
+
+/* Insert → Cover Page gallery */
+.docx-native .docx-ribbon .cover-gallery {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: repeat(4, 104px);
+  gap: 8px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.docx-native .docx-ribbon .cover-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 6px 5px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.docx-native .docx-ribbon .cover-card:hover {
+  border-color: var(--word-blue);
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .cover-thumb-page {
+  width: 88px;
+  height: 116px;
+  overflow: hidden;
+  background: var(--docs-paper);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  padding: 4px 5px;
+  font-size: 4px;
+  line-height: 1.3;
+  color: var(--docs-paper-ink-dim);
+  text-align: left;
+  pointer-events: none;
+}
+
+.docx-native .docx-ribbon .cover-thumb-para {
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.docx-native .docx-ribbon .cover-card-name {
+  font-size: 11px;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .cover-gallery-remove {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding: 7px 12px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 4px 4px;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.docx-native .docx-ribbon .cover-gallery-remove:not(:disabled):hover {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .cover-gallery-remove:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.docx-native .docx-ribbon .table-picker {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 8px;
+}
+
+.docx-native .docx-ribbon .table-picker-title {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.docx-native .docx-ribbon .table-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 18px);
+  gap: 3px;
+}
+
+/* "Insert Table…" entry under the hover grid (opens the rows/cols dialog) */
+.docx-native .docx-ribbon .table-picker-custom {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 5px 6px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 4px 4px;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.docx-native .docx-ribbon .table-picker-custom:hover {
+  background: var(--hover);
+}
+
+/* Word-style table move handle at the hovered table's top-left corner */
+.docx-native .docx-ribbon .doc-table-handle {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--docs-table-handle-border);
+  border-radius: 3px;
+  background: var(--docs-table-handle-bg);
+  color: var(--docs-table-handle-ink);
+  cursor: move;
+  box-shadow: var(--docs-shadow-chip);
+}
+
+.docx-native .docx-ribbon .doc-table-handle:hover {
+  background: var(--docs-table-handle-hover);
+}
+
+.docx-native .docx-ribbon .doc-table-resize {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--docs-table-handle-border);
+  border-radius: 3px;
+  background: var(--docs-table-handle-bg);
+  color: var(--docs-table-handle-ink);
+  cursor: nwse-resize;
+  box-shadow: var(--docs-shadow-chip);
+}
+
+.docx-native .docx-ribbon .doc-table-resize:hover {
+  background: var(--docs-table-handle-hover);
+}
+
+.docx-native .docx-ribbon .table-cell {
+  width: 18px;
+  height: 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  background: var(--surface);
+  cursor: pointer;
+  padding: 0;
+}
+
+.docx-native .docx-ribbon .table-cell.hot {
+  /* blue-tinted like an in-document selection, not the gray toolbar plate */
+  background: var(--accent-soft);
+  border-color: var(--word-blue);
+}
+
+/* ---- Insert: symbol palette ---- */
+
+.docx-native .docx-ribbon .symbol-palette {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: repeat(10, 28px);
+  gap: 2px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 8px;
+}
+
+.docx-native .docx-ribbon .symbol-cell {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: 3px;
+  font-size: 15px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .symbol-cell:hover {
+  background: var(--active-bg);
+}
+
+/* ---- Shape picker dropdown ---- */
+
+.docx-native .docx-ribbon .shape-palette {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  width: 312px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 6px;
+}
+
+.docx-native .docx-ribbon .shape-group-title {
+  padding: 6px 4px 2px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.docx-native .docx-ribbon .shape-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+}
+
+.docx-native .docx-ribbon .shape-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 0;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .shape-cell:hover {
+  background: var(--active-bg);
+}
+
+/* ---- WordArt picker panel ---- */
+
+/* Unlabeled letter grid matching the slides WordArt gallery (style name = tooltip) */
+.docx-native .docx-ribbon .wordart-palette {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: repeat(4, 44px);
+  gap: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 8px;
+}
+
+.docx-native .docx-ribbon .wordart-cell {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 26px;
+  font-family: Georgia, serif;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.docx-native .docx-ribbon .wordart-cell:hover {
+  border-color: var(--accent);
+}
+
+/* ---- Drop cap dropdown menu ---- */
+
+.docx-native .docx-ribbon .dropcap-menu {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 8px;
+  min-width: 200px;
+}
+
+.docx-native .docx-ribbon .dropcap-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text);
+  min-width: 56px;
+}
+
+.docx-native .docx-ribbon .dropcap-option:hover {
+  background: var(--active-bg);
+  border-color: var(--border);
+}
+
+.docx-native .docx-ribbon .dropcap-preview {
+  font-size: 28px;
+  font-weight: bold;
+  line-height: 1;
+  color: var(--text);
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+
+/* ---- Equations: built-in equation library dropdown + LaTeX insert dialog ---- */
+
+.docx-native .docx-ribbon .equation-gallery {
+  /* right-aligned to its trigger (the Equation button sits at the ribbon's
+     far right) — fixed + anchored like the other panels */
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  right: anchor(right);
+  position-visibility: anchors-visible;
+  z-index: 60;
+  width: 300px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 6px;
+}
+
+.docx-native .docx-ribbon .equation-gallery-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  padding: 8px 6px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .equation-gallery-item:hover {
+  background: var(--active-bg);
+}
+
+.docx-native .docx-ribbon .equation-gallery-name {
+  font-size: 11px;
+  color: var(--text-dim);
+  align-self: flex-start;
+}
+
+.docx-native .docx-ribbon .equation-gallery-preview {
+  font-family: 'Cambria Math', 'STIX Two Math', serif;
+  font-size: 15px;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.docx-native .docx-ribbon .equation-gallery-custom {
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--border-strong);
+  background: none;
+  padding: 8px 6px;
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .equation-gallery-custom:hover {
+  background: var(--active-bg);
+}
+
+.docx-native .docx-ribbon .equation-modal {
+  min-width: 460px;
+}
+
+.docx-native .docx-ribbon .equation-preview {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  margin: 10px 0 2px;
+  padding: 10px;
+  font-family: 'Cambria Math', 'STIX Two Math', serif;
+  font-size: 18px;
+  overflow-x: auto;
+}
+
+.docx-native .docx-ribbon .equation-preview-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: system-ui, sans-serif;
+}
+
+.docx-native .docx-ribbon .equation-preview-error {
+  font-size: 12px;
+  color: var(--danger);
+  font-family: system-ui, sans-serif;
+}
+
+.docx-native .docx-ribbon .equation-inline-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+/* ---- Layout: preset menus + paragraph spinners ---- */
+
+.docx-native .docx-ribbon .layout-menu {
+  position: fixed;
+  position-anchor: --rb-drop-wrap;
+  top: calc(anchor(bottom) + 4px);
+  left: anchor(left);
+  position-try-fallbacks: flip-inline;
+  position-visibility: anchors-visible;
+  z-index: 60;
+  min-width: 200px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  box-shadow: var(--docs-shadow-menu);
+  padding: 5px;
+}
+
+.docx-native .docx-ribbon .layout-menu button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 7px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.docx-native .docx-ribbon .layout-menu button span {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.docx-native .docx-ribbon .layout-menu button:not(:disabled):hover {
+  background: var(--hover);
+}
+
+.docx-native .docx-ribbon .layout-menu button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.docx-native .docx-ribbon .layout-menu button.active {
+  background: var(--active-bg);
+}
+
+.docx-native .docx-ribbon .layout-menu-head {
+  padding: 6px 12px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.docx-native .docx-ribbon .layout-menu-head + button {
+  margin-top: 0;
+}
+
+.docx-native .docx-ribbon .layout-menu.layout-menu-scroll {
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+}
+
+/* w:trHeight hRule="exact": Word clips overflow instead of growing the row. td height is
+   min-height in CSS table layout, so cells wrap content in this fixed-height box instead;
+   clip (not hidden) so contenteditable's programmatic scrolls can't shift the content */
+.docx-native .docx-ribbon .cell-clip {
+  /* flow-root: overflow:clip alone is no BFC, so a first paragraph's
+     margin-top would collapse out and grow the exact row past its height */
+  display: flow-root;
+  overflow: clip;
+}
+
+/* w:textDirection cells: Word sizes the row from the horizontal cells / trHeight and
+   wraps the rotated text into the resulting cell height. Out of flow, the vertical
+   line no longer stretches the row group; padding:inherit keeps the cell insets. */
+.docx-native .docx-ribbon .cell-vert {
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  overflow: clip;
+}
+
+/* a row with no other height source (no declared trHeight, every in-flow cell
+   rotated) sizes from the rotated text like Word: the wrapper drops back into
+   flow. Structural :has() rather than a rendered tr attribute: ProseMirror
+   reuses the tr DOM when only its children change, so a baked attribute goes
+   stale after column inserts/deletes. gridGap spacers are not in-flow evidence. */
+.docx-native .docx-ribbon tr:not([style*='height']):not(
+    :has(
+      > td:not(.cell-vert-host):not([data-grid-gap]),
+      > th:not(.cell-vert-host):not([data-grid-gap])
+    )
+  )
+  > :is(td, th)
+  > .cell-vert {
+  position: static;
+  inset: auto;
+  padding: 0;
+}
+
+/* table row/cell revisions: Word's cell highlighting (inserted light blue, deleted pink,
+   merged light yellow; Track Changes Options can repaint them) */
+.docx-native .docx-ribbon tr.row-rev-ins > td,
+.docx-native .docx-ribbon tr.row-rev-ins > th,
+.docx-native .docx-ribbon td.cell-rev-ins,
+.docx-native .docx-ribbon th.cell-rev-ins {
+  background: var(--rev-ins-bg, var(--docs-paper-cell-ins-bg));
+}
+
+.docx-native .docx-ribbon tr.row-rev-del > td,
+.docx-native .docx-ribbon tr.row-rev-del > th,
+.docx-native .docx-ribbon td.cell-rev-del,
+.docx-native .docx-ribbon th.cell-rev-del {
+  background: var(--rev-del-bg, var(--docs-paper-cell-del-bg));
+}
+
+.docx-native .docx-ribbon td[data-rev-merge],
+.docx-native .docx-ribbon th[data-rev-merge] {
+  background: var(--rev-merge-bg, var(--docs-paper-cell-merge-bg));
+}
+
+.docx-native .docx-ribbon .rev-display-none td[data-rev-merge],
+.docx-native .docx-ribbon .rev-display-none th[data-rev-merge],
+.docx-native .docx-ribbon .rev-display-simple td[data-rev-merge],
+.docx-native .docx-ribbon .rev-display-simple th[data-rev-merge],
+.docx-native .docx-ribbon .rev-display-original td[data-rev-merge],
+.docx-native .docx-ribbon .rev-display-original th[data-rev-merge],
+.docx-native .docx-ribbon .rev-hide-format td[data-rev-merge],
+.docx-native .docx-ribbon .rev-hide-format th[data-rev-merge] {
+  background: none;
+}
+
+/* pending table / row / cell property revisions (tblPrChange &c.): a change bar on the left edge */
+.docx-native .docx-ribbon table.doc-table[data-rev-fmt],
+.docx-native .docx-ribbon tr[data-rev-fmt] > td:first-child,
+.docx-native .docx-ribbon tr[data-rev-fmt] > th:first-child,
+.docx-native .docx-ribbon td[data-rev-fmt],
+.docx-native .docx-ribbon th[data-rev-fmt] {
+  box-shadow: inset 3px 0 0 var(--docs-paper-ppr);
+}
+
+.docx-native .docx-ribbon .rev-display-none table.doc-table[data-rev-fmt],
+.docx-native .docx-ribbon .rev-display-none tr[data-rev-fmt] > td:first-child,
+.docx-native .docx-ribbon .rev-display-none tr[data-rev-fmt] > th:first-child,
+.docx-native .docx-ribbon .rev-display-none td[data-rev-fmt],
+.docx-native .docx-ribbon .rev-display-none th[data-rev-fmt],
+.docx-native .docx-ribbon .rev-display-simple table.doc-table[data-rev-fmt],
+.docx-native .docx-ribbon .rev-display-simple tr[data-rev-fmt] > td:first-child,
+.docx-native .docx-ribbon .rev-display-simple tr[data-rev-fmt] > th:first-child,
+.docx-native .docx-ribbon .rev-display-simple td[data-rev-fmt],
+.docx-native .docx-ribbon .rev-display-simple th[data-rev-fmt],
+.docx-native .docx-ribbon .rev-display-original table.doc-table[data-rev-fmt],
+.docx-native .docx-ribbon .rev-display-original tr[data-rev-fmt] > td:first-child,
+.docx-native .docx-ribbon .rev-display-original tr[data-rev-fmt] > th:first-child,
+.docx-native .docx-ribbon .rev-display-original td[data-rev-fmt],
+.docx-native .docx-ribbon .rev-display-original th[data-rev-fmt] {
+  box-shadow: none;
+}
+
+/* no-markup / simple-markup mode = as if all accepted: deleted rows hidden, insert background removed */
+.docx-native .docx-ribbon .rev-display-none tr.row-rev-del,
+.docx-native .docx-ribbon .rev-display-none td.cell-rev-del,
+.docx-native .docx-ribbon .rev-display-none th.cell-rev-del,
+.docx-native .docx-ribbon .rev-display-simple tr.row-rev-del,
+.docx-native .docx-ribbon .rev-display-simple td.cell-rev-del,
+.docx-native .docx-ribbon .rev-display-simple th.cell-rev-del {
+  display: none;
+}
+
+.docx-native .docx-ribbon .rev-display-none tr.row-rev-ins > td,
+.docx-native .docx-ribbon .rev-display-none tr.row-rev-ins > th,
+.docx-native .docx-ribbon .rev-display-none td.cell-rev-ins,
+.docx-native .docx-ribbon .rev-display-none th.cell-rev-ins,
+.docx-native .docx-ribbon .rev-display-simple tr.row-rev-ins > td,
+.docx-native .docx-ribbon .rev-display-simple tr.row-rev-ins > th,
+.docx-native .docx-ribbon .rev-display-simple td.cell-rev-ins,
+.docx-native .docx-ribbon .rev-display-simple th.cell-rev-ins {
+  background: none;
+}
+
+/* original mode = as if all rejected: inserted rows hidden, delete background removed */
+.docx-native .docx-ribbon .rev-display-original tr.row-rev-ins,
+.docx-native .docx-ribbon .rev-display-original td.cell-rev-ins,
+.docx-native .docx-ribbon .rev-display-original th.cell-rev-ins {
+  display: none;
+}
+
+.docx-native .docx-ribbon .rev-display-original tr.row-rev-del > td,
+.docx-native .docx-ribbon .rev-display-original tr.row-rev-del > th,
+.docx-native .docx-ribbon .rev-display-original td.cell-rev-del,
+.docx-native .docx-ribbon .rev-display-original th.cell-rev-del {
+  background: none;
+}
+
+/* Arrange group position gallery: 3x3 page thumbnail grid, dots indicate image placement */
+.docx-native .docx-ribbon .pos-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+  gap: 4px;
+  padding: 6px 8px 4px;
+}
+
+.docx-native .docx-ribbon .layout-menu button.pos-cell {
+  display: flex;
+  width: 36px;
+  height: 36px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+
+.docx-native .docx-ribbon .layout-menu button.pos-cell.active {
+  border-color: var(--border-strong);
+  background: var(--active-bg);
+}
+
+.docx-native .docx-ribbon .pos-cell .pos-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--text-dim);
+}
+
+.docx-native .docx-ribbon .pos-cell.ph-left {
+  justify-content: flex-start;
+}
+.docx-native .docx-ribbon .pos-cell.ph-center {
+  justify-content: center;
+}
+.docx-native .docx-ribbon .pos-cell.ph-right {
+  justify-content: flex-end;
+}
+.docx-native .docx-ribbon .pos-cell.pv-top {
+  align-items: flex-start;
+}
+.docx-native .docx-ribbon .pos-cell.pv-center {
+  align-items: center;
+}
+.docx-native .docx-ribbon .pos-cell.pv-bottom {
+  align-items: flex-end;
+}
+
+/* Switch Windows sits at the ribbon's right edge — anchor right so it isn't clipped */
+.docx-native .docx-ribbon .layout-menu.align-right {
+  left: auto;
+  right: anchor(right);
+}
+
+.docx-native .docx-ribbon .layout-para {
+  gap: 14px;
+}
+
+.docx-native .docx-ribbon .layout-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  justify-content: center;
+}
+
+.docx-native .docx-ribbon .layout-num {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.docx-native .docx-ribbon .layout-num > span:first-child {
+  width: 44px;
+  text-align: right;
+  color: var(--text-dim);
+}
+
+.docx-native .docx-ribbon .layout-num input {
+  width: 56px;
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.docx-native .docx-ribbon .layout-num input:disabled {
+  opacity: 0.5;
+}
+
+.docx-native .docx-ribbon .layout-unit {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+[data-office-theme='dark'] .docx-native .docx-ribbon {
+  --word-blue: #4a9eff;
+  --word-blue-dark: #3a8eef;
+  --accent-soft: #1e3a5f;
+  --docs-copilot-bg-a: #322c46;
+  --docs-copilot-bg-b: #253546;
+  --docs-swatch-outline: rgb(255 255 255 / 25%);
+  --docs-scroll-thumb: rgb(255 255 255 / 28%);
+  --docs-shadow-menu: 0 8px 24px rgb(0 0 0 / 55%);
+  --docs-shadow-chip: 0 2px 8px rgb(0 0 0 / 40%);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-office-theme='light']):not([data-office-theme='dark']) .docx-native .docx-ribbon {
+    --word-blue: #4a9eff;
+    --word-blue-dark: #3a8eef;
+    --accent-soft: #1e3a5f;
+    --docs-copilot-bg-a: #322c46;
+    --docs-copilot-bg-b: #253546;
+    --docs-swatch-outline: rgb(255 255 255 / 25%);
+    --docs-scroll-thumb: rgb(255 255 255 / 28%);
+    --docs-shadow-menu: 0 8px 24px rgb(0 0 0 / 55%);
+    --docs-shadow-chip: 0 2px 8px rgb(0 0 0 / 40%);
+  }
+}
+

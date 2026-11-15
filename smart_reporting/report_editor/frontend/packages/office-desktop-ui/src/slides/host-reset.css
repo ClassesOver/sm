@@ -1,0 +1,6 @@
+/* Migration seam: retire the old host's three-row grid rules. Source rules follow. */
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon { display: block; min-width: 0; font: 13px var(--font-ui, 'Segoe UI', sans-serif); }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon :where(.ribbon-body, .ribbon-group, .ribbon-tabs, .ribbon-tab, .rb-big, .rb-icon, .rb-small) { min-height: 0; max-height: none; margin: 0; box-shadow: none; grid-template-columns: none; grid-template-rows: none; grid-auto-flow: initial; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon :where(.ribbon-group) { border: 0; gap: 0; position: static; align-self: stretch; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon :where(.ribbon-tab, .rb-big, .rb-icon, .rb-small) { min-width: 0; height: auto; line-height: normal; font-family: inherit; font-weight: normal; letter-spacing: normal; align-self: auto; justify-content: center; text-decoration: none; transition: none; }
+.slides-native-ribbon.slides-native-ribbon.slides-native-ribbon :where(.ribbon-group-label) { position: static; margin: 0; padding: 0; }

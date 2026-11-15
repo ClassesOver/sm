@@ -1,0 +1,24 @@
+{
+  "repository": "https://github.com/genspark-ai/genoffice",
+  "commit": "f8c17004fb730df11f0f743164ffd8b4281bb38c",
+  "sources": [
+    {
+      "app": "pdf",
+      "path": "apps/pdf/src/renderer/styles.css",
+      "sha256": "0f85d8a88b213b78bfd6b0c4b36f3e0349b8ac7973cc1a74c08022c674194505",
+      "adaptation": "Source properties referenced by ribbon CSS plus dependencies; values unchanged."
+    },
+    {
+      "app": "slides",
+      "path": "apps/slides/src/renderer/styles.css",
+      "sha256": "4c223aa7cad2fc20d714444fb65f85f2c3f0f01ae64b054686ad0528632a5d6a",
+      "adaptation": "Source properties referenced by ribbon CSS plus dependencies; values unchanged."
+    },
+    {
+      "app": "sheets",
+      "path": "apps/sheets/src/renderer/styles.css",
+      "sha256": "e0faabcde838f5ad9bd2af5deb51b48cda35142f9854068cba339a6e86bfb88f",
+      "adaptation": "Source properties referenced by ribbon CSS plus dependencies; values unchanged."
+    }
+  ]
+}

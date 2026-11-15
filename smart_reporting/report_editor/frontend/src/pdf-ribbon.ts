@@ -1,3 +1,5 @@
+import { bindPdfDesktopCommandAppearance } from '@smart-reporting/office-desktop-ui/pdf'
+import '@smart-reporting/office-desktop-ui/pdf.css'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { pdfRibbonLabel } from './pdf-ribbon-locales'
 
@@ -20,12 +22,12 @@ export interface PdfRibbon {
 
 export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean } = {}): PdfRibbon {
   const root = document.createElement('div')
-  root.className = 'pdf-ribbon'
+  root.className = 'pdf-ribbon pdf-desktop-ribbon ribbon'
   const disposeScroll = bindOfficeRibbonScroll(root)
   root.setAttribute('role', 'region')
   root.setAttribute('aria-label', 'PDF ribbon')
   const tabs = document.createElement('div')
-  tabs.className = 'pdf-ribbon-tabs'
+  tabs.className = 'pdf-ribbon-tabs ribbon-tabs'
   tabs.setAttribute('role', 'tablist')
   const panels = new Map<string, HTMLElement>()
   const buttons = new Map<string, HTMLButtonElement>()
@@ -40,6 +42,7 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
     active = id
     for (const [tabId, panel] of panels) {
       panel.hidden = tabId !== id
+      buttons.get(tabId)?.classList.toggle('active', tabId === id)
       buttons.get(tabId)?.setAttribute('aria-selected', String(tabId === id))
       buttons.get(tabId)?.setAttribute('tabindex', String(tabId === id ? 0 : -1))
     }
@@ -48,6 +51,7 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
   for (const tab of TABS) {
     const button = document.createElement('button')
     button.type = 'button'
+    button.className = 'ribbon-tab'
     button.textContent = tabLabel(tab)
     button.id = `pdf-ribbon-tab-${tab.id}`
     button.dataset.pdfRibbonTab = tab.id
@@ -75,6 +79,8 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
     buttons.set(tab.id, button)
 
     const panel = document.createElement('div')
+    panel.className = 'ribbon-body'
+    panel.dataset.ribbonBody = ''
     panel.id = `pdf-ribbon-panel-${tab.id}`
     panel.dataset.pdfRibbonPanel = tab.id
     panel.setAttribute('role', 'tabpanel')
@@ -88,22 +94,39 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
   host.append(root)
   select(active)
 
+  const disposeAppearance = bindPdfDesktopCommandAppearance(root)
+
   return {
     group(tab, label) {
       const panel = panels.get(tab)
       if (!panel) throw new Error(`Unknown PDF ribbon tab: ${tab}`)
-      const group = document.createElement('section')
-      group.className = 'pdf-ribbon-group'
-      group.dataset.ribbonGroup = label
+      const section = document.createElement('section')
+      section.className = 'ribbon-group'
+      section.dataset.ribbonGroup = label
+      const group = document.createElement('div')
+      group.className = 'pdf-ribbon-group ribbon-group-items'
       group.setAttribute('aria-label', label)
       const title = document.createElement('h2')
+      title.className = 'pdf-desktop-group-title'
       title.textContent = pdfRibbonLabel(label, language)
       group.append(title)
-      const trailing = tab !== 'home' || label === 'Convert & Export' ? null
-        : label === 'AI' ? panel.firstElementChild
-        : Array.from(panel.children).find(element => (element as HTMLElement).dataset.ribbonGroup === 'Convert & Export') ?? null
-      panel.insertBefore(group, trailing)
+      section.append(group)
+      // Desktop Home order is AI, Markup, Edit, Convert, Page/Zoom, Search/Print.
+      // The controller can create groups in any order without changing that layout.
+      const homeOrder = ['AI', 'Markup', 'Edit', 'Convert & Export', 'Page & Zoom', 'Search, Print & Properties']
+      const order = homeOrder.indexOf(label)
+      const trailing = tab === 'home' && order >= 0
+        ? Array.from(panel.children).find(element => homeOrder.indexOf((element as HTMLElement).dataset.ribbonGroup ?? '') > order) ?? null
+        : null
+      panel.insertBefore(section, trailing)
+      // The separators are the upstream independent flex items, rather than group borders.
+      panel.querySelectorAll(':scope > .ribbon-sep').forEach(separator => separator.remove())
+      for (const item of [...panel.children].slice(1)) {
+        const separator = document.createElement('div'); separator.className = 'ribbon-sep'; separator.setAttribute('aria-hidden', 'true')
+        panel.insertBefore(separator, item)
+      }
       group.setAttribute('aria-label', title.textContent)
+      section.setAttribute('aria-label', title.textContent)
       groups.push({ element: group, name: label, title })
       return group
     },
@@ -118,8 +141,8 @@ export function createPdfRibbon(host: HTMLElement, options: { hasForms?: boolean
     setLanguage(value) {
       language = value
       for (const tab of TABS) buttons.get(tab.id)!.textContent = tabLabel(tab)
-      for (const group of groups) { group.title.textContent = pdfRibbonLabel(group.name, language); group.element.setAttribute('aria-label', group.title.textContent) }
+      for (const group of groups) { group.title.textContent = pdfRibbonLabel(group.name, language); group.element.setAttribute('aria-label', group.title.textContent); group.element.parentElement?.setAttribute('aria-label', group.title.textContent) }
     },
-    dispose() { disposeScroll(); root.remove() },
+    dispose() { disposeAppearance(); disposeScroll(); root.remove() },
   }
 }

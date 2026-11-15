@@ -449,7 +449,7 @@ it('keeps Home slide layout changes connected and unsupported slide actions expl
   const unavailable = [...group.querySelectorAll<HTMLButtonElement>('[data-unavailable="true"]')]
 
   expect([...group.querySelectorAll('[data-source-action]')].map(control => control.getAttribute('data-source-action'))).toEqual([
-    'onAddSlide', 'onAddSlideWithLayout', 'onSetLayout', 'onResetLayout', 'onAddSection',
+    'onAddSlide', 'onSetLayout', 'onAddSection', 'onAddSlideWithLayout', 'onResetLayout',
   ])
   expect(unavailable.every(control => control.disabled && control.dataset.unavailable === 'true')).toBe(true)
   expect(layout.dataset.sourceAction).toBe('onSetLayout')
@@ -728,7 +728,7 @@ it('folds Motion Paths before Animation and keeps the original controls working 
     const pulse = panel.querySelector<HTMLButtonElement>('[data-animation-effect="pulse"]')!
     let width = 1200
     Object.defineProperty(panel, 'clientWidth', { get: () => width })
-    for (const group of panel.children) {
+    for (const group of panel.querySelectorAll(':scope > .ribbon-group')) {
       const button = group.querySelector<HTMLButtonElement>('[data-animation-collapse]')
       const inlineWidth = button === effects ? 650 : button === paths ? 200 : 100
       Object.defineProperty(group, 'offsetWidth', { get: () => button && !button.hidden ? 80 : inlineWidth })
@@ -753,7 +753,8 @@ it('folds Motion Paths before Animation and keeps the original controls working 
     expect(document.activeElement).toBe(effects)
     width = 1200; resize()
     expect(paths.hidden && effects.hidden).toBe(true)
-    expect(pulse.parentElement?.getAttribute('data-ribbon-group')).toBe('Animation')
+    expect(pulse.parentElement?.className).toBe('ribbon-group-items')
+    expect(pulse.closest('[data-ribbon-group]')?.getAttribute('data-ribbon-group')).toBe('Animation')
   } finally {
     ribbon.dispose()
     vi.unstubAllGlobals()

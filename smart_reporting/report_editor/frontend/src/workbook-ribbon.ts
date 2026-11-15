@@ -1,3 +1,5 @@
+import '@smart-reporting/office-desktop-ui/sheets.css'
+import { composeSheetsDesktopGroup } from '@smart-reporting/office-desktop-ui/sheets'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import { createOfficeAIEntry } from './office-ai-entry'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
@@ -1002,8 +1004,8 @@ export function mountWorkbookRibbon(
   const tabLabels: Record<RibbonTab, string> = { File: '文件', Home: '开始', Insert: '插入', 'Page Layout': '页面布局', Formulas: '公式', Data: '数据', Review: '审阅', View: '视图', 'Chart Design': '图表设计', 'Table Design': '表格设计' }
   container.innerHTML = `
     <header class="workbook-ribbon" aria-label="Excel 功能区">
-      <nav class="workbook-ribbon-tabs" role="tablist" aria-label="工作簿工具"></nav>
-      <div class="workbook-ribbon-body" role="tabpanel" id="workbook-ribbon-panel"></div>
+      <nav class="workbook-ribbon-tabs ribbon-tabs" role="tablist" aria-label="工作簿工具"></nav>
+      <div class="workbook-ribbon-body ribbon" role="tabpanel" id="workbook-ribbon-panel"></div>
     </header>`
   const nav = container.querySelector<HTMLElement>('.workbook-ribbon-tabs')!
   const body = container.querySelector<HTMLElement>('.workbook-ribbon-body')!
@@ -1256,7 +1258,7 @@ export function mountWorkbookRibbon(
       if (id === 'sheet-protect' || id === 'workbook-protect') {
         const state = id === 'sheet-protect' ? { on: !!protection?.sheet.protected, reason: protection?.sheet.reason } : { on: !!protection?.workbook.locked, reason: protection?.workbook.reason }
         const label = id === 'sheet-protect' ? (state.on ? '撤销工作表保护' : '保护工作表') : (state.on ? '撤销工作簿保护' : '保护工作簿')
-        const text = button.querySelector('span:not(.workbook-ribbon-icon)')
+        const text = button.querySelector(':scope > span:not(.workbook-ribbon-icon):not(.tool-icon-row)')
         if (text) text.textContent = label
         else button.textContent = label
         button.setAttribute('aria-label', label)
@@ -1596,6 +1598,7 @@ export function mountWorkbookRibbon(
       button.setAttribute('role', 'tab')
       button.setAttribute('aria-controls', 'workbook-ribbon-panel')
       button.setAttribute('aria-selected', String(tab === active))
+      button.classList.toggle('active', tab === active)
       button.tabIndex = tab === active ? 0 : -1
       button.dataset.ribbonTab = tab
       button.textContent = tabLabels[tab]
@@ -1946,6 +1949,7 @@ export function mountWorkbookRibbon(
         select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`cell-style:${value}`) })
         section.append(select)
       }
+      composeSheetsDesktopGroup(section, group.title, active)
       sections.push(section)
     }
     body.replaceChildren(...sections)
