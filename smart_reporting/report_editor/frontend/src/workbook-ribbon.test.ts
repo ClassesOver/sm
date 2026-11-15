@@ -1422,30 +1422,43 @@ it('renders Page Layout dropdowns with the source option sets and dispatches the
   const onCommand = vi.fn()
   const state: WorkbookPageSetupState = {
     margins: 'custom', orientation: undefined, paperSize: undefined,
-    fitToWidth: 2, fitToHeight: 0, printGridlines: true, printHeadings: false, printArea: 'A1:B4',
+    fitToWidth: 2, fitToHeight: 0, printGridlines: true, printHeadings: false, printArea: 'A1:B4', printTitles: '2:4',
   }
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
     rotation: () => undefined, editable: () => true, hasSelection: () => true, unavailableReason: () => undefined, pageSetup: () => state,
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Page Layout"]')!.click()
-  const margins = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-margins"]')!
-  expect([...margins.options].map(option => option.textContent)).toEqual(['自定义（保留文件边距）', '常规', '宽', '窄'])
-  expect(margins.value).toBe('custom')
-  const orientation = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-orientation"]')!
-  expect([...orientation.options].map(option => option.value)).toEqual(['', 'portrait', 'landscape'])
-  const paper = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-paper"]')!
-  expect([...paper.options].map(option => option.textContent)).toEqual(['按文件保存', 'Letter', 'Legal', 'Tabloid', 'Executive', 'A3', 'A4', 'A5'])
+  const trigger = (selector: string) => document.querySelector<HTMLButtonElement>(`button[${selector}]`)!
+  const menu = (button: HTMLButtonElement) => document.getElementById(button.getAttribute('aria-controls')!)!
+  const margins = trigger('data-ribbon-control="page-margins"')
+  expect(margins.title).toContain('自定义（保留文件边距）')
+  expect(margins.parentElement?.querySelector('.workbook-ribbon-icon svg')).not.toBeNull()
+  expect([...menu(margins).children].map(option => option.textContent)).toEqual(['常规', '宽', '窄'])
+  const orientation = trigger('data-ribbon-control="page-orientation"')
+  expect(orientation.title).toContain('按文件保存')
+  expect([...menu(orientation).children].map(option => option.textContent)).toEqual(['纵向', '横向'])
+  const paper = trigger('data-ribbon-control="page-paper"')
+  expect([...menu(paper).children].map(option => option.textContent)).toEqual(['Letter', 'Legal', 'Tabloid', 'Executive', 'A3', 'A4', 'A5'])
+  expect(trigger('data-ribbon-menu="print-area"').title).toContain('A1:B4')
+  const titles = trigger('data-ribbon-menu="print-titles"')
+  expect(titles.title).toContain('2:4')
+  expect([...menu(titles).children].map(option => option.textContent)).toEqual(['重复第 1 行', '重复所选行', '清除打印标题'])
   const fitWidth = document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-fit:width"]')!
   expect([...fitWidth.options].map(option => option.value)).toEqual(['0', '1', '2', '3', '4', '5'])
   expect(fitWidth.value).toBe('2')
   expect(document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-fit:height"]')!.value).toBe('0')
   expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.getAttribute('aria-checked')).toBe('true')
-  const breaks = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="page-breaks"]')!
-  breaks.value = 'page-breaks:reset'
-  breaks.dispatchEvent(new Event('change', { bubbles: true }))
-  expect(breaks.value).toBe('')
-  orientation.value = 'landscape'
-  orientation.dispatchEvent(new Event('change', { bubbles: true }))
+  const breaks = trigger('data-ribbon-menu="page-breaks"')
+  breaks.click()
+  menu(breaks).querySelector<HTMLButtonElement>('[data-menu-command="page-breaks:reset"]')!.click()
+  expect(menu(breaks).hidden).toBe(true)
+  expect(document.activeElement).toBe(breaks)
+  orientation.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+  expect(document.activeElement).toBe(menu(orientation).firstElementChild)
+  menu(orientation).querySelector<HTMLButtonElement>('[data-menu-command="page-orientation:landscape"]')!.click()
+  state.orientation = 'landscape'
+  ribbon.refreshState()
+  expect(menu(orientation).querySelector('[aria-selected="true"]')?.textContent).toBe('横向')
   fitWidth.value = '3'
   fitWidth.dispatchEvent(new Event('change', { bubbles: true }))
   document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-headings"]')!.click()
@@ -1463,7 +1476,7 @@ it('keeps Page Layout controls non-editable without page-setup state', () => {
   document.body.innerHTML = '<main></main>'
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), { rotation: () => undefined, editable: () => true, unavailableReason: () => undefined })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Page Layout"]')!.click()
-  expect(document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-margins"]')!.disabled).toBe(true)
+  expect(document.querySelector<HTMLButtonElement>('button[data-ribbon-control="page-margins"]')!.disabled).toBe(true)
   expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.disabled).toBe(true)
   ribbon.dispose()
 })

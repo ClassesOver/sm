@@ -290,6 +290,7 @@ export interface WorkbookPageSetupState {
   printGridlines: boolean
   printHeadings: boolean
   printArea?: string | undefined
+  printTitles?: string | undefined
 }
 
 // Menus follow GenOffice ExcelShell.tsx Page Layout tab at f8c17004: the
@@ -323,6 +324,14 @@ const PRINT_TITLE_CHOICES = [
   { value: 'print-titles:first-row', label: '重复第 1 行' },
   { value: 'print-titles:selection', label: '重复所选行' },
   { value: 'print-titles:clear', label: '清除打印标题' },
+] as const
+const PAGE_SETUP_MENUS = [
+  { id: 'page-margins', label: '页边距', symbol: '⿴', field: true, choices: PAGE_MARGIN_CHOICES.map(({value, label}) => [`page-margins:${value}`, label] as const) },
+  { id: 'page-orientation', label: '纸张方向', symbol: '⤢', field: true, choices: PAGE_ORIENTATION_CHOICES.map(({value, label}) => [`page-orientation:${value}`, label] as const) },
+  { id: 'page-paper', label: '纸张大小', symbol: '▭', field: true, choices: PAGE_PAPER_CHOICES.map(({value, label}) => [`page-paper:${value}`, label] as const) },
+  { id: 'print-area', label: '打印区域', symbol: '⬚', field: false, choices: PRINT_AREA_CHOICES.map(({value, label}) => [value, label] as const) },
+  { id: 'page-breaks', label: '分页符', symbol: '┆', field: false, choices: PAGE_BREAK_CHOICES.map(({value, label}) => [value, label] as const) },
+  { id: 'print-titles', label: '打印标题', symbol: '▤', field: false, choices: PRINT_TITLE_CHOICES.map(({value, label}) => [value, label] as const) },
 ] as const
 
 const commandLabels: Record<string, string> = {
@@ -1334,17 +1343,28 @@ export function mountWorkbookRibbon(
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
       select.setAttribute('aria-description', select.title)
     }
-    fillPageSelect('[data-ribbon-control="page-margins"]',
-      pageState?.margins === 'custom'
-        ? [{ value: 'custom', label: '自定义（保留文件边距）', disabled: true }, ...PAGE_MARGIN_CHOICES.map(choice => ({ value: choice.value, label: choice.label }))]
-        : PAGE_MARGIN_CHOICES.map(choice => ({ value: choice.value, label: choice.label })),
-      pageState ? pageState.margins === 'custom' ? 'custom' : pageState.margins : '')
-    fillPageSelect('[data-ribbon-control="page-orientation"]',
-      [...(pageState?.orientation === undefined ? [{ value: '', label: '按文件保存' }] : []), ...PAGE_ORIENTATION_CHOICES.map(choice => ({ value: choice.value, label: choice.label }))],
-      pageState?.orientation ?? '')
-    fillPageSelect('[data-ribbon-control="page-paper"]',
-      [...(pageState?.paperSize === undefined ? [{ value: '', label: '按文件保存' }] : []), ...PAGE_PAPER_CHOICES.map(choice => ({ value: choice.value, label: choice.label }))],
-      pageState?.paperSize === undefined ? '' : String(pageState.paperSize))
+    const pageValues = {
+      'page-margins': pageState?.margins, 'page-orientation': pageState?.orientation,
+      'page-paper': pageState?.paperSize, 'print-area': pageState?.printArea,
+      'page-breaks': undefined, 'print-titles': pageState?.printTitles,
+    }
+    for (const { id, label, field } of PAGE_SETUP_MENUS) {
+      const trigger = body.querySelector<HTMLButtonElement>(`button[data-ribbon-${field ? 'control' : 'menu'}="${id}"]`)
+      if (!trigger) continue
+      const current = pageValues[id]
+      let currentLabel = field ? '按文件保存' : current
+      for (const option of trigger.parentElement!.querySelectorAll<HTMLButtonElement>('[data-menu-command]')) {
+        const checked = field && option.dataset.menuCommand === `${id}:${current}`
+        option.setAttribute('aria-selected', String(checked))
+        if (checked) currentLabel = option.textContent ?? currentLabel
+      }
+      if (id === 'page-margins' && current === 'custom') currentLabel = '自定义（保留文件边距）'
+      if (id === 'page-paper' && current !== undefined && currentLabel === '按文件保存') currentLabel = `文件值 ${current}`
+      trigger.disabled = !editable || !pageState
+      trigger.title = trigger.disabled ? '当前工作簿不可编辑或正在保存' : [label, currentLabel].filter(Boolean).join(' · ')
+      trigger.setAttribute('aria-description', trigger.title)
+      if (trigger.disabled && trigger.getAttribute('aria-expanded') === 'true') closeLargeViewMenu?.()
+    }
     for (const [axis, key] of [['width', 'fitToWidth'], ['height', 'fitToHeight']] as const) {
       fillPageSelect(`[data-ribbon-control="page-fit:${axis}"]`,
         [{ value: '0', label: '自动' }, ...[1, 2, 3, 4, 5].map(pages => ({ value: String(pages), label: `${pages} 页` }))],
@@ -1378,11 +1398,6 @@ export function mountWorkbookRibbon(
       translation.disabled = !!reason
       translation.title = reason ?? '用 AI 翻译选区文本'
       translation.setAttribute('aria-description', translation.title)
-    }
-    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"]):not([data-ribbon-menu^="chart-"])')) {
-      select.disabled = !editable || !pageState
-      select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
-      select.setAttribute('aria-description', select.title)
     }
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-sheet-option]')) {
       const command = button.dataset.ribbonCommand
@@ -1470,14 +1485,16 @@ export function mountWorkbookRibbon(
     button.addEventListener('click', () => { if (!button.disabled) onCommand(command) })
     return button
   }
-  const largeViewMenu = (label: string, iconCommand: string, detail: string, choices: readonly (readonly [RibbonCommand, string])[]) => {
+  const largeRibbonMenu = (label: string, iconCommand: string, detail: string, choices: readonly (readonly [RibbonCommand, string])[], symbol?: string) => {
     const wrapper = document.createElement('div')
     wrapper.className = 'workbook-ribbon-chart-menu workbook-ribbon-large-menu'
     const icons = document.createElement('span')
     icons.className = 'workbook-ribbon-large-menu-icons'
     const icon = document.createElement('span')
     icon.className = 'workbook-ribbon-icon'
-    icon.innerHTML = workbookCommandIcon(iconCommand) ?? ''
+    const glyph = workbookCommandIcon(iconCommand, symbol)
+    if (glyph) icon.innerHTML = glyph
+    else icon.textContent = symbol ?? ''
     icons.append(icon)
     icons.insertAdjacentHTML('beforeend', workbookCommandIcon('ribbon-caret') ?? '')
     const caption = document.createElement('span')
@@ -1740,21 +1757,12 @@ export function mountWorkbookRibbon(
         }
       }
       if (active === 'Page Layout' && group.title === '页面设置') {
-        // 固定源 MenuSelect 形态：字段下拉直接切换，动作下拉（打印区域/
-        // 分页符/顶端标题行）选中后回弹到菜单标题。
-        for (const [control, label] of [['page-margins', '页边距'], ['page-orientation', '纸张方向'], ['page-paper', '纸张大小']] as const) {
-          const select = document.createElement('select')
-          select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', label); select.dataset.ribbonControl = control
-          select.addEventListener('change', () => { if (!select.disabled && select.value) onCommand(`${control}:${select.value}` as RibbonCommand) })
-          section.append(select)
-        }
-        for (const [menu, label, choices] of [['print-area', '打印区域', PRINT_AREA_CHOICES], ['page-breaks', '分页符', PAGE_BREAK_CHOICES], ['print-titles', '打印标题', PRINT_TITLE_CHOICES]] as const) {
-          const select = document.createElement('select')
-          select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', label); select.dataset.ribbonMenu = menu
-          const title = document.createElement('option'); title.value = ''; title.textContent = label
-          select.append(title, ...choices.map(choice => { const option = document.createElement('option'); option.value = choice.value; option.textContent = choice.label; return option }))
-          select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(value as RibbonCommand) })
-          section.append(select)
+        // ExcelShell PageSetup uses the same large MenuSelect as the View tab.
+        for (const {id, label, symbol, field, choices} of PAGE_SETUP_MENUS) {
+          const {wrapper, trigger} = largeRibbonMenu(label, id, label, choices, symbol)
+          if (field) trigger.dataset.ribbonControl = id
+          else trigger.dataset.ribbonMenu = id
+          section.append(wrapper)
         }
       }
       if (active === 'Page Layout' && group.title === '工作表选项') {
@@ -1818,12 +1826,12 @@ export function mountWorkbookRibbon(
         section.append(controls)
       }
       if (active === 'View' && group.title === '窗口') {
-        const { wrapper, trigger } = largeViewMenu('冻结窗格', 'freeze-panes', '冻结行和列', FREEZE_CHOICES)
+        const { wrapper, trigger } = largeRibbonMenu('冻结窗格', 'freeze-panes', '冻结行和列', FREEZE_CHOICES)
         trigger.dataset.ribbonControl = 'freeze-panes'
         section.append(wrapper)
       }
       if (active === 'View' && group.title === '缩放') {
-        const { wrapper, trigger } = largeViewMenu('缩放', 'zoom-open', '缩放工作表',
+        const { wrapper, trigger } = largeRibbonMenu('缩放', 'zoom-open', '缩放工作表',
           [50, 75, 100, 125, 150, 200].map(percent => [`zoom:${percent}`, percent + '%']))
         trigger.dataset.ribbonMenu = 'zoom'
         section.append(wrapper)

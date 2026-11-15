@@ -1188,6 +1188,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       printGridlines: (patch.printGridlines as boolean | undefined) ?? before?.printGridlines ?? false,
       printHeadings: (patch.printHeadings as boolean | undefined) ?? before?.printHeadings ?? false,
       printArea: (patch.printArea as string | null | undefined) === undefined ? before?.printArea : (patch.printArea as string | null) ?? undefined,
+      printTitles: (patch.printTitles as string | null | undefined) === undefined ? before?.printTitles : (patch.printTitles as string | null) ?? undefined,
     }
   }
   const activePageSetupContext = () => {

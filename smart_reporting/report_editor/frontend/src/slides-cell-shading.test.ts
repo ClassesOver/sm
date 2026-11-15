@@ -3,14 +3,14 @@ import { createEditorShell } from './shell'
 import { createNativeOfficeView } from './native-office-view'
 import { NativeDraft, type NativeDraftIdentity } from './native-draft'
 import type { NativeContextResponse } from './native-api'
-import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
 
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function (this: HTMLDialogElement) { this.open = true } })
   Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function (this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new Event('close')) } })
 })
-afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks() })
+afterEach(() => { document.body.replaceChildren(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 const identity: NativeDraftIdentity = { documentId: 'cell-shading', revision: 1, sourceSha256: 'a'.repeat(64), scope: { database: 'fixture', companyId: 'company', userId: 'user', threadId: 'thread' } }
 const context = { context: { ...identity, format: 'pptx', sourceFile: { sha256: identity.sourceSha256 } }, editingEnabled: true } as unknown as NativeContextResponse
 const store = () => {
@@ -65,7 +65,7 @@ it('folds repeated cell updates, retains noFill and canonical order while whole-
 it('choosing a preset clears old cell overrides; flags and whole borders preserve later cell overrides',async()=>{
  const {shell,draft,view}=await open()
  focus(shell.editor,1);selectValue(shell.editor,'tableShading','#FFF2CC')
- selectValue(shell.editor,'tableStyle','zebraBlue')
+ shell.editor.querySelector<HTMLButtonElement>('[data-table-style-preset="zebraBlue"]')!.click()
  expect(patch(draft)).toEqual({slideIndex:0,elementId:'tbl_1',styleName:'zebraBlue'})
  focus(shell.editor,2);selectValue(shell.editor,'tableShading','none')
  control(shell.editor,'tableBandRow').click();control(shell.editor,'tableAllBorders').click()

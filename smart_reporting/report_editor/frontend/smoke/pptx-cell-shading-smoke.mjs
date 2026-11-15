@@ -129,15 +129,15 @@ try {
   await text.fill('styled cell'); await text.blur()
   await page.locator('[data-ribbon-tab="tableDesign"]').click()
   assert.equal(target.tableCellShadingEditable,true)
-  const style=page.locator('[data-command="tableStyle"]'), shading=page.locator('[data-command="tableShading"]'), whole=page.locator('[data-command="tableShadingWholeTable"]')
+  const style = name => page.locator(`[data-table-style-preset="${name}"]`), shading=page.locator('[data-command="tableShading"]'), whole=page.locator('[data-command="tableShadingWholeTable"]')
   const cell=(row,col)=>page.getByLabel(`表格单元格 ${row+1} 行 ${col+1} 列`,{exact:true})
   const readDraft=()=>page.evaluate(()=>JSON.parse(Object.entries(localStorage).find(([key])=>key.includes('fixture-pptx'))?.[1]??'{"operations":[]}').operations)
-  await style.selectOption('zebraBlue')
+  await style('zebraBlue').click()
   await cell(1,1).focus();await shading.selectOption('#FFF2CC')
   assert.deepEqual((await readDraft())[0].tableStyles[0].cellShadings,[{row:1,col:1,shadingColor:'#FFF2CC'}])
   await whole.click();await shading.selectOption('#FFE6CC')
   assert.equal((await readDraft())[0].tableStyles[0].cellShadings,undefined)
-  await style.selectOption('zebraBlue')
+  await style('zebraBlue').click()
   assert.equal((await readDraft())[0].tableStyles[0].shadingColor,undefined)
   await cell(1,1).focus();await shading.selectOption('#FFF2CC')
   await cell(0,2).focus();await shading.selectOption('#E2EFDA')
@@ -186,7 +186,7 @@ print(json.dumps({'cell':t.cell(1,2).text,'targetFills':['FFF2CC','E2EFDA','none
   activeBytes=savedBytes;activeSha=createHash('sha256').update(savedBytes).digest('hex');activeRevision=2
   await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?smokeRevision=2`);await page.locator('.slides-native-ribbon').waitFor()
   await select.selectOption(target.id);assert.equal(await text.inputValue(),'styled cell')
-  assert.equal(await style.inputValue(),'zebraBlue');await cell(1,1).focus();assert.equal(await shading.inputValue(),'') // Saved source has no pending override; the picker stays at its choose-color placeholder.
+  assert.equal(await style('zebraBlue').getAttribute('aria-pressed'),'true');await cell(1,1).focus();assert.equal(await shading.inputValue(),'') // Saved source has no pending override; the picker stays at its choose-color placeholder.
   assert.deepEqual(pageErrors,[]);assert.deepEqual(failedResponses,[])
   const receipt={ok:true,sourceSha,outputSha:activeSha,independent:JSON.parse(result.stdout),operation:expected[0],productionBuild:true}
   if(process.env.PPTX_SMOKE_EVIDENCE_DIR){const directory=resolve(process.env.PPTX_SMOKE_EVIDENCE_DIR);await mkdir(directory,{recursive:true});await writeFile(join(directory,'source.pptx'),sourceBytes);await writeFile(join(directory,'downloaded.pptx'),downloaded);await writeFile(join(directory,'evidence.json'),JSON.stringify(receipt,null,2))}

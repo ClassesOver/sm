@@ -1,6 +1,7 @@
 import { createOfficeAIEntry } from './office-ai-entry'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
+import { TableMiniPreview } from './vendor/genoffice-slides/components/table-mini-preview'
 import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
 import { SLIDE_TRANSITIONS } from './slides-transitions'
 import { AnimEffectIcon, IconAnimStar, IconPathDiagonal } from './vendor/genoffice-slides/components/icons'
@@ -111,6 +112,7 @@ export interface NativeSlidesRibbon {
   setTransitionEditEnabled(enabled: boolean, reason?: string): void
   setTransitionApplyAllEnabled(enabled: boolean, reason?: string): void
   setAnimationGallery(target: 'shape' | 'media' | null, effect: string): void
+  setTablePresetEnabled(enabled: boolean, reason?: string): void
   cancelAnimationHover(): void
   setLocked(locked: boolean): void
   dispose(): void
@@ -339,7 +341,23 @@ const tabs: Tab[] = [
       { id: 'viewZoomFit', label: 'Fit to Window', sourceIcon: IconFitWindow, sourceActionId: 'onZoomFit' },
     ] },
   ] },
-  { id: 'tableDesign', label: 'Table Design', context: 'table', groups: [{ label: 'Table Styles', controls: [{ id: 'tableStructure', label: 'Rows and Columns', caption: '行列操作', sourceActionId: 'editTableStructure' }, { id: 'tableStyle', label: 'Table Style', caption: '表格样式', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...SLIDES_TABLE_PRESETS.map(item => item.name)], optionLabels: ['来源样式或未选择', ...SLIDES_TABLE_PRESETS.map(item => item.label)] }, { id: 'tableFirstRow', label: '标题行', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableBandRow', label: '斑马纹', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableRtl', label: '从右到左表格', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableShadingWholeTable', label: '底纹作用于整表', sourceActionId: 'onEditTableStyle' }, { id: 'tableShading', label: 'Shading', caption: '底纹', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...TABLE_SHADING_COLORS, 'none'], optionLabels: ['选择底纹', '白色', '浅灰', '浅青', '淡蓝', '灰蓝', '浅黄', '浅橙', '浅桃', '浅绿', '浅紫', '无填充'] }, { id: 'tableAllBorders', label: 'All Borders', caption: '所有边框', sourceActionId: 'onEditTableStyle' }, { id: 'tableNoBorders', label: 'No Borders', caption: '无边框', sourceActionId: 'onEditTableStyle' }] }] },
+  { id: 'tableDesign', label: 'Table Design', context: 'table', groups: [
+    { label: 'Table Styles', controls: [] },
+    { label: 'Table Style Options', controls: [
+      { id: 'tableFirstRow', label: '标题行', kind: 'toggle', sourceActionId: 'onEditTableStyle' },
+      { id: 'tableBandRow', label: '斑马纹', kind: 'toggle', sourceActionId: 'onEditTableStyle' },
+      { id: 'tableRtl', label: '从右到左表格', kind: 'toggle', sourceActionId: 'onEditTableStyle' },
+    ] },
+    { label: 'Shading', controls: [
+      { id: 'tableShadingWholeTable', label: '底纹作用于整表', sourceActionId: 'onEditTableStyle' },
+      { id: 'tableShading', label: 'Shading', caption: '底纹', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...TABLE_SHADING_COLORS, 'none'], optionLabels: ['选择底纹', '白色', '浅灰', '浅青', '淡蓝', '灰蓝', '浅黄', '浅橙', '浅桃', '浅绿', '浅紫', '无填充'] },
+    ] },
+    { label: 'Borders', controls: [
+      { id: 'tableAllBorders', label: 'All Borders', caption: '所有边框', sourceActionId: 'onEditTableStyle' },
+      { id: 'tableNoBorders', label: 'No Borders', caption: '无边框', sourceActionId: 'onEditTableStyle' },
+    ] },
+    { label: 'Rows and Columns', controls: [{ id: 'tableStructure', label: 'Rows and Columns', caption: '行列操作', sourceActionId: 'editTableStructure' }] },
+  ] },
   { id: 'chartDesign', label: 'Chart Design', context: 'chart', groups: [{ label: 'Chart Elements', controls: [{ id: 'chartElements', label: 'Chart Elements', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Styles', controls: [{ id: 'chartDesignPresets', label: 'Chart Colors and Styles', sourceActionId: 'onEditChart', sourceIcon: IconChart }, { id: 'chartPointColors', label: 'Chart Point Colors', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Data', controls: [{ id: 'chartSwitchRowCol', label: 'Switch Row/Column', sourceActionId: 'onEditChart', sourceIcon: IconSwitchRowCol }, { id: 'chartType', label: 'Change Chart Type', sourceActionId: 'onChartType' }, { id: 'chartData', label: 'Edit Data', sourceActionId: 'onChartData' }] }] },
   { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id:'removeBackground',label:'去除背景',sourceActionId:'onPictureCutout' }, { id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'pictureOpacity', label: 'Transparency', sourceActionId: 'onPictureOpacity' }] },
     { label: 'Outline', controls: [
@@ -496,6 +514,15 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
   let animationTarget: 'shape' | 'media' | null = null
   let appliedAnimation = ''
+  let tablePresetReady = false
+  let tablePresetReason: string | undefined
+  const updateTablePresetGallery = () => {
+    for (const element of controls.get('tableStyle') ?? []) {
+      const button = element as HTMLButtonElement
+      button.disabled = locked || !tablePresetReady
+      button.title = tablePresetReady ? button.textContent ?? '' : tablePresetReason ?? '请选择支持样式编辑的来源表格'
+    }
+  }
   let animationHoverTimer: number | undefined
   let animationHoveredButton: HTMLButtonElement | undefined
   const animationFlyouts: Array<{ group: HTMLElement; trigger: HTMLButtonElement; close(): void; setCollapsed(value: boolean): void; inlineWidth: number; foldedWidth: number }> = []
@@ -597,6 +624,26 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       heading.textContent = groupLabel
       group.append(heading)
       let controlHost: HTMLElement = group
+      if (tab.id === 'tableDesign' && groupDefinition.label === 'Table Styles') {
+        group.classList.add('slides-table-style-gallery')
+        controls.set('tableStyle', SLIDES_TABLE_PRESETS.map(preset => {
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.dataset.command = 'tableStyle'
+          button.dataset.tableStylePreset = preset.name
+          button.dataset.sourceAction = 'onEditTableStyle'
+          button.setAttribute('aria-pressed', 'false')
+          button.innerHTML = renderToStaticMarkup(reactElement(TableMiniPreview, preset.preview))
+          const label = document.createElement('span')
+          label.textContent = document.documentElement.lang.toLowerCase().startsWith('zh') ? preset.label : preset.english
+          button.append(label)
+          button.addEventListener('click', () => {
+            if (!button.disabled) options.onAction('tableStyle', preset.name)
+          })
+          group.append(button)
+          return button
+        }))
+      }
       if (tab.id === 'transitions' && groupDefinition.label === 'Transition to This Slide') {
         group.classList.add('slides-transition-gallery')
         controls.set('transition', SLIDE_TRANSITIONS.map(kind => {
@@ -1021,6 +1068,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   updateTransitionApplyAll()
   updateTransitionEdit()
   updateAnimationGallery()
+  updateTablePresetGallery()
   updateCommentEdit()
   updateAIEdit()
 
@@ -1059,6 +1107,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       if (target !== animationTarget) cancelAnimationHover()
       animationTarget = target; appliedAnimation = effect; updateAnimationGallery()
     },
+    setTablePresetEnabled(enabled, reason) { tablePresetReady = enabled; tablePresetReason = reason; updateTablePresetGallery() },
     cancelAnimationHover,
     setSlideOrientationEnabled(enabled) {
       hasWritableSlideSize = enabled
@@ -1078,6 +1127,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     setValue(command, value, hint) {
       for (const element of controls.get(command) ?? []) {
         if (command === 'transition') element.setAttribute('aria-pressed', String(element.dataset.transitionEffect === value))
+        if (command === 'tableStyle') element.setAttribute('aria-pressed', String(element.dataset.tableStylePreset === value))
         if (command === 'pictureOutlineWidth') for (const button of element.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
           button.setAttribute('aria-pressed', String(button.dataset.outlineWidth === value))
         }
@@ -1149,6 +1199,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateTransitionApplyAll()
       updateTransitionEdit()
       updateAnimationGallery()
+      updateTablePresetGallery()
       updateCommentEdit()
       updateAIEdit()
     },

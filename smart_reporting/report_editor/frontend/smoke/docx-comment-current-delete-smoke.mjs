@@ -115,6 +115,7 @@ try{
   await open(1)
   await page.locator('.tiptap').evaluate(element=>element.editor.commands.setTextSelection(3))
   await page.locator('[data-tab-id="review"]').click()
+  await page.locator('[data-action="comment-delete-menu"]').click()
   const remove=page.locator('[data-action="comment-delete-current"]')
   assert.equal(await remove.isVisible(),true);assert.equal(await remove.isEnabled(),true)
   const dialog=page.waitForEvent('dialog'),click=remove.click(),confirm=await dialog;assert.match(confirm.message(),/删除此批注/);await confirm.accept();await click
@@ -145,6 +146,7 @@ assert.equal(sha(downloaded),sha(await readFile(savedPath)),'download URL bytes 
  await page.goto(base+'/reports/v1/native/fixture-current-delete/2');await page.locator('.docx-source-home').waitFor({timeout:60000});await page.locator('[data-tab-id="review"]').click()
  const reopenedRemove=page.locator('[data-action="comment-delete-current"]')
  assert.equal(await reopenedRemove.isDisabled(),true)
+ assert.equal(await page.locator('[data-action="comment-delete-menu"]').isDisabled(),true)
  await page.screenshot({path:join(output,'current-comment-deleted-reopened.png'),fullPage:true})
  const loadedChunks=Object.fromEntries(await Promise.all([...chunks].map(async([path,promise])=>[path,await promise])))
  assert.deepEqual(errors,[])

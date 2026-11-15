@@ -199,6 +199,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeParagraphDialog: (() => void) | undefined
   let closePageBorderDialog: (() => void) | undefined
   let closePageBorderMenu: (() => void) | undefined
+  let closeCommentDeleteMenu: (() => void) | undefined
   let closeWatermarkMenu: (() => void) | undefined
   let closeWatermarkDialog: (() => void) | undefined
   let closeSpecialIndent: (() => void) | undefined
@@ -346,6 +347,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       const resolvedOnly = button.dataset.commentDeleteBatch === 'resolved', reason = commentCommands.deleteAllReason(resolvedOnly)
       button.disabled = reason !== null; button.title = reason ?? button.getAttribute('aria-label') ?? ''
       if (reason) button.setAttribute('aria-description', reason); else button.removeAttribute('aria-description')
+    }
+    const deleteTrigger = body.querySelector<HTMLButtonElement>('[data-action="comment-delete-menu"]')
+    if (deleteTrigger) {
+      const choices = deleteTrigger.parentElement!.querySelectorAll<HTMLButtonElement>('[data-comment-delete-current], [data-comment-delete-batch]')
+      deleteTrigger.disabled = [...choices].every(choice => choice.disabled)
+      const reason = deleteTrigger.disabled ? (choices[0]?.getAttribute('aria-description') ?? null) : null
+      deleteTrigger.title = reason ?? ribbonZh.ribbonDeleteCommentTip
+      if (reason) deleteTrigger.setAttribute('aria-description', reason)
+      else deleteTrigger.removeAttribute('aria-description')
+      if (deleteTrigger.disabled) closeCommentDeleteMenu?.()
     }
   }
   const notesPanel = document.createElement('div')
@@ -831,25 +842,64 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           command.addEventListener('mousedown',event=>event.preventDefault())
           command.addEventListener('click',commentCommands.openNew);items.append(command);continue
         }
-        if (id === 'review' && label === '删除当前批注' && commentCommands?.deleteCurrent) {
-          const visibleLabel = '删除批注'
-          const icon = document.createElement('span'), iconRoot = createRoot(icon)
-          flushSync(() => iconRoot.render(createElement(IconTrash, {size:20})))
-          command.append(icon.firstElementChild!.cloneNode(true)); iconRoot.unmount()
-          command.append(document.createTextNode(visibleLabel)); command.dataset.action = 'comment-delete-current'; command.dataset.commentDeleteCurrent = ''
-          command.setAttribute('aria-label', label)
-          command.addEventListener('mousedown', event => event.preventDefault())
-          command.addEventListener('click', () => { commentCommands.deleteCurrent?.(); refreshCommentNavigation() })
-          items.append(command); refreshCommentNavigation(); continue
-        }
-        if (id === 'review' && (label === '删除已解决批注' || label === '删除全部批注') && commentCommands?.deleteAll) {
-          const resolvedOnly = label === '删除已解决批注'
-          command.textContent = label; command.dataset.action = resolvedOnly ? 'comment-delete-resolved' : 'comment-delete-all'
-          command.dataset.commentDeleteBatch = resolvedOnly ? 'resolved' : 'all'
-          command.setAttribute('aria-label', resolvedOnly ? '删除所有已解决的批注' : '删除文档中的所有批注')
-          command.addEventListener('mousedown', event => event.preventDefault())
-          command.addEventListener('click', () => { commentCommands.deleteAll?.(resolvedOnly); refreshCommentNavigation() })
-          items.append(command); refreshCommentNavigation(); continue
+        if (id === 'review' && ['删除当前批注', '删除已解决批注', '删除全部批注'].includes(label) && (commentCommands?.deleteCurrent || commentCommands?.deleteAll)) {
+          if (label !== '删除当前批注') continue
+          const wrap = document.createElement('div'), menu = document.createElement('div')
+          wrap.className = 'rb-split-wrap'
+          menu.className = 'layout-menu'; menu.hidden = true; menu.dataset.rbPanel = ''
+          menu.setAttribute('role', 'group'); menu.setAttribute('aria-label', ribbonZh.ribbonDeleteComment)
+          command.className = 'rb-big'; command.dataset.action = 'comment-delete-menu'
+          command.setAttribute('aria-expanded', 'false'); command.setAttribute('aria-haspopup', 'true')
+          const icon = document.createElement('span'), caption = document.createElement('span')
+          icon.className = 'rb-big-icon'
+          icon.innerHTML = renderToStaticMarkup(createElement(IconTrash, {size:28})) + renderToStaticMarkup(createElement(IconCaret))
+          caption.textContent = ribbonZh.ribbonDeleteComment
+          command.append(icon, caption)
+          let dismiss: (() => void) | undefined
+          const close = () => {
+            menu.hidden = true
+            command.setAttribute('aria-expanded', 'false')
+            dismiss?.()
+            dismiss = undefined
+            closeCommentDeleteMenu = undefined
+          }
+          const add = (kind: 'current' | 'resolved' | 'all', text: string, run: () => void) => {
+            const choice = document.createElement('button')
+            choice.type = 'button'; choice.textContent = text; choice.dataset.action = 'comment-delete-' + kind
+            choice.setAttribute('aria-label', kind === 'current' ? label : text)
+            if (kind === 'current') choice.dataset.commentDeleteCurrent = ''
+            else choice.dataset.commentDeleteBatch = kind
+            choice.addEventListener('click', () => {
+              if (menu.hidden || choice.disabled) return
+              close()
+              command.focus({ preventScroll: true })
+              run()
+              refreshCommentNavigation()
+            })
+            menu.append(choice)
+          }
+          if (commentCommands.deleteCurrent) add('current', ribbonZh.ribbonDeleteComment, () => commentCommands.deleteCurrent?.())
+          if (commentCommands.deleteAll) {
+            add('resolved', ribbonZh.ribbonDeleteResolvedComments, () => commentCommands.deleteAll?.(true))
+            add('all', ribbonZh.ribbonDeleteAllComments, () => commentCommands.deleteAll?.(false))
+          }
+          wrap.addEventListener('mousedown', event => event.preventDefault())
+          command.addEventListener('click', () => {
+            if (!menu.hidden) { close(); return }
+            menu.hidden = false
+            command.setAttribute('aria-expanded', 'true')
+            command.focus({ preventScroll: true })
+            closeCommentDeleteMenu = close
+            dismiss = installPopoverDismiss(close, { inside: () => [wrap] })
+          })
+          wrap.addEventListener('keydown', event => {
+            if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229 || menu.hidden) return
+            event.stopPropagation()
+            close()
+            command.focus()
+          })
+          wrap.append(command, menu); items.append(wrap)
+          continue
         }
         if (id === 'review' && label === '显示批注' && commentCommands) {
           const icon = document.createElement('span'), iconRoot = createRoot(icon)
@@ -1090,6 +1140,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
+    closeCommentDeleteMenu?.()
     closePageBorderMenu?.()
     closeWatermarkMenu?.()
     if (id !== 'design' && pageColorRoot) {
@@ -1605,6 +1656,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
+    closeCommentDeleteMenu?.()
     closePageBorderMenu?.()
     disposed = true; closeWatermarkMenu?.(); closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); cellBorderControls?.dispose(); numberingValueControl.destroy()
     disposeScroll()

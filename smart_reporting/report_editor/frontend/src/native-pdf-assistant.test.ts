@@ -61,3 +61,25 @@ it('PDF 收起和展开时保留当前任务',async()=>{
   expect(api.pdfAIStart).toHaveBeenCalledOnce()
   binding.dispose()
 })
+
+it('queues Enter while reading and continues after an explicit resume following Stop', async () => {
+  const api = {
+    pdfAIStart: vi.fn().mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue({taskId:'queued',status:'failed'}),
+    pdfAICancel: vi.fn().mockResolvedValue({status:'cancelled'}),
+  }
+  const {root,binding} = fixture(api)
+  binding.open('summarize')
+  await vi.waitFor(()=>expect(api.pdfAIStart).toHaveBeenCalledOnce())
+  const input=root.querySelector('textarea')!
+  input.value='第二条'
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+  expect(input.value).toBe('')
+  await vi.waitFor(()=>expect(root.querySelector('.ai-queue-toggle')?.textContent).toContain('1 条排队中'))
+  root.querySelector<HTMLButtonElement>('[data-pdf-ai="cancel"]')!.click()
+  await vi.waitFor(()=>expect(root.querySelector('.ai-queue-strip')?.getAttribute('data-paused')).toBe('true'))
+  expect(api.pdfAIStart).toHaveBeenCalledOnce()
+  root.querySelector<HTMLButtonElement>('[aria-label="继续排队"]')!.click()
+  await vi.waitFor(()=>expect(api.pdfAIStart).toHaveBeenCalledTimes(2))
+  expect(api.pdfAIStart.mock.calls[1][0]).toMatchObject({instruction:'第二条',action:'summarize'})
+  binding.dispose()
+})
