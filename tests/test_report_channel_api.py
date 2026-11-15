@@ -66,6 +66,8 @@ async def test_channel_word_assistant_uses_server_draft_and_reports_private_stat
             "editId": "task-a", "status": "ready", "accepted": False,
             "proposal": {"text": "synthetic candidate"}, "clientRequestId": kwargs["client_request_id"],
         }
+        assert (await client.get(path + "/task-a")).status_code == 403
+        repository.grant_active.return_value = True
         assert (await client.get(path + "/task-a")).json() == {
             "taskId": "task-a", "status": "ready", "accepted": False,
         }
