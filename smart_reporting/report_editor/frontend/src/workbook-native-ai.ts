@@ -3,6 +3,8 @@ import type { NativeOperation } from './native-draft'
 import { nativeAIProgressListener, mountNativeAIProgress, type NativeAIProgressListener } from './native-ai-progress'
 import { Sparkles, X, Check, Trash2, Undo2, Redo2, createElement } from 'lucide'
 import { bindOfficeAssistantPanel } from './office-assistant-panel'
+import { NativeApiError } from './native-api'
+import { missingNativeAITask, reconnectNativeAITask, temporaryConnectionFailure } from './native-ai-recovery'
 
 type Scope = 'range' | 'workbook'
 export type WorkbookAISelection = { sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number }
@@ -26,9 +28,11 @@ export function createWorkbookNativeAIClient(documentId: string, revision: numbe
     if (payload !== undefined && !csrfToken) throw new Error('缺少原生 AI 编辑授权，请重新打开')
     const response = await fetch(base + '/' + path, { method: payload === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store', signal, ...(path === 'cancel-request' ? { keepalive: true } : {}),
       ...(payload === undefined ? {} : { headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken }, body: JSON.stringify(payload) }) })
-    const body = await response.json()
-    if (!response.ok) throw new Error(body.detail?.message ?? ('AI 请求失败 (' + response.status + ')'))
-    return body as T
+    if (!response.ok) {
+      const body = await response.json().catch(() => null)
+      throw new NativeApiError(response.status, body?.detail?.code ?? '', body?.detail?.message ?? ('AI 请求失败 (' + response.status + ')'))
+    }
+    return await response.json() as T
   }
   return { start: (payload, signal) => request('start', payload, signal), status: (id, signal) => request(encodeURIComponent(id) + '?waitMs=20000', undefined, signal), events,
     accept: (id, payload, signal) => request(encodeURIComponent(id) + '/accept', payload, signal), cancel: id => request(encodeURIComponent(id) + '/cancel', {}),
@@ -97,9 +101,18 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
       if (disposed || turn !== generation) return
       snapshot = identity(quoted)
       panel.querySelector<HTMLElement>('.native-ai-context')!.textContent = '本次冻结范围：' + quoted.label
-      const job = await tasks.run({ expectedSha256: quoted.expectedSha256, operations: quoted.operations, selection: quoted.selection, scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }, activeRequestId, (started, signal) => {
+      const payload = { expectedSha256: quoted.expectedSha256, operations: quoted.operations, selection: quoted.selection, scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }
+      const job = await tasks.run(payload, activeRequestId, (started, signal) => {
         cancel.hidden = false
         progress.start(options.api.events, started.editId, signal, () => !disposed && turn === generation && !options.locked())
+      }, (started, error, signal) => {
+        if (/^[0-9a-f]{64}$/.test(started.editId) && (missingNativeAITask(error) || temporaryConnectionFailure(error))) {
+          return reconnectNativeAITask(
+            signal => options.api.status(started.editId, signal),
+            signal => options.api.start(payload, signal),
+            error, signal,
+          )
+        }
       })
       if (!job || disposed || turn !== generation) return
       if (job.status === 'succeeded' && job.proposal) { show(job); status.textContent = '候选已经引擎核验，请检查差异后明确采纳。' }

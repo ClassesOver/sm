@@ -1,11 +1,12 @@
 import {afterEach,expect,it,vi} from 'vitest'
-import {mountWorkbookNativeAI} from './workbook-native-ai'
+import {mountWorkbookNativeAI, type WorkbookNativeAIClient} from './workbook-native-ai'
+import {NativeApiError} from './native-api'
 
 afterEach(()=>document.body.replaceChildren())
 function setup(){
  const host=document.createElement('div');document.body.append(host)
  const candidate={editId:'edit',status:'succeeded',snapshotSha256:'b'.repeat(64),proposal:{summary:'候选',operations:[]}}
- const api={start:vi.fn(async()=>candidate),status:vi.fn(async()=>candidate),accept:vi.fn(async()=>({operations:[]})),cancel:vi.fn(async()=>({})),cancelRequest:vi.fn(async()=>({}))}
+ const api={start:vi.fn<WorkbookNativeAIClient['start']>(async()=>candidate),status:vi.fn(async()=>candidate),accept:vi.fn(async()=>({operations:[]})),cancel:vi.fn(async()=>({})),cancelRequest:vi.fn(async()=>({}))}
  const apply=vi.fn(async()=>{})
  const view=mountWorkbookNativeAI(host,{api,apply,locked:()=>false,context:async scope=>({scope,expectedSha256:'a'.repeat(64),operations:[],selection:{sheetName:'Sheet',startRow:0,endRow:0,startColumn:0,endColumn:0},label:'Sheet!A1',cells:{}})})
  const input=host.querySelector('textarea')!,form=host.querySelector('form')!
@@ -46,4 +47,20 @@ it('共享侧栏把输入置底并保留真实submit表单关联',async()=>{
  const submit=host.querySelector<HTMLButtonElement>('[type=submit]')!
  expect(submit.form).toBe(host.querySelector('form'))
  input.value='填写';submit.click();await vi.waitFor(()=>expect(api.start).toHaveBeenCalledOnce());view.dispose()
+})
+it('服务重启后复用冻结请求，候选仍须显式采纳', async () => {
+ const {view, api, host, submit, apply} = setup()
+ const candidate = {...await api.status(), editId: 'a'.repeat(64)}
+ api.start.mockResolvedValueOnce({...candidate, status: 'running'})
+ api.start.mockResolvedValueOnce(candidate)
+ api.status.mockRejectedValueOnce(new NativeApiError(404, 'native_ai_job_missing', '任务当前不可见'))
+ view.open()
+ await submit()
+ expect(api.start).toHaveBeenCalledTimes(2)
+ expect(api.start.mock.calls[1][0]).toEqual(api.start.mock.calls[0][0])
+ expect(api.cancelRequest).not.toHaveBeenCalled()
+ expect(apply).not.toHaveBeenCalled()
+ host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()
+ await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce())
+ view.dispose()
 })
