@@ -71,3 +71,28 @@ async def test_pptx_preview_rejects_unapproved_shape():
     )
     with pytest.raises(ValueError, match="pptx_operation_target_unapproved"):
         await PptxTextPreviewEngine(load, propose).prepare(request)
+
+
+@pytest.mark.anyio
+async def test_pptx_preview_rejects_source_changed_during_text_extraction():
+    original, slide_id, shape_id = sample_pptx()
+    scope = DocumentScope(
+        "channel", "grant", "deck", "1", hashlib.sha256(original).hexdigest(),
+        DocumentFormat.PPTX,
+    )
+    reads = 0
+
+    async def load(_):
+        nonlocal reads
+        reads += 1
+        return original if reads < 3 else original + b"changed"
+
+    async def propose(_):
+        return ({"slide_id": slide_id, "shape_id": shape_id, "text": "New"},)
+
+    request = DocumentCandidateRequest(
+        scope, "one", "Rewrite", ({"slide_id": slide_id, "shape_id": shape_id},),
+    )
+    with pytest.raises(PermissionError, match="document_source_changed"):
+        await PptxTextPreviewEngine(load, propose).prepare(request)
+    assert reads == 3
