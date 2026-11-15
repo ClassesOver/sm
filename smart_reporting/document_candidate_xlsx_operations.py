@@ -9,7 +9,7 @@ from typing import Any
 import math
 import unicodedata
 
-from .document_candidate_xlsx_targets import validate_xlsx_selection
+from .document_candidate_xlsx_targets import canonical_xlsx_target, validate_xlsx_selection
 
 
 def validate_xlsx_operations(
@@ -19,8 +19,8 @@ def validate_xlsx_operations(
     validate_xlsx_selection(selection)
     if not operations or len(operations) > 100:
         raise ValueError("xlsx_operations_invalid")
-    allowed = {(item["sheet"], item["range"]) for item in selection}
-    seen: set[tuple[str, str]] = set()
+    allowed = {canonical_xlsx_target(item) for item in selection}
+    seen: set[tuple[str, tuple[int, int], tuple[int, int]]] = set()
     for operation in operations:
         if not isinstance(operation, dict) or set(operation) != {"sheet", "range", "value"}:
             raise ValueError("xlsx_operation_invalid")
@@ -28,7 +28,7 @@ def validate_xlsx_operations(
         validate_xlsx_selection(({
             "sheet": operation["sheet"], "range": operation["range"],
         },))
-        target = (operation["sheet"], operation["range"])
+        target = canonical_xlsx_target(operation)
         if target not in allowed or target in seen:
             raise ValueError("xlsx_operation_target_unapproved")
         seen.add(target)
