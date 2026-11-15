@@ -385,3 +385,52 @@ async def test_gateway_rejects_invalid_adapter_generated_task_ids(returned_task_
             "channel-a", "member", request_id="one", instruction="Edit",
             selection=({"objectId": "one"},),
         )
+
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("error_code", [
+    "xlsx_target_out_of_bounds",
+    "xlsx_preview_protected_sheet",
+    "pptx_operation_target_unapproved",
+    "pptx_preview_target_unsupported",
+    "pdf_rect_invalid",
+    "pdf_annotation_target_unapproved",
+    "pdf_page_out_of_bounds",
+])
+async def test_format_candidate_validation_errors_return_422(error_code):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+
+    identity = ConnectorIdentity("dsh", "member", "session")
+
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def prepare(self, request):
+            raise ValueError(error_code)
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+
+    async def resolve(channel, caller):
+        return scope()
+
+    async def authenticate(request):
+        return identity
+
+    repository = type("Repository", (), {"has_member": AsyncMock(return_value=True)})()
+    app = FastAPI()
+    app.include_router(create_report_channel_router(
+        repository, authenticate, document_gateway=DocumentCandidateGateway(registry, resolve),
+    ))
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="https://reports.test",
+    ) as http:
+        result = await http.post("/reports/v1/channels/channel-a/document-tasks", json={
+            "request_id": "one", "instruction": "Edit",
+            "selection": [{"objectId": "one"}],
+        })
+    assert result.status_code == 422
+    assert result.json()["detail"] == "document_task_invalid"
