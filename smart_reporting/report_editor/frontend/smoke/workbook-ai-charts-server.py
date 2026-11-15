@@ -36,6 +36,7 @@ async def create_app(directory: Path, port: int, *, source: bytes | None = None)
     f = await extract_fixture(directory / 'runtime')
     source = await asyncio.to_thread(source_with_two_charts) if source is None else source
     sparkline = os.environ.get('WORKBOOK_AI_CHARTS_SPARKLINE') == '1'
+    table = os.environ.get('WORKBOOK_AI_CHARTS_TABLE') == '1'
     if sparkline:
         from smart_reporting.report_editor.native_office import patch_office
 
@@ -73,6 +74,9 @@ async def create_app(directory: Path, port: int, *, source: bytes | None = None)
             if sparkline:
                 operation = {'op': 'add_sparkline', 'sheetId': 'Sheet', 'type': 'column',
                              'dataRange': 'B2:C3', 'targetCell': 'B8', 'color': '#214365'}
+            if table:
+                operation = {'op': 'add_table', 'sheetId': 'Sheet', 'range': 'A1:B3', 'name': 'Revenue',
+                             'style': 'TableStyleDark2', 'bandedRows': False}
             if os.environ.get('WORKBOOK_AI_CHARTS_SOURCE_DATA') == '1':
                 operation = ({'op': 'add_chart', 'sheetId': 'Sheet', 'chartType': 'line', 'dataRange': 'A1:B3',
                               'title': '实际来源收入', 'anchorCell': 'E20'} if '新增' in instruction else {
@@ -89,7 +93,8 @@ async def create_app(directory: Path, port: int, *, source: bytes | None = None)
                 operation['arguments']['edits'][0].update(dataLabels='value', dataLabelPosition='center', dataLabelFormat='0.0')
             scripted = ScriptedModel(id='chart-browser', responses=[
                 call('read_sheet_features', {'sheetId': 'Sheet'}, 'features'),
-                call('load_guide', {'guides': ['charts']}, 'guide'),
+                call('load_guide', {'guides': ['table' if table else 'charts']}, 'guide'),
+                *([call('read_range', {'sheetId': 'Sheet', 'range': 'A1:B3'}, 'table-data')] if table else []),
                 *([call('read_range', {'sheetId': 'Sheet', 'range': 'A1:B3'}, 'data')] if os.environ.get('WORKBOOK_AI_CHARTS_SOURCE_DATA') == '1' else []),
                 *([call('read_range', {'sheetId': 'Sheet', 'range': 'B2:C3'}, 'sparkline-data')] if sparkline else []),
                 call('propose_operations', {'operations': [operation], 'summary': instruction}, 'proposal'),

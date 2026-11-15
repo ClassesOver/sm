@@ -202,6 +202,7 @@ export default defineConfig({
           if (/\/src\/workbook-(?:insert-function|function-[^/]+)\.(?:ts|tsx)$/.test(id)) return 'workbook-insert-function'
           if (/\/workbook_engine\/packages\/xlsx-engine\/src\/outline(?:-read)?\.ts$/.test(id) || /\/src\/workbook-outline(?:-(?:gutter(?:-model)?|shortcuts))?\.ts$/.test(id)) return 'workbook-outline'
           if (id.endsWith('/workbook_engine/packages/xlsx-engine/src/table-style-read.ts')) return 'workbook-table-style-read'
+          if (/\/workbook_engine\/(?:packages\/xlsx-engine\/src\/table-(?:add|edit)|bridge\/table-source)\.ts$/.test(id)) return 'workbook-table-write'
           if (/\/src\/workbook-defined-name(?:s|-scope)\.ts$/.test(id) || /\/workbook_engine\/packages\/xlsx-engine\/src\/defined-names\.ts$/.test(id)) return 'workbook-defined-names'
           if (/\/src\/workbook-table-(?:totals|style-edit|convert|create|header-row|filter-button)\.ts$/.test(id)) return 'workbook-table-design'
           if (/\/src\/workbook-(?:data-table|goal-seek)(?:-dialog)?\.ts$/.test(id)) return 'workbook-what-if'

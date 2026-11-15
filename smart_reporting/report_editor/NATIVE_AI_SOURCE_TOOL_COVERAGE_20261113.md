@@ -44,6 +44,8 @@ XLSX `add_chart` 接入本地 GenOffice 参考源码 `19a389b3` 的 `columns` �
 
 XLSX `add_table` 接到原生 Excel 表格写入器。表头从操作重放时的草稿读取，空白补为 `ColumnN`，重复名补数字后缀，并同步表头格与表格列名。支持默认全簿唯一名称、显式名称、内置样式与隔行底纹。尚无法核实实时计算值的公式表头会保留原样并拒绝该候选。
 
+表格浏览器验收使用 `WORKBOOK_AI_CHARTS_TABLE=1` 运行 `frontend/smoke/workbook-ai-charts-smoke.mjs`。Edge 在采纳后、草稿恢复后和下载重开后均从表格设计页读到 Revenue。撤销会移除表格。独立回读确认 A1:B3、内置样式、隔行底纹关闭、人工加粗、两张原图及源数据。修订 4→5 的验收返回 `native_source_review_pending` 并照常签发实际下载。首次构建主引擎块为 431.0 KiB；拆出表格写入模块后为 414.1 KiB，预算保持 428 KiB。拆分后用同一 XLSX 零保存复验，305 个实际资源通过身份校验。两次证据位于 Windows `%TEMP%/genoffice-ai-table-edge` 和 `%TEMP%/genoffice-ai-table-reopen-final`，使用 ScriptedModel 和内存修订仓储。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

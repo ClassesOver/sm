@@ -63,5 +63,20 @@ if __name__ == '__main__':
         assert [sheet[address].value for address in hosts] == [None, None]
         print(json.dumps({'ok': True, 'hosts': hosts, 'references': references,
                           'sha256': hashlib.sha256(saved).hexdigest()}))
+    elif '--table' in sys.argv[2:]:
+        source, saved = [(directory / name).read_bytes() for name in ('source.xlsx', 'table.xlsx')]
+        with ZipFile(BytesIO(source)) as original, ZipFile(BytesIO(saved)) as result:
+            for part in ('xl/charts/chart1.xml', 'xl/charts/chart2.xml', 'xl/drawings/drawing1.xml'):
+                assert original.read(part) == result.read(part)
+        sheet = load_workbook(BytesIO(saved)).active
+        assert len(sheet._charts) == 2 and sheet['A1'].font.bold
+        assert list(sheet.tables) == ['Revenue']
+        table = sheet.tables['Revenue']
+        assert table.ref == 'A1:B3'
+        assert [column.name for column in table.tableColumns] == ['Quarter', 'Amount']
+        assert table.tableStyleInfo.name == 'TableStyleDark2' and not table.tableStyleInfo.showRowStripes
+        assert [(sheet[f'A{row}'].value, sheet[f'B{row}'].value) for row in (2, 3)] == [('Q1', 10), ('Q2', 20)]
+        print(json.dumps({'ok': True, 'table': table.name, 'range': table.ref,
+                          'sha256': hashlib.sha256(saved).hexdigest()}))
     else:
         print(json.dumps(verify(directory), ensure_ascii=False))
