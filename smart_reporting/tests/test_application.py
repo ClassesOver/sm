@@ -220,7 +220,7 @@ def test_default_application_exposes_explicit_context_and_retires_report_editors
     ):
         response = client.get(path)
         assert response.status_code == 410
-        assert response.json()["error"] == "report_editor_retired"
+        assert response.json()["detail"]["code"] == "report_editor_retired"
     # 前端构建产物仍位于 /reports/v1/editor/assets/，由 Office 路由提供，不能被退役规则拦截。
     missing_asset = client.get("/reports/v1/editor/assets/__missing__.js")
     assert missing_asset.status_code == 404

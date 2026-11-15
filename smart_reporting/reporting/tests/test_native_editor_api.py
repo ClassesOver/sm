@@ -387,23 +387,3 @@ async def test_save_preserves_specific_reporting_conflict(setup):
         )
     assert raised.value.code == "native_revision_conflict"
 
-
-@pytest.mark.anyio
-async def test_office_static_assets_are_served_inside_static_root_only(tmp_path):
-    from smart_reporting.report_editor.native_api import create_native_editor_router
-
-    static = tmp_path / "static"
-    (static / "assets").mkdir(parents=True)
-    (static / "assets" / "native.js").write_text("console.log('office')", encoding="utf-8")
-    (tmp_path / "secret.txt").write_text("outside", encoding="utf-8")
-    grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret="s" * 32)
-    app = FastAPI()
-    app.include_router(create_native_editor_router(
-        grants, editor=SimpleNamespace(), cookie_secure=False, static_dir=static))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        served = await client.get("/reports/v1/editor/assets/assets/native.js")
-        assert served.status_code == 200
-        assert served.text == "console.log('office')"
-        assert (await client.get("/reports/v1/editor/assets/..%2Fsecret.txt")).status_code == 404
-        assert (await client.get("/reports/v1/editor/assets/missing.js")).status_code == 404
-

@@ -149,27 +149,6 @@ native_downloads = ReportDownloadHttpService(
     report_download_grants, report_artifact_repository, workspace_service=native_workspace,
 )
 router = APIRouter()
-# 报告工作流与旧 Markdown/幻灯片/工作簿编辑器已退役，旧编辑链接统一返回 410。
-# 单独的 router 最后挂载：Office 路由（含 /reports/v1/editor/assets 静态资源）优先匹配。
-retired_router = APIRouter()
-_RETIRED_EDITOR_PREFIXES = ("/reports/v1/editor", "/reports/v1/slides", "/reports/v1/workbooks")
-
-
-def _retired_editor_response() -> JSONResponse:
-    return JSONResponse(
-        {"error": "report_editor_retired", "message": "旧报告编辑入口已停用，请在 Office 中打开文件。"},
-        status_code=410,
-        headers={"Cache-Control": "no-store"},
-    )
-
-
-for _prefix in _RETIRED_EDITOR_PREFIXES:
-    retired_router.add_api_route(
-        f"{_prefix}/{{retired_path:path}}",
-        _retired_editor_response,
-        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        include_in_schema=False,
-    )
 
 
 async def _log_runtime_identity() -> None:
@@ -461,7 +440,6 @@ def create_base_app(
         cookie_secure=bool(settings.report_public_base_url and settings.report_public_base_url.startswith("https://")),
     ))
     application.include_router(create_quality_warning_router())
-    application.include_router(retired_router)
     application.router.add_event_handler("startup", _refresh_file_logging)
     application.router.add_event_handler("startup", business_ingestion_worker.start)
     application.router.add_event_handler("startup", _log_runtime_identity)
