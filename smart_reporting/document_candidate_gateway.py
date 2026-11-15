@@ -30,7 +30,10 @@ class DocumentCandidateGateway:
 
     @staticmethod
     def _validate_task_id(task_id: Any) -> str:
-        self._validate_task_id(task_id)
+        if not isinstance(task_id, str) or not 1 <= len(task_id) <= 256 or not task_id.isascii() or not all(
+            char.isalnum() or char in "-_" for char in task_id
+        ):
+            raise ValueError("document_task_id_invalid")
         return task_id
 
     async def _scope(self, channel: str, identity: Any) -> DocumentScope:
@@ -63,10 +66,7 @@ class DocumentCandidateGateway:
 
     async def status(self, channel: str, identity: Any, task_id: str) -> dict[str, Any]:
         scope = await self._scope(channel, identity)
-        if not isinstance(task_id, str) or not 1 <= len(task_id) <= 256 or not task_id.isascii() or not all(
-            char.isalnum() or char in "-_" for char in task_id
-        ):
-            raise ValueError("document_task_id_invalid")
+        self._validate_task_id(task_id)
         adapter = self._registry.require(scope.format)
         if await self._scope(channel, identity) != scope:
             raise DocumentCandidateDenied("document_scope_changed")
