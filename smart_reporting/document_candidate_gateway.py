@@ -28,6 +28,11 @@ class DocumentCandidateGateway:
         self._registry = registry
         self._resolve_scope = resolve_scope
 
+    @staticmethod
+    def _validate_task_id(task_id: Any) -> str:
+        self._validate_task_id(task_id)
+        return task_id
+
     async def _scope(self, channel: str, identity: Any) -> DocumentScope:
         scope = await self._resolve_scope(channel, identity)
         if scope is None or scope.channel != channel:
@@ -50,7 +55,7 @@ class DocumentCandidateGateway:
         # Recheck immediately before dispatch as well as after it completes.
         if await self._scope(channel, identity) != scope:
             raise DocumentCandidateDenied("document_scope_changed")
-        task_id = await adapter.prepare(request)
+        task_id = self._validate_task_id(await adapter.prepare(request))
         # The authorization may have been revoked while the adapter awaited.
         if await self._scope(channel, identity) != scope:
             raise DocumentCandidateDenied("document_scope_changed")
