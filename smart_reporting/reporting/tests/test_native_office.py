@@ -29,7 +29,7 @@ def test_empty_operations_preserve_exact_original_bytes(format):
 
 
 @pytest.mark.parametrize('operation', [
-    {'kind':'editSlides','unknown':True}, {'kind':'editSlides','images':[]},
+    {'kind':'editSlides','unknown':True}, {'kind':'editSlides','images':[{'slideIndex':0}]},
     {'kind':'editSlides','chartReplacements':[]}, {'kind':'editSlides','expectedSha256':'fake'},
     {'kind':'editSlides','theme':[]}, {'kind':'editSlides','edits':None},
     {'kind':'editSlides','slideSize':{'cx':1,'cy':1}},

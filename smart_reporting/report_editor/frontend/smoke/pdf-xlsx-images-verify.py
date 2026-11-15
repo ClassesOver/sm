@@ -9,7 +9,7 @@ from pathlib import Path
 from zipfile import ZipFile
 import xml.etree.ElementTree as ET
 from openpyxl import load_workbook
-from PIL import Image, ImageDraw, ImageChops
+from PIL import Image, ImageDraw
 
 NS={'x':'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing','a':'http://schemas.openxmlformats.org/drawingml/2006/main'}
 EMU=12700

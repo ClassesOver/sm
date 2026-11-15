@@ -205,14 +205,6 @@ class SemanticIssue(SemanticModel):
     impact: Literal["unavailable", "warning"]
 
 
-class MetricRequest(SemanticModel):
-    metric_version: MetricVersionRef
-    basis_id: Identity
-    period: Period
-    dimensions: tuple[Identity, ...] = ()
-    filter_values: tuple[PolicyFilter, ...] = ()
-
-
 class MetricResult(SemanticModel):
     metric_version: MetricVersionRef
     basis_id: Identity

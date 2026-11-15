@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 
 from smart_reporting.report_editor.native import NativeEditorService, bind_native_workspace
 from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE, create_native_editor_router
-from smart_reporting.report_editor.native_word_mail_merge_export import export_word_mail_merge, render_word_mail_merge
+from smart_reporting.report_editor.native_word_mail_merge_export import render_word_mail_merge
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
 

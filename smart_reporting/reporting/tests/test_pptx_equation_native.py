@@ -22,7 +22,7 @@ def equation_engine(tmp_path_factory):
     target = isolated / 'dist' / 'edit-pptx.mjs'
     target.parent.mkdir()
     subprocess.run([
-        str(engine / 'node_modules/.bin/esbuild'), 'bridge/edit-pptx.ts', '--bundle', '--platform=node',
+        str(engine / 'node_modules/.bin/esbuild'), 'bridge/edit-pptx.ts', '--bundle', '--platform=node', '--loader:.md=text',
         '--format=esm', f'--outfile={target}', '--log-level=warning',
         '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
     ], cwd=engine, check=True, capture_output=True, text=True)

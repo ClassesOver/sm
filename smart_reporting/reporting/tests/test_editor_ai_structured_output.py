@@ -9,14 +9,10 @@ from agno.models.openai import OpenAIChat
 from pydantic import ValidationError
 
 from smart_reporting.report_editor.slides_ai import (
-    AgnoSlidesProposalPlanner,
     SlidesAIProposal,
-    create_report_slides_ai_service,
 )
 from smart_reporting.report_editor.workbook_ai import (
-    AgnoWorkbookProposalPlanner,
     WorkbookAIProposal,
-    create_report_workbook_ai_service,
 )
 from smart_reporting.reporting.structured_output.agno_compat import _parse_reporting_response_model
 from smart_reporting.reporting.structured_output.wire_schema import (
@@ -26,21 +22,6 @@ from smart_reporting.reporting.structured_output.wire_schema import (
 
 def _model() -> OpenAIChat:
     return OpenAIChat(id="qwen3.8-flash", api_key="test", base_url="https://dashscope.example/v1")
-
-
-@pytest.mark.parametrize(
-    ("factory", "planner_type", "schema"),
-    [
-        (create_report_slides_ai_service, AgnoSlidesProposalPlanner, SlidesAIProposal),
-        (create_report_workbook_ai_service, AgnoWorkbookProposalPlanner, WorkbookAIProposal),
-    ],
-)
-def test_editor_ai_factories_use_structured_generator_agents(factory, planner_type, schema):
-    service = factory(_model(), object())
-
-    assert isinstance(service.planner, planner_type)
-    assert service.planner.agent.output_schema is schema
-    assert service.planner.agent.tools == []
 
 
 @pytest.mark.parametrize("schema", [SlidesAIProposal, WorkbookAIProposal])

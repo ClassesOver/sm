@@ -98,7 +98,7 @@ def test_ribbon_style_preserves_ppr_run_defaults_and_all_other_parts():
 @pytest.mark.parametrize('key', ['color', 'underline', 'strike', 'italic'])
 def test_ribbon_style_clears_each_majority_property_without_touching_opaque(key):
     doc = Document(); doc.styles.add_style('RibbonCustom', WD_STYLE_TYPE.PARAGRAPH); p = doc.add_paragraph()
-    a = p.add_run('ABC'); b = p.add_run('D')
+    a = p.add_run('ABC'); p.add_run('D')
     if key == 'color':
         from docx.shared import RGBColor
         a.font.color.rgb = RGBColor(0x12, 0x34, 0x56)

@@ -24,7 +24,7 @@ from smart_reporting.report_editor.native_workbook_read_ai import AgnoNativeWork
 from smart_reporting.report_editor.workbook_ai import AgnoWorkbookProposalPlanner
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.report_editor.workbook_native_ai_api import create_native_workbook_ai_router
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 from smart_reporting.reporting.tests.test_native_pdf_extract import extract_fixture
 

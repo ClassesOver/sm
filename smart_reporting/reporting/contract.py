@@ -27,7 +27,6 @@ from .semantics.request_types import SHA256_PATTERN as SHA256_PATTERN
 from .semantics.request_types import Identity, PolicyVersionRef, ReportQuestion
 from .type_normalization import normalize_data_type
 
-REPORT_WORKFLOW_SCOPE_STATE_KEY = "report_workflow_scope"
 
 _CONNECTION_KEYS = frozenset(
     {
@@ -46,23 +45,6 @@ _CONNECTION_KEYS = frozenset(
         "username",
     }
 )
-_PRESENTATION_REQUEST_PATTERN = re.compile(
-    r"(?:(?<![A-Za-z0-9])pptx?(?![A-Za-z0-9])|power\s*point|slides?|slide\s+deck|presentation\s+deck|"
-    r"幻灯片|演示文稿|演示稿|做成演示|汇报用演示)",
-    re.IGNORECASE,
-)
-_PRESENTATION_NEGATION_PATTERN = re.compile(
-    r"(?:不(?:要|用|需要|做|生成|想要)|无需|不用|不要再|no\s+(?:need\s+for\s+)?|without\s+)",
-    re.IGNORECASE,
-)
-
-
-_WORKBOOK_REQUEST_PATTERN = re.compile(
-    r"(?:(?<![A-Za-z0-9])xlsx?(?![A-Za-z0-9])|excel|spreadsheet|workbook|工作簿|电子表格)",
-    re.IGNORECASE,
-)
-_WORD_REQUEST_PATTERN = re.compile(r"(?<![A-Za-z0-9])(?:word|docx)(?![A-Za-z0-9])", re.IGNORECASE)
-_PDF_REQUEST_PATTERN = re.compile(r"(?<![A-Za-z0-9])pdf(?![A-Za-z0-9])", re.IGNORECASE)
 
 
 # document 仅兼容历史的 PDF/Word 双产物请求；新运行默认单独交付 PDF。
@@ -70,25 +52,6 @@ DeliveryFormat = Annotated[
     Literal["xlsx", "pptx", "pdf", "docx", "document"],
     BeforeValidator(lambda value: "docx" if value == "word" else value),
 ]
-REPORT_DELIVERY_FORMATS: frozenset[str] = frozenset(("xlsx", "pptx", "pdf", "docx", "document"))
-
-
-def infer_delivery_format(prompt: str) -> DeliveryFormat:
-    """旧调用的确定性回退；自然语言主路径使用语义规范化结果。"""
-    formats = set()
-    for pattern, format_name in ((_PRESENTATION_REQUEST_PATTERN, "pptx"),
-                                 (_WORKBOOK_REQUEST_PATTERN, "xlsx"),
-                                 (_WORD_REQUEST_PATTERN, "docx"),
-
-                                 (_PDF_REQUEST_PATTERN, "pdf")):
-        for match in pattern.finditer(prompt):
-            prefix = prompt[max(0, match.start() - 12):match.start()]
-            prefix = re.split(r"[，,。；;！？!?\n]", prefix)[-1]
-            if not _PRESENTATION_NEGATION_PATTERN.search(prefix):
-                formats.add(format_name)
-    if len(formats) == 1:
-        return formats.pop()
-    return "pdf"
 
 
 class ReportPeriod(StrictModel):
@@ -259,44 +222,6 @@ class ReportRequestEnvelope(StrictModel):
         except Exception as error:
             raise ReportingError("report_request_invalid", "报表请求不符合 v1 契约。") from error
 
-    def workflow_payload(self, *, default_source_ids: tuple[str, ...]) -> dict[str, Any]:
-        payload = self.model_dump(mode="json", by_alias=True, exclude_none=True, exclude_unset=True)
-        payload["sourceIds"] = list(self.source_ids or default_source_ids)
-        return payload
-
-    def period_windows(
-        self, *, granularity: Literal["date", "month", "year"] = "date"
-    ) -> ReportPeriodWindows:
-        """按请求声明生成比较窗口；物理边界相同的角色共享 queryWindowId。"""
-        from .data_source.period import build_period_windows
-
-        generated = build_period_windows(
-            self.period.start,
-            self.period.end,
-            include_yoy="yoy" in self.comparison_roles,
-            include_mom="mom" in self.comparison_roles,
-            granularity=granularity,
-        )
-        by_bounds: dict[tuple[date, date], str] = {}
-        windows: list[ReportPeriodWindow] = []
-        for item in generated.windows:
-            bounds = (item.start, item.end)
-            query_id = by_bounds.setdefault(
-                bounds,
-                "window-"
-                + hashlib.sha256(
-                    f"{granularity}:{item.start.isoformat()}:{item.end.isoformat()}".encode()
-                ).hexdigest()[:24],
-            )
-            windows.append(
-                ReportPeriodWindow(
-                    role=item.role,
-                    period=ReportPeriod(start=item.start, end=item.end),
-                    queryWindowId=query_id,
-                )
-            )
-        return ReportPeriodWindows(windows=tuple(windows))
-
 
 class ReportPromptInput(StrictModel):
     version: Literal["1"] = "1"
@@ -387,24 +312,6 @@ class ReportingWorkflowInput(StrictModel):
         if self.prompt is not None:
             return ReportPromptInput.model_validate(payload)
         return ReportRequestEnvelope.from_untrusted(payload)
-
-
-def parse_reporting_workflow_input(value: str) -> ReportingWorkflowInput:
-    """按 CLI 与 AgentOS 共用规则解析自然语言或 v1 Envelope JSON。"""
-
-    normalized = str(value or "").strip()
-    if not normalized:
-        raise ReportingError("report_request_invalid", "报表请求不能为空。")
-    try:
-        parsed = json.loads(normalized)
-    except ValueError:
-        parsed = {"version": "1", "prompt": normalized}
-    if not isinstance(parsed, dict):
-        raise ReportingError("report_request_invalid", "报表请求不符合 v1 契约。")
-    try:
-        return ReportingWorkflowInput.model_validate(parsed)
-    except Exception as error:
-        raise ReportingError("report_request_invalid", "报表请求不符合 v1 契约。") from error
 
 
 class ReportingAgent(StrictModel):

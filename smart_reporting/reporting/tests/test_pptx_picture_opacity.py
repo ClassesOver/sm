@@ -10,7 +10,7 @@ from pptx.dml.color import RGBColor
 from pptx.enum.dml import MSO_LINE_DASH_STYLE
 from pptx.util import Pt
 
-from smart_reporting.report_editor.native_office import _pptx_arguments, inspect_office, patch_office
+from smart_reporting.report_editor.native_office import _pptx_arguments, patch_office
 from smart_reporting.reporting.tests.test_pptx_crop_arrange import _crop, _png, _presentation, _target
 
 

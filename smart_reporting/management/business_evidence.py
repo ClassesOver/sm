@@ -18,7 +18,6 @@ from ..reporting.business_knowledge.retrieval import (
     EvidenceRelease,
     EvidenceSearchReceipt,
     ReleasedDocument,
-    ReportEvidenceSearchReceipt,
     is_applicable,
 )
 from ..reporting.semantics.models import Identity
@@ -322,35 +321,3 @@ class BusinessEvidenceService:
         except (OSError, ValueError) as error:
             raise ManagementError('management_document_original_unavailable', '原件缺失或身份已变化，暂时无法读取。', 409) from error
 
-    async def search_report(self, bases, *, run_id, scope, user_id, thread_id, kind, query) -> ReportEvidenceSearchReceipt:
-        basis, release, authorized_rows = await self._report_access(bases,
-            run_id=run_id, scope=scope, user_id=user_id, thread_id=thread_id, kind=kind)
-        if release is None:
-            return ReportEvidenceSearchReceipt(basis_id=basis.id, kind=kind, issue_codes=('background_release_unavailable',))
-        request = self._report_query(basis, query)
-
-        async def revalidate(saved):
-            async def read_original(hit, row):
-                await self._read_report_original(basis.scope_id, hit, row)
-            return await self._revalidate_release(release, saved, authorized_rows, read_original)
-
-        result = await self._search_release(release, request, authorized_rows, revalidate)
-        return ReportEvidenceSearchReceipt(basis_id=basis.id, kind=kind, search=result)
-
-    async def revalidate_report(self, bases, *, run_id, scope, user_id, thread_id,
-        saved: ReportEvidenceSearchReceipt) -> ReportEvidenceSearchReceipt:
-        saved = ReportEvidenceSearchReceipt.model_validate(saved.model_dump())
-        basis, release, authorized_rows = await self._report_access(bases,
-            run_id=run_id, scope=scope, user_id=user_id, thread_id=thread_id, kind=saved.kind)
-        if saved.basis_id == basis.id and release is None and saved.kind == 'background' and saved.search is None:
-            return ReportEvidenceSearchReceipt(basis_id=basis.id, kind=saved.kind, issue_codes=('background_release_unavailable',))
-        if (saved.basis_id != basis.id or release is None or saved.search is None
-            or saved.search.release_id != release.release_id
-            or saved.search.request != self._report_query(basis, saved.search.request.query)):
-            return ReportEvidenceSearchReceipt(basis_id=basis.id, kind=saved.kind, issue_codes=('report_evidence_identity_invalid',))
-
-        async def read_original(hit, row):
-            await self._read_report_original(basis.scope_id, hit, row)
-
-        result = await self._revalidate_release(release, saved.search, authorized_rows, read_original)
-        return ReportEvidenceSearchReceipt(basis_id=basis.id, kind=saved.kind, search=result)

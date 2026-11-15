@@ -8,7 +8,6 @@ from typing import Any, Literal, Protocol
 from pydantic import Field, model_validator
 
 from ..contract import SHA256_PATTERN, StrictModel
-from ..models import ReportingError
 
 CONFIG_FILE_NAME = "report-data-sources.json"
 
@@ -203,7 +202,3 @@ class ReportSourceRegistryConfig:
     sources: dict[str, DataSourceConfig]
     config_paths: tuple[Path, ...]
 
-    def require_defaults(self) -> tuple[str, ...]:
-        if not self.default_source_ids:
-            raise ReportingError("report_default_source_missing", "服务端未配置默认报表数据源。")
-        return self.default_source_ids

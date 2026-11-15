@@ -157,6 +157,7 @@ def test_tools_require_complete_authorized_read_and_freeze_scope(source):
     assert context['blocks'][0]['blockId'] == table['blockId']
     with pytest.raises(ReportingError):
         tools.read_blocks(['outside'])
+    # 按分页协议读到 nextOffset 为空；未读完前仍不得登记候选。
     page = tools.read_blocks([table['blockId']])
     while page['nextOffset'] is not None:
         with pytest.raises(ReportingError, match='完整读取'):

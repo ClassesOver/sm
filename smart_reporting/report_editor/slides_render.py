@@ -71,7 +71,3 @@ def validate_slide_edits(edits: Any) -> list[dict[str, Any]]:
     return edits
 
 
-def validate_preview_edits(payload: Any, expected_sha256: str) -> list[dict[str, Any]]:
-    if not isinstance(payload, dict) or payload.get("expectedSha256") != expected_sha256:
-        raise ReportingError("report_slides_conflict", "PPTX 已发生变化，请重新载入。")
-    return validate_slide_edits(payload.get("edits"))

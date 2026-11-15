@@ -37,10 +37,3 @@ def configure_tracing(
         raise TracingConfigurationError("agent_tracing_initialization_failed") from error
 
 
-def flush_tracing(timeout_millis: int = 30_000) -> bool:
-    from opentelemetry import trace as trace_api
-
-    force_flush = getattr(trace_api.get_tracer_provider(), "force_flush", None)
-    if not callable(force_flush):
-        return True
-    return bool(force_flush(timeout_millis))

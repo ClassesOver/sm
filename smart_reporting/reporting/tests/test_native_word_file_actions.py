@@ -11,9 +11,9 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from smart_reporting.report_editor.native import NativeEditorService
+from smart_reporting.reporting.models import ReportingError
 from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE, create_native_editor_router
 from smart_reporting.reporting.delivery.docx_native import inspect_docx, patch_docx
-from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_editor_api import Repository as BaseRepository
 from smart_reporting.report_editor.native_models import NativeEditorContext
 from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication, Repository as PublicationRepository

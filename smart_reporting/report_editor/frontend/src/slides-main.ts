@@ -33,7 +33,6 @@ import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart
 import { DEFAULT_SHAPE_FILL, LINE_SHAPE_KINDS, SHAPE_GALLERY_GROUPS, SHAPE_PRESETS } from './vendor/genoffice-slides/components/shape-gallery-data'
 import { PARAGRAPH_LIST_COMMANDS, BULLET_GLYPHS, paragraphCommandPatch, projectParagraphs, uniformParagraphValue, type ParagraphFormatting, type ParagraphSourceFormatting, type ParagraphList } from './slides-paragraph'
 import { createElement, ArrowDown, ArrowUp, Copy, Download, Redo2, Save, Sparkles, Trash2, Undo2, X } from 'lucide'
-import { binaryRefreshLock, mountOfficeReportRefresh } from './binary-refresh'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
@@ -859,7 +858,6 @@ let printOpening=false
 let structureDialogGeneration = 0
 let savedRevision = false
 let saving = false
-let refresh: Awaited<ReturnType<typeof mountOfficeReportRefresh>>
 let loading = true
 let mutationPending = 0
 const locked = () => disposed || saving || savedRevision || nativeDraft?.closed === true || nativeDraft?.saving === true
@@ -3967,7 +3965,7 @@ aiAccept.addEventListener('click', async () => {
 })
 
 const save = async () => {
-  if (refresh?.busy || locked() || mutationPending || saveButton.disabled) return
+  if (locked() || mutationPending || saveButton.disabled) return
   stopBrush()
   if (native && (!commentPane.flush()||notesPane&&!notesPane.flush())) return
   if(chartFormatPane&&!chartFormatPane.flush())return
@@ -3980,7 +3978,6 @@ const save = async () => {
   customShowDialog?.dispose();customShowDialog=undefined
   mediaPickerController?.abort();mediaPlayback?.dispose();mediaPlayback=undefined
   saving = true
-  refresh?.update()
   closeStructureDialog()
   ++previewSequence
   clearTimeout(previewTimer)
@@ -4051,23 +4048,12 @@ const save = async () => {
     if (!savedRevision) setEditingLocked(false)
     updateNativeHistory()
     saveButton.disabled = savedRevision
-    refresh?.update()
   }
 }
 saveButton.addEventListener('click', save)
 
 async function start() {
   try {
-    if (!native && basePath.startsWith('/reports/v1/slides/')) refresh = await mountOfficeReportRefresh(root.closest<HTMLElement>('.report-app') ?? root.parentElement!, 'pptx', request, {
-      saving: () => saving,
-      blocked: () => loading || locked() || mutationPending > 0 || saveButton.disabled,
-      flush: () => {
-        if (native && !commentPane.flush() || notesPane && !notesPane.flush() || chartFormatPane && !chartFormatPane.flush()
-          || geometryPane && !geometryPane.flush() || shapeFormatPane && !shapeFormatPane.flush()) throw new Error('请先完成当前输入')
-        if (document.activeElement instanceof HTMLElement && root.contains(document.activeElement)) document.activeElement.blur()
-      }, dirty: () => dirty || imageEdits.length > 0 || chartTools.pendingEdits().length > 0,
-      save, setRefreshing: binaryRefreshLock(root, saveButton, () => saving || savedRevision || disposed),
-    })
     deck = await request<Deck>('deck')
     nativeRibbon?.setLayouts(deck.layouts ?? [])
     order.push(...deck.slides.map(slide => slide.slideIndex))
@@ -4122,7 +4108,6 @@ async function start() {
       if (nativeDraft?.dirty) refreshCanvasPreview()
     }).catch(() => { canvasStatus.textContent = '画布暂不可用，显示 PDF 兼容预览；可继续使用对象面板编辑。' })
     loading = false
-    refresh?.update()
     stateLabel.textContent = dirty ? '有未保存修改' : '可编辑'
     statusMessage.textContent = nativeDraft?.persistenceError ?? `${deck.slides.length} 页 · 已核验 PPTX 身份${dirty ? ' · 已恢复本地草稿' : ''}`
   } catch (error) {
@@ -4150,7 +4135,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; void namingController?.cancel().catch(() => {}); pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('wheel',onCanvasWheel);canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); rehearsalDialog?.remove(); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; void namingController?.cancel().catch(() => {}); pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('wheel',onCanvasWheel);canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); rehearsalDialog?.remove(); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

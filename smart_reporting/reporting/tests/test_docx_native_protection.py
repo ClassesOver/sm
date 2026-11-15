@@ -7,7 +7,7 @@ from lxml import etree
 import pytest
 
 from smart_reporting.reporting.delivery import docx_native
-from smart_reporting.reporting.tests.test_docx_comment_text_host import NS, W, isolated_bundled_engine
+from smart_reporting.reporting.tests.test_docx_comment_text_host import W, isolated_bundled_engine
 
 
 def _source():

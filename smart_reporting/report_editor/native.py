@@ -21,7 +21,6 @@ from ..reporting.models import ReportingError
 from ._file_identity import read_verified_file
 from .native_models import (
     NATIVE_ARTIFACT_MEDIA,
-    NATIVE_MEDIA,
     NativeEditorContext,
     NativeFormat,
     NativeScope,
@@ -31,7 +30,6 @@ from .native_pdf_contract import PDF_CONFIRMATION_KINDS, pdf_review_issues
 from .native_xlsx_threads import xlsx_thread_actor
 
 _MAX_FILE_BYTES = 24 * 1024 * 1024
-_MEDIA = NATIVE_MEDIA
 
 
 def bind_native_workspace(workspace: Any, scope: NativeScope) -> str:

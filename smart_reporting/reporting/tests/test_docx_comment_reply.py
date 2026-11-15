@@ -7,7 +7,7 @@ from lxml import etree as E
 import pytest
 
 from smart_reporting.reporting.delivery import docx_native
-from smart_reporting.reporting.tests.test_docx_comment_text_host import isolated_bundled_engine, source, W, R
+from smart_reporting.reporting.tests.test_docx_comment_text_host import isolated_bundled_engine, source, W
 
 W14 = 'http://schemas.microsoft.com/office/word/2010/wordml'
 W15 = 'http://schemas.microsoft.com/office/word/2012/wordml'

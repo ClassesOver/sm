@@ -7,7 +7,7 @@ from zipfile import ZipFile
 from docx import Document
 from lxml import etree
 from smart_reporting.reporting.delivery.docx_native import inspect_docx, patch_docx
-from smart_reporting.reporting.tests.test_docx_comment_reply import NS, W, W15, modern_source, rewrite
+from smart_reporting.reporting.tests.test_docx_comment_reply import NS, W15, modern_source, rewrite
 
 p=json.load(sys.stdin)
 if p['mode']=='create':

@@ -3,7 +3,6 @@
 from dataclasses import dataclass, field
 
 from sqlglot import exp, parse_one
-from sqlglot.optimizer.scope import traverse_scope
 
 from ..models import ReportingError
 from ..semantics.models import Scalar, StatisticalPolicy
@@ -123,64 +122,3 @@ class PolicyProfileAdapter:
         return await self.adapter.query_bound(normalized, parameters)
 
 
-class PolicyQueryAdapter:
-    """对已审核探索SQL的每个物理表应用口径；CTE名称按SQL作用域解析。"""
-
-    def __init__(self, adapter, *, policy: StatisticalPolicy, catalog: tuple[CatalogTable, ...]):
-        self.adapter, self.policy, self.catalog = adapter, policy, catalog
-        self.config, self.allowed_tables = adapter.config, adapter.allowed_tables
-
-    def _prepare(self, sql):
-        normalized = validate_starrocks_read_only_sql(sql, database=self.config.database,
-            allowed_tables=self.allowed_tables)
-        statement = parse_one(normalized, read='starrocks')
-        if any(statement.find_all(exp.Placeholder)):
-            raise ReportingError('query_parameters_invalid', '探索SQL不得自行声明服务端绑定参数。')
-        registered = {(table.database.casefold(), table.name.casefold()): table
-            for table in self.catalog}
-        parameters, checks = {}, []
-        for query_scope in traverse_scope(statement):
-            for alias, (_, source) in query_scope.selected_sources.items():
-                if not isinstance(source, exp.Table):
-                    continue
-                key = ((source.db or self.config.database).casefold(), source.name.casefold())
-                table = registered.get(key)
-                if table is None:
-                    raise ReportingError('metric_field_denied', '探索查询引用未登记目录对象。')
-                scope = compile_profile_scope(table, self.policy, self.catalog)
-                checks.extend(scope.checks)
-                relation = scope.relation.copy()
-                for placeholder in relation.find_all(exp.Placeholder):
-                    original = placeholder.name
-                    name = f'p{len(parameters)}'
-                    parameters[name] = scope.parameters[original]
-                    placeholder.set('this', name)
-                # 原database.table.column变为派生关系别名.column；不改列本身身份。
-                for column in query_scope.columns:
-                    if column.db and (column.db.casefold(), column.table.casefold()) == key:
-                        column.set('db', None)
-                        column.set('catalog', None)
-                        column.set('table', exp.to_identifier(alias))
-                source.replace(relation.subquery(alias))
-        expanded = validate_starrocks_read_only_sql(statement.sql(dialect='starrocks'),
-            database=self.config.database, allowed_tables=self.allowed_tables)
-        return expanded, parameters, tuple(dict.fromkeys(checks))
-
-    async def materialize(self, sql, *, max_bytes=None):
-        expanded, parameters, checks = self._prepare(sql)
-
-        async def verify_joins():
-            for check in checks:
-                result = await self.adapter.query(check)
-                if result.columns != ('violation_count',) or len(result.rows) != 1 or len(result.rows[0]) != 1:
-                    raise ReportingError('metric_join_check_invalid', '探索关联核对结果无效。')
-                if result.rows[0][0] != 0:
-                    raise ReportingError('join_fanout', '探索关联维度键不唯一，不能使用该结果。')
-
-        await verify_joins()
-        result = await self.adapter.materialize_bound(expanded, parameters, max_bytes=max_bytes)
-        await verify_joins()
-        return result
-
-    async def aclose(self):
-        await self.adapter.aclose()
