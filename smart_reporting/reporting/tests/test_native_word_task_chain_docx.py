@@ -44,15 +44,22 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 
 class SyntheticMcpTransport:
-    def __init__(self):
+    def __init__(self, *, accept_normalized_instruction=False):
         self.calls = 0
         self.proposed = asyncio.Event()
         self.release = None
         self.mode = 'valid'
+        self.accept_normalized_instruction = accept_normalized_instruction
+
+    def validate_instruction(self, instruction):
+        if self.accept_normalized_instruction:
+            assert instruction.strip() == 'Rewrite selected paragraph'
+            return
+        assert instruction == '  Rewrite selected paragraph  '
 
     async def run(self, *, server, ticket, task_id, instruction):
         self.calls += 1
-        assert instruction == '  Rewrite selected paragraph  '
+        self.validate_instruction(instruction)
         async with asgi_server(server) as endpoint:
             async with endpoint.client(auth=ticket) as client:
                 context = (await client.call_tool('get_document_context', {'task_id': task_id})).data
@@ -465,12 +472,84 @@ async def test_existing_http_start_status_explicit_accept_save_and_independent_d
         'Selected original', 'UNCHANGED CONTROL', 'Bearer ', 'native-word-task-mcp-v1'])
 
 
-@pytest.mark.parametrize('revoke', [False, True])
-async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(chain, word_repository, revoke):
+@pytest.fixture
+def dsh_word_instruction_client(tmp_path):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from shutil import which
+    from threading import Thread
+
+    from smart_reporting.report_acp_client import ReportAcpClient
+
+    inputs = []
+
+    class Model(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            if not self.path.endswith("/messages"):
+                self.send_error(404)
+                return
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            inputs.append(body["messages"])
+            message = dict(
+                id="synthetic-word", type="message", role="assistant", model=body["model"],
+                content=[], stop_reason=None, usage=dict(input_tokens=1, output_tokens=0),
+            )
+            events = [
+                dict(type="message_start", message=message),
+                dict(type="content_block_start", index=0, content_block=dict(type="text", text="")),
+                dict(type="content_block_delta", index=0,
+                     delta=dict(type="text_delta", text="Rewrite selected paragraph")),
+                dict(type="content_block_stop", index=0),
+                dict(type="message_delta", delta=dict(stop_reason="end_turn"), usage=dict(output_tokens=4)),
+                dict(type="message_stop"),
+            ]
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            for event in events:
+                self.wfile.write(
+                    (f"event: {event['type']}\ndata: {json.dumps(event)}\n\n").encode()
+                )
+
+    node = os.getenv("REPORT_ACP_TEST_NODE") or which("node")
+    assert node
+    entry = Path(os.environ["REPORT_ACP_TEST_DSH_BIN"]).resolve(strict=True)
+    loader = os.getenv("REPORT_ACP_TEST_NODE_LOADER")
+    command = (*((loader,) if loader else ()), node, str(entry), "acp")
+    with ThreadingHTTPServer(("127.0.0.1", 0), Model) as model:
+        thread = Thread(target=model.serve_forever, daemon=True)
+        thread.start()
+        env = dict(os.environ, DSH_HOME=str(tmp_path / "dsh-profile"),
+                   DEEPSEEK_API_KEY="synthetic-local-only",
+                   DEEPSEEK_BASE_URL=f"http://127.0.0.1:{model.server_port}")
+        try:
+            yield lambda: ReportAcpClient(command, tmp_path, env=env)
+        finally:
+            model.shutdown()
+            thread.join()
+    assert len(inputs) == 1
+    assert "Rewrite the following request" in json.dumps(inputs[0])
+
+
+@pytest.mark.parametrize(('revoke', 'acp_host'), [
+    pytest.param(False, False, id='False'),
+    pytest.param(True, False, id='True'),
+    pytest.param(False, True, id='acp-http'),
+])
+async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(
+    chain, word_repository, revoke, acp_host, request,
+):
+    import hmac
+    from contextlib import asynccontextmanager
+    from pathlib import Path
     from uuid import uuid4
 
     from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+    from smart_reporting.report_channel_acp import ReportChannelAcp
     from smart_reporting.report_channel_editor import report_channel_editor_authorizer
+    from smart_reporting.report_channel_host import mount_report_channel
     from smart_reporting.report_channel_mcp import create_report_channel_mcp
     from smart_reporting.report_channel_repository import ReportChannelRepository
     from smart_reporting.report_channel_word import ChannelWordDraft, ReportChannelWordAssistant
@@ -487,12 +566,20 @@ async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(chain, 
     draft = ChannelWordDraft(session, chain.payload['expectedSha256'], [],
         chain.payload['selection'], token_hash(raw_session))
     origin = 'https://127.0.0.1:4296' if os.getenv('WORD_CHANNEL_TLS_CERT') else 'https://reports.test'
+    hold = os.getenv('WORD_CHANNEL_HOST_SECONDS') if not revoke and not acp_host else None
+    connector_token = 'synthetic-connector'
+    if hold:
+        assert os.getenv('WORD_CHANNEL_TLS_CERT') and os.getenv('WORD_CHANNEL_TLS_KEY')
+        assert 1 <= int(hold) <= 3600
+        connector_token = Path(os.environ['WORD_CHANNEL_HOST_TOKEN_FILE']).read_text(encoding='ascii').strip()
+        assert len(connector_token) >= 32 and all(33 <= ord(char) <= 126 for char in connector_token)
 
     async def resolve_draft(channel_id):
         return draft if channel_id == channel else None
 
     async def authenticate(request):
-        if request.headers.get('Authorization') == 'Bearer synthetic-connector':
+        authorization = request.headers.get('Authorization', '').encode()
+        if hmac.compare_digest(authorization, f'Bearer {connector_token}'.encode()):
             return ConnectorIdentity('dsh', 'synthetic-subject', channel)
         return None
 
@@ -502,17 +589,36 @@ async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(chain, 
         return None
 
     assistant = ReportChannelWordAssistant(chain.ai, resolve_draft, channels)
+    acp_factory = None
+    if acp_host and os.getenv("REPORT_ACP_TEST_DSH_BIN"):
+        acp_factory = request.getfixturevalue("dsh_word_instruction_client")
+        # The ACP preparation step returns a trimmed instruction.
+        chain.transport.accept_normalized_instruction = True
     app = FastAPI()
     router = create_report_channel_router(channels, authenticate,
         authorize_editor=report_channel_editor_authorizer(chain.editor, resolve_channel, allowed_origin=origin),
         public_origin=origin,
         editor_path=lambda _: chain.base.removesuffix('/api'),
-        delegate_word=assistant.start, word_status=assistant.status)
-    if not revoke and (directory := os.getenv('WORD_CHANNEL_VIDEO_DIR')):
-        await record_channel_review(chain, router, origin, directory)
+        delegate_word=assistant.start, word_status=assistant.status,
+        acp=ReportChannelAcp(channels, acp_factory or (lambda: pytest.fail('Word HTTP must not start ACP')),
+                            durable=acp_factory is not None)
+        if acp_host else None)
+    if hold:
+        await record_channel_review(chain, router, origin, None, hold_seconds=int(hold),
+                                    connector_token=connector_token)
         return
-    app.include_router(router)
-    server = create_report_channel_mcp(app, origin=origin)
+    if not revoke and (directory := os.getenv('WORD_CHANNEL_VIDEO_DIR')):
+        await record_channel_review(chain, router, origin, directory, prepare_with_acp=acp_factory is not None)
+        if acp_factory is not None:
+            grant = await channels.member_grant(channel, ConnectorIdentity('dsh', 'synthetic-subject', channel))
+            assert grant is not None
+            binding = await channels.acp_binding(grant)
+            assert binding is not None and binding.session_id
+        return
+    if acp_host:
+        mount_report_channel(app, router, origin=origin)
+    else:
+        app.include_router(router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url=origin,
                            cookies={NATIVE_SESSION_COOKIE: raw_session}) as issuer:
         invitation = await issuer.post('/reports/v1/channels/invitations',
@@ -521,8 +627,41 @@ async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(chain, 
         assert invitation.status_code == 201, invitation.text
     if revoke:
         chain.transport.release = asyncio.Event()
-    async with asgi_server(server) as endpoint, endpoint.client(auth='synthetic-connector') as connector:
-        joined = (await connector.call_tool('join_report_channel', {'share_link': invitation.json()['url']})).data
+    @asynccontextmanager
+    async def channel_calls():
+        if not acp_host:
+            server = create_report_channel_mcp(app, origin=origin)
+            async with asgi_server(server) as endpoint, endpoint.client(auth='synthetic-connector') as connector:
+                async def call(tool, arguments):
+                    return (await connector.call_tool(tool, arguments)).data
+
+                yield call
+            return
+        async with AsyncClient(transport=ASGITransport(app=app), base_url=origin,
+                               headers={'Authorization': 'Bearer synthetic-connector'}) as connector:
+            assert (await connector.get('/reports/channel-mcp')).status_code == 404
+            assert (await connector.get('/reports/join')).json()['wordCandidates']['pathField'] == 'wordTasksPath'
+            async def call(tool, arguments):
+                if tool == 'join_report_channel':
+                    response = await connector.post('/reports/v1/channels/invitations/exchange',
+                        json={'reference': arguments['share_link'].split('#', 1)[1]})
+                    joined = response.raise_for_status().json()
+                    return {**joined, 'editorUrl': origin + joined['editorPath']}
+                path = f"/reports/v1/channels/{arguments['channel']}/word-tasks"
+                if tool == 'delegate_report_word_task':
+                    response = await connector.post(path, json={
+                        **{key: arguments[key] for key in ('request_id', 'instruction')},
+                        'prepare_with_acp': acp_factory is not None,
+                    })
+                    task = response.raise_for_status().json()
+                    return {**task, 'reviewUrl': origin + task['reviewPath']}
+                assert tool == 'report_word_task_status'
+                return (await connector.get(f"{path}/{arguments['task_id']}")).raise_for_status().json()
+
+            yield call
+
+    async with channel_calls() as call:
+        joined = await call('join_report_channel', {'share_link': invitation.json()['url']})
         assert joined['channel'] == channel
         editor_path = joined['editorUrl'].removeprefix(origin)
         async with AsyncClient(transport=ASGITransport(app=chain.app), base_url='http://test',
@@ -530,8 +669,8 @@ async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(chain, 
             assert (await ungranted.get(editor_path)).status_code in {401, 403}
             assert (await ungranted.get(editor_path + '/api/context')).status_code in {401, 403}
         assert (await chain.client.get(editor_path)).status_code == 200
-        delegated = (await connector.call_tool('delegate_report_word_task', {'channel': channel,
-            'request_id': 'channel-word', 'instruction': chain.payload['instruction']})).data
+        delegated = await call('delegate_report_word_task', {'channel': channel,
+            'request_id': 'channel-word', 'instruction': chain.payload['instruction']})
         task_id = delegated['taskId']
         assert delegated['reviewUrl'] == f"{joined['editorUrl']}#word-task={task_id}"
         assert delegated['status'] == 'running'
@@ -547,13 +686,13 @@ async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(chain, 
             return
         done = await settled(chain, task_id)
         assert done['status'] == 'succeeded' and not done['accepted'], done
-        assert (await connector.call_tool('report_word_task_status', status_query)).data == {
+        assert await call('report_word_task_status', status_query) == {
             'taskId': task_id, 'status': 'succeeded', 'accepted': False}
         accepted = await chain.client.post(chain.base + f'/ai/{task_id}/accept', headers=chain.headers,
             json={'expectedSha256': draft.source_sha256, 'snapshotSha256': done['snapshotSha256'],
                   'operations': []})
         assert accepted.status_code == 200, accepted.text
-        assert (await connector.call_tool('report_word_task_status', status_query)).data['accepted'] is True
+        assert (await call('report_word_task_status', status_query))['accepted'] is True
         saved = await chain.client.post(chain.base + '/save', headers=chain.headers,
             json={'requestId': 'channel-word-save', 'expectedSha256': draft.source_sha256,
                   'operations': accepted.json()['operations']})
@@ -563,7 +702,10 @@ async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(chain, 
             NativeScope.model_validate(native['scope']), candidate='Synthetic candidate')
 
 
-async def record_channel_review(chain, router, share_origin, directory):
+async def record_channel_review(chain, router, share_origin, directory, *, hold_seconds=None,
+                                connector_token='synthetic-connector', prepare_with_acp=False):
+    from contextlib import nullcontext
+
     from playwright.async_api import async_playwright
 
     from smart_reporting.report_editor.native_models import NativeScope
@@ -581,8 +723,24 @@ async def record_channel_review(chain, router, share_origin, directory):
     try:
         async with asyncio.timeout(10):
             while not server.started:
+                if serving.done():
+                    await serving
+                    raise RuntimeError('Synthetic channel host exited before startup')
                 await asyncio.sleep(.05)
-        async with Client(origin + '/reports/channel-mcp', auth='synthetic-connector') as connector, async_playwright() as playwright:
+        if hold_seconds is not None:
+            async with Client(origin + '/reports/channel-mcp', auth=connector_token) as connector:
+                tools = {tool.name for tool in await connector.list_tools()}
+                assert {'join_report_channel', 'delegate_report_word_task', 'report_word_task_status'} <= tools
+            print(f'Synthetic report host ready for {hold_seconds}s at {origin}/reports/channel-mcp', flush=True)
+            await asyncio.sleep(hold_seconds)
+            return
+        headers = {'Authorization': f'Bearer {connector_token}'}
+        transport = (
+            nullcontext() if router.acp_enabled else Client(origin + '/reports/channel-mcp', auth=connector_token)
+        )
+        async with transport as connector, AsyncClient(
+            transport=ASGITransport(app=browser_app), base_url=origin, headers=headers,
+        ) as private_api, async_playwright() as playwright:
             args = ['--single-process', '--disable-dev-shm-usage']
             if tls_cert:
                 args.append('--ignore-certificate-errors-spki-list=' + os.environ['WORD_CHANNEL_TLS_SPKI'])
@@ -596,24 +754,49 @@ async def record_channel_review(chain, router, share_origin, directory):
                 await page.locator('[data-action=word-edit-ai]').click(timeout=90_000)
                 await page.get_by_text('分享报告频道', exact=True).click()
                 await page.get_by_label('DSH 连接器身份').fill('synthetic-subject')
+                if router.acp_enabled:
+                    await page.add_style_tag(content='input[readonly], textarea[readonly] { -webkit-text-security: disc; }')
                 await page.get_by_role('button', name='生成邀请链接').click()
                 share = page.get_by_label('报告频道邀请链接')
                 await share.wait_for()
-                joined = (await connector.call_tool('join_report_channel', {'share_link': await share.input_value()})).data
+                share_link = await share.input_value()
+                if router.acp_enabled:
+                    assert (await private_api.get('/reports/channel-mcp')).status_code == 404
+                    response = await private_api.post('/reports/v1/channels/invitations/exchange',
+                        json={'reference': share_link.split('#', 1)[1]})
+                    joined = response.raise_for_status().json()
+                    joined['editorUrl'] = origin + joined['editorPath']
+                else:
+                    joined = (await connector.call_tool('join_report_channel', {'share_link': share_link})).data
                 channel = joined['channel']
                 if tls_cert:
                     assert joined['editorUrl'] == page.url
                 await page.get_by_label('频道消息', exact=True).fill('Please edit the synthetic selection')
                 await page.get_by_role('button', name='发送到频道').click()
                 await page.get_by_text('编辑者 · Please edit the synthetic selection', exact=True).wait_for()
-                messages = (await connector.call_tool('read_report_channel', {'channel': channel})).data
+                if router.acp_enabled:
+                    messages = (await private_api.get(joined['messagesPath'])).raise_for_status().json()
+                    (await private_api.post(joined['messagesPath'], json={
+                        'message_id': 'synthetic-reply', 'text': 'Preparing a candidate',
+                    })).raise_for_status()
+                else:
+                    messages = (await connector.call_tool('read_report_channel', {'channel': channel})).data
+                    await connector.call_tool('post_report_channel_message', {'channel': channel,
+                        'message_id': 'synthetic-reply', 'text': 'Preparing a candidate'})
                 assert messages[0]['text'] == 'Please edit the synthetic selection'
-                await connector.call_tool('post_report_channel_message', {'channel': channel,
-                    'message_id': 'synthetic-reply', 'text': 'Preparing a candidate'})
                 await page.get_by_text('连接器 · Preparing a candidate', exact=True).wait_for()
-                delegated = (await connector.call_tool('delegate_report_word_task', {'channel': channel,
-                    'request_id': 'channel-word', 'instruction': chain.payload['instruction']})).data
-                review_url = delegated['reviewUrl']
+                payload = {'request_id': 'channel-word', 'instruction': chain.payload['instruction']}
+                if router.acp_enabled:
+                    response = await private_api.post(joined['wordTasksPath'], json={
+                        **payload, 'prepare_with_acp': prepare_with_acp,
+                    })
+                    delegated = response.raise_for_status().json()
+                    review_url = origin + delegated['reviewPath']
+                else:
+                    delegated = (await connector.call_tool(
+                        'delegate_report_word_task', {'channel': channel, **payload},
+                    )).data
+                    review_url = delegated['reviewUrl']
                 assert review_url == f"{joined['editorUrl']}#word-task={delegated['taskId']}"
                 await page.get_by_role('button', name='查看 Word 任务进度和候选').click(timeout=30_000)
                 panel = page.get_by_role('region', name='AI 编辑选区')
@@ -911,7 +1094,10 @@ async def test_reconnecting_word_service_waits_for_current_lease_holder(chain, m
         assert original["status"] == "succeeded", original
         assert restored["editId"] == first["editId"]
         assert restored["status"] == "succeeded", restored
-        assert restored["proposal"] == original["proposal"]
+        # 重连投影重新渲染预览；docx ZIP 的 DOS 时间戳（2 秒分辨率）使两次渲染
+        # 字节可能不同，previewSha256 不具稳定性。此处只断言持久化任务结果一致。
+        assert restored["proposal"]["summary"] == original["proposal"]["summary"]
+        assert restored["proposal"]["operations"] == original["proposal"]["operations"]
         assert chain.transport.calls == 1
     finally:
         chain.transport.release.set()

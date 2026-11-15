@@ -1,17 +1,29 @@
 """Opt-in channel invitation exchange for a host with connector authentication."""
 
+import asyncio
 import secrets
 import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .report_channel_invitation import Invitation
+from .report_channel_acp import (
+    ReportChannelAcpCapacity,
+    ReportChannelAcpConflict,
+    ReportChannelAcpDenied,
+)
+from .report_acp_client import ReportAcpError
 from .report_channel_repository import ReportChannelRepository
+from .document_candidate_gateway import DocumentCandidateDenied, DocumentCandidateGateway
+
+if TYPE_CHECKING:
+    from .report_channel_acp import ReportChannelAcp, ReportAcpConversation
 
 
 @dataclass(frozen=True)
@@ -46,6 +58,33 @@ class DelegateRequest(BaseModel):
 
     request_id: str = Field(min_length=1, max_length=128)
     instruction: str = Field(min_length=1, max_length=2000)
+    prepare_with_acp: bool = False
+
+
+class DocumentTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    instruction: str = Field(min_length=1, max_length=2000)
+    selection: list[dict] = Field(min_length=1, max_length=100)
+
+
+class AcpMessage(ChannelMessage):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    @field_validator("text")
+    @classmethod
+    def nonblank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("ACP message cannot be blank")
+        return value
+
+
+class ReportChannelRouter(APIRouter):
+    def __init__(self, authenticate: Callable[[Request], Awaitable[ConnectorIdentity | None]]):
+        super().__init__()
+        self.authenticate = authenticate
+        self.acp_enabled = False
 
 
 def create_report_channel_router(
@@ -57,8 +96,44 @@ def create_report_channel_router(
     editor_path: Callable[[str], str] | None = None,
     delegate_word: Callable[[str, ConnectorIdentity, DelegateRequest], Awaitable[dict]] | None = None,
     word_status: Callable[[str, ConnectorIdentity, str], Awaitable[dict]] | None = None,
-) -> APIRouter:
-    router = APIRouter()
+    acp: "ReportChannelAcp | None" = None,
+    document_gateway: DocumentCandidateGateway | None = None,
+) -> ReportChannelRouter:
+    router = ReportChannelRouter(authenticate)
+    router.acp_enabled = acp is not None
+    acp_conversations: dict[tuple[str, ConnectorIdentity], ReportAcpConversation] = {}
+    acp_restore_lock = asyncio.Lock()
+
+    async def acp_turn(channel: str, identity: ConnectorIdentity, text: str, message_id: str) -> str:
+        try:
+            bound = acp_conversations.get((channel, identity))
+            if bound is None and acp is not None:
+                async with acp_restore_lock:
+                    # Concurrent requests must share the same restored instance.
+                    bound = acp_conversations.get((channel, identity))
+                    if bound is None:
+                        bound = await acp.restore(channel, identity)
+                        if bound is not None:
+                            acp_conversations[(channel, identity)] = bound
+            if bound is None:
+                raise ReportChannelAcpDenied("Report channel membership required")
+            return await bound.prompt(identity, text, message_id=message_id)
+        except ReportChannelAcpDenied:
+            raise HTTPException(403, "report_channel_membership_required") from None
+        except ReportChannelAcpConflict as error:
+            raise HTTPException(409, str(error)) from None
+        except ReportChannelAcpCapacity as error:
+            raise HTTPException(429, str(error)) from None
+        except (ReportAcpError, TimeoutError, OSError):
+            raise HTTPException(502, "report_channel_acp_unavailable") from None
+
+    if acp is not None:
+        @router.post("/reports/v1/channels/{channel}/acp/messages")
+        async def acp_message(request: Request, channel: str, payload: AcpMessage):
+            identity = await authenticate(request)
+            if identity is None:
+                raise HTTPException(401, "connector_authentication_required")
+            return {"reply": await acp_turn(channel, identity, payload.text, "chat:" + payload.message_id)}
 
     def report_editor_path(channel: str) -> str:
         path = editor_path(channel)
@@ -80,11 +155,82 @@ def create_report_channel_router(
             raise HTTPException(403, "report_channel_membership_required")
         return identity
 
+    if document_gateway is not None:
+        @router.post("/reports/v1/channels/{channel}/document-tasks", status_code=202)
+        async def create_document_task(request: Request, channel: str, payload: DocumentTaskRequest):
+            identity = await require_member(request, channel)
+            try:
+                task_id = await document_gateway.prepare(
+                    channel, identity, request_id=payload.request_id,
+                    instruction=payload.instruction, selection=tuple(payload.selection),
+                )
+            except (DocumentCandidateDenied, PermissionError):
+                raise HTTPException(403, "document_channel_authorization_required") from None
+            except ValueError as error:
+                if str(error) in {"document_adapter_unavailable", "document_request_id_conflict"}:
+                    raise HTTPException(409, str(error)) from None
+                if str(error) in {
+                    "document_request_id_invalid", "document_instruction_invalid",
+                    "document_selection_invalid", "document_selection_mismatch",
+                    "document_task_id_invalid",
+                    "xlsx_selection_required", "xlsx_target_invalid", "xlsx_target_duplicate",
+                    "xlsx_target_out_of_bounds", "xlsx_sheet_invalid",
+                    "xlsx_range_reversed", "xlsx_operations_invalid",
+                    "xlsx_operation_invalid", "xlsx_operation_target_unapproved",
+                    "xlsx_formula_or_value_unsafe", "xlsx_value_too_long",
+                    "xlsx_value_non_finite", "xlsx_preview_target_invalid",
+                    "xlsx_preview_formula_or_merged_cell", "xlsx_preview_protected_sheet",
+                    "xlsx_preview_hidden_sheet",
+                    "pptx_selection_invalid", "pptx_target_invalid",
+                    "pptx_target_duplicate", "pptx_operations_invalid",
+                    "pptx_operation_invalid", "pptx_operation_target_unapproved",
+                    "pptx_text_invalid", "pptx_preview_target_unsupported",
+                    "pdf_selection_invalid", "pdf_target_invalid",
+                    "pdf_page_invalid", "pdf_rect_invalid",
+                    "pdf_annotations_invalid", "pdf_annotation_invalid",
+                    "pdf_annotation_target_unapproved", "pdf_annotation_note_invalid",
+                    "pdf_password_required", "pdf_page_out_of_bounds",
+                }:
+                    raise HTTPException(422, "document_task_invalid") from None
+                raise
+            return {"taskId": task_id}
+
+        @router.get("/reports/v1/channels/{channel}/document-tasks/{task_id}")
+        async def get_document_task(request: Request, channel: str, task_id: str):
+            identity = await require_member(request, channel)
+            try:
+                return await document_gateway.status(channel, identity, task_id)
+            except (DocumentCandidateDenied, PermissionError):
+                raise HTTPException(403, "document_channel_authorization_required") from None
+            except ValueError as error:
+                if str(error) in {"document_adapter_unavailable", "document_request_id_conflict"}:
+                    raise HTTPException(409, str(error)) from None
+                if str(error) in {
+                    "document_request_id_invalid", "document_instruction_invalid",
+                    "document_selection_invalid", "document_task_id_invalid",
+                }:
+                    raise HTTPException(422, "document_task_invalid") from None
+                raise
+
     if delegate_word is not None:
         @router.post("/reports/v1/channels/{channel}/word-tasks", status_code=202)
         async def delegate(request: Request, channel: str, payload: DelegateRequest):
             identity = await require_member(request, channel)
             path = report_editor_path(channel) if editor_path is not None else None
+            if payload.prepare_with_acp:
+                if acp is None:
+                    raise HTTPException(422, "report_channel_acp_unavailable")
+                instruction = await acp_turn(
+                    channel, identity,
+                    "Rewrite the following request as one concise instruction for a Word "
+                    "report assistant. Return only the instruction. Keep the requested scope "
+                    "and facts unchanged. Do not use tools.\n\n" + payload.instruction,
+                    "word:" + payload.request_id,
+                )
+                instruction = instruction.strip()
+                if not instruction or len(instruction) > 2000:
+                    raise HTTPException(502, "report_channel_acp_instruction_invalid")
+                payload = DelegateRequest(request_id=payload.request_id, instruction=instruction)
             result = await delegate_word(channel, identity, payload)
             if path is not None:
                 task_id = result["taskId"]
@@ -99,14 +245,68 @@ def create_report_channel_router(
             return await word_status(channel, identity, task_id)
 
     @router.get("/reports/join")
-    async def invitation_instructions():
+    async def invitation_instructions(response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if router.acp_enabled:
+            return {
+                "version": 1,
+                "action": "join-report-channel",
+                "referenceLocation": "fragment",
+                "authentication": "host-issued-connector-bearer",
+                "exchange": {
+                    "method": "POST",
+                    "path": "/reports/v1/channels/invitations/exchange",
+                    "referenceField": "reference",
+                },
+                "conversation": {
+                    "method": "POST", "pathField": "acpMessagesPath",
+                    "messageField": "text", "messageIdField": "message_id", "replyField": "reply",
+                    "agentProtocol": "acp",
+                },
+                **({
+                    "wordCandidates": {
+                        "method": "POST",
+                        "pathField": "wordTasksPath",
+                        "requestFields": ["request_id", "instruction"],
+                        "prepareWithAcpField": "prepare_with_acp",
+                        "status": {"method": "GET", "pathSuffix": "/{taskId}"},
+                        "reviewPathField": "reviewPath",
+                    },
+                } if delegate_word is not None and word_status is not None and editor_path is not None else {}),
+                "savePolicy": "human-review-accept-save",
+            }
         return {
             "version": 1,
             "action": "join-report-channel",
             "mcpTool": "join_report_channel",
             "referenceLocation": "fragment",
             "exchange": {"method": "POST", "path": "/reports/v1/channels/invitations/exchange"},
-            "instructions": "通过连接器认证兑换邀请。加入后打开 editorPath，使用 messagesPath 在频道协作。",
+            "mcp": {
+                "path": "/reports/channel-mcp", "transport": "streamable-http",
+                "authentication": "host-issued-connector-bearer", "automaticSetup": False,
+            },
+            "join": {"tool": "join_report_channel", "argument": "share_link", "value": "complete-original-share-link"},
+            "workflow": [
+                {"action": "open-editor", "resultField": "editorUrl", "requires": "authorized-browser-editor-session"},
+                {"tool": "delegate_report_word_task", "arguments": ["channel", "request_id", "instruction"]},
+                {"tool": "report_word_task_status", "arguments": ["channel", "task_id"]},
+                {"action": "present-candidate", "resultField": "reviewUrl", "requires": "human-review"},
+                {"action": "reopen-and-verify", "requires": "human-save"},
+            ],
+            "conversation": {"readTool": "read_report_channel", "postTool": "post_report_channel_message"},
+            "savePolicy": "human-review-accept-save",
+            "instructions": (
+                "这是报告频道的接入说明，读取此页面不会兑换邀请，也不代表已经加入。"
+                "MCP 地址相对于此链接来源解析；使用客户端受支持的连接器配置和宿主认证流程接入，"
+                "不要在聊天中索取密码或令牌。链接不能自动安装连接器，也不能代替身份认证。"
+                "接入后把用户提供的完整原始链接（保留 # 后的片段）作为 share_link 传给 join_report_channel；"
+                "片段不会随网页请求发送，不能从此页面恢复。"
+                "使用返回的 channel 进行聊天与任务委派。通过客户端受支持的浏览器操作打开 editorUrl；"
+                "浏览器须具备该报告的编辑会话，必要时走宿主正常登录流程。文本抓取不算打开编辑器。"
+                "智能报告助手负责生成 Word 候选；用返回的 taskId 查询进度，向用户展示 reviewUrl。"
+                "用户审阅、采纳并保存后重新打开核对；不得自动替用户采纳或宣称未经验证的保存成功。"
+            ),
         }
 
     async def conversation(request: Request, channel: str, after: int, message=None):
@@ -167,6 +367,12 @@ def create_report_channel_router(
             if channel is None:
                 raise HTTPException(403, "report_channel_editor_required")
             await repository.revoke(channel, connector=payload.connector, subject=payload.subject)
+            for key in list(acp_conversations):
+                bound_channel, identity = key
+                if (bound_channel, identity.connector, identity.subject) == (
+                    channel, payload.connector, payload.subject,
+                ):
+                    acp_conversations.pop(key, None)
             return Response(status_code=204)
 
     @router.post("/reports/v1/channels/invitations/exchange")
@@ -190,11 +396,23 @@ def create_report_channel_router(
             )
         except ValueError:
             raise HTTPException(403, "invalid_report_channel_invitation") from None
-        if editor_path is None:
-            return member
+        acp_result = {}
+        if acp is not None:
+            try:
+                bound = await acp.bind(member.channel, identity)
+            except ReportChannelAcpDenied:
+                raise HTTPException(403, "report_channel_membership_required") from None
+            key = (member.channel, identity)
+            previous = acp_conversations.get(key)
+            if previous is None or not bound.matches_binding(previous):
+                acp_conversations[key] = bound
+            acp_result["acpMessagesPath"] = (
+                f"/reports/v1/channels/{quote(member.channel, safe='')}/acp/messages"
+            )
         return {
             "channel": member.channel,
-            "editorPath": paths[member.channel],
+            **acp_result,
+            **({"editorPath": paths[member.channel]} if editor_path is not None else {}),
             "messagesPath": f"/reports/v1/channels/{quote(member.channel, safe='')}/messages",
             **({"wordTasksPath": f"/reports/v1/channels/{quote(member.channel, safe='')}/word-tasks"}
                if delegate_word is not None else {}),

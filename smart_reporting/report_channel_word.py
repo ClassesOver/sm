@@ -35,14 +35,18 @@ class ReportChannelWordAssistant:
         self.resolve_draft = resolve_draft
         self.repository = repository
 
+    @staticmethod
+    def _snapshot(draft: ChannelWordDraft) -> ChannelWordDraft:
+        return ChannelWordDraft(
+            draft.session, draft.source_sha256, deepcopy(draft.operations),
+            deepcopy(draft.selection), draft.session_reference,
+        )
+
     async def _draft(self, channel: str) -> ChannelWordDraft:
         draft = await self.resolve_draft(channel)
         if draft is None:
             raise HTTPException(409, "report_channel_word_draft_unavailable")
-        draft = ChannelWordDraft(
-            draft.session, draft.source_sha256, deepcopy(draft.operations),
-            deepcopy(draft.selection), draft.session_reference,
-        )
+        draft = self._snapshot(draft)
         context = await self.ai.editor.context_for_session(draft.session)
         if context.format != "docx":
             raise HTTPException(409, "report_channel_word_draft_unavailable")
@@ -57,9 +61,14 @@ class ReportChannelWordAssistant:
     def _status(job: dict) -> dict:
         return {"taskId": job["editId"], "status": job["status"], "accepted": job["accepted"]}
 
-    async def start(self, channel: str, identity: ConnectorIdentity, payload: DelegateRequest) -> dict:
+    async def start(
+        self, channel: str, identity: ConnectorIdentity, payload: DelegateRequest, *,
+        validated_draft: ChannelWordDraft | None = None, expected_grant: str | None = None,
+    ) -> dict:
+        # Capture caller-owned nested data before the first authorization await.
+        draft = self._snapshot(validated_draft) if validated_draft is not None else None
         grant = await self.repository.member_grant(channel, identity)
-        if grant is None:
+        if grant is None or (expected_grant is not None and grant != expected_grant):
             raise HTTPException(403, "report_channel_membership_required")
 
         async def authorized() -> bool:
@@ -67,7 +76,9 @@ class ReportChannelWordAssistant:
 
         request_hash = hashlib.sha256(f"{grant}:{payload.request_id}".encode()).hexdigest()[:63]
         try:
-            draft = await self._draft(channel)
+            if draft is None:
+                draft = await self._draft(channel)
+            # Draft resolution may await I/O while the invitation is revoked.
             if not await authorized():
                 raise HTTPException(403, "report_channel_membership_required")
             job = await self.ai.start_edit(

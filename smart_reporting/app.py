@@ -8,6 +8,7 @@ from loguru import logger as loguru_logger
 from starlette.concurrency import run_in_threadpool
 
 from .context_management import validate_configured_tiktoken_cache
+from .report_channel_api import ReportChannelRouter
 from .http.identity import (
     requires_workspace_capability,
     verified_report_request,
@@ -375,7 +376,7 @@ native_editor.office_saved = office_documents.saved
 
 
 def create_base_app(
-    context: ApplicationContext, *, report_channel_router: APIRouter | None = None,
+    context: ApplicationContext, *, report_channel_router: ReportChannelRouter | None = None,
 ) -> FastAPI:
     application = FastAPI(title="开发智能体服务")
     if report_channel_router is not None:
