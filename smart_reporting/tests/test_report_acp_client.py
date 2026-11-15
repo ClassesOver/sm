@@ -5,13 +5,13 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from smart_reporting.report_acp_client import ReportAcpClient, ReportAcpError
-from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
-from smart_reporting.report_channel_host import mount_report_channel
 from smart_reporting.report_channel_acp import (
     ReportChannelAcp,
     ReportChannelAcpConflict,
     ReportChannelAcpDenied,
 )
+from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+from smart_reporting.report_channel_host import mount_report_channel
 
 
 @pytest.fixture
@@ -453,3 +453,131 @@ async def test_acp_restore_failure_uses_safe_http_status(failure, status):
                                    json={"message_id": "one", "text": "hello"})
     assert response.status_code == status
     assert "private" not in response.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("shutdown_failure", [False, True])
+async def test_durable_revocation_cancels_turn_and_preserves_unknown_receipt(shutdown_failure):
+    import asyncio
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    identity = ConnectorIdentity("dsh", "synthetic", "session")
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    class Repository:
+        active = True
+        receipt = None
+
+        async def member_grant(self, channel, caller):
+            return "grant" if self.active and caller == identity else None
+
+        async def enable_acp_binding(self, grant):
+            return True
+
+        @asynccontextmanager
+        async def acp_turn_lock(self, grant):
+            yield True
+
+        async def acp_binding(self, grant):
+            return SimpleNamespace(session_id=None)
+
+        async def acp_receipt(self, grant, message_id):
+            return self.receipt
+
+        async def set_acp_session(self, *args):
+            return True
+
+        async def reserve_acp_turn(self, grant, message_id, digest, **kwargs):
+            self.receipt = SimpleNamespace(request_digest=digest, reply=None)
+            return "created"
+
+    repository = Repository()
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def open_session(self, resume=None):
+            return "session-id"
+
+        async def prompt(self, message):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                if shutdown_failure:
+                    raise ReportAcpError("synthetic shutdown failure") from None
+                raise
+
+    conversation = await ReportChannelAcp(repository, Client, durable=True).bind("report-a", identity)
+    pending = asyncio.create_task(conversation.prompt(identity, "hello", message_id="first"))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        repository.active = False
+        done, _ = await asyncio.wait({pending}, timeout=2)
+        assert done, "revocation must stop a durable in-flight turn"
+        with pytest.raises(ReportChannelAcpDenied):
+            await pending
+        assert cancelled.is_set()
+        repository.active = True
+        with pytest.raises(ReportChannelAcpConflict, match="outcome_unknown"):
+            await conversation.prompt(identity, "hello", message_id="first")
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_revoked_turn_closes_actual_acp_subprocess(tmp_path):
+    import asyncio
+
+    identity = ConnectorIdentity("dsh", "synthetic", "session")
+    started = asyncio.Event()
+    processes = []
+
+    class Repository:
+        active = True
+
+        async def member_grant(self, *args):
+            return "grant" if self.active else None
+
+    repository = Repository()
+    peer = """
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request['method'] == 'initialize':
+        result = {'protocolVersion': 1}
+    elif request['method'] == 'session/new':
+        result = {'sessionId': 'synthetic'}
+    else:
+        # Wait for the parent to close stdin during cancellation.
+        sys.stdin.read()
+        break
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+"""
+
+    class Client(ReportAcpClient):
+        async def prompt(self, text):
+            processes.append(self._process)
+            started.set()
+            return await super().prompt(text)
+
+    conversation = await ReportChannelAcp(
+        repository, lambda: Client((sys.executable, "-u", "-c", peer), tmp_path),
+    ).bind("channel", identity)
+    pending = asyncio.create_task(conversation.prompt(identity, "hello", message_id="first"))
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        repository.active = False
+        with pytest.raises(ReportChannelAcpDenied):
+            await asyncio.wait_for(pending, 5)
+        assert processes[0].returncode is not None
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)

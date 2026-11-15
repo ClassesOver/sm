@@ -216,3 +216,129 @@ async def test_capacity_is_rechecked_after_prepare_and_only_new_task_is_cancelle
         assert 'only-this-new-task' not in ai._jobs
     finally:
         await ai.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("swallow_cancel", [False, True])
+async def test_channel_revocation_cancels_running_word_execution(swallow_cancel):
+    import asyncio
+    from types import SimpleNamespace
+
+    from smart_reporting.report_editor.native_ai import NativeAIService
+    from smart_reporting.reporting.tests.test_native_word_task_builder import inputs
+
+    data = inputs()
+    active = True
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def authorized():
+        return active
+
+    class Dispatcher:
+        enabled = True
+
+        def require_available(self):
+            pass
+
+        async def prepare(self, **kwargs):
+            return SimpleNamespace(scope=SimpleNamespace(external_run_id="channel-word-task"))
+
+        async def execute(self, ref, **kwargs):
+            assert await kwargs["authorization_check"]()
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                if swallow_cancel:
+                    return object()  # A late dependency result must never become a candidate.
+                raise
+
+    ai = NativeAIService(data.editor, planner=object(), enabled=True, word_task_dispatcher=Dispatcher())
+    try:
+        await ai.start_edit(data.session, instruction="Edit", expected_sha256="a" * 64,
+                            operations=[], selection=[{"blockId": "p1"}],
+                            authorization_check=authorized, server_session_reference="c" * 64)
+        await asyncio.wait_for(started.wait(), 2)
+        active = False
+        await asyncio.wait_for(cancelled.wait(), 2)
+        job = ai._jobs["channel-word-task"]
+        await asyncio.wait_for(asyncio.shield(job.task), 2)
+        assert job.status == "failed"
+        assert job.error["code"] == "native_permission_denied"
+        assert job.proposal is None
+    finally:
+        await ai.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('during_source_io', [False, True])
+async def test_word_mcp_rechecks_channel_grant_on_each_tool_call(monkeypatch, during_source_io):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from smart_reporting.report_editor.native_word_task_builder import NativeWordTaskInputBuilder
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.reporting.tests.test_native_word_task_builder import inputs
+    from smart_reporting.task_execution.models import TaskState
+    from smart_reporting.task_execution.native_word_contracts import canonical_digest
+
+    module = adapter()
+    data = inputs()
+    value = await NativeWordTaskInputBuilder(data.grants, data.editor).build(**data.args)
+    ref = module.WordTaskReference(data.args['scope'], canonical_digest(value.model_dump(mode='json', by_alias=True)), value)
+    task = SimpleNamespace(state=TaskState.ACTIVE, state_version=1, current_internal_run_id='run',
+                           current_attempt_no=1, deadline_at=datetime.now(UTC) + timedelta(minutes=1))
+    repository = SimpleNamespace(
+        get_task_snapshot=AsyncMock(return_value=task), resume_current=AsyncMock(return_value=(task, None)),
+        recover_native_word_candidate=AsyncMock(return_value=None), read_native_word_input=AsyncMock(),
+        attempt_instruction=AsyncMock(return_value=data.args['instruction']),
+        commit_native_word_candidate=AsyncMock(),
+    )
+    bridges = []
+    original_bridge = module.WordTaskMcpBridge
+
+    def bridge(**kwargs):
+        result = original_bridge(**kwargs)
+        bridges.append(result)
+        return result
+
+    monkeypatch.setattr(module, 'WordTaskMcpBridge', bridge)
+    active = True
+    flip_during_io = False
+
+    async def authorized():
+        return active
+
+    async def current_editor(*args):
+        nonlocal active
+        if flip_during_io:
+            active = False
+
+    class TransportFinished(Exception):
+        pass
+
+    class Transport:
+        async def run(self, *, server, ticket, task_id, instruction):
+            nonlocal active, flip_during_io
+            # Exercise the actual bridge verifier and dispatcher's authorizer.
+            await bridges[0]._authorize(task_id, ticket=ticket)
+            if during_source_io:
+                flip_during_io = True
+            else:
+                active = False
+            with pytest.raises(ReportingError) as denied:
+                await bridges[0]._authorize(task_id, ticket=ticket)
+            assert denied.value.code == 'native_permission_denied'
+            raise TransportFinished()
+
+    dispatcher = module.WordTaskDispatcher(repository, data.grants, data.editor,
+        scope_factory=None, secret='s' * 32, transport=Transport(), enabled=True)
+    dispatcher._current_editor = current_editor
+    dispatcher._close_failed_claim = AsyncMock()
+    task_session = SimpleNamespace(lease=SimpleNamespace(owner='worker', epoch=1), assert_alive=lambda: None)
+    with pytest.raises(TransportFinished):
+        await dispatcher._execute_claim(ref, task_session, authorization_check=authorized)
+    repository.commit_native_word_candidate.assert_not_awaited()
+    assert bridges[0]._closed

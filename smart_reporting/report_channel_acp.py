@@ -37,7 +37,7 @@ class ReportChannelAcp:
         self._client_factory = client_factory
         self._durable = durable
 
-    async def bind(self, channel: str, identity: ConnectorIdentity) -> "ReportAcpConversation":
+    async def bind(self, channel: str, identity: ConnectorIdentity) -> ReportAcpConversation:
         grant = await self._repository.member_grant(channel, identity)
         if grant is None:
             raise ReportChannelAcpDenied("Report channel membership required")
@@ -94,10 +94,9 @@ class ReportAcpConversation:
         finally:
             if not turn.done():
                 turn.cancel()
-                try:
-                    await turn
-                except asyncio.CancelledError:
-                    pass
+            # Cleanup must not replace a revocation/cancellation error, even
+            # when the peer fails while closing or has already failed itself.
+            await asyncio.gather(turn, return_exceptions=True)
 
     async def prompt(self, identity: ConnectorIdentity, text: str, *, message_id: str) -> str:
         if not text.strip() or len(text) > 8000:
@@ -159,7 +158,7 @@ class ReportAcpConversation:
                 if reserved != "created":
                     raise ReportChannelAcpConflict("report_channel_acp_outcome_unknown")
                 await self._authorize(identity)
-                reply = await client.prompt(text)
+                reply = await self._prompt_while_authorized(client, identity, text)
             await self._authorize(identity)
             if not await repository.complete_acp_turn(self._grant, message_id, request_digest, reply):
                 raise ReportChannelAcpDenied("Report channel membership required")

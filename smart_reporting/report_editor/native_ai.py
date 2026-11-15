@@ -553,6 +553,23 @@ class NativeAIService:
             ],
         }
 
+    async def _while_job_authorized(self, job: _NativeAIJob, work: Awaitable[Any]) -> Any:
+        if job.authorization_check is None:
+            return await work
+        pending = asyncio.ensure_future(work)
+        try:
+            while True:
+                done, _ = await asyncio.wait({pending}, timeout=0.5)
+                await self._require_job_authorization(job)
+                if done:
+                    return await pending
+        finally:
+            if not pending.done():
+                pending.cancel()
+            # Preserve the authorization/cancellation error even if a dependency
+            # raises while shutting down or returns a late result after cancel.
+            await asyncio.gather(pending, return_exceptions=True)
+
     async def _run_job(
         self,
         job: _NativeAIJob,
@@ -566,13 +583,18 @@ class NativeAIService:
             await self._require_job_authorization(job)
             await job.event_log.emit("phase", label="正在生成候选")
             if job.word_task_reference is not None:
-                planned = await asyncio.wait_for(
-                    self.word_task_dispatcher.execute(job.word_task_reference), timeout=self.timeout_seconds)
+                execution = self.word_task_dispatcher.execute(
+                    job.word_task_reference,
+                    **({"authorization_check": job.authorization_check}
+                       if job.authorization_check is not None else {}),
+                )
+                planned = await self._while_job_authorized(job, asyncio.wait_for(
+                    execution, timeout=self.timeout_seconds))
             else:
-                planned = await asyncio.wait_for(
+                planned = await self._while_job_authorized(job, asyncio.wait_for(
                     self._plan_with_events(job, prompt, selected, format=context.format),
                     timeout=self.timeout_seconds,
-                )
+                ))
             if job.status != "running":
                 return
             if planned is None:

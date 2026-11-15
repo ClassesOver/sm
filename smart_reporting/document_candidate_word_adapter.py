@@ -54,6 +54,8 @@ class ChannelWordCandidateAdapter:
             request.scope.channel,
             identity,
             DelegateRequest(request_id=request.request_id, instruction=request.instruction),
+            validated_draft=draft,
+            expected_grant=request.scope.grant,
         )
         return result["taskId"]
 
