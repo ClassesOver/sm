@@ -304,3 +304,13 @@ async def test_concurrent_acp_requests_share_one_restored_conversation():
     assert all(response.status_code == 200 for response in responses)
     assert all(response.json() == {"reply": "HELLO"} for response in responses)
     assert restores == 1
+
+
+@pytest.mark.anyio
+async def test_acp_cleanup_preserves_error_after_peer_closes_pipe(tmp_path):
+    # A peer can exit before the host finishes writing or cleaning up stdin.
+    peer = "import sys; sys.exit(0)"
+    async with ReportAcpClient((sys.executable, "-u", "-c", peer), tmp_path, timeout=1) as client:
+        with pytest.raises((ReportAcpError, BrokenPipeError, ConnectionResetError)):
+            await client.open_session()
+        assert client._process is None
