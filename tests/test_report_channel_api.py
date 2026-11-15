@@ -194,3 +194,29 @@ async def test_exchange_uses_identity_from_host_authenticator():
         assert repository.exchange.call_args.kwargs["session"] == "session-a"
         repository.exchange.side_effect = ValueError("consumed")
         assert (await client.post(path, json=payload)).status_code == 403
+
+
+@pytest.mark.anyio
+async def test_word_delegation_revoked_during_draft_resolution_never_starts_ai():
+    identity = ConnectorIdentity("dsh", "account-a", "session-a")
+    repository = SimpleNamespace(
+        member_grant=AsyncMock(return_value="grant-a"),
+        grant_active=AsyncMock(return_value=True),
+    )
+    draft = ChannelWordDraft(object(), "source-hash", [], [{"blockId": "synthetic"}])
+
+    async def resolve(channel):
+        repository.grant_active.return_value = False
+        return draft
+
+    ai = SimpleNamespace(
+        editor=SimpleNamespace(context_for_session=AsyncMock(return_value=SimpleNamespace(format="docx"))),
+        start_edit=AsyncMock(),
+    )
+    assistant = ReportChannelWordAssistant(ai, resolve, repository)
+    from smart_reporting.report_channel_api import DelegateRequest
+
+    with pytest.raises(Exception) as error:
+        await assistant.start("channel-a", identity, DelegateRequest(request_id="one", instruction="Edit"))
+    assert getattr(error.value, "status_code", None) == 403
+    ai.start_edit.assert_not_awaited()
