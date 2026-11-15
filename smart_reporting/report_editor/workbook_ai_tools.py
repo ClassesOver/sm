@@ -37,6 +37,11 @@ from .workbook_search import find_cell_indexes
 
 _CELL_SOURCE_OPS = {'set_cell', 'set_formula', 'clear_cell', 'set_range', 'clear_range'}
 _RANGE_VALUE_KINDS = {'clearCellRange', 'replaceRangeText'}
+_SHEET_PROTECTION_PERMISSIONS = {
+    'selectLockedCells', 'selectUnlockedCells', 'formatCells', 'formatColumns', 'formatRows',
+    'insertColumns', 'insertRows', 'insertHyperlinks', 'deleteColumns', 'deleteRows',
+    'sort', 'autoFilter', 'pivotTables', 'objects', 'scenarios',
+}
 _MAX_EXPANDED_CELL_EDITS = 2000
 _MAX_CLEAR_RANGE_CELLS = 200000
 
@@ -459,6 +464,10 @@ class WorkbookAIToolkit(Toolkit):
                 'rule.kind 支持 number、text、blank、duplicate、top10、formula、colorScale、dataBar。'
                 '前六种规则使用 format(fillColor?,fontColor?,bold?,italic?)。'
                 '用 clear_conditional_formats(sheetId) 清除指定工作表的全部条件格式。'
+                '用 protect_sheet(sheetId,protected,allow?) 设置无密码工作表保护。'
+                'allow 可指定 selectLockedCells、selectUnlockedCells、formatCells、formatColumns、formatRows、'
+                'insertColumns、insertRows、insertHyperlinks、deleteColumns、deleteRows、sort、autoFilter、'
+                'pivotTables、objects、scenarios 等允许操作。仅整簿授权可修改，禁止提交密码。'
             )
         if 'structure' in guides:
             catalog['structure'] += (
@@ -603,6 +612,20 @@ class WorkbookAIToolkit(Toolkit):
                 'ranges': [{'startRow': r0, 'endRow': r1, 'startColumn': c0, 'endColumn': c1}],
                 'stopIfTrue': False, 'rule': source_conditional_rule(operation['rule']),
             }]}
+        if op == 'protect_sheet':
+            required = {'op', 'sheetId', 'protected'}
+            if 'password' in operation:
+                raise ValueError('workbook_ai_sheet_password_unsupported')
+            allow = operation.get('allow', {})
+            if (set(operation) - {'allow'} != required
+                    or not isinstance(operation['sheetId'], str) or not operation['sheetId']
+                    or type(operation['protected']) is not bool
+                    or not isinstance(allow, dict) or set(allow) - _SHEET_PROTECTION_PERMISSIONS
+                    or any(type(value) is not bool for value in allow.values())):
+                raise ValueError('workbook_ai_sheet_protection_invalid')
+            protected = operation['protected']
+            return {'kind': 'protectSheet', 'sheetName': self._sheet(operation['sheetId'])['name'],
+                    'protect': protected, **({'allow': allow} if protected else {})}
         if op == 'set_data_validation':
             if (set(operation) != {'op', 'sheetId', 'range', 'validation'}
                     or not isinstance(operation['sheetId'], str) or not operation['sheetId']

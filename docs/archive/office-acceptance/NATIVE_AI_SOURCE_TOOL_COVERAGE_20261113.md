@@ -72,6 +72,8 @@ XLSX `set_data_validation` 支持内联列表、同表范围列表、数值区�
 
 XLSX `add_conditional_format` 支持桌面源协议的八类规则。新增保留已有规则及优先级；`clear_conditional_formats` 清除指定工作表的全部可编辑规则，对含有无法安全移除的 Excel 扩展规则的工作表拒绝清除。数据条沿用网页引擎的基础 OOXML 格式，使用一个颜色。
 
+XLSX `protect_sheet` 支持设置或解除无密码工作表保护。已有的文件写入器按 Excel 的权限位保存可选择、筛选、排序和格式等允许操作。带密码工作表的保护设置仍不可修改，提案不会接收明文密码。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

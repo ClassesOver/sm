@@ -39,7 +39,7 @@ class _WorkbookAIJob:
 WorkbookAIOperationKind = Literal[
     "applyCellEdits", "applySheetMerges", "applySheetEdits", "applyRowColumnOps", "applyCellShift",
     "applyDvRules", "applyDataValidationSource", "applyCfRules", "appendSheetConditionalFormats",
-    "replaceSheetConditionalFormats", "applySheetNotes", "applySheetFilter", "addPivot",
+    "replaceSheetConditionalFormats", "applySheetNotes", "applySheetFilter", "protectSheet", "addPivot",
     "applyColumnWidths", "applyRowHeights", "applyPageSetups", "applySheetOutline",
     "applyTableAdditions", "applyTableEdits", "refreshPivotCaches", "applyPivotLayoutExpansions",
     "expandPivotOutputs", "applyDefinedNames", "sortRange", "applyChartEdits", "applyChartDeletions", "applyChartSource",

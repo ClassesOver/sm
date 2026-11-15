@@ -261,7 +261,12 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       }
       case 'expandPivotOutputs': bytes = await expandPivotOutputs(bytes, op.expansions); break
       case 'applyDefinedNames': bytes = await applyDefinedNames(bytes, op.plan); break
-      case 'protectSheet': bytes = await protectSheet(bytes, op.sheetName, op.protect); break
+      case 'protectSheet': {
+        const parsed = z.object({ kind: z.literal('protectSheet'), sheetName: z.string().min(1).max(31),
+          protect: z.boolean(), allow: z.record(z.string(), z.boolean()).optional(),
+        }).strict().parse(op)
+        bytes = await protectSheet(bytes, parsed.sheetName, parsed.protect, parsed.allow); break
+      }
       case 'setSheetEditableRanges': {
         const parsed = z.object({ kind: z.literal('setSheetEditableRanges'), sheetName: z.string().min(1).max(31),
           ranges: z.array(z.object({ name: z.string().trim().min(1).max(255), sqref: z.string().min(1).max(32767) }).strict()).max(1000),

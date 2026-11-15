@@ -29,6 +29,62 @@ from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
 @pytest.mark.anyio
+async def test_source_sheet_protection_round_trips_excel_permission_flags():
+    book = Workbook()
+    book.active['A1'] = '=2+3'
+    book.create_sheet('Other').protection.enable()
+    stream = BytesIO()
+    book.save(stream)
+    source = stream.getvalue()
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    model = {'sheets': [{'name': 'Sheet'}, {'name': 'Other'}]}
+    tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([{
+        'op': 'protect_sheet', 'sheetId': 'Sheet', 'protected': True,
+        'allow': {'sort': True, 'autoFilter': True, 'selectLockedCells': False},
+    }], '保护工作表')
+    workbook = load_workbook(BytesIO(written))
+    protection = workbook['Sheet'].protection
+    assert protection.sheet and protection.selectLockedCells
+    assert not protection.sort and not protection.autoFilter and protection.insertRows
+    assert workbook['Sheet']['A1'].value == '=2+3' and workbook['Other'].protection.sheet
+
+    source = written
+    tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([{
+        'op': 'protect_sheet', 'sheetId': 'Sheet', 'protected': False,
+    }], '取消工作表保护')
+    workbook = load_workbook(BytesIO(written))
+    assert not workbook['Sheet'].protection.sheet and workbook['Other'].protection.sheet
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('protected', [True, False])
+async def test_source_protection_rejects_existing_password_protected_sheet(protected):
+    book = Workbook()
+    book.active.protection.set_password('fixture-password')
+    stream = BytesIO()
+    book.save(stream)
+
+    async def preview(operations):
+        await asyncio.to_thread(patch_office, 'xlsx', stream.getvalue(), operations)
+        pytest.fail('Password-protected worksheet was changed')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    with pytest.raises(ValueError, match='native_office_operations_invalid'):
+        await tools.propose_operations([{
+            'op': 'protect_sheet', 'sheetId': 'Sheet', 'protected': protected,
+        }], '修改保护设置')
+
+
+@pytest.mark.anyio
 async def test_source_conditional_formats_append_all_kinds_and_clear_only_target_sheet():
     book = Workbook()
     book.active.conditional_formatting.add('A1', FormulaRule(formula=['A1>0'], stopIfTrue=True))
