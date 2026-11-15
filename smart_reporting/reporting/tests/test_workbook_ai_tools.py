@@ -12,6 +12,8 @@ from agno.models.response import ModelResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Font
+from openpyxl.utils.datetime import CALENDAR_MAC_1904
+from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table
 
 from smart_reporting.report_editor.native_models import NativeEditorContext
@@ -21,6 +23,69 @@ from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('date1904', 'dates'), [
+    (False, ('46023', '46053')), (True, ('44561', '44591')),
+])
+async def test_source_data_validation_keeps_other_cells_and_rebases_remaining_formula(date1904, dates):
+    book = Workbook()
+    if date1904:
+        book.epoch = CALENDAR_MAC_1904
+    sheet = book.active
+    existing = DataValidation(type='custom', formula1='A1>$H$1', showErrorMessage=True)
+    existing.add('B1:B5')
+    sheet.add_data_validation(existing)
+    sheet['B1'] = '原值'
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_data_validation', 'sheetId': 'Sheet', 'range': target, 'validation': rule}
+        for target, rule in [
+            ('B1:B2', {'kind': 'list', 'values': ['通过', '待复核']}),
+            ('B4', None),
+            ('C1:C2', {'kind': 'listRef', 'range': 'G1:G3'}),
+            ('D1', {'kind': 'numberBetween', 'min': 0.5, 'max': 9}),
+            ('E1', {'kind': 'dateBetween', 'start': '2026-01-01', 'end': '2026-01-31'}),
+            ('F1', {'kind': 'checkbox'}),
+            ('I1', {'kind': 'formula', 'formula': '=ISNUMBER(I1)'}),
+        ]
+    ], '设置输入限制')
+    sheet = load_workbook(BytesIO(written)).active
+    rules = {str(rule.sqref): rule for rule in sheet.data_validations.dataValidation}
+    assert rules['B1:B2'].formula1 == '"通过,待复核"'
+    assert rules['B3 B5'].formula1 == 'A3>$H$1' and rules['B3 B5'].showErrorMessage
+    assert rules['C1:C2'].formula1 == '$G$1:$G$3'
+    assert (rules['D1'].type, rules['D1'].formula1, rules['D1'].formula2) == ('decimal', '0.5', '9')
+    assert rules['E1'].type == 'date'
+    assert (rules['E1'].formula1, rules['E1'].formula2) == dates
+    assert rules['I1'].formula1 == 'ISNUMBER(I1)'
+    model = inspect_office('xlsx', written)
+    assert any(item['rule']['type'] == 'checkbox' for item in model['sheets'][0]['dataValidations']['rules'])
+    assert sheet['B1'].value == '原值'
+
+
+@pytest.mark.anyio
+async def test_source_data_validation_rejects_range_scope():
+    async def preview(_):
+        pytest.fail('Unapproved data validation reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range',
+                              selection={'sheetName': 'Sheet'}, preview=preview)
+    with pytest.raises(ValueError, match='selection_mismatch'):
+        await tools.propose_operations([{
+            'op': 'set_data_validation', 'sheetId': 'Sheet', 'range': 'A1', 'validation': None,
+        }], '清除输入限制')
 
 
 @pytest.mark.anyio

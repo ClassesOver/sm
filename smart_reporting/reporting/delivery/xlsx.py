@@ -24,7 +24,7 @@ class WorkbookBuildResult:
 _OPERATION_KINDS = frozenset({
     'clearCellRange', 'replaceRangeText', 'applyTableSource', 'applyHyperlinkSource', 'applyNoteSource',
     'applyStaticImages', 'applyChartAdditions', 'applyChartDeletions', 'applyChartEdits', 'applyChartAnchors', 'applyChartSource', 'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyCellShift', 'applyDvRules',
-    'applyCfRules', 'replaceSheetConditionalFormats', 'applySheetNotes', 'patchSheetNotes', 'applySheetFilter', 'replaceSheetDataValidations', 'addPivot',
+    'applyCfRules', 'replaceSheetConditionalFormats', 'applySheetNotes', 'patchSheetNotes', 'applySheetFilter', 'replaceSheetDataValidations', 'applyDataValidationSource', 'addPivot',
     'applyColumnWidths', 'applyRowHeights', 'applySheetOutline', 'applyPageSetups', 'applyTableAdditions', 'applyTableEdits', 'sortRange',
     'refreshPivotCaches', 'applyPivotLayoutExpansions', 'expandPivotOutputs', 'upsertPivotControl', 'removePivotControl',
     'applyDefinedNames', 'protectSheet', 'protectWorkbookStructure', 'setSheetEditableRanges', 'setThemePart',

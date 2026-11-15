@@ -52,6 +52,7 @@ _XLSX_FIELDS = {
     'applySheetFilter': {'sheetName', 'filter', 'hiddenRows', 'visibilityRange'},
     'appendSheetSparklines': {'sheetName', 'groups'},
     'replaceSheetDataValidations': {'sheetName', 'rules'},
+    'applyDataValidationSource': {'sheetName', 'range', 'validation'},
     'replaceSheetConditionalFormats': {'sheetName', 'rules'},
     'addPivot': {'addition'}, 'applyColumnWidths': {'sheetName', 'entries'},
     'applySheetOutline': {'sheetName', 'rows', 'columns', 'summaryBelow', 'summaryRight'},

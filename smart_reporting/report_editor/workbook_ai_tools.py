@@ -423,6 +423,13 @@ class WorkbookAIToolkit(Toolkit):
                 'printGridlines?,printHeadings?,printArea?,printTitles?,header?,footer?,rowBreaks?,colBreaks?)。'
                 '缩放百分比与按页适配互斥，printTitles 可写 "1:2,A:B"，null 清除打印范围、标题或页眉页脚。'
             )
+        if 'data' in guides:
+            catalog['data'] += (
+                '用 set_data_validation(sheetId,range,validation) 增设或替换范围内验证，null 清除。'
+                'validation 支持 list(values)、listRef(range)、numberBetween(min,max)、'
+                'dateBetween(start,end)，日期为 YYYY-MM-DD，以及 checkbox 和 formula(formula，以等号开头)。'
+                '列表过长或包含逗号时请引用同表单元格区域。仅整簿授权可修改数据验证。'
+            )
         if 'structure' in guides:
             catalog['structure'] += (
                 '整簿授权下用 {op:move_sheet,sheetId,position} 移动工作表标签。'
@@ -554,6 +561,13 @@ class WorkbookAIToolkit(Toolkit):
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}
+        if op == 'set_data_validation':
+            if (set(operation) != {'op', 'sheetId', 'range', 'validation'}
+                    or not isinstance(operation['sheetId'], str) or not operation['sheetId']
+                    or (operation['validation'] is not None and not isinstance(operation['validation'], dict))):
+                raise ValueError('workbook_ai_data_validation_invalid')
+            return {'kind': 'applyDataValidationSource', 'sheetName': self._sheet(operation['sheetId'])['name'],
+                    'range': _range_address(operation['range']), 'validation': operation['validation']}
         if op == 'find_replace':
             required = {'op', 'sheetId', 'range', 'find', 'replace'}
             if (set(operation) - {'matchCase', 'wholeCell'} != required

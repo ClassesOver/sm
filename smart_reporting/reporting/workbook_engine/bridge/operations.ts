@@ -30,7 +30,7 @@ import { upsertPivotControl, upsertPivotControlRequestSchema, syncOwnedPivotCont
 import { appendSheetSparklines, appendSheetSparklinesOperationSchema, assertSheetSparklinesShiftable, renameSparklineSheetReferences, removeSheetSparklines, removeSheetSparklinesOperationSchema, editSheetSparklineGroup, editSheetSparklineGroupOperationSchema } from '../packages/xlsx-engine/src/sparkline-additions'
 import { applySheetMerges } from './merges'
 import { removeSheetSplitPane } from './split-pane'
-import { replaceSheetDataValidations } from '../packages/xlsx-engine/src/data-validation-write'
+import { applyDataValidationSource, replaceSheetDataValidations } from '../packages/xlsx-engine/src/data-validation-write'
 import { replaceConditionalFormattingSnapshots } from '../packages/xlsx-engine/src/conditional-formatting-snapshot'
 import { replaceSheetConditionalFormatsOperationSchema } from '../packages/xlsx-engine/src/conditional-formatting-schema'
 import { applyNotePictureOperation, notePictureOperationSchema } from '../packages/xlsx-engine/src/note-pictures'
@@ -157,6 +157,7 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await applyCellShift(bytes, parsed.sheetName, { range: parsed.range, shift: parsed.shift }); break
       }
       case 'applyDvRules': bytes = await applyDvRules(bytes, op.rules); break
+      case 'applyDataValidationSource': bytes = await applyDataValidationSource(bytes, op); break
       case 'replaceSheetDataValidations': {
         const parsed = z.object({
           kind: z.literal('replaceSheetDataValidations'), sheetName: z.string().min(1).max(31),

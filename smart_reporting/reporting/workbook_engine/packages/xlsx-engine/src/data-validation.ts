@@ -499,7 +499,7 @@ function formulaText(type: string | undefined, raw: unknown): string | undefined
 /// pre-1900 year throws DvEditError, because it has no serial to write.
 /// Serials 1-59 sit one day before the linear rule (Excel's phantom 1900-02-29);
 /// formatSerial in @genoffice/file-parse reverses the same shift.
-function dateToSerial(text: string): number | undefined {
+export function dateToSerial(text: string, date1904 = false): number | undefined {
   const match =
     /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/.exec(
       text.trim(),
@@ -530,8 +530,9 @@ function dateToSerial(text: string): number | undefined {
     if (secondNum < 0 || secondNum > 59) return undefined
     seconds = hourNum * 3600 + minuteNum * 60 + secondNum
   }
-  const days = (Date.UTC(yearNum, monthNum - 1, dayNum) - Date.UTC(1899, 11, 30)) / 86_400_000
-  const serial = days < 61 ? days - 1 : days
+  const epoch = date1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 30)
+  const days = (Date.UTC(yearNum, monthNum - 1, dayNum) - epoch) / 86_400_000
+  const serial = !date1904 && days < 61 ? days - 1 : days
   return seconds === 0 ? serial : serial + seconds / 86_400
 }
 

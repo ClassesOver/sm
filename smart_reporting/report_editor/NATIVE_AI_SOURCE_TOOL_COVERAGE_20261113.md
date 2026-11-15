@@ -68,6 +68,8 @@ XLSX `set_sheet_hidden` 接到原生工作表结构写入器。隐藏当前工�
 
 XLSX `set_rows_hidden` 和 `set_cols_hidden` 复用原生分组写入器，仅更新指定跨度内的可见性。独立回读覆盖按列拆分已有分组、保留行高和列宽、保留折叠状态及同批隐藏和显示操作。
 
+XLSX `set_data_validation` 支持内联列表、同表范围列表、数值区间、日期区间、复选框、自定义公式和清除。每项操作从当前草稿包读取规则，裁去目标区域，并按新的首格平移剩余规则的相对引用。无法以 Excel 内联格式表示的列表应使用同表范围，既有规则无法完整读取时拒绝覆盖。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

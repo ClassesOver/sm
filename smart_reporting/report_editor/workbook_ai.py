@@ -38,7 +38,7 @@ class _WorkbookAIJob:
 # 图表缓存只能由 applyChartSource 从真实工作表读取，不能由模型填入。
 WorkbookAIOperationKind = Literal[
     "applyCellEdits", "applySheetMerges", "applySheetEdits", "applyRowColumnOps", "applyCellShift",
-    "applyDvRules", "applyCfRules", "applySheetNotes", "applySheetFilter", "addPivot",
+    "applyDvRules", "applyDataValidationSource", "applyCfRules", "applySheetNotes", "applySheetFilter", "addPivot",
     "applyColumnWidths", "applyRowHeights", "applyPageSetups", "applySheetOutline",
     "applyTableAdditions", "applyTableEdits", "refreshPivotCaches", "applyPivotLayoutExpansions",
     "expandPivotOutputs", "applyDefinedNames", "sortRange", "applyChartEdits", "applyChartDeletions", "applyChartSource",
