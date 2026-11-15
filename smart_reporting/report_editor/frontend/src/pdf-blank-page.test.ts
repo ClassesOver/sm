@@ -20,6 +20,15 @@ describe('PDF insert blank page (pinned source insertBlankPage)', () => {
     expect(PDF_A4_POINTS).toEqual({ width: 595.28, height: 841.89 })
   })
 
+  it('matches the physical display size of cropped and rotated custom UserUnit pages', () => {
+    const draftPages = [{ ...page('wide', 0, 400, 320, 90), userUnit: 2.5 }]
+    const crop = {kind:'cropPage',pageId:'wide',rect:[20,10,100,210]}
+    const staged = insertBlankPdfPage(draftPages, [crop], 'wide', () => 'physical')
+    expect(staged.find(op => op.kind === 'insertBlankPage')).toMatchObject({width:500,height:200})
+    const again = insertBlankPdfPage(draftPages, staged, 'blank:physical', () => 'neighbor')
+    expect(again.find(op => op.pageId === 'blank:neighbor')).toMatchObject({width:500,height:200})
+  })
+
   it('indexes blanks after the source pages in insertion order, like engine blankPages', () => {
     let ops = insertBlankPdfPage(pages, [], 'p2', id)
     ops = insertBlankPdfPage(pages, ops, 'p1', id)

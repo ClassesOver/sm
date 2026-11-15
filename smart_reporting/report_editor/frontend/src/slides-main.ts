@@ -38,6 +38,7 @@ import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
 import type { mountSlidesCanvas } from './slides-canvas'
 import { nextPreset, notchStep, prevPreset } from './slides-view-zoom'
+import { createWheelPager, createZoomWheelClassifier } from './docx-view-wheel'
 import type { createSlidesSorter } from './slides-view-modes'
 import type { createSlidesOutline, createSlidesReading } from './slides-outline-reading'
 import { applyCanvasEdits } from './slides-canvas-model'
@@ -990,6 +991,35 @@ function sendCanvasPreview() {
 
 const canvasHost = root.querySelector<HTMLElement>('.slides-canvas')!
 if (native) canvasHost.tabIndex = 0
+const pageWheel = createWheelPager()
+const zoomWheel = createZoomWheelClassifier()
+const onCanvasWheel = (event: WheelEvent) => {
+  if (!native || !canvas || locked() || loading || event.defaultPrevented ||
+      slidesViewMode === 'reading' || slidesViewMode === 'sorter' ||
+      (event.target instanceof Element && event.target.closest('dialog,[role="dialog"]'))) return
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault()
+    const intent = zoomWheel.feed(event, event.timeStamp)
+    if (!intent) return
+    const current = canvas.getZoom()
+    const next = intent === 'pinch' ? current * Math.exp(-event.deltaY * 0.01)
+      : notchStep(current, intent === 'zoom-in' ? 1 : -1)
+    canvas.setZoom(next, { x: event.clientX, y: event.clientY })
+    return
+  }
+  if (!canvas.fitsViewport() || event.shiftKey || event.altKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) ||
+      cropOverlay || structureDialog || document.activeElement?.closest('input,textarea,[contenteditable="true"],dialog,[role="dialog"]')) return
+  const flip = pageWheel.feed(event.deltaY, event.timeStamp)
+  if (!flip) return
+  const target = order[order.indexOf(selectedSlide) + flip]
+  if (target === undefined) return
+  const button = root.querySelector<HTMLButtonElement>('.slide-open[data-slide-index="' + target + '"]')
+  if (button) {
+    event.preventDefault()
+    button.click()
+  }
+}
+if (native) canvasHost.addEventListener('wheel', onCanvasWheel, { passive: false })
 const onMediaDragOver=(event:DragEvent)=>{if(native&&event.dataTransfer?.types.includes('Files'))event.preventDefault()}
 const onMediaDrop=(event:DragEvent)=>{
   const file=event.dataTransfer?.files[0];if(!native||!file)return
@@ -3740,7 +3770,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; void namingController?.cancel().catch(() => {}); pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); rehearsalDialog?.remove(); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; void namingController?.cancel().catch(() => {}); pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('wheel',onCanvasWheel);canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); rehearsalDialog?.remove(); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

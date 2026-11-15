@@ -6,6 +6,7 @@ import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer
 import { createDocxRibbon } from './docx-ribbon'
 import { createDocxTableGridlines } from './docx-gridlines'
 import { createDocxViewCommands } from './docx-view'
+import { StoryViewExtension, storyViewKey } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/story-view'
 import { docxOperations, type DocxAnchor } from './docx-operations'
 import { readFileSync } from 'node:fs'
 
@@ -506,6 +507,43 @@ it('refreshes GenOffice view buttons and preview after opening or exiting Readin
     expect(print.getAttribute('aria-pressed')).toBe('true'); expect(reading.getAttribute('aria-pressed')).toBe('false')
     pagination.click(); expect(preview).toHaveBeenCalledOnce()
   } finally { view.dispose(); editor.destroy() }
+})
+
+it('runs the original GenOffice Story extension from the Word view ribbon', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const scroller = host.appendChild(document.createElement('div'))
+  const Heading = Paragraph.extend({ name: 'docHeading', addAttributes: () => ({ level: { default: 2 } }), renderHTML: () => ['h2', 0] })
+  const editor = new Editor({ element: scroller, extensions: [Doc, Paragraph, Heading, Text, TextStyle, StoryViewExtension], content: {
+    type: 'doc', content: [
+      {type:'docHeading',content:[{type:'text',text:'目录标题'}]},
+      {type:'docParagraph',content:[{type:'text',text:'正文',marks:[{type:'docTextStyle',attrs:{color:'#990000'}}]}]},
+    ],
+  } })
+  const view = createDocxViewCommands({
+    root:host,scroller,page:editor.view.dom,pageSize:()=>({width:800,height:1000}),onPaginationPreview:vi.fn(),
+    story:{setActive:active=>editor.commands.setStoryViewActive(active)},
+  })
+  const ribbon = createDocxRibbon(editor,true,undefined,undefined,undefined,[],undefined,view)
+  host.prepend(ribbon)
+  try {
+    const before=editor.getJSON()
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-label="视图"]')!.click()
+    const button=ribbon.querySelector<HTMLButtonElement>('[data-view-command="故事"]')!
+    button.click()
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(storyViewKey.getState(editor.state)?.active).toBe(true)
+    expect(editor.view.dom.querySelector('.story-marker')?.textContent).toBe('##')
+    expect(editor.getJSON()).toEqual(before)
+    const insertAt=editor.state.doc.content.size-1
+    editor.view.someProp('handleTextInput', handler=>handler(editor.view,insertAt,insertAt,'续写',()=>editor.state.tr.insertText('续写',insertAt)))
+    editor.view.dispatch(editor.state.tr.insertText('续写',insertAt))
+    expect(editor.state.doc.lastChild?.firstChild?.marks[0]?.attrs.color).toBe('#990000')
+    expect(editor.state.doc.lastChild?.lastChild?.text).toBe('续写')
+    expect(editor.state.doc.lastChild?.lastChild?.marks).toHaveLength(0)
+    button.click()
+    expect(host.classList.contains('view-story')).toBe(false)
+    expect(editor.view.dom.querySelector('.story-marker')).toBeNull()
+  } finally {view.dispose();editor.destroy()}
 })
 
 it('offers source-bound Home formatting and leaves unsupported Ribbon commands disabled', () => {

@@ -199,3 +199,19 @@ it('scales at the source preset and re-fits using both viewport dimensions', asy
   expect(initial.edits).toEqual([])
   expect(geometry).not.toHaveBeenCalled()
 })
+
+it('keeps the same slide point under the gesture anchor after the Konva stage renders', async () => {
+  const viewport = document.body.lastElementChild as HTMLElement
+  await act(async () => canvas.update(state()))
+  await act(async () => rendered.resize!([{ contentRect: { width: 480, height: 270 } }]))
+  expect(canvas.fitsViewport()).toBe(true)
+  const content = viewport.appendChild(document.createElement('div'))
+  content.className = 'konvajs-content'
+  vi.spyOn(content, 'getBoundingClientRect').mockImplementation(() => ({
+    left: 100, top: 80, width: rendered.stage.width, height: rendered.stage.height,
+  }) as DOMRect)
+  await act(async () => canvas.setZoom(1, { x: 220, y: 147.5 }))
+  expect(canvas.fitsViewport()).toBe(false)
+  expect(viewport.scrollLeft).toBe(120)
+  expect(viewport.scrollTop).toBeCloseTo(67.5)
+})

@@ -654,6 +654,17 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
     ],
   },
   {
+    tab: 'Home', id: 'fill-menu', label: '填充', group: '编辑', icon: '↓', detail: '填充',
+    choices: [
+      { command: 'fill-down', label: '向下填充' },
+      { command: 'fill-right', label: '向右填充' },
+      { command: 'fill-up', label: '向上填充' },
+      { command: 'fill-left', label: '向左填充' },
+      { command: 'fill-series-open', label: '序列…' },
+      { command: 'flash-fill', label: '快速填充' },
+    ],
+  },
+  {
     tab: 'Data', id: 'sort', label: '排序', group: '排序和筛选', icon: '⇅', detail: '对所选内容排序',
     choices: SORT_CHOICES,
   },
@@ -1213,12 +1224,6 @@ export function mountWorkbookRibbon(
         String(pageState?.[key] ?? 0))
     }
     // 页面布局动作下拉依赖页面设置读模型；选择性粘贴下拉由上方剪贴板状态单独管理。
-    const fillMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="fill"]')
-    if (fillMenu) {
-      const sheetProtected = !!view.protection?.().sheet.protected
-      fillMenu.disabled = !editable || !selected || sheetProtected
-      fillMenu.title = !editable ? '当前工作簿不可编辑或正在保存' : sheetProtected ? PROTECTED_SHEET_REASON : !selected ? '请先选择单元格或区域' : '填充'
-    }
     const zoomMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')
     if (zoomMenu) {
       zoomMenu.disabled = view.zoomSelectionAvailable?.() === false
@@ -1244,7 +1249,7 @@ export function mountWorkbookRibbon(
       translation.title = reason ?? '用 AI 翻译选区文本'
       translation.setAttribute('aria-description', translation.title)
     }
-    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"]):not([data-ribbon-menu^="chart-"])')) {
+    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"]):not([data-ribbon-menu^="chart-"])')) {
       select.disabled = !editable || !pageState
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
       select.setAttribute('aria-description', select.title)
@@ -1445,16 +1450,6 @@ export function mountWorkbookRibbon(
           status.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick() } })
           wrapper.append(input, status); section.append(wrapper)
         }
-      }
-      if (active === 'Home' && group.title === '编辑') {
-        // 固定源 Fill 菜单（ExcelShell.tsx:4149-4153）：选中后回弹到菜单标题。
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '填充'); select.dataset.ribbonMenu = 'fill'
-        select.append(...[['', '填充'], ['fill-down', '向下'], ['fill-right', '向右'], ['fill-up', '向上'], ['fill-left', '向左'], ['fill-series-open', '序列…']].map(([value, label]) => {
-          const option = document.createElement('option'); option.value = value!; option.textContent = label!; return option
-        }))
-        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(value as RibbonCommand) })
-        section.append(select)
       }
       if (active === 'Home' && group.title === '剪贴板') {
         // 固定源粘贴分体按钮的下拉：选中后回弹到菜单标题（同页面布局动作下拉）。

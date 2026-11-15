@@ -109,6 +109,30 @@ it('follows GenOffice view toggles and gates pagination preview to print outside
   expect(preview).toHaveBeenCalledOnce()
 })
 
+it('opens GenOffice Story view with editable display callbacks and returns to Print on a second click', () => {
+  const story = { setActive: vi.fn() }
+  const { view, root, page, preview } = setup({ story })
+  const original = page.innerHTML
+  view.run('故事')
+  expect(view.mode).toBe('story')
+  expect(root.classList.contains('view-story')).toBe(true)
+  expect(view.active?.('故事')).toBe(true)
+  expect(view.active?.('页面视图')).toBe(false)
+  view.run('分页预览')
+  expect(preview).not.toHaveBeenCalled()
+  view.run('故事')
+  expect(view.mode).toBe('page')
+  expect(story.setActive.mock.calls).toEqual([[true], [false]])
+  expect(page.innerHTML).toBe(original)
+  view.run('故事')
+  view.run('Web 版式')
+  expect(view.mode).toBe('web')
+  expect(root.classList.contains('view-story')).toBe(false)
+  view.run('故事')
+  view.dispose()
+  expect(story.setActive).toHaveBeenLastCalledWith(false)
+})
+
 it('routes gridlines as an independent display toggle without changing document or zoom', () => {
   let visible = false
   const gridlines = { toggle: vi.fn(() => { visible = !visible }), get visible() { return visible } }

@@ -438,7 +438,13 @@ export function insertBlankPdfPage(pages: PdfPageIdentity[], operations: NativeO
   if (afterPageId !== null && at < 0) throw new Error('页面不存在')
   const neighbor = current[Math.max(0, at)]
   const quarter = neighbor ? neighbor.rotation % 180 !== 0 : false
-  const size = neighbor ? { width: quarter ? neighbor.cropBox.height : neighbor.cropBox.width, height: quarter ? neighbor.cropBox.width : neighbor.cropBox.height } : PDF_A4_POINTS
+  // GenOffice takes the PDF.js viewport at scale 1. Its size includes /UserUnit.
+  const sourceUnit = neighbor?.userUnit ?? 1
+  const unit = Number.isFinite(sourceUnit) && sourceUnit > 0 ? sourceUnit : 1
+  const size = neighbor ? {
+    width: (quarter ? neighbor.cropBox.height : neighbor.cropBox.width) * unit,
+    height: (quarter ? neighbor.cropBox.width : neighbor.cropBox.height) * unit,
+  } : PDF_A4_POINTS
   const pageId = `blank:${newId().toLowerCase()}`
   if (!isPdfBlankPageId(pageId)) throw new Error('空白页身份无效')
   const order = current.map(page => page.pageId)

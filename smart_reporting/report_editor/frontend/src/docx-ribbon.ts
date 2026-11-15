@@ -36,7 +36,7 @@ import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconReadMode, IconWholePage } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconStoryView, IconReadMode, IconWholePage } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { closeHistory } from '@tiptap/pm/history'
@@ -74,7 +74,7 @@ const tabs = [
 ]
 const migrating = '迁移中：当前 DOCX 保存协议不支持此命令'
 const tableUnavailable = 'DOCX 表格操作尚未接入严格写回协议'
-const viewModeIcons = { '页面视图': IconPrintLayout, 'Web 版式': IconWebLayout, '大纲': IconOutlineView, '阅读视图': IconReadMode, '分页预览': IconWholePage } as const
+const viewModeIcons = { '页面视图': IconPrintLayout, 'Web 版式': IconWebLayout, '大纲': IconOutlineView, '故事': IconStoryView, '阅读视图': IconReadMode, '分页预览': IconWholePage } as const
 const pendingGroups: Record<string, [string, string[]][]> = {
   file: [['文件', ['新建', '打开', '保存', '另存为']]],
   draw: [['绘图工具', ['选择', '笔', '荧光笔', '橡皮擦']], ['清除', ['全部清除']]],
@@ -83,7 +83,7 @@ const pendingGroups: Record<string, [string, string[]][]> = {
   references: [['Zotero', ['Zotero']], ['目录', ['目录', '更新目录']], ['脚注', ['插入脚注', '插入尾注']], ['书签', ['书签', '交叉引用']], ['引文与索引', ['插入引文', '书目', '题注', '索引']]],
   mailings: [['创建', ['信封', '标签']], ['开始邮件合并', ['开始邮件合并', '选择收件人', '编辑收件人列表']], ['编写和插入域', ['突出显示合并域', '地址块', '问候语', '插入合并域']], ['预览结果', ['预览结果', '查找收件人', '检查错误']], ['完成', ['完成并合并']]],
   review: [['校对', ['编辑器', '拼写检查']], ['语言', ['翻译']], ['批注', ['新建批注', '删除当前批注', '删除已解决批注', '删除全部批注', '上一条批注', '下一条批注', '显示批注']], ['修订', ['修订', '显示标记', '接受', '拒绝', '上一条', '下一条']], ['保护', ['比较', '保护文档']]],
-  view: [['视图', ['页面视图', 'Web 版式', '大纲', '阅读视图', '分页预览']], ['缩放', ['缩放', '缩小', '放大', '100%', '页宽', '整页']], ['显示', ['标尺', '网格线', '导航窗格']], ['外观', ['AI 面板', '深色模式']], ['窗口', ['新建标签', '拆分', '切换标签']]],
+  view: [['视图', ['页面视图', 'Web 版式', '大纲', '故事', '阅读视图', '分页预览']], ['缩放', ['缩放', '缩小', '放大', '100%', '页宽', '整页']], ['显示', ['标尺', '网格线', '导航窗格']], ['外观', ['AI 面板', '深色模式']], ['窗口', ['新建标签', '拆分', '切换标签']]],
   tableDesign: [['表格样式', ['无样式', '表格样式']], ['底纹', ['单元格底纹']], ['边框', ['所有框线', '外侧框线', '内侧框线', '边框颜色', '边框粗细']]],
   tableLayout: [['删除', ['删除表格']], ['行和列', ['上方插入', '下方插入', '左侧插入', '右侧插入']], ['合并', ['合并单元格', '拆分单元格']], ['行列操作', ['删除行', '删除列']], ['对齐方式', ['顶端对齐', '垂直居中', '底端对齐']], ['单元格大小', ['行高', '列宽']], ['表格数据', ['表格属性']]],
   pictureFormat: [['调整', ['删除背景', '裁剪', '替换图片']], ['排列', ['位置', '环绕文字', '对齐', '上移一层', '下移一层']], ['大小', ['高度', '宽度', '重置大小']]],
@@ -850,7 +850,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         }
         if (view && (modeIcon || ['标尺', '导航窗格', '网格线', '拆分'].includes(label))) {
           command.dataset.action = label === '标尺' ? 'ruler-toggle' : label === '网格线' ? 'gridlines-toggle' : label === '导航窗格' ? 'navigation-toggle' : label === '大纲' ? 'view-outline' : label === '拆分' ? 'split-view-toggle' : 'view-page'
-          if (label === 'Web 版式' || label === '阅读视图') command.dataset.action = 'view-' + label
+          if (label === 'Web 版式' || label === '故事' || label === '阅读视图') command.dataset.action = 'view-' + label
           if (label === '分页预览') command.dataset.action = 'pagination-preview'
           command.dataset.viewCommand = label
         }
@@ -860,7 +860,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           command.addEventListener('click', () => tableCommands.run(actionId))
         } else if (view && (available || command.dataset.viewCommand)) {
           command.dataset.sourceAction = label === '标尺' ? 'onShowRuler' : label === '网格线' ? 'onShowGrid' : label === '导航窗格' ? 'onShowNav' : label === '拆分' ? 'onSplitView' : label === '大纲' || label === '页面视图' ? 'onViewMode' : label === '页宽' || label === '整页' ? 'onZoomFit' : label === '缩放' ? 'onZoomDialog' : label === '分页预览' ? 'onPagePreview' : 'onZoom'
-          if (label === 'Web 版式') command.dataset.sourceAction = 'onViewMode'
+          if (label === 'Web 版式' || label === '故事') command.dataset.sourceAction = 'onViewMode'
           if (label === '阅读视图') command.dataset.sourceAction = 'onReadMode'
           command.addEventListener('mousedown', event => event.preventDefault())
           command.addEventListener('click', () => { if (label === '导航窗格' || label === '拆分') command.focus({ preventScroll: true }); view.run(label); refreshView() })

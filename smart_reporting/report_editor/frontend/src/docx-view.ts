@@ -39,17 +39,19 @@ export function createDocxViewCommands(options: {
   ruler?: {toggle(): void; readonly visible: boolean}
   split?: {toggle(): void; readonly visible: boolean}
   outline?: {run(label: string): void; reason(label: string): string | null; readonly mode: string}
+  story?: {setActive(active: boolean): void}
 }) {
   let zoom = 100
   let fit: DocxZoomFit | undefined
   let disposed = false
   let web = false
+  let story = false
   let reading = false
   let preRead: { zoom: number; fit: DocxZoomFit | undefined } | undefined
   const darkKey = 'aidocs.darkPage'
   const readDarkPref = () => { try { return localStorage.getItem(darkKey) } catch { return null } }
   let dark = options.themeDark?.() ? readDarkPref() !== '0' : false
-  const classNames = ['docx-view-web', 'docx-read-mode', 'page-dark', 'workspace-dark']
+  const classNames = ['docx-view-web', 'view-story', 'docx-read-mode', 'page-dark', 'workspace-dark']
   const previousClasses = classNames.map(name => options.root.classList.contains(name))
   const previousScrollerDark = options.scroller.classList.contains('page-dark')
   const syncAppearance = () => {
@@ -158,6 +160,13 @@ export function createDocxViewCommands(options: {
   }
   options.scroller.addEventListener('wheel', onWheel, { passive: false })
   const handled = new Set(['Web 版式', '页面视图', '深色模式', '缩小', '放大', '页宽', '整页', '缩放', '100%', '分页预览'])
+  const viewMode = () => story ? 'story' : web ? 'web' : options.outline?.mode === 'outline' ? 'outline' : 'page'
+  const setStory = (active: boolean) => {
+    if (story === active) return
+    story = active
+    options.root.classList.toggle('view-story', active)
+    options.story?.setActive(active)
+  }
   const commands: DocxViewCommands = {
     reason(label) {
       if (!disposed && label === '标尺' && options.ruler) return null
@@ -165,13 +174,14 @@ export function createDocxViewCommands(options: {
       if (!disposed && label === '导航窗格' && options.navigation) return null
       if (!disposed && label === '拆分' && options.split) return null
       if (!disposed && label === '阅读视图' && options.reading) return null
+      if (!disposed && label === '故事' && options.story) return null
       if (!disposed && ['大纲', '页面视图'].includes(label) && options.outline) return options.outline.reason(label)
-      if (label === '分页预览' && (reading || web || options.outline?.mode === 'outline')) return '分页预览仅在页面视图中可用'
+      if (label === '分页预览' && (reading || viewMode() !== 'page')) return '分页预览仅在页面视图中可用'
       return !disposed && handled.has(label) ? null : '此视图命令尚未与原生 Word 画布对齐'
     },
     active(label) {
       if (label === '拆分') return !disposed && !!options.split?.visible
-      return !disposed && (label === '深色模式' ? dark : label === '阅读视图' ? reading : label === 'Web 版式' ? web : label === '标尺' ? !!options.ruler?.visible : label === '网格线' ? !!options.gridlines?.visible : label === '导航窗格' ? !!options.navigation?.visible : label === '大纲' ? options.outline?.mode === 'outline' : label === '页面视图' ? !reading && !web && (!options.outline || options.outline.mode === 'page') : false)
+      return !disposed && (label === '深色模式' ? dark : label === '阅读视图' ? reading : label === 'Web 版式' ? web : label === '标尺' ? !!options.ruler?.visible : label === '网格线' ? !!options.gridlines?.visible : label === '导航窗格' ? !!options.navigation?.visible : label === '故事' ? story : label === '大纲' ? viewMode() === 'outline' : label === '页面视图' ? !reading && viewMode() === 'page' : false)
     },
     run(label) {
       if (commands.reason(label) !== null) return
@@ -181,12 +191,13 @@ export function createDocxViewCommands(options: {
         syncAppearance(); options.onViewChange?.(); return
       }
       if (label === '阅读视图') { setReading(!reading); return }
-      if (['大纲', '页面视图', 'Web 版式'].includes(label)) {
-        // GenOffice ViewTab toggles Web and Outline back to Print; Print also exits Reading.
+      if (['大纲', '故事', '页面视图', 'Web 版式'].includes(label)) {
+        // GenOffice ViewTab toggles Web, Outline and Story back to Print; Print also exits Reading.
         const showOutline = label === '大纲' && options.outline?.mode !== 'outline'
         web = label === 'Web 版式' && !web
         options.root.classList.toggle('docx-view-web', web)
         options.outline?.run(showOutline ? '大纲' : '页面视图')
+        setStory(label === '故事' && !story)
         if (label === '页面视图' && reading) { setReading(false); return }
         options.onViewChange?.(); return
       }
@@ -207,9 +218,10 @@ export function createDocxViewCommands(options: {
   observer?.observe(options.scroller)
   window.addEventListener('resize', refit)
   update(); syncAppearance()
-  return { ...commands, refresh: refit, get mode(): 'page' | 'web' | 'outline' { return web ? 'web' : options.outline?.mode === 'outline' ? 'outline' : 'page' }, get reading() { return reading }, get zoom() { return zoom }, dispose() {
+  return { ...commands, refresh: refit, get mode() { return viewMode() }, get reading() { return reading }, get zoom() { return zoom }, dispose() {
     if (disposed) return
     if (reading) setReading(false)
+    setStory(false)
     disposed = true
     options.scroller.removeEventListener('wheel', onWheel)
     window.removeEventListener('keydown', onKey)

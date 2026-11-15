@@ -526,7 +526,7 @@ it('dispatches the GenOffice Home Sort and Filter menu beside AutoSum', () => {
   const editing = select.closest('.workbook-ribbon-group')!
   const controls = Array.from(editing.querySelectorAll<HTMLElement>('[data-ribbon-control], [data-ribbon-command]'))
   expect(controls.slice(0, 3).map(control => control.dataset.ribbonControl ?? control.dataset.ribbonCommand))
-    .toEqual(['autosum', 'sort-filter', 'find'])
+    .toEqual(['autosum', 'sort-filter', 'fill-menu'])
   expect(Array.from(select.options, option => [option.value, option.text])).toEqual([
     ['', '排序和筛选'], ['sort:asc', '升序'], ['sort:desc', '降序'], ['sort-custom-open', '自定义排序…'],
     ['filter-toggle', '筛选'], ['filter-clear', '清除筛选条件'], ['filter-reapply', '重新应用当前筛选'],
@@ -541,6 +541,36 @@ it('dispatches the GenOffice Home Sort and Filter menu beside AutoSum', () => {
   expect(select.disabled).toBe(true)
   select.value = 'sort:asc'
   select.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledTimes(6)
+  ribbon.dispose()
+})
+
+it('dispatches the GenOffice Home Fill menu with Flash Fill and protects the workbook', () => {
+  document.body.innerHTML = '<main></main>'
+  const command = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    rotation: () => 0, editable: () => true,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const fill = document.querySelector<HTMLSelectElement>('[data-ribbon-control="fill-menu"]')!
+  expect(fill).not.toBeNull()
+  expect(fill.closest('label')?.previousElementSibling?.querySelector('[data-ribbon-control="sort-filter"]')).not.toBeNull()
+  expect(fill.disabled).toBe(false)
+  expect(Array.from(fill.options, option => [option.value, option.text])).toEqual([
+    ['', '填充'], ['fill-down', '向下填充'], ['fill-right', '向右填充'], ['fill-up', '向上填充'],
+    ['fill-left', '向左填充'], ['fill-series-open', '序列…'], ['flash-fill', '快速填充'],
+  ])
+  for (const option of Array.from(fill.options).slice(1)) {
+    fill.value = option.value
+    fill.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(fill.value).toBe('')
+  }
+  protectedSheet = true; ribbon.refreshState()
+  expect(fill.disabled).toBe(true)
+  fill.value = 'flash-fill'
+  fill.dispatchEvent(new Event('change'))
   expect(command).toHaveBeenCalledTimes(6)
   ribbon.dispose()
 })

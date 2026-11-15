@@ -4,11 +4,11 @@ import { createSlidesEditorView } from './slides-main'
 import { createEditorShell } from './shell'
 import { NativeDraft } from './native-draft'
 
-const zoom = vi.hoisted(() => ({ get: vi.fn(() => 0.5), set: vi.fn() }))
+const zoom = vi.hoisted(() => ({ get: vi.fn(() => 0.5), set: vi.fn(), fits: vi.fn(() => true) }))
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: (_host: HTMLElement, onZoomChange: (value: number) => void) => {
   onZoomChange(0.5)
-  return { update() {}, destroy() {}, getZoom: zoom.get, setZoom(value: number | null) {
-    zoom.set(value)
+  return { update() {}, destroy() {}, getZoom: zoom.get, fitsViewport: zoom.fits, setZoom(value: number | null, anchor?: {x: number; y: number}) {
+    if (anchor) zoom.set(value, anchor); else zoom.set(value)
     onZoomChange(value ?? 0.5)
   } }
 } }))
@@ -16,6 +16,7 @@ vi.mock('./vendor/genoffice/renderer/SlideThumb', () => ({ SlideThumb: ({ slide 
 const views: ReturnType<typeof createSlidesEditorView>[] = []
 beforeEach(() => {
   zoom.set.mockClear()
+  zoom.fits.mockReturnValue(true)
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
 })
 afterEach(() => { views.splice(0).forEach(view => view.dispose()); document.body.replaceChildren(); vi.unstubAllGlobals() })
@@ -202,5 +203,29 @@ it('toggles thumbnails without hiding the outline and controls zoom from the sta
   slider.dispatchEvent(new Event('input', { bubbles: true }))
   expect(zoom.set).toHaveBeenLastCalledWith(1.5)
   expect(status.querySelector('output')!.value).toBe('150%')
+  expect(app.draft.operations).toEqual([])
+})
+
+it('uses wheel input for anchored zoom or page navigation only in the canvas', async () => {
+  const app = await fixture()
+  app.control<HTMLButtonElement>('[data-command=normalView]').click()
+  await vi.waitFor(() => expect(app.control('.slides-status-zoom').hidden).toBe(false))
+  const host = app.control('.slides-canvas')
+  const wheel = (target: HTMLElement, options: WheelEventInit) => {
+    const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, ...options })
+    target.dispatchEvent(event)
+    return event.defaultPrevented
+  }
+  expect(wheel(host, { metaKey: true, deltaY: -120, clientX: 200, clientY: 160 })).toBe(true)
+  expect(zoom.set).toHaveBeenLastCalledWith(0.6, { x: 200, y: 160 })
+  expect(wheel(host, { ctrlKey: true, deltaY: -5.5 })).toBe(true)
+  expect(zoom.set.mock.lastCall![0]).toBeCloseTo(0.5 * Math.exp(0.055))
+  expect(wheel(app.control('.slides-statusbar'), { ctrlKey: true, deltaY: -120 })).toBe(false)
+
+  zoom.fits.mockReturnValue(false)
+  expect(wheel(host, { deltaY: 120 })).toBe(false)
+  zoom.fits.mockReturnValue(true)
+  expect(wheel(host, { deltaY: 120 })).toBe(true)
+  expect(app.control('.slide-row[data-selected=true] .slide-open').getAttribute('data-slide-index')).toBe('1')
   expect(app.draft.operations).toEqual([])
 })
