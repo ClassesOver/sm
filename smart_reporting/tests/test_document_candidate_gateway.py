@@ -244,3 +244,47 @@ async def test_document_adapter_runtime_value_error_is_not_misreported_as_bad_re
             })
         with pytest.raises(ValueError, match="internal adapter failure"):
             await http.get(path + "/task-one")
+
+
+@pytest.mark.anyio
+async def test_document_adapter_permission_denied_returns_403():
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from unittest.mock import AsyncMock
+    from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+
+    identity = ConnectorIdentity("dsh", "member", "session")
+
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def prepare(self, request):
+            raise PermissionError("private grant or source detail")
+
+        async def status(self, authorized_scope, task_id):
+            raise PermissionError("private grant or source detail")
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+
+    async def resolve(channel, caller):
+        return scope()
+
+    async def authenticate(request):
+        return identity
+
+    repository = type("Repository", (), {"has_member": AsyncMock(return_value=True)})()
+    app = FastAPI()
+    app.include_router(create_report_channel_router(
+        repository, authenticate, document_gateway=DocumentCandidateGateway(registry, resolve),
+    ))
+    path = "/reports/v1/channels/channel-a/document-tasks"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        response = await http.post(path, json={
+            "request_id": "one", "instruction": "Edit", "selection": [{"objectId": "one"}],
+        })
+        assert response.status_code == 403
+        assert "private" not in response.text
+        response = await http.get(path + "/task-one")
+        assert response.status_code == 403
+        assert "private" not in response.text
