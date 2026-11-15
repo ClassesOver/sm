@@ -5,6 +5,59 @@ import type { NativeDraft } from './native-draft'
 import { mountNativeAIProgress, type NativeAIProgressListener } from './native-ai-progress'
 import { bindOfficeAssistantPanel } from './office-assistant-panel'
 
+function missingWordTask(error: unknown) {
+  return error instanceof NativeApiError && error.status === 404 && error.code === 'native_ai_job_missing'
+}
+
+function temporaryConnectionFailure(error: unknown) {
+  return error instanceof TypeError || error instanceof NativeApiError && [502, 503, 504].includes(error.status)
+}
+
+function waitForWordService(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); reject(signal.reason) }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }, 750)
+    signal.addEventListener('abort', abort, {once:true})
+    if (signal.aborted) abort()
+  })
+}
+
+async function reconnectWordTask(
+  read: (signal: AbortSignal) => Promise<NativeAIJob>,
+  resume: (signal: AbortSignal) => Promise<NativeAIJob>,
+  error: unknown,
+  parent: AbortSignal,
+): Promise<NativeAIJob> {
+  const reconnect = new AbortController()
+  const abort = () => reconnect.abort(parent.reason)
+  parent.addEventListener('abort', abort, {once:true})
+  if (parent.aborted) abort()
+  const timeout = setTimeout(() => reconnect.abort(new Error('连接尚未恢复，请重新打开文档。')), 45000)
+  const signal = reconnect.signal
+  try {
+    while (!signal.aborted) {
+      try {
+        if (missingWordTask(error)) return await resume(signal)
+        if (!temporaryConnectionFailure(error)) throw error
+        await waitForWordService(signal)
+        return await read(signal)
+      } catch (next) {
+        if (!missingWordTask(next) && !temporaryConnectionFailure(next)) throw next
+        // If the resume endpoint rejects the original identity, the task is gone.
+        if (missingWordTask(error) && missingWordTask(next)) throw next
+        error = next
+      }
+    }
+    throw signal.reason
+  } finally {
+    clearTimeout(timeout)
+    parent.removeEventListener('abort', abort)
+  }
+}
+
 /** 候选只在显式采纳后进入当前草稿，仍须用户保存为独立修订。 */
 export function bindNativeAI(container: HTMLElement, options: {
   api: ReturnType<typeof createNativeApi>; draft: NativeDraft; format?: 'docx' | 'pdf'
@@ -107,8 +160,12 @@ export function bindNativeAI(container: HTMLElement, options: {
         if(!disposed && turn===generation)show(started)
       }, (started, error, signal) => {
         if (options.format === 'docx' && /^word-[0-9a-f]{64}$/.test(started.editId)
-          && error instanceof NativeApiError && error.status === 404 && error.code === 'native_ai_job_missing') {
-          return options.api.aiStart({...payload,resumeEditId:started.editId},signal)
+          && (missingWordTask(error) || temporaryConnectionFailure(error))) {
+          return reconnectWordTask(
+            signal => options.api.aiStatus(started.editId, signal),
+            signal => options.api.aiStart({...payload,resumeEditId:started.editId}, signal),
+            error, signal,
+          )
         }
       })
       if(!result || disposed || turn!==generation)return

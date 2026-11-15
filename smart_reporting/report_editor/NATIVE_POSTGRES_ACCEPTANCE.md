@@ -179,6 +179,12 @@ with the original payload and task ID, then displayed the candidate for explicit
 acceptance. PostgreSQL showed completion on the original attempt, and independent
 readback of the signed revision 2 download confirmed the edit and adjacent text.
 
+A second Edge run released the status request while the listening socket was
+down. The panel waited through the actual connection failure and recovered the
+same task and attempt after the new worker started. The recovery window is
+bounded to 45 seconds for an acknowledged Word task. This run passed the
+production build budget and confirmed the downloaded DOCX by independent readback.
+
 The isolated run passed five selected cases on PostgreSQL with Node 24. It
 covered HTTP upload, start, explicit acceptance, save and independent DOCX
 readback, plus completed-receipt replay, stale-worker cancellation after
