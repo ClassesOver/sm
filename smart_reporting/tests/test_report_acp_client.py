@@ -314,3 +314,27 @@ async def test_acp_cleanup_preserves_error_after_peer_closes_pipe(tmp_path):
         with pytest.raises((ReportAcpError, BrokenPipeError, ConnectionResetError)):
             await client.open_session()
         assert client._process is None
+
+
+@pytest.mark.anyio
+async def test_blank_acp_message_returns_422_not_500():
+    identity = ConnectorIdentity("dsh", "synthetic", "session")
+
+    class Conversation:
+        async def prompt(self, caller, text, *, message_id):
+            raise ValueError("Report message must contain between 1 and 8000 characters")
+
+    class Bridge:
+        async def restore(self, channel, caller):
+            return Conversation()
+
+    async def authenticate(request):
+        return identity
+
+    app = FastAPI()
+    app.include_router(create_report_channel_router(object(), authenticate, acp=Bridge()))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        response = await http.post("/reports/v1/channels/report-a/acp/messages",
+                                   json={"message_id": "blank", "text": "   "})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "report_channel_acp_message_invalid"
