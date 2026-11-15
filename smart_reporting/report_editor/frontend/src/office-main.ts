@@ -112,6 +112,10 @@ async function refreshLibrary() {
   const account = accountGeneration
   const result = await officeRequest<OfficeLibrary>(`/workspaces/${selectedSpace}/library`)
   if (account !== accountGeneration || selectedSpace !== currentSpace) return
+  installLibrary(result)
+}
+
+function installLibrary(result: OfficeLibrary) {
   library = {
     folders: result.folders.map(item => ({ ...item, parent: item.parent ?? rootFolder })),
     entries: result.files.map(item => ({
@@ -618,6 +622,32 @@ async function duplicateOfficeEntry(entry: Entry) {
   }, grantPath(result.editor.url))
 }
 
+async function revealOfficeFile(entry: Entry) {
+  const account = accountGeneration
+  let targetPath: string | undefined
+  await withImport(async () => {
+    const result = await officeRequest<OfficeLibrary>(`/workspaces/${entry.space}/library`)
+    if (account !== accountGeneration) return
+    const file = result.files.find(item => item.id === entry.id)
+    if (!file) throw new Error('文件已移出此工作区或不可用。')
+    currentSpace = entry.space
+    installLibrary(result)
+    folder = file.folder ?? rootFolder
+    for (let ancestor: string | undefined = folder; ancestor; ancestor = library.folders.find(item => item.id === ancestor)?.parent) {
+      setFolderCollapsed(ancestor, false)
+    }
+    selectedFiles.clear()
+    view = 'folder'
+    filter = ''
+    selectedTab = ''
+    sidebarHidden = false
+    targetPath = `/reports/v1/native/${file.document}/${file.revision}`
+  })
+  if (targetPath && account === accountGeneration) {
+    root.querySelector<HTMLButtonElement>(`.file-list [data-open="${CSS.escape(targetPath)}"]`)?.focus()
+  }
+}
+
 async function renameOfficeTab(entry: Entry) {
   const account = accountGeneration
   const libraryUrl = `/workspaces/${entry.space}/library`
@@ -691,6 +721,7 @@ root.addEventListener('contextmenu', event => {
       add('重命名', () => void withImport(() => renameOfficeTab(tabEntry)))
       add('创建副本（复制已保存的文件）', () => void withImport(() => duplicateOfficeEntry(tabEntry)))
     }
+    add('在文件夹中显示', () => void revealOfficeFile(tabEntry))
     const tabPath = tabButton?.dataset.tab
     const index = [...tabs.keys()].indexOf(tabPath ?? '')
     const move = (offset: -1 | 1) => {
