@@ -68,6 +68,8 @@ class XlsxLiteralPreviewEngine:
                 if sheet_name not in workbook.sheetnames or ":" in address:
                     raise ValueError("xlsx_preview_target_invalid")
                 sheet = workbook[sheet_name]
+                if sheet.protection.sheet:
+                    raise ValueError("xlsx_preview_protected_sheet")
                 cell = sheet[address]
                 if cell.__class__.__name__ == "MergedCell" or cell.data_type == "f":
                     raise ValueError("xlsx_preview_formula_or_merged_cell")
