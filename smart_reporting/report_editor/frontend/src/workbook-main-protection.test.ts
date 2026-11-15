@@ -273,6 +273,36 @@ it('keeps a protected sheet read-only until unprotected, then saves unprotect be
   current.view?.dispose()
 })
 
+it('saves changed AutoFilter criteria on a protected sheet and reopens the original range', async () => {
+  const range = { startRow: 0, endRow: 1, startColumn: 0, endColumn: 0 }
+  const source = await applyWorkbookOperations(await fixture(), [
+    { kind: 'protectSheet', sheetName: 'Sheet1', protect: false },
+    { kind: 'applySheetFilter', sheetName: 'Sheet1', filter: { range, columns: [] } },
+    { kind: 'protectSheet', sheetName: 'Sheet1', protect: true, allow: { autoFilter: true } },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/filtered.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    expect(grid.view.protection().sheet).toMatchObject({ protected: true, allowFilter: true })
+    await grid.api.executeCommand('sheet.command.remove-sheet-filter').catch(() => false)
+    expect(sheet().getFilter()).toBeTruthy()
+    const criteria = { colId: 0, filters: { filters: ['other'] } }
+    expect(await grid.api.executeCommand('sheet.command.set-filter-criteria', { col: 0, criteria })).toBe(true)
+    await vi.waitFor(() => expect(draft.operations).toMatchObject([
+      { kind: 'applySheetFilter', sheetName: 'Sheet1', filter: { range, columns: [{ colId: 0, values: ['other'] }] }, hiddenRows: [1] },
+    ]))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = (await readWorkbook(downloaded!)).sheets[0]!
+    expect(saved.protection).toMatchObject({ protected: true, allow: { autoFilter: true } })
+    expect(saved.filter).toMatchObject({ range, columns: [{ colId: 0, values: ['other'] }] })
+  } finally { current.view?.dispose() }
+})
+
 it('edits values only inside allowed ranges while retaining sheet protection on save and reopen', async () => {
   const source = await applyWorkbookOperations(await fixture(), [
     { kind: 'protectSheet', sheetName: 'Sheet1', protect: false },
