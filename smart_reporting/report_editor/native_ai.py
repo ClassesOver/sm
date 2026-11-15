@@ -793,6 +793,11 @@ class NativeAIService:
             raise _invalid("native_ai_snapshot_changed", "完整草稿已变化，请重新生成候选。")
         if job.status != "succeeded" or job.proposal is not proposal or self._closed:
             raise _invalid("native_ai_not_ready", "AI 候选已取消，未加入草稿。")
+        if await self._persist_acceptance(job, context, proposal):
+            if revalidate_session is not None and await revalidate_session() != current_session:
+                raise _invalid("native_permission_denied", "原生会话权限已变化。")
+            if job.status != "succeeded" or job.proposal is not proposal or self._closed:
+                raise _invalid("native_ai_not_ready", "AI 候选已取消，未加入草稿。")
         job.accepted = True
         logger.bind(
             format=context.format, document_id=context.document_id, revision=context.revision,
@@ -806,6 +811,9 @@ class NativeAIService:
             "needsVerification": True,
             "sourceWarning": "原生编辑内容尚未重新核验业务事实；原始证据保持不变。",
         }
+
+    async def _persist_acceptance(self, job, context, proposal) -> bool:
+        return False
 
     async def cancel_edit(self, session: ReportEditorSession, edit_id: str) -> dict[str, Any]:
         job, _ = await self._job(session, edit_id)

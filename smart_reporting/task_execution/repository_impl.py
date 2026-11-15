@@ -218,6 +218,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             Column("native_word_input", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_input_sha256", String(64)),
             Column("native_workbook_request_sha256", String(64)),
+            Column("native_workbook_accepted_at", DateTime(timezone=True)),
             Column("native_workbook_candidate", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_candidate_receipt", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_candidate_sha256", String(64)),
@@ -454,6 +455,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                 ("native_word_input_sha256", "VARCHAR(64)"),
                 ("native_workbook_request_sha256", "VARCHAR(64)"),
                 ("native_workbook_candidate", "JSONB"),
+                ("native_workbook_accepted_at", "TIMESTAMP WITH TIME ZONE"),
                 ("native_word_candidate_receipt", "JSONB"),
                 ("native_word_candidate_sha256", "VARCHAR(64)"),
                 ("acceptance_contract", "JSONB"),
@@ -1911,7 +1913,24 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             "kind": "native_workbook_candidate", "sha256": hashlib.sha256(canonical_bytes(candidate)).hexdigest(),
         }:
             raise TaskExecutionRepositoryError("native_workbook_candidate_invalid", "XLSX 候选回执不匹配。")
-        return candidate
+        return {**candidate, "accepted": row._mapping["native_workbook_accepted_at"] is not None}
+
+    async def accept_native_workbook_candidate(
+        self, scope: TaskExecutionScope, candidate: dict[str, Any],
+    ) -> bool:
+        pointer_sha = hashlib.sha256(canonical_bytes(candidate)).hexdigest()
+        await self.initialize()
+        async with self.db.db_engine.begin() as connection:
+            result = await connection.execute(update(self.tasks).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.status == TaskState.COMPLETED,
+                self.tasks.c.native_workbook_candidate == candidate,
+                self.tasks.c.finish_receipt["kind"].as_string() == "native_workbook_candidate",
+                self.tasks.c.finish_receipt["sha256"].as_string() == pointer_sha,
+            ).values(native_workbook_accepted_at=func.coalesce(
+                self.tasks.c.native_workbook_accepted_at, func.clock_timestamp(),
+            )))
+            return result.rowcount == 1
 
     async def request_finish(
         self,

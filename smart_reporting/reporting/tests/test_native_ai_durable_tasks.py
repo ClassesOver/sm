@@ -231,7 +231,12 @@ async def test_workbook_candidate_finish_is_fenced_and_recoverable(durable):
     recovered_lease = await repository.claim_lease(task_id, 'recovery-worker')
     completed = await repository.finalize_finish(task_id, recovered_lease, task.state_version, agno_status='recovered')
     assert completed.state is TaskState.COMPLETED
-    assert await repository.get_completed_native_workbook_candidate(scope, context.digest()) == receipt
+    assert await repository.get_completed_native_workbook_candidate(scope, context.digest()) == {**receipt, "accepted": False}
+    assert not await repository.accept_native_workbook_candidate(scope, {**receipt, "snapshotSha256": "f" * 64})
+    assert not await repository.accept_native_workbook_candidate(replace(scope, owner_user_id="foreign"), receipt)
+    assert await repository.accept_native_workbook_candidate(scope, receipt)
+    assert await repository.accept_native_workbook_candidate(scope, receipt)
+    assert await repository.get_completed_native_workbook_candidate(scope, context.digest()) == {**receipt, "accepted": True}
     assert await repository.get_completed_native_workbook_candidate(scope, 'f' * 64) is None
     assert await repository.get_completed_native_workbook_candidate(
         replace(scope, owner_user_id='foreign'), context.digest(),

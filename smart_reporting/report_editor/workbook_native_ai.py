@@ -143,20 +143,37 @@ class NativeWorkbookAIService(NativeAIService):
     async def _read_durable_candidate(self, scope, context):
         return await self.task_repository.get_completed_native_workbook_candidate(scope, context.digest())
 
+    @staticmethod
+    def _durable_candidate(job, proposal):
+        return {"contextSha256": job.context_sha256, "snapshotSha256": job.snapshot_sha256,
+                "clientRequestId": job.client_request_id, "proposal": proposal}
+
+    async def _persist_acceptance(self, job, context, proposal):
+        if self.task_repository is not None and re.fullmatch(r"[0-9a-f]{64}", job.edit_id):
+            marked = await self.task_repository.accept_native_workbook_candidate(
+                self._durable_scope(context, job.edit_id), self._durable_candidate(job, proposal),
+            )
+            if not marked:
+                raise _invalid("native_ai_not_ready", "XLSX 候选已失效。")
+            return True
+        return False
+
     async def _job(self, session, edit_id):
         if self.task_repository is not None and re.fullmatch(r"[0-9a-f]{64}", edit_id):
             context = await self._context(session)
             job = self._jobs.get(edit_id)
-            if job is None:
+            if job is None or job.status == "succeeded":
                 receipt = await self._read_durable_candidate(self._durable_scope(context, edit_id), context)
                 if receipt is not None:
-                    job = _WorkbookNativeAIJob(
-                        edit_id, context.digest(), receipt["snapshotSha256"], context.scope.user_id,
-                        datetime.now(UTC), status="succeeded", client_request_id=receipt["clientRequestId"],
-                        proposal=receipt["proposal"],
-                    )
-                    await job.event_log.finish(job.status)
-                    return job, context
+                    if job is None:
+                        job = _WorkbookNativeAIJob(
+                            edit_id, context.digest(), receipt["snapshotSha256"], context.scope.user_id,
+                            datetime.now(UTC), status="succeeded", client_request_id=receipt["clientRequestId"],
+                            proposal=receipt["proposal"], accepted=receipt["accepted"],
+                        )
+                        await job.event_log.finish(job.status)
+                        return job, context
+                    job.accepted = receipt["accepted"]
         return await super()._job(session, edit_id)
 
     async def _run_durable_job(self, task_scope, job, context, base, selection, scope, instruction):
@@ -173,7 +190,7 @@ class NativeWorkbookAIService(NativeAIService):
                         if receipt is None or job.snapshot_sha256 != receipt["snapshotSha256"]:
                             raise _invalid("native_ai_snapshot_changed", "XLSX 候选快照已变化。")
                         if job.status == "running":
-                            job.proposal, job.status = receipt["proposal"], "succeeded"
+                            job.proposal, job.accepted, job.status = receipt["proposal"], receipt["accepted"], "succeeded"
                         return
                     if task.state is TaskState.CANCELLED:
                         job.status = "cancelled"
@@ -221,7 +238,7 @@ class NativeWorkbookAIService(NativeAIService):
             if receipt is None or job.snapshot_sha256 != receipt["snapshotSha256"]:
                 raise _invalid("native_ai_snapshot_changed", "XLSX 候选快照已变化。")
             if job.status == "running":
-                job.proposal, job.status = receipt["proposal"], "succeeded"
+                job.proposal, job.accepted, job.status = receipt["proposal"], receipt["accepted"], "succeeded"
             return
         else:
             raise _invalid("native_ai_not_ready", "XLSX 任务已结束。")
@@ -230,8 +247,7 @@ class NativeWorkbookAIService(NativeAIService):
             claim.assert_alive()
             finishing = await repository.request_native_workbook_finish(
                 task_scope, claim.lease, task.state_version, job.request_sha256,
-                {"contextSha256": job.context_sha256, "snapshotSha256": job.snapshot_sha256,
-                 "clientRequestId": job.client_request_id, "proposal": proposal},
+                self._durable_candidate(job, proposal),
             )
             await repository.finalize_finish(task_id, claim.lease, finishing.state_version, agno_status="completed")
 
