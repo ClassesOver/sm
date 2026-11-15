@@ -98,6 +98,47 @@ async def test_source_query_rechecks_authority_after_execution(change):
 
 
 @pytest.mark.asyncio
+async def test_workspace_sources_keep_healthy_sources_when_one_credential_is_unavailable():
+    from smart_reporting.management.models import ManagementError
+    from smart_reporting.office.source_runtime import OfficeSourceRuntime
+
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        admin = Identity('db', '1', '10')
+        await office.bootstrap(admin, 'Admin')
+        space = (await office.create_space(admin, 'Team', admin.user))['id']
+        for source in ('legacy', 'invalid', 'healthy'):
+            await office.grant_source(admin, space, source, ['db.a'])
+
+        class Vault:
+            async def resolve(self, connection, scope, source, reference):
+                if source == 'legacy':
+                    raise ManagementError('management_credential_key_missing', '缺少解密历史凭据所需的密钥。', 503)
+                if source == 'invalid':
+                    return 'invalid-private-dsn'
+                return 'starrocks://test:local-test-password@localhost/db'
+
+        class Runtime(OfficeSourceRuntime):
+            async def published(self, connection, actor, source):
+                return 'scope', dict(revision=1, name=source, source_type='starrocks',
+                                     database='db', credential_ref='ref', execution_parameters={}), ('db.a',)
+
+        runtime = Runtime(office, Vault())
+        listing = {item['id']: item for item in await runtime.available(admin, space)}
+        assert listing['healthy']['available'] and listing['healthy']['tables'] == ('db.a',)
+        assert listing['legacy'] == {'id': 'legacy', 'available': False, 'reason': '缺少解密历史凭据所需的密钥。'}
+        assert not listing['invalid']['available']
+        assert 'local-test-password' not in repr(listing) and 'invalid-private-dsn' not in repr(listing)
+        with pytest.raises(OfficeError) as error:
+            await runtime.query(admin, space, 'legacy', 'SELECT value FROM db.a')
+        assert error.value.code == 'management_credential_key_missing'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_existing_source_service_uses_office_company_and_encrypted_vault():
     from smart_reporting.management.repository import (
         metadata, tenant_settings, sources, source_drafts, source_versions,

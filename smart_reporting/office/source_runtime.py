@@ -5,7 +5,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from ..management.data_sources.repository import SourceRepository
-from ..management.models import ManagementScope
+from ..management.models import ManagementError, ManagementScope
 from ..management.repository import sources, source_versions
 from ..management.table_access import TableAccessService
 from ..reporting.data_source.starrocks import StarRocksDataSourceAdapter, parse_starrocks_source
@@ -51,12 +51,18 @@ class OfficeSourceRuntime:
     async def access(self, actor, space, source):
         async with self.office.transaction(actor) as connection:
             scope_id, row, tables = await self._authorized_tables(connection, actor, space, source)
-            dsn = await self.vault.resolve(connection, scope_id, source, row["credential_ref"])
-            config = parse_starrocks_source({
-                "id": source, "name": row["name"], "type": row["source_type"],
-                "database": row["database"], "dsnEnv": "OFFICE_SOURCE_DSN",
-                **(row["execution_parameters"] or {}),
-            }, {"OFFICE_SOURCE_DSN": dsn})
+            try:
+                dsn = await self.vault.resolve(connection, scope_id, source, row["credential_ref"])
+            except ManagementError as error:
+                raise OfficeError(error.code, error.message, error.status) from error
+            try:
+                config = parse_starrocks_source({
+                    "id": source, "name": row["name"], "type": row["source_type"],
+                    "database": row["database"], "dsnEnv": "OFFICE_SOURCE_DSN",
+                    **(row["execution_parameters"] or {}),
+                }, {"OFFICE_SOURCE_DSN": dsn})
+            except (TypeError, ValueError) as error:
+                raise OfficeError("office_source_config_invalid", "数据源连接配置无效，请联系公司管理员。", 422) from error
             return SourceAccess(source, row["revision"], tables, config)
 
     async def _authorized_tables(self, connection, actor, space, source):
@@ -80,6 +86,7 @@ class OfficeSourceRuntime:
                                "tables": access.tables, "available": True})
             except OfficeError as error:
                 result.append({"id": source, "available": False, "reason": error.message})
+        await self.office.space_access(actor, space)
         return result
 
     async def describe(self, actor, space, source, table):
