@@ -134,6 +134,9 @@ async def test_native_xlsx_ai_http_scope_csrf_selection_and_cancel_request():
         assert (await client.post(base.replace('/workbook/1/', '/workbook/2/')+'/start', json=payload, headers=headers)).status_code == 403
         assert (await client.post(base+'/start', json={**payload, 'path': '/tmp/foreign'}, headers=headers)).status_code == 422
         assert (await client.post(base+'/start', json={**payload, 'selection': {**payload['selection'], 'startRow': True}}, headers=headers)).status_code == 422
+        resume = await client.post(base+'/start', json={**payload, 'resumeEditId': 'b' * 64}, headers=headers)
+        assert resume.status_code == 404 and resume.json()['detail']['code'] == 'native_ai_job_missing'
+        assert not ai._jobs
         cancelled = await client.post(base+'/cancel-request', json={'clientRequestId': 'http'}, headers=headers)
         started = await client.post(base+'/start', json=payload, headers=headers)
         assert started.status_code == 200 and started.json()['status'] == 'cancelled'

@@ -1255,6 +1255,15 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             scope, instruction, _native_workbook_request_sha256=request_sha256,
         )
 
+    async def has_native_workbook_task_input(self, scope: TaskExecutionScope, request_sha256: str) -> bool:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:
+            result = await connection.execute(select(self.tasks.c.external_run_id).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.native_workbook_request_sha256 == request_sha256,
+            ))
+            return result.scalar_one_or_none() is not None
+
     async def is_native_workbook_task_cancelled(self, scope: TaskExecutionScope) -> bool:
         await self.initialize()
         async with self.db.db_engine.connect() as connection:

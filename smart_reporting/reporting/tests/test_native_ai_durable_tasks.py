@@ -265,3 +265,29 @@ async def test_completed_workbook_cancellation_respects_explicit_acceptance(dura
         assert projected["status"] == "cancelled" and "proposal" not in projected
         with pytest.raises(ReportingError):
             await first.accept_edit(d["session"], edit_id, **adoption)
+
+async def test_workbook_resume_is_bound_to_existing_task_and_frozen_input(durable):
+    d = durable
+    second = d["service"](never_call)
+    session, request = d["session"], d["request"]
+    edit_id = second._durable_edit_id(d["context"], request["client_request_id"])
+    with pytest.raises(ReportingError) as missing:
+        await second.start_edit(session, **request, resume_edit_id=edit_id)
+    assert missing.value.code == "native_ai_job_missing"
+    assert await d["repository"].get_task_snapshot("native-workbook-ai:" + edit_id) is None
+
+    first = d["service"]()
+    acknowledged = await first.start_edit(session, **request)
+    assert acknowledged["editId"] == edit_id
+    completed = await first.wait_edit_status(session, edit_id)
+    assert completed["status"] == "succeeded", completed
+    await first.aclose()
+
+    with pytest.raises(ReportingError) as wrong_id:
+        await second.start_edit(session, **request, resume_edit_id="b" * 64)
+    with pytest.raises(ReportingError) as changed:
+        await second.start_edit(session, **{**request, "instruction": "Changed instruction"}, resume_edit_id=edit_id)
+    assert wrong_id.value.code == changed.value.code == "native_ai_job_missing"
+    recovered = await second.start_edit(session, **request, resume_edit_id=edit_id)
+    assert recovered["editId"] == edit_id
+    assert await second.wait_edit_status(session, edit_id) == completed

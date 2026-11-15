@@ -57,7 +57,7 @@ it('服务重启后复用冻结请求，候选仍须显式采纳', async () => {
  view.open()
  await submit()
  expect(api.start).toHaveBeenCalledTimes(2)
- expect(api.start.mock.calls[1][0]).toEqual(api.start.mock.calls[0][0])
+ expect(api.start.mock.calls[1][0]).toEqual({...api.start.mock.calls[0][0], resumeEditId:candidate.editId})
  expect(api.cancelRequest).not.toHaveBeenCalled()
  expect(apply).not.toHaveBeenCalled()
  host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()

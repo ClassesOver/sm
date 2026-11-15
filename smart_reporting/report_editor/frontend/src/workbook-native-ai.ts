@@ -10,7 +10,7 @@ type Scope = 'range' | 'workbook'
 export type WorkbookAISelection = { sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number }
 type Context = { expectedSha256: string; operations: NativeOperation[]; selection: WorkbookAISelection; scope: Scope; label: string; cells: Record<string, { value?: unknown; formula?: string }> }
 type Job = { editId: string; status: string; snapshotSha256: string; proposal?: { summary: string; operations: NativeOperation[] }; error?: { message: string } }
-type Start = Pick<Context, 'expectedSha256' | 'operations' | 'selection' | 'scope'> & { instruction: string; clientRequestId: string }
+type Start = Pick<Context, 'expectedSha256' | 'operations' | 'selection' | 'scope'> & { instruction: string; clientRequestId: string; resumeEditId?: string }
 export interface WorkbookNativeAIClient {
   start(payload: Start, signal: AbortSignal): Promise<Job>
   status(id: string, signal: AbortSignal): Promise<Job>
@@ -101,7 +101,8 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
       if (disposed || turn !== generation) return
       snapshot = identity(quoted)
       panel.querySelector<HTMLElement>('.native-ai-context')!.textContent = '本次冻结范围：' + quoted.label
-      const payload = { expectedSha256: quoted.expectedSha256, operations: quoted.operations, selection: quoted.selection, scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }
+      const payload = { expectedSha256: quoted.expectedSha256, operations: structuredClone(quoted.operations),
+        selection: structuredClone(quoted.selection), scope: quoted.scope, instruction: instruction.value.trim(), clientRequestId: activeRequestId }
       const job = await tasks.run(payload, activeRequestId, (started, signal) => {
         cancel.hidden = false
         progress.start(options.api.events, started.editId, signal, () => !disposed && turn === generation && !options.locked())
@@ -109,7 +110,7 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
         if (/^[0-9a-f]{64}$/.test(started.editId) && (missingNativeAITask(error) || temporaryConnectionFailure(error))) {
           return reconnectNativeAITask(
             signal => options.api.status(started.editId, signal),
-            signal => options.api.start(payload, signal),
+            signal => options.api.start({...payload,resumeEditId:started.editId}, signal),
             error, signal,
           )
         }

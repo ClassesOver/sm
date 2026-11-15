@@ -22,6 +22,7 @@ class WorkbookAISelection(BaseModel):
 
 
 class WorkbookNativeAIStartPayload(_DraftPayload):
+    resume_edit_id: str | None = Field(default=None, alias="resumeEditId", pattern=r"^[0-9a-f]{64}$")
     client_request_id: str = Field(alias="clientRequestId", min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
     instruction: str = Field(min_length=1, max_length=2000)
     selection: WorkbookAISelection | None = None
@@ -53,7 +54,8 @@ def create_native_workbook_ai_router(grants: Any, *, editor: Any, ai: NativeWork
         try:
             session = await session_for(request, document_id, revision, write=True)
             return await ai.start_edit(session, client_request_id=payload.client_request_id, instruction=payload.instruction, expected_sha256=payload.expected_sha256,
-                operations=payload.operations, selection=payload.selection.model_dump(by_alias=True) if payload.selection else {}, scope=payload.scope)
+                operations=payload.operations, selection=payload.selection.model_dump(by_alias=True) if payload.selection else {},
+                scope=payload.scope, resume_edit_id=payload.resume_edit_id)
         except ReportingError as error:
             raise _ai_error(error) from None
 

@@ -95,7 +95,8 @@ class NativeWorkbookAIService(NativeAIService):
             raise _invalid("native_ai_format_unsupported", "此入口仅支持原生 XLSX。")
         return context
 
-    async def start_edit(self, session, *, client_request_id, instruction, expected_sha256, operations, selection, scope="range"):
+    async def start_edit(self, session, *, client_request_id, instruction, expected_sha256,
+                         operations, selection, scope="range", resume_edit_id=None):
         context = await self._context(session)
         if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 2000:
             raise _invalid("native_ai_instruction_invalid", "请输入不超过 2000 字的修改要求。")
@@ -107,10 +108,14 @@ class NativeWorkbookAIService(NativeAIService):
         selection = deepcopy(selection)
         request_id = self._request_id(client_request_id)
         fingerprint = native_digest({"context": context.digest(), "instruction": instruction, "operations": base, "selection": selection, "scope": scope})
+        if resume_edit_id is not None and (
+            self.task_repository is None or resume_edit_id != self._durable_edit_id(context, request_id)
+        ):
+            raise _invalid("native_ai_job_missing", "原 XLSX 任务不存在或已过期。")
         self._prune()
         key = (context.digest(), request_id)
         previous_id = self._requests.get(key)
-        if previous_id is not None:
+        if previous_id is not None and resume_edit_id is None:
             previous = self._jobs[previous_id]
             if previous.request_sha256 is not None and previous.request_sha256 != fingerprint:
                 raise _invalid("native_ai_snapshot_changed", "相同 AI 请求的内容已变化，请重新发起。")
@@ -121,16 +126,8 @@ class NativeWorkbookAIService(NativeAIService):
         if self.task_repository is not None:
             edit_id = self._durable_edit_id(context, request_id)
             task_scope = self._durable_scope(context, edit_id)
-            if await self.task_repository.is_native_workbook_task_cancelled(task_scope):
+            if not await self._register_durable_request(task_scope, instruction, fingerprint, resume_edit_id):
                 return self._serialize(await self._cancelled_projection(context, edit_id, request_id))
-            try:
-                await self.task_repository.create_native_workbook_task(task_scope, instruction, fingerprint)
-            except TaskExecutionRepositoryError as error:
-                if error.code in {"native_workbook_input_conflict", "task_initial_instruction_conflict"}:
-                    if await self.task_repository.is_native_workbook_task_cancelled(task_scope):
-                        return self._serialize(await self._cancelled_projection(context, edit_id, request_id))
-                    raise _invalid("native_ai_snapshot_changed", "相同 AI 请求的内容已变化，请重新发起。") from None
-                raise
             previous = self._request_job(context, request_id, fingerprint)
             if previous is not None:
                 return self._serialize(previous)
@@ -144,6 +141,24 @@ class NativeWorkbookAIService(NativeAIService):
             self._prepare_job(*args) if task_scope is None else self._run_durable_job(task_scope, *args)
         )
         return self._serialize(job)
+
+    async def _register_durable_request(self, scope, instruction, fingerprint, resume_edit_id):
+        repository = self.task_repository
+        if await repository.is_native_workbook_task_cancelled(scope):
+            return False
+        if resume_edit_id is not None:
+            if not await repository.has_native_workbook_task_input(scope, fingerprint):
+                raise _invalid("native_ai_job_missing", "原 XLSX 任务不存在或已过期。")
+        else:
+            try:
+                await repository.create_native_workbook_task(scope, instruction, fingerprint)
+            except TaskExecutionRepositoryError as error:
+                if error.code not in {"native_workbook_input_conflict", "task_initial_instruction_conflict"}:
+                    raise
+                if await repository.is_native_workbook_task_cancelled(scope):
+                    return False
+                raise _invalid("native_ai_snapshot_changed", "相同 AI 请求的内容已变化，请重新发起。") from None
+        return True
 
     @staticmethod
     def _durable_edit_id(context, request_id):
