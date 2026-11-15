@@ -197,7 +197,7 @@ class WordTaskDispatcher:
             # failure, retry the model, or acquire authority via scope-only cancel.
             return
 
-    async def _execute_claim(self, ref, task_session, *, shutdown_requested, authorization_check=None):
+    async def _execute_claim(self, ref, task_session, *, shutdown_requested=None, authorization_check=None):
         task_id = ref.scope.external_run_id
         session_reference = ref.word_input.binding.server_session_reference
         bridge = None

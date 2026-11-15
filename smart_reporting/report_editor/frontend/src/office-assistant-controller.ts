@@ -96,10 +96,13 @@ export class OfficeAssistantController<Input, Job> {
     this.requestId = ''; this.taskId = ''
     this.terminalObserved = false
     const turn = this.generation
+    const earlier = [...this.cleanups.values()]
     const current = this.queueCleanup(requestId, taskId)
-    const completion = this.cleanupAll([...new Set([...current, ...this.cleanups.values()])]).finally(() => {
+    const previous = earlier.filter(record => !current.includes(record))
+    const completion = this.cleanupAll(current.length ? current : previous).finally(() => {
       if (this.pendingCancel?.promise === completion) this.pendingCancel = undefined
     })
+    if (current.length) void this.cleanupAll(previous).catch(() => {})
     this.pendingCancel = { generation: turn, promise: completion }
     return completion
   }
