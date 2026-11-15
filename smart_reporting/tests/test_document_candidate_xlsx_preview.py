@@ -272,3 +272,33 @@ async def test_xlsx_preview_rejects_source_changed_during_workbook_inspection():
     with pytest.raises(PermissionError, match="document_source_changed"):
         await engine.prepare(request)
     assert reads == 3
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("address", ["A1", "B2"])
+async def test_xlsx_preview_rejects_entire_merged_range_including_anchor(address):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet["A1"] = 12
+    sheet.merge_cells("A1:B2")
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    original = output.getvalue()
+    scope = DocumentScope(
+        "channel", "grant", "book", "1", hashlib.sha256(original).hexdigest(),
+        DocumentFormat.XLSX,
+    )
+
+    async def source(_):
+        return original
+
+    async def propose(_):
+        return ({"sheet": "Sheet1", "range": address, "value": 15},)
+
+    request = DocumentCandidateRequest(
+        scope, "one", "Edit merged cell", ({"sheet": "Sheet1", "range": address},),
+    )
+    with pytest.raises(ValueError, match="xlsx_preview_formula_or_merged_cell"):
+        await XlsxLiteralPreviewEngine(source, propose).prepare(request)
