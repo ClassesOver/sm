@@ -1348,6 +1348,31 @@ it('toggles the active Univer worksheet gridlines without changing cell data', (
   expect(calls).toEqual([true, false])
 })
 
+it('renders GenOffice Page Layout viewing and printing in separate checked columns', () => {
+  const command = vi.fn()
+  let editable = true, showGridlines = true, showHeadings = false
+  const state: WorkbookPageSetupState = { margins: 'normal', printGridlines: false, printHeadings: true }
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    rotation: () => undefined, editable: () => editable, hasSelection: () => false, pageSetup: () => state,
+    gridlines: () => ({ visible: showGridlines, available: true }),
+    headings: () => ({ visible: showHeadings, available: true }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Page Layout"]')!.click()
+  const columns = Array.from(document.querySelectorAll<HTMLElement>('.workbook-ribbon-check-column'))
+  expect(columns.map(column => column.getAttribute('aria-label'))).toEqual(['网格线', '标题'])
+  const controls = columns.flatMap(column => Array.from(column.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')))
+  expect(controls.map(button => [button.dataset.ribbonCommand, button.getAttribute('aria-checked')])).toEqual([
+    ['toggle-gridlines', 'true'], ['print-gridlines', 'false'], ['toggle-headings', 'false'], ['print-headings', 'true'],
+  ])
+  for (const button of controls) button.click()
+  expect(command.mock.calls.flat()).toEqual(['toggle-gridlines', 'print-gridlines', 'toggle-headings', 'print-headings'])
+  showGridlines = false; showHeadings = true; state.printGridlines = true; editable = false; ribbon.refreshState()
+  expect(controls.map(button => [button.disabled, button.getAttribute('aria-checked')])).toEqual([
+    [false, 'false'], [true, 'true'], [false, 'true'], [true, 'true'],
+  ])
+  ribbon.dispose()
+})
+
 it('renders Page Layout dropdowns with the source option sets and dispatches their commands', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
@@ -1370,7 +1395,7 @@ it('renders Page Layout dropdowns with the source option sets and dispatches the
   expect([...fitWidth.options].map(option => option.value)).toEqual(['0', '1', '2', '3', '4', '5'])
   expect(fitWidth.value).toBe('2')
   expect(document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-fit:height"]')!.value).toBe('0')
-  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.getAttribute('aria-pressed')).toBe('true')
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.getAttribute('aria-checked')).toBe('true')
   const breaks = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="page-breaks"]')!
   breaks.value = 'page-breaks:reset'
   breaks.dispatchEvent(new Event('change', { bubbles: true }))

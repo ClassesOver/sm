@@ -102,7 +102,6 @@
 .docx-native .docx-ribbon .rb-icon { display:inline-flex; flex:0 0 auto; width:var(--office-control-height); height:var(--office-control-height); align-items:center; justify-content:center; gap:2px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
 .docx-native .docx-ribbon .rb-icon svg { flex-shrink:0; max-width:24px; max-height:24px; }
 .docx-native .docx-ribbon .docx-source-command { width:auto; min-width:var(--office-control-height); padding-inline:6px; white-space:nowrap; }
-.docx-native .docx-source-home .ribbon-group-items:has(> [data-action="convert-pdf"]) { display:grid; grid-template-rows:repeat(2,var(--office-control-height)); grid-auto-flow:column; grid-auto-columns:max-content; }
 .docx-native .docx-source-home .ribbon-group-items:has(> [data-action="find"]) { display:flex; flex-direction:column; align-items:stretch; flex-wrap:nowrap; }
 .docx-native .docx-source-home .ribbon-group-items > [data-action="select"] { min-height:var(--office-control-height); padding:0 6px; color:var(--office-ink-2); }
 .docx-native .docx-ribbon .rb-icon:hover:not(:disabled),

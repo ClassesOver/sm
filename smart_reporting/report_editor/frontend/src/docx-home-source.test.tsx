@@ -9,7 +9,7 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
-function renderHome(editable = true) {
+function renderHome(editable = true, onExport?: (format:'pdf'|'html'|'markdown')=>void) {
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
@@ -17,7 +17,7 @@ function renderHome(editable = true) {
   const noop = () => {}
   const onSpacing = vi.fn()
   const onToggleFormattingMarks = vi.fn()
-  flushSync(() => root.render(<DocxHomeSource editable={editable} onToggleFormattingMarks={onToggleFormattingMarks} onMark={noop} onFontSize={noop}
+  flushSync(() => root.render(<DocxHomeSource editable={editable} onExport={onExport} onToggleFormattingMarks={onToggleFormattingMarks} onMark={noop} onFontSize={noop}
     onFontFamily={noop} onFontSizeValue={noop} onColor={noop} onAlignment={noop}
     onIndent={noop} onList={noop} onSpacing={onSpacing} />))
   return {
@@ -28,6 +28,32 @@ function renderHome(editable = true) {
     panel: host.querySelector<HTMLDivElement>('[data-source-action="line-spacing-options-menu"]')!,
   }
 }
+
+it('opens the GenOffice Home Convert menu and invokes the existing export callback', () => {
+  const onExport=vi.fn(),{host}=renderHome(true,onExport)
+  const trigger=host.querySelector<HTMLButtonElement>('[data-action="convert-menu"]')!
+  flushSync(()=>trigger.click())
+  const menu=host.querySelector('[role="menu"][aria-label="转换"]')!
+  const options=Array.from(menu.querySelectorAll<HTMLButtonElement>('button'))
+  expect(options.map(button=>button.dataset.action)).toEqual(['convert-pdf','convert-html','convert-markdown','export-images'])
+  expect(options[3].disabled).toBe(true)
+  flushSync(()=>options[0].click())
+  expect(onExport).toHaveBeenCalledExactlyOnceWith('pdf')
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  flushSync(()=>trigger.click())
+  flushSync(()=>host.querySelector<HTMLButtonElement>('[data-action="convert-markdown"]')!.click())
+  expect(onExport).toHaveBeenLastCalledWith('markdown')
+  flushSync(()=>trigger.click())
+  const option=host.querySelector<HTMLButtonElement>('[data-action="convert-html"]')!
+  option.focus()
+  flushSync(()=>option.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true})))
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(trigger)
+  const readonly=renderHome(false,onExport)
+  flushSync(()=>readonly.host.querySelector<HTMLButtonElement>('[data-action="convert-menu"]')!.click())
+  expect(readonly.host.querySelector<HTMLButtonElement>('[data-action="convert-pdf"]')!.disabled).toBe(true)
+  expect(readonly.host.querySelector<HTMLButtonElement>('[data-action="convert-html"]')!.disabled).toBe(false)
+})
 
 it.each(['outside pointerdown', 'Escape', 'window blur'])('dismisses the spacing popup on %s without invoking a spacing command', reason => {
   const { host, trigger, panel, onSpacing } = renderHome()

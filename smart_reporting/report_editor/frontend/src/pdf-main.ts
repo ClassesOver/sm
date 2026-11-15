@@ -729,12 +729,21 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   for (const command of PDF_VIEW_RIBBON_GROUPS[0].commands) { const control = [...viewNavigation.querySelectorAll<HTMLElement>('[data-source-command-id]')].find(node => node.dataset.sourceCommandId === command.id); if (control) viewNavigation.append(control) }
   const viewZoomGroup = ribbon.group('view', 'Page & Zoom')
   const viewPageInput = createPageInput('view.pageZoom.goToPage')
-  viewZoomGroup.append(viewPageInput.row)
+  const viewPageZoom = documentElement('div', 'pdf-view-page-zoom')
+  const viewZoomRow = documentElement('div', 'pdf-view-zoom-row')
+  const viewZoomValue = documentElement('output')
+  viewZoomValue.dataset.pdfViewZoom = ''
+  viewZoomValue.setAttribute('aria-label', pdfRibbonLabel('缩放'))
+  viewZoomValue.textContent = `${Math.round(scale * 100)}%`
+  viewPageZoom.append(viewPageInput.row, viewZoomRow)
+  viewZoomGroup.append(viewPageZoom)
   commandGroup = viewZoomGroup
   const syncZoomControls = () => {
     for (const option of [...homeZoom.options]) if (!PDF_ZOOM_STEPS.some(step => step === Number(option.value)) && Number(option.value) !== scale) option.remove()
     if (![...homeZoom.options].some(item => Number(item.value) === scale)) { const added = documentElement('option'); added.value = String(scale); added.textContent = `${Math.round(scale * 100)}%`; homeZoom.append(added) }
-    homeZoom.value = String(scale); zoomSlider.value = String(Math.round(scale * 100)); zoomValue.textContent = `${Math.round(scale * 100)}%`
+    homeZoom.value = String(scale)
+    zoomSlider.value = String(Math.round(scale * 100))
+    zoomValue.textContent = viewZoomValue.textContent = `${Math.round(scale * 100)}%`
   }
   const setZoom = (value: number, vx = 0, vy = 0, manual = true) => {
     let next: number
@@ -755,7 +764,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const viewFitWidth = button('适合宽度', () => fitScale('width'), false)
   const viewFitPage = button('适合页面', () => fitScale('page'), false)
   sourceCommand(viewFitWidth, 'view.pageZoom.fitWidth'); sourceCommand(viewFitPage, 'view.pageZoom.fitPage')
-  viewZoomGroup.append(zoomOut, zoomIn, viewFitWidth, viewFitPage)
+  viewZoomRow.append(zoomOut, viewZoomValue, zoomIn)
+  viewZoomGroup.append(viewFitWidth, viewFitPage)
   viewFitWidth.setAttribute('aria-keyshortcuts', 'Control+0 Meta+0')
   // GenOffice App.tsx reading shortcuts use the same commands as the ribbon.
   root.addEventListener('keydown', event => {

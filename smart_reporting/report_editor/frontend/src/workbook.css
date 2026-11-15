@@ -11,6 +11,12 @@
 .workbook-ribbon-group .workbook-ribbon-number-format { max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .workbook-ribbon-group:first-child { padding-left:0; }
 .workbook-ribbon-group:last-child { border-right:0; }
+.workbook-ribbon-check-column { grid-row:span 3; display:grid; grid-template-rows:repeat(3,var(--office-control-height)); gap:4px; align-items:center; }
+.workbook-ribbon-check-column > span { padding-inline:8px; }
+.workbook-ribbon-group .workbook-ribbon-check-column > button { justify-content:flex-start; }
+.workbook-ribbon-check-mark { width:14px; height:14px; display:inline-grid; place-items:center; border:1px solid var(--color-border-strong); border-radius:2px; }
+.workbook-ribbon-check-mark svg { width:12px; height:12px; }
+.workbook-ribbon-check-column [aria-checked="false"] .workbook-ribbon-check-mark svg { visibility:hidden; }
 .workbook-ribbon-group h2 { position:absolute; bottom:0; left:12px; right:12px; margin:0; color:var(--color-text-muted); font-size:var(--font-size-xs); font-weight:500; text-align:center; }
 .workbook-ribbon-group button { display:inline-flex; flex:0 0 auto; align-items:center; justify-content:center; gap:4px; min-height:var(--office-control-height); padding:4px 8px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; white-space:nowrap; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
 .workbook-ribbon-group button:hover:not(:disabled) { background:var(--office-hover-bg); border-color:var(--office-hover-border); }

@@ -447,6 +447,7 @@ it('switches between the source single and double page controls while keeping fi
  const spread=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.navigation.pageSpread"]')!
  const fit=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.pageZoom.fitWidth"]')!
  const zoom=f.root.querySelector<HTMLSelectElement>('.pdf-zoom')!
+ const readout=f.root.querySelector<HTMLOutputElement>('[data-pdf-view-zoom]')!
  const rows=()=>[...viewport.querySelectorAll('.pdf-page-row')].map(row=>row.children.length)
  expect(spread.getAttribute('aria-pressed')).toBe('false')
  expect(spread.querySelector('svg')?.children).toHaveLength(2)
@@ -458,18 +459,39 @@ it('switches between the source single and double page controls while keeping fi
  fit.click()
  await vi.waitFor(()=>expect(Number(zoom.value)).toBeGreaterThan(1.5))
  const singleZoom=Number(zoom.value)
+ expect(readout.textContent).toBe(`${Math.round(singleZoom*100)}%`)
  spread.click()
  await vi.waitFor(()=>expect(rows()).toEqual([2,1]))
  expect(spread.getAttribute('aria-pressed')).toBe('true')
  expect(spread.querySelector('svg')?.children).toHaveLength(1)
  expect(Number(zoom.value)).toBeLessThan(singleZoom)
+ expect(readout.textContent).toBe(`${Math.round(Number(zoom.value)*100)}%`)
  expect(viewport.querySelector<HTMLElement>('.pdf-page.is-active')?.dataset.pageId).toBe(selected)
  spread.click()
  await vi.waitFor(()=>expect(rows()).toEqual([1,1,1]))
  expect(spread.getAttribute('aria-pressed')).toBe('false')
  expect(spread.querySelector('svg')?.children).toHaveLength(2)
  expect(Number(zoom.value)).toBeCloseTo(singleZoom)
+ expect(readout.textContent).toBe(`${Math.round(singleZoom*100)}%`)
  expect(viewport.querySelector<HTMLElement>('.pdf-page.is-active')?.dataset.pageId).toBe(selected)
+ expect(f.draft.operations).toEqual([])
+})
+it('places the PDF zoom readout between the View controls and shares manual zoom with the status bar',async()=>{
+ const f=await fixture({editingEnabled:false});await f.create()
+ const readout=f.root.querySelector<HTMLOutputElement>('[data-pdf-view-zoom]')!
+ const out=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.pageZoom.zoomOut"]')!
+ const plus=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.pageZoom.zoomIn"]')!
+ const slider=f.root.querySelector<HTMLInputElement>('.pdf-view-status input[type=range]')!
+ expect(readout.previousElementSibling).toBe(out)
+ expect(readout.nextElementSibling).toBe(plus)
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="view"]')!.click()
+ const start=Number(slider.value)
+ plus.click()
+ await vi.waitFor(()=>expect(Number(slider.value)).toBeGreaterThan(start))
+ expect(readout.textContent).toBe(slider.value+'%')
+ out.click()
+ await vi.waitFor(()=>expect(Number(slider.value)).toBe(start))
+ expect(readout.textContent).toBe(slider.value+'%')
  expect(f.draft.operations).toEqual([])
 })
 it('thumbnail selection and outline navigation keep the paper selection on the same page identity',async()=>{

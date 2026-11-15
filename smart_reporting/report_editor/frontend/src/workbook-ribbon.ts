@@ -489,12 +489,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     // selects generated in render() (source ExcelShell MenuSelect form).
     { title: '页面设置', actions: [action('背景', 'background')] },
     { title: '调整为合适大小', actions: [action('打印缩放比例', 'print-scale-open', 'print-scale-open')] },
-    { title: '工作表选项', actions: [
-      action('显示网格线', 'toggle-gridlines', 'toggle-gridlines'),
-      action('打印网格线', 'print-gridlines', 'print-gridlines'),
-      action('显示标题', 'toggle-headings', 'toggle-headings'),
-      action('打印标题', 'print-headings', 'print-headings'),
-    ] },
+    { title: '工作表选项', actions: [] },
   ],
   Formulas: [
     { title: '函数库', actions: [
@@ -959,6 +954,7 @@ export function mountWorkbookRibbon(
     crossHighlight?(): { active: boolean; available: boolean }
     formulaBar?(): { visible: boolean; available: boolean }
     headings?(): { visible: boolean; available: boolean }
+    gridlines?(): { visible: boolean; available: boolean }
     rightToLeft?(): { active: boolean; available: boolean }
     noteReason?(command: string): string | undefined
     spelling?(): { ready: boolean; enabled: boolean }
@@ -1212,6 +1208,12 @@ export function mountWorkbookRibbon(
         button.title = button.disabled ? '工作簿正在加载或保存' : button.textContent ?? ''
         button.setAttribute('aria-pressed', String(state?.active ?? false))
       }
+      if (id === 'toggle-gridlines' && view.gridlines) {
+        const state = view.gridlines()
+        button.disabled = !state.available
+        button.title = button.disabled ? '工作表视图尚未就绪' : '网格线'
+        button.setAttribute('aria-pressed', String(state.visible))
+      }
       if (id === 'toggle-formula-bar' || id === 'toggle-headings') {
         const state = id === 'toggle-formula-bar' ? view.formulaBar?.() : view.headings?.()
         button.disabled = !state?.available
@@ -1379,12 +1381,15 @@ export function mountWorkbookRibbon(
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
       select.setAttribute('aria-description', select.title)
     }
-    for (const [command, key] of [['print-gridlines', 'printGridlines'], ['print-headings', 'printHeadings']] as const) {
-      const button = body.querySelector<HTMLButtonElement>(`[data-ribbon-command="${command}"]`)
-      if (!button) continue
-      button.disabled = !editable || !pageState
-      button.setAttribute('aria-pressed', String(!!pageState?.[key]))
-      button.title = button.disabled ? '当前工作簿不可编辑或正在保存' : button.textContent ?? ''
+    for (const button of body.querySelectorAll<HTMLButtonElement>('[data-sheet-option]')) {
+      const command = button.dataset.ribbonCommand
+      const viewing = command === 'toggle-gridlines' || command === 'toggle-headings'
+      const displayState = command === 'toggle-gridlines' ? view.gridlines?.() : viewing ? view.headings?.() : undefined
+      const checked = displayState?.visible ?? (command === 'print-gridlines' ? pageState?.printGridlines : command === 'print-headings' ? pageState?.printHeadings : false)
+      button.disabled = viewing ? !displayState?.available : !editable || !pageState
+      button.removeAttribute('aria-pressed')
+      button.setAttribute('aria-checked', String(!!checked))
+      button.title = button.disabled ? viewing ? '工作表视图尚未就绪' : '当前工作簿不可编辑或正在保存' : button.dataset.sheetOption!
       if (button.disabled) button.setAttribute('aria-description', button.title)
       else button.removeAttribute('aria-description')
     }
@@ -1643,6 +1648,38 @@ export function mountWorkbookRibbon(
           select.append(title, ...choices.map(choice => { const option = document.createElement('option'); option.value = choice.value; option.textContent = choice.label; return option }))
           select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(value as RibbonCommand) })
           section.append(select)
+        }
+      }
+      if (active === 'Page Layout' && group.title === '工作表选项') {
+        for (const [label, viewCommand, printCommand, printTitle] of [
+          ['网格线', 'toggle-gridlines', 'print-gridlines', '打印网格线'],
+          ['标题', 'toggle-headings', 'print-headings', '打印行号列标'],
+        ] as const) {
+          const column = document.createElement('div')
+          column.className = 'workbook-ribbon-check-column'
+          column.setAttribute('role', 'group')
+          column.setAttribute('aria-label', label)
+          const title = document.createElement('span')
+          title.textContent = label
+          column.append(title)
+          for (const [caption, command, detail] of [['查看', viewCommand, label], ['打印', printCommand, printTitle]] as const) {
+            const button = document.createElement('button')
+            button.type = 'button'
+            button.dataset.ribbonCommand = command
+            button.dataset.sheetOption = detail
+            button.title = detail
+            button.setAttribute('role', 'checkbox')
+            button.setAttribute('aria-label', caption + label)
+            button.setAttribute('aria-checked', 'false')
+            const mark = document.createElement('span')
+            mark.className = 'workbook-ribbon-check-mark'
+            mark.setAttribute('aria-hidden', 'true')
+            mark.innerHTML = workbookCommandIcon('', '✓') ?? ''
+            button.append(mark, caption)
+            button.addEventListener('click', () => { if (!button.disabled) onCommand(command) })
+            column.append(button)
+          }
+          section.append(column)
         }
       }
       if (active === 'Page Layout' && group.title === '调整为合适大小') {

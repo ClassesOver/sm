@@ -28,6 +28,62 @@ import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/p
 import { ShapePreview } from './vendor/genoffice-docs/packages/ui/src/shape-gallery'
 import { STANDARD_COLORS, THEME_COLORS, THEME_COLOR_SHADES } from './vendor/genoffice-slides/ui/color-picker'
 import { OUTLINE_DASHES } from '../../../reporting/slides_engine/bridge/pptx-outline'
+import type { ShapeGradient } from '../../../reporting/slides_engine/bridge/pptx-shape-fill'
+
+// Fixed GenOffice Ribbon.tsx ShapeFillMenu gradient presets.
+function mixHex(from: string, to: string, t: number): string {
+  const pf = parseInt(from.slice(1), 16)
+  const pt = parseInt(to.slice(1), 16)
+  const ch = (shift: number) => {
+    const a = (pf >> shift) & 255
+    const b = (pt >> shift) & 255
+    return Math.round(a + (b - a) * t)
+  }
+  return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0').toUpperCase()}`
+}
+
+function createShapeGradientPresets(localize: (label: string) => string, onPick: (fill: string | ShapeGradient) => void) {
+  const details = document.createElement('details')
+  const summary = document.createElement('summary')
+  summary.textContent = localize('Gradient')
+  const entries = document.createElement('div')
+  details.append(summary, entries)
+  const directions = [
+    { angleDeg: 90, radial: false, css: 'linear-gradient(180deg', label: 'Linear Down' },
+    { angleDeg: 0, radial: false, css: 'linear-gradient(90deg', label: 'Linear Right' },
+    { angleDeg: 45, radial: false, css: 'linear-gradient(135deg', label: 'Linear Diagonal' },
+    { angleDeg: 0, radial: true, css: 'radial-gradient(circle', label: 'From Center' },
+  ] as const
+  const render = (base: string) => {
+    const none = document.createElement('button')
+    none.type = 'button'
+    none.textContent = localize('No Gradient')
+    none.onclick = () => onPick(base)
+    entries.replaceChildren(none)
+    const variants = [
+      { from: mixHex(base, '#FFFFFF', 0.7), to: base, label: 'Light Variations' },
+      { from: base, to: mixHex(base, '#000000', 0.5), label: 'Dark Variations' },
+    ]
+    for (const variant of variants) {
+      const heading = document.createElement('div')
+      heading.textContent = localize(variant.label)
+      const row = document.createElement('div')
+      row.className = 'slides-fill-gradients'
+      for (const direction of directions) {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.dataset.shapeFillGradient = variant.label + ':' + direction.label
+        button.title = localize(direction.label)
+        button.setAttribute('aria-label', localize(variant.label) + ' · ' + button.title)
+        button.style.backgroundImage = `${direction.css}, ${variant.from}, ${variant.to})`
+        button.onclick = () => onPick({ from: variant.from, to: variant.to, angleDeg: direction.angleDeg, radial: direction.radial })
+        row.append(button)
+      }
+      entries.append(heading, row)
+    }
+  }
+  return { details, render }
+}
 
 /**
  * Native web subset of GenOffice Slides Ribbon at f8c17004fb730df11f0f743164ffd8b4281bb38c.
@@ -478,12 +534,14 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         trigger.innerHTML = renderToStaticMarkup(reactElement(shapeFill ? IconFillColor : IconPageBorders, { size: 15 }))
         trigger.append(document.createTextNode(groupLabel + ' ▾'))
         controls.set(id, [trigger])
+        let updateGradients: (() => void) | undefined
         const { menu, close } = createRibbonPopover(trigger, groupLabel, () => {
           if (pictureOutline) pictureTransparency?.close()
           else {
             closeShapeFormatMenus(id)
             closeShapeGalleries()
           }
+          updateGradients?.()
         })
         group.append(trigger, menu)
         controlHost = menu
@@ -519,6 +577,18 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           appendSwatches(THEME_COLOR_SHADES.flat().map(hex => ({ hex, name: '#' + hex })))
           addHeading('Standard Colors')
           appendSwatches(STANDARD_COLORS)
+          const gradients = createShapeGradientPresets(localize, value => {
+            if (trigger.disabled || menu.hidden) return
+            close(true)
+            if (typeof value === 'string') options.onAction('shapeFill', value)
+            else options.onAction('shapeFillGradient', value)
+          })
+          menu.append(gradients.details)
+          updateGradients = () => {
+            gradients.details.open = false
+            const color = menu.querySelector<HTMLInputElement>('[data-command="shapeFill"]')?.dataset.gradientBase
+            gradients.render(color || '#4472C4')
+          }
         }
         if (pictureOutline) closePictureOutline = close
         else shapeFormatMenus.set(id, close)

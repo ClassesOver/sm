@@ -29,6 +29,7 @@ import shapePresets from './shape-presets.json' with { type: 'json' }
 import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addImageMediaAndRel, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAdvanceTime, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAdvanceTime, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import type { SlideElement } from '@genoffice/pptx-engine'
 import { isOutlineDash, type ShapeStroke } from './pptx-outline'
+import { isShapeFill, shapeFillPatch, type ShapeFill } from './pptx-shape-fill'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -194,9 +195,9 @@ type Input = {
 const numberingTypes = ['arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'alphaUcPeriod', 'alphaLcParenR', 'alphaLcPeriod', 'romanLcPeriod', 'circleNumDbPlain', 'ea1ChsPeriod']
 const maxParagraphEmu = 51206400 // ECMA-376 ST_TextMargin/ST_TextIndent, 56 inches.
 const colorPattern = /^#[0-9a-fA-F]{6}$/
-type ShapeColors = { fill?: string; stroke?: ShapeStroke | null }
+type ShapeColors = { fill?: ShapeFill; stroke?: ShapeStroke | null }
 function validShapeColors({ fill, stroke }: ShapeColors) {
-  return (fill === undefined || fill === 'none' || (typeof fill === 'string' && colorPattern.test(fill))) &&
+  return (fill === undefined || isShapeFill(fill)) &&
     (stroke == null || (typeof stroke === 'object' && Object.keys(stroke).every(key => ['color', 'widthPt', 'dash'].includes(key)) &&
       typeof stroke.color === 'string' && colorPattern.test(stroke.color) &&
       Number.isFinite(stroke.widthPt) && stroke.widthPt >= 0.01 && stroke.widthPt <= 100 &&
@@ -990,7 +991,7 @@ if (request.action === 'inspect') {
         !(style.fill === undefined && canEditPictureOutline(element)))) {
       throw new Error('shape_style_target_invalid')
     }
-    if (style.fill !== undefined && !setElementFill(opened, slide, style.elementId, style.fill)) throw new Error('shape_fill_failed')
+    if (style.fill !== undefined && !setElementFill(opened, slide, style.elementId, shapeFillPatch(style.fill))) throw new Error('shape_fill_failed')
     if (style.stroke !== undefined) {
       const target = element as typeof element & { stroke?: unknown; dirtyStroke?: boolean }
       const dash = style.stroke?.dash ?? (element.type === 'picture' ? element.stroke?.dash : undefined)
@@ -1104,11 +1105,12 @@ if (request.action === 'inspect') {
       flipH: shape.flipH,
       flipV: shape.flipV,
       ...(line ? { stroke: { color: '#000000', widthEmu: 12700 } } : {
-        fillColor: shape.fill === 'none' ? undefined : shape.fill ?? '#C43E1C',
+        fillColor: shape.fill === undefined ? '#C43E1C' : typeof shape.fill === 'string' && shape.fill !== 'none' ? shape.fill : undefined,
         ...(shape.stroke ? { stroke: { color: shape.stroke.color, widthEmu: Math.round(shape.stroke.widthPt * 12700) } } : {}),
       }),
     })
-    if (shape.fill === 'none' && !setElementFill(opened, slide, inserted.id, 'none')) throw new Error('shape_fill_failed')
+    if (shape.fill !== undefined && (shape.fill === 'none' || typeof shape.fill === 'object') &&
+      !setElementFill(opened, slide, inserted.id, shapeFillPatch(shape.fill))) throw new Error('shape_fill_failed')
     if (shape.stroke?.dash) {
       inserted.stroke = strokePatchToModel({
         color: shape.stroke.color, widthEmu: Math.round(shape.stroke.widthPt * 12700), dash: shape.stroke.dash,

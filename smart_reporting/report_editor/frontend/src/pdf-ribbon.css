@@ -27,6 +27,9 @@
 .pdf-form-field input[type=checkbox]{min-width:auto;align-self:flex-start}
 .pdf-view-page-row{display:flex;align-items:center;gap:4px;color:var(--office-muted);font-size:var(--font-size-sm)}
 .pdf-ribbon-group .pdf-view-page-input{width:58px}
+.pdf-ribbon-group .pdf-view-page-zoom{display:grid;grid-row:span 2;align-content:center;gap:4px}
+.pdf-view-zoom-row{display:flex;align-items:center;gap:4px}
+.pdf-view-zoom-row output{min-width:4ch;text-align:center;font-variant-numeric:tabular-nums;font-size:var(--font-size-sm)}
 
 .pdf-print-document{display:none}
 .pdf-outline{width:220px;flex:none;overflow:auto;border-right:1px solid var(--office-border);background:var(--office-chrome);padding:8px}

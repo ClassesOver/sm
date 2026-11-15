@@ -1,7 +1,8 @@
 import {projectParagraphs,uniformParagraphValue,type ParagraphFormatting,type ParagraphSourceFormatting,type ParagraphList} from './slides-paragraph'
 import type { ShapeStroke } from '../../../reporting/slides_engine/bridge/pptx-outline'
+import type { ShapeFill } from '../../../reporting/slides_engine/bridge/pptx-shape-fill'
 export type BrushText={fontSizePt?:number;fontFamily?:string;color?:string;bold?:boolean;italic?:boolean;underline?:boolean}
-export type BrushShape={fill?:string;stroke?:ShapeStroke|null}
+export type BrushShape={fill?:ShapeFill;stroke?:ShapeStroke|null}
 export type BrushSource={supported:boolean;text?:BrushText;align?:'left'|'center'|'right'|'justify';shape?:BrushShape;reason?:string}
 export type SlidesBrush=Omit<BrushSource,'supported'|'reason'>
 export type BrushElement={slideIndex:number;id:string;type:string;editable:boolean;text:string;brushSource?:BrushSource;paragraphFormatting?:ParagraphSourceFormatting[];paragraphLists?:ParagraphList[]}
@@ -43,7 +44,7 @@ export function planSlidesBrushApply<T extends BrushDraft>(brush:SlidesBrush,tar
  const current=effective(target,currentDraft),changes={...currentDraft},text:BrushText={},shape:BrushShape={}
  const hasText=!!(currentDraft.edits?.findLast(item=>targets(item,target)&&item.text!==undefined)?.text??target.text).trim()
  if(hasText)for(const field of textFields)if(brush.text?.[field]!==undefined&&brush.text[field]!==current.text?.[field])Object.assign(text,{[field]:brush.text[field]})
- if(brush.shape?.fill!==undefined&&brush.shape.fill!==current.shape?.fill)shape.fill=brush.shape.fill
+ if(brush.shape?.fill!==undefined&&JSON.stringify(brush.shape.fill)!==JSON.stringify(current.shape?.fill))shape.fill=brush.shape.fill
  if(brush.shape?.stroke!==undefined&&JSON.stringify(brush.shape.stroke)!==JSON.stringify(current.shape?.stroke))shape.stroke=brush.shape.stroke?{...brush.shape.stroke}:null
  const align=hasText&&brush.align&&brush.align!==current.align?brush.align:undefined
  if(Object.keys(text).length){

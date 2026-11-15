@@ -610,7 +610,8 @@ export async function applyPageSetups(
       throw new PageSetupError(`Sheet "${state.sheetName}" was not found.`)
     }
     const worksheetPath = await resolveWorksheetPath(source, element.relationshipId)
-    const xml = applyPageSetupState(await source.readText(worksheetPath), state)
+    const worksheetXml = replaced.get(worksheetPath) ?? await source.readText(worksheetPath)
+    const xml = applyPageSetupState(worksheetXml, state)
     replaced.set(worksheetPath, xml)
     if (state.printArea !== undefined || state.printTitles !== undefined) {
       printEntries.push({

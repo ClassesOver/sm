@@ -1,5 +1,6 @@
 /** Small browser-safe localization closure adapted from GenOffice PDF i18n/strings.ts at f8c17004fb730df11f0f743164ffd8b4281bb38c. */
 const labels = {
+  '缩放': ['Zoom', '缩放'],
   'Edit': ['Edit', '编辑'], 'Convert & Export': ['Convert & Export', '转换与导出'], 'Search, Print & Properties': ['Search, Print & Properties', '搜索、打印与属性'], 'Signature & Protection': ['Signature & Protection', '签名与保护'],
   '完成填写': ['Finish filling', '完成填写'],
   '连续添加': ['Keep adding', '连续添加'],

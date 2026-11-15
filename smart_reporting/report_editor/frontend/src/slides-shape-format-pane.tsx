@@ -4,12 +4,13 @@ import { flushSync } from 'react-dom'
 import { SlidesFormatColorWell } from './slides-chart-format-pane'
 import type { BrushSource } from './slides-format-brush'
 import { isOutlineDash, type ShapeStroke } from '../../../reporting/slides_engine/bridge/pptx-outline'
+import { isShapeGradient, type ShapeFill } from '../../../reporting/slides_engine/bridge/pptx-shape-fill'
 import './slides-shape-format-pane.css'
 
-type Style = { slideIndex: number; elementId: string; fill?: string; stroke?: ShapeStroke | null }
+type Style = { slideIndex: number; elementId: string; fill?: ShapeFill; stroke?: ShapeStroke | null }
 type Draft = { shapeStyles?: Style[] }
 type Context<T extends Draft> = { slideIndex: number; element?: { id: string; type: string; brushSource?: BrushSource }; changes: T; reason?: string }
-const commands = new Set(['shapeFill','shapeNoFill','shapeOutline','shapeOutlineWidth','shapeOutlineDash','shapeNoOutline','shapeResetFill','shapeResetStroke'])
+const commands = new Set(['shapeFill','shapeFillGradient','shapeNoFill','shapeOutline','shapeOutlineWidth','shapeOutlineDash','shapeNoOutline','shapeResetFill','shapeResetStroke'])
 const hex = (value: unknown): value is string => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 function values<T extends Draft>(context: Context<T>) {
@@ -21,6 +22,7 @@ function values<T extends Draft>(context: Context<T>) {
 export function shapeStyleForCommand(command: string, value: unknown, previous: Style): Style | undefined {
   const style = { ...previous }, outline = style.stroke ?? { color:'#000000',widthPt:1 }
   if (command === 'shapeFill') { if (!hex(value)) return; style.fill = value.toUpperCase() }
+  else if (command === 'shapeFillGradient') { if (!isShapeGradient(value)) return; style.fill = value }
   else if (command === 'shapeNoFill') style.fill = 'none'
   else if (command === 'shapeOutline') { if (!hex(value)) return; style.stroke = { ...outline,color:value.toUpperCase() } }
   else if (command === 'shapeOutlineWidth') { const width = Number(value); if (!Number.isFinite(width) || !(width > 0 && width <= 100)) return; style.stroke = { ...outline,widthPt:width } }
@@ -50,7 +52,7 @@ export function planSlidesShapeStyle<T extends Draft>(context: Context<T>, comma
     else next.stroke = merged.stroke
     if (equal(next[field],source?.[field])) delete next[field]
   }
-  if (next.fill === patch?.fill && equal(next.stroke,patch?.stroke)) return
+  if (equal(next.fill,patch?.fill) && equal(next.stroke,patch?.stroke)) return
   const styles = [...(context.changes.shapeStyles ?? []).filter(item => item.slideIndex !== context.slideIndex || item.elementId !== element.id)]
   if (next.fill !== undefined || next.stroke !== undefined) styles.push(next)
   if (styles.length > 500) throw new Error('形状样式修改已达到500项，请先保存')
@@ -99,10 +101,11 @@ export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => C
       {(['fill','stroke'] as const).map(field => {
         const value = current[field], none = field === 'fill' ? value === 'none' : value === null, unavailable = disabled || value === undefined
         const label = field === 'fill' ? '填充' : '轮廓', sourceStroke = current.source?.stroke
-        const color = field === 'fill' ? (current.fill === 'none' ? '#4472C4' : current.fill) : current.stroke?.color ?? sourceStroke?.color ?? '#000000'
+        const color = field === 'fill' ? (hex(current.fill) ? current.fill : '#4472C4') : current.stroke?.color ?? sourceStroke?.color ?? '#000000'
         return <fieldset key={field}><legend>{label}</legend>
           <label className="shape-radio"><input type="radio" name={`${target(context)}:${field}`} data-shape-none={field} checked={none} disabled={unavailable} onChange={() => queue(field === 'fill' ? 'shapeNoFill' : 'shapeNoOutline',undefined,version)} />无{field === 'fill' ? '填充' : '线条'}</label>
-          <label className="shape-radio"><input type="radio" name={`${target(context)}:${field}`} checked={value !== undefined && !none} disabled={unavailable} onChange={() => queue(field === 'fill' ? 'shapeFill' : 'shapeOutline',color,version)} />{field === 'fill' ? '纯色填充' : '实线'}</label>
+          <label className="shape-radio"><input type="radio" name={`${target(context)}:${field}`} checked={value !== undefined && !none && (field !== 'fill' || typeof value === 'string')} disabled={unavailable} onChange={() => queue(field === 'fill' ? 'shapeFill' : 'shapeOutline',color,version)} />{field === 'fill' ? '纯色填充' : '实线'}</label>
+          {field === 'fill' && isShapeGradient(value) && <p>渐变填充</p>}
           <div className="shape-color-row"><span>颜色</span><SlidesFormatColorWell point={`shape-${field}`} value={color ?? '#4472C4'} label={`${label}颜色`} disabled={unavailable} onPick={value => queue(field === 'fill' ? 'shapeFill' : 'shapeOutline',value,version)} />
           <button type="button" data-shape-reset={field} disabled={disabled || current.patch?.[field] === undefined} onClick={() => { widthDraft = undefined; widthBeforeEdit = undefined; queue(field === 'fill' ? 'shapeResetFill' : 'shapeResetStroke',undefined,version) }}>恢复来源</button></div>
           {field === 'stroke' && <label className="shape-width">粗细<input type="number" data-shape-width aria-label="轮廓粗细（磅）" aria-invalid={invalidWidth() || undefined} aria-describedby={messageId} min="0.01" max="100" step="0.25" value={widthDraft ?? (current.stroke?.widthPt !== undefined ? String(current.stroke.widthPt) : '')} disabled={unavailable || none} onChange={event => { if (!valid(version)) return; if (widthDraft === undefined) widthBeforeEdit = current.stroke?.widthPt ?? 1; widthDraft = event.target.value; if (invalidWidth()) { clearTimeout(timer); error = '轮廓粗细须大于0且不超过100磅'; render() } else queue('shapeOutlineWidth',widthDraft,version) }} onKeyDown={event => { if (event.nativeEvent.isComposing || event.keyCode === 229 || event.defaultPrevented) return; if(event.key === 'Enter') {event.preventDefault();flush()} if(event.key === 'Escape') {event.preventDefault();const original=widthBeforeEdit;widthDraft=undefined;widthBeforeEdit=undefined;error='';if(original!==undefined)queue('shapeOutlineWidth',original,version);else render()} }} />磅</label>}
@@ -122,10 +125,10 @@ export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => C
     const unavailableFill = locked || !!context.reason || context.element?.brushSource?.supported !== true || current.fill === undefined
     for (const swatch of ribbonHost?.querySelectorAll<HTMLButtonElement>('[data-shape-fill-swatch]') ?? []) {
       swatch.disabled = unavailableFill
-      swatch.setAttribute('aria-pressed', String(swatch.dataset.shapeFillSwatch === current.fill?.toUpperCase()))
+      swatch.setAttribute('aria-pressed', String(hex(current.fill) && swatch.dataset.shapeFillSwatch === current.fill.toUpperCase()))
     }
     for (const [command,field,value] of [
-      ['shapeFillMenu','fill',''], ['shapeFill','fill',current.fill === 'none' ? '' : current.fill], ['shapeNoFill','fill',''],
+      ['shapeFillMenu','fill',''], ['shapeFill','fill',hex(current.fill) ? current.fill : ''], ['shapeNoFill','fill',''],
       ['shapeOutlineMenu','stroke',''], ['shapeOutline','stroke',current.stroke?.color], ['shapeNoOutline','stroke',''],
       ['shapeOutlineWidth','stroke',String(current.stroke?.widthPt ?? '')],
       ['shapeOutlineDash','stroke',current.stroke ? current.stroke.dash ?? 'solid' : ''],
@@ -133,7 +136,10 @@ export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => C
       for (const control of ribbonHost?.querySelectorAll<HTMLInputElement | HTMLFieldSetElement | HTMLButtonElement>(`[data-command="${command}"]`) ?? []) {
         const unavailable = locked || !!context.reason || context.element?.brushSource?.supported !== true || current[field] === undefined
         control.disabled = unavailable; control.title = unavailable ? `来源${field === 'fill' ? '填充' : '轮廓'}暂不支持安全修改` : ''
-        if (control instanceof HTMLInputElement) control.value = value ?? ''
+        if (control instanceof HTMLInputElement) {
+          control.value = value ?? ''
+          if (command === 'shapeFill') control.dataset.gradientBase = hex(current.fill) ? current.fill : ''
+        }
         else if (control instanceof HTMLFieldSetElement) {
           if (value && command === 'shapeOutlineWidth') control.setAttribute('aria-description', `${value} pt`)
           else control.removeAttribute('aria-description')

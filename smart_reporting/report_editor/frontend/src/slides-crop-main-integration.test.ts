@@ -138,6 +138,13 @@ it('changes, formats and deletes an unsaved drawn shape using its insertion iden
   await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon',fill:'#E97132'}]))
   app.command('shapeFillMenu').click()
   expect(orange.getAttribute('aria-pressed')).toBe('true')
+  const gradient=app.shell.editor.querySelector<HTMLButtonElement>('[data-shape-fill-gradient="Dark Variations:Linear Diagonal"]')!
+  gradient.closest('details')!.open=true
+  gradient.click()
+  await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([{
+   ...inserted,kind:'hexagon',fill:{from:'#E97132',to:'#753919',angleDeg:45,radial:false},
+  }]))
+  app.command('shapeFillMenu').click()
   expect(fill.disabled).toBe(false)
   fill.value='#12ab34'
   fill.dispatchEvent(new Event('change',{bubbles:true}))

@@ -40,6 +40,7 @@ import { requestJson } from './api-request'
 import type { mountSlidesCanvas } from './slides-canvas'
 import type { DrawRect } from './vendor/genoffice-slides/draw-shape'
 import { isOutlineDash, type ShapeStroke } from '../../../reporting/slides_engine/bridge/pptx-outline'
+import { isShapeFill, type ShapeFill } from '../../../reporting/slides_engine/bridge/pptx-shape-fill'
 import { nextPreset, notchStep, prevPreset } from './slides-view-zoom'
 import { createWheelPager, createZoomWheelClassifier } from './docx-view-wheel'
 import type { createSlidesSorter } from './slides-view-modes'
@@ -104,8 +105,8 @@ type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y:
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 /** 固定源 Shape Format 填充/轮廓（setFill / setStroke） */
-type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; stroke?: ShapeStroke | null }
-type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number }; flipH?: boolean; flipV?: boolean; draftKey?: string; fill?: string; stroke?: ShapeStyleEdit['stroke'] }
+type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: ShapeFill; stroke?: ShapeStroke | null }
+type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number }; flipH?: boolean; flipV?: boolean; draftKey?: string; fill?: ShapeFill; stroke?: ShapeStyleEdit['stroke'] }
 type SlidesPreviewSlide = RenderSlide & {
   slideIndex: number; slideIdentity?: string; mediaSources?: SlideMediaSource[]; modelSources?: ModelSource[]
   draftShapeSources?: { draftKey: string; sourceId: string }[]
@@ -2190,7 +2191,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
     || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId &&
       (['text', 'shape'].includes(element.type) || (item.fill === undefined && pictureOutlineEnabled(element))))
     || Object.keys(item).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || (item.fill === undefined && item.stroke === undefined)
-    || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || !validStroke(item.stroke))) throw new Error('草稿中的形状样式无效；原草稿已保留')
+    || (item.fill !== undefined && !isShapeFill(item.fill)) || !validStroke(item.stroke))) throw new Error('草稿中的形状样式无效；原草稿已保留')
   const restoredSmartArts = changes.smartArts ?? []
   if (!Array.isArray(restoredSmartArts) || restoredSmartArts.length > 50 || restoredSmartArts.some(item => !item || Object.keys(item).sort().join() !== 'items,layout,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
     || !SMARTART_GALLERY.some(entry => entry.layout === item.layout) || !Array.isArray(item.items) || item.items.length < 1 || item.items.length > SMARTART_MAX_ITEMS || item.items.some(text => typeof text !== 'string' || text.length > 200))) throw new Error('草稿中的新增 SmartArt 无效；原草稿已保留')
@@ -2243,7 +2244,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
     !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length ||
     restoredDeleted.includes(item.slideIndex) || !SHAPE_PRESETS.includes(item.kind) ||
     ((item.fill !== undefined || item.stroke !== undefined) && LINE_SHAPE_KINDS.includes(item.kind)) ||
-    (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) ||
+    (item.fill !== undefined && !isShapeFill(item.fill)) ||
     !validStroke(item.stroke) ||
     !item.geometry || (LINE_SHAPE_KINDS.includes(item.kind)
       ? !(item.geometry.width >= 0 && item.geometry.height >= 0 && (item.geometry.width > 0 || item.geometry.height > 0))
@@ -3054,6 +3055,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview(); break
       }
       case 'shapeFill':
+      case 'shapeFillGradient':
       case 'shapeNoFill':
       case 'shapeOutline':
       case 'shapeOutlineWidth':
@@ -3594,7 +3596,8 @@ function renderStructurePending() {
   }
   for (const [key, style] of shapeStyleEdits) {
     const name = deck.slides[style.slideIndex]?.elements.find(element => element.id === style.elementId)?.name || style.elementId
-    const parts = [style.fill === 'none' ? '无填充' : style.fill ? `填充 ${style.fill}` : '', style.stroke === null ? '无轮廓' : style.stroke ? `轮廓 ${style.stroke.color} ${style.stroke.widthPt} 磅` : ''].filter(Boolean)
+    const fill = style.fill === 'none' ? '无填充' : typeof style.fill === 'object' ? '渐变填充' : style.fill ? `填充 ${style.fill}` : ''
+    const parts = [fill, style.stroke === null ? '无轮廓' : style.stroke ? `轮廓 ${style.stroke.color} ${style.stroke.widthPt} 磅` : ''].filter(Boolean)
     row(`第 ${order.indexOf(style.slideIndex) + 1} 页 · ${name} · ${parts.join('、')}`, () => shapeStyleEdits.delete(key))
   }
   for (const [index, table] of tableEdits.entries()) row(`第 ${order.indexOf(table.slideIndex) + 1} 页 · 表格 ${table.rows}×${table.cols}`, () => tableEdits.splice(index, 1))
