@@ -162,7 +162,9 @@ export default defineConfig({
           if (id.endsWith('/vendor/genoffice-docs/apps/docs/src/renderer/components/icons.tsx')) return 'native-docx-ribbon-icons'
           if (id.endsWith('/src/workbook-ribbon.ts')) return 'workbook-ribbon'
           if (/\/src\/workbook-(?:chart-format-pane|chart-design-dialog|recommended-charts-dialog)\.(?:ts|tsx)$/.test(id)) return 'workbook-chart-controls'
-          if (/\/workbook_engine\/packages\/xlsx-engine\/src\/pivot-(?:add|refresh|standard-grouping|layout|formula|grouping|filters)\.ts$/.test(id)) return 'workbook-pivot-calculation'
+          // Keep the pivot schema with its enums and source adapters so
+          // initialization does not read enums from the workbook chunk.
+          if (/\/workbook_engine\/packages\/xlsx-engine\/src\/pivot-(?:add|refresh|standard-grouping|layout|formula|grouping|filters|value-modes|show-as|source(?:-format)?)\.ts$/.test(id)) return 'workbook-pivot-calculation'
           if (id.endsWith('/workbook_engine/packages/xlsx-engine/src/chart-edit.ts')) return 'workbook-chart-edit'
           if (/\/src\/workbook-queries(?:-reader)?\.ts$/.test(id) || /\/src\/workbook-vendor\/grid\/(?:workbook-queries|query-parts)\.ts$/.test(id)) return 'workbook-queries'
           if (/\/src\/workbook-(?:print-header-footer|header-footer-editor)\.ts$/.test(id)) return 'workbook-print-settings'
