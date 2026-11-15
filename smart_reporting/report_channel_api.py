@@ -180,6 +180,7 @@ def create_report_channel_router(
                     "xlsx_formula_or_value_unsafe", "xlsx_value_too_long",
                     "xlsx_value_non_finite", "xlsx_preview_target_invalid",
                     "xlsx_preview_formula_or_merged_cell", "xlsx_preview_protected_sheet",
+                    "xlsx_preview_hidden_sheet",
                     "pptx_selection_invalid", "pptx_target_invalid",
                     "pptx_target_duplicate", "pptx_operations_invalid",
                     "pptx_operation_invalid", "pptx_operation_target_unapproved",
