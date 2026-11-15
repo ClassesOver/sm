@@ -83,8 +83,7 @@ class XlsxLiteralPreviewEngine:
             # workbook formulas or verified their dependencies.
             formula_count = sum(
                 1 for sheet in workbook.worksheets
-                for row in sheet.iter_rows()
-                for cell in row if cell.data_type == "f"
+                for cell in sheet._cells.values() if cell.data_type == "f"
             )
             # Never mutate or save the workbook: a diff is the only output.
             if task_id in self._tasks:
