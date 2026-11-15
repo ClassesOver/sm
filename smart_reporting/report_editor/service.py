@@ -629,8 +629,8 @@ class ReportEditorGrantService:
         self, session_hash: str, *, now: datetime | None = None
     ) -> ReportEditorSession:
         """仅供服务端已登记交接句柄使用；HTTP不得接收浏览器提交的会话摘要。"""
-        current = _utc(now or datetime.now(UTC))
         session = await self.repository.get_session(session_hash)
+        current = _utc(now or datetime.now(UTC))
         if session is None:
             raise ReportingError("report_editor_session_invalid", "报告编辑会话无效。")
         if session.expires_at <= current:

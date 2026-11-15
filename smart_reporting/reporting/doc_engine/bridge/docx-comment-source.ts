@@ -4,10 +4,10 @@
 import {createHash} from 'node:crypto'
 import JSZip from 'jszip'
 import {XMLValidator} from 'fast-xml-parser'
-import {assertZipInflatesWithinLimits,loadDocxZip} from '../packages/docx-engine/src/zip-load.ts'
-import {resolveRelationshipTargetPath} from '../packages/docx-engine/src/parse-package.ts'
-import {attrsOf,childrenOf,nameOf,xmlParser,type XNode} from '../packages/docx-engine/src/xml-utils.ts'
-import {inspectCommentText,resolveCommentText,type CommentTextOperation,type CommentTextTarget,type CommentTextSource} from './docx-comments.ts'
+import {assertZipInflatesWithinLimits,loadDocxZip} from '../packages/docx-engine/src/zip-load'
+import {resolveRelationshipTargetPath} from '../packages/docx-engine/src/parse-package'
+import {attrsOf,childrenOf,nameOf,xmlParser,type XNode} from '../packages/docx-engine/src/xml-utils'
+import {inspectCommentText,resolveCommentText,type CommentTextOperation,type CommentTextTarget,type CommentTextSource} from './docx-comments'
 
 const W='http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 const R='http://schemas.openxmlformats.org/officeDocument/2006/relationships'
@@ -16,7 +16,7 @@ const CT='http://schemas.openxmlformats.org/package/2006/content-types'
 const MAIN='word/document.xml',COMMENTS='word/comments.xml',SETTINGS='word/settings.xml'
 const DOCRELS='word/_rels/document.xml.rels',COMMENTRELS='word/_rels/comments.xml.rels'
 const hash=(value:string|Uint8Array)=>createHash('sha256').update(value).digest('hex')
-const fail=(reason:string):never=>{throw new Error('docx_comment_source_'+reason)}
+const fail:(reason:string)=>never=(reason)=>{throw new Error('docx_comment_source_'+reason)}
 const utf8=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true})
 interface Rel {id:string;type:string;target:string;mode?:string}
 export interface DocxCommentSourceInspection {

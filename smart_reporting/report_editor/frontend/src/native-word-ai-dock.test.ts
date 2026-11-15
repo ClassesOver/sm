@@ -88,3 +88,49 @@ it('Word 共享外壳保持固定标题、中间候选区和底部输入操作�
   for(const selector of ['textarea','[data-ai=start]','[data-ai=cancel]'])expect(panel.querySelector('.office-assistant-composer '+selector)).not.toBeNull()
   binding.dispose()
 })
+it('Word review preset freezes authorized targets, requires generate then explicit accept, and rejects changed drafts',async()=>{
+ const {root,draft,api,binding,operation}=setup()
+ binding.openPreset('翻译成英语',[{blockId:'p'}],'selection')
+ expect(root.querySelector('textarea')!.value).toBe('翻译成英语');expect(api.aiStart).not.toHaveBeenCalled()
+ root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+ await vi.waitFor(()=>expect(root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.disabled).toBe(false))
+ expect(api.aiStart.mock.calls[0][0].selection).toEqual([{blockId:'p'}]);expect(draft.operations).toEqual([])
+ draft.setOperations([{...operation,text:'手工改稿'}])
+ root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click()
+ expect(api.aiAccept).not.toHaveBeenCalled();expect(draft.operations[0].text).toBe('手工改稿');binding.dispose()
+})
+it('Word preset selection changes invalidate the authorization until the preset is reopened',async()=>{
+ const {root,api,binding}=setup();binding.openPreset('校对',[{blockId:'p'}],'selection');binding.setSelection([{blockId:'other'}]);root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click();expect(api.aiStart).not.toHaveBeenCalled();binding.dispose()
+})
+it('Word flushes pending editor input before accepting a candidate and rejects a changed snapshot',async()=>{
+ const {root,draft,api,binding,operation}=setup();binding.openPreset('校对',[{blockId:'p'}],'document');root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click();await vi.waitFor(()=>expect(root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.disabled).toBe(false))
+ // A view may still hold a DOM input not yet reflected in NativeDraft.
+ const pending={...operation,text:'待同步输入'}
+ const editorInput=document.createElement('input');root.append(editorInput);editorInput.value='待同步输入'
+ // The production contract calls view.flushPendingEdits, exercised in a dedicated binding.
+ binding.dispose()
+ const nextRoot=document.createElement('div');document.body.append(nextRoot)
+ let pendingEdit=false
+ const second=bindNativeAI(nextRoot,{api:api as never,draft,format:'docx',view:{refresh:vi.fn(),flushPendingEdits:()=>{if(pendingEdit)draft.setOperations([pending])}},onDraftChange:vi.fn()})
+ second.openPreset('校对',[{blockId:'p'}],'document');nextRoot.querySelector<HTMLButtonElement>('[data-ai=start]')!.click();await vi.waitFor(()=>expect(nextRoot.querySelector<HTMLButtonElement>('[data-ai=accept]')!.disabled).toBe(false));pendingEdit=true
+ nextRoot.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click();await Promise.resolve()
+ expect(api.aiAccept).not.toHaveBeenCalled();expect(draft.operations).toEqual([pending]);second.dispose()
+})
+it('Word rejects results generated against a changed draft and cancels the remote candidate',async()=>{
+ const {root,draft,api,binding,operation}=setup();let finish!:(value:object)=>void;api.aiStart.mockImplementation(()=>new Promise(resolve=>{finish=resolve}) as never)
+ binding.openPreset('翻译',[{blockId:'p'}],'document');root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click();draft.setOperations([{...operation,text:'生成期间编辑'}]);finish({editId:'late-draft',status:'succeeded',proposal:{summary:'旧草稿候选',operations:[]}})
+ await vi.waitFor(()=>expect(api.aiCancel).toHaveBeenCalledWith('late-draft'));expect(root.textContent).not.toContain('旧草稿候选');binding.dispose()
+})
+it('Word rechecks preset authorization after pending-input flush changes selection',()=>{
+ const base=setup();base.binding.dispose();const {api,draft}=base,root=document.body.appendChild(document.createElement('div'))
+ let binding:ReturnType<typeof bindNativeAI>
+ binding=bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn(),flushPendingEdits:()=>binding.setSelection([{blockId:'other'}])},onDraftChange:vi.fn()})
+ binding.setSelection([{blockId:'p'}]);binding.openPreset('校对',[{blockId:'p'}],'selection');root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click();expect(api.aiStart).not.toHaveBeenCalled();binding.dispose()
+})
+it('Word rechecks editing locks after pending-input flush on generation and adoption',async()=>{
+ const base=setup();base.binding.dispose();const {api,draft}=base,root=document.body.appendChild(document.createElement('div'));let lock=false,flushLock=true
+ const binding=bindNativeAI(root,{api:api as never,draft,format:'docx',locked:()=>lock,view:{refresh:vi.fn(),flushPendingEdits:()=>{if(flushLock)lock=true}},onDraftChange:vi.fn()})
+ binding.openPreset('校对',[{blockId:'p'}],'document');root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click();expect(api.aiStart).not.toHaveBeenCalled()
+ lock=false;flushLock=false;binding.update();root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click();await vi.waitFor(()=>expect(root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.disabled).toBe(false));flushLock=true
+ root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click();expect(api.aiAccept).not.toHaveBeenCalled();binding.dispose()
+})

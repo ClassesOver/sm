@@ -1,6 +1,14 @@
 # Word / XLSX 当前缺口索引（非穷尽）
+2026-11-14 实施增量已单列：[审计整改进度与真实保存证据](NATIVE_WORD_AUDIT_REMEDIATION_20261114.md)。同ID当前范围以增量索引为准，原始审计保留历史身份。
+
+
+2026-11-14 Word全入口审计已单列：[844条命令／字段明细与剩余差异](NATIVE_WORD_EXHAUSTIVE_GAPS_20261114.md)。本索引仍为跨格式非穷尽历史汇总，Word当前完整入口盘点请以该审计及其来源身份为准。
+
+2026-11-14 最新全域核查见 [XLSX固定源缺口账本](XLSX_PARITY_AUDIT_20261114/README.md)：逐份身份核验的源文件、能力族、AI操作字段、宿主映射与未验证项均独立登记。以下为历史增量索引；外链管理、线程批注、批注图片、受限范围等已有实现，不能继续按早期行视为全缺。完整行为穷尽仍进行中。
 
 更新：2026-11-13。此索引以更新时共享工作区的实际代码为准，替代早期矩阵的“当前状态”用途；不改写 `NATIVE_WORD_XLSX_PARITY_AUDIT.md`、`NATIVE_RIBBON_COMMAND_AUDIT.md` 的历史。固定源 `/home/junge/pros/genoffice-source-full` HEAD 已只读核对为 `f8c17004fb730df11f0f743164ffd8b4281bb38c`。
+
+2026-11-14 Word 增量：Editor／22语言翻译预设、正文修订范围菜单、文本比较、只读修订摘要预填、HTML／Markdown导出、源主题与字体／颜色预设、墨迹、保护设置、文本框／形状／艺术字插入已接通。图表、常见域、story修订、图片几何格式、同格连续段落设置、表格后新增段落也已补实现；证据层级及剩余边界见[本批验收](NATIVE_WORD_GENOFFICE_ALIGNMENT_20261114.md)。以下旧表的“整个族缺失”只代表旧批次，不能覆盖本增量。顶层多段段落设置原本已有；固定源图片Ribbon没有颜色／透明度入口，不再作为迁移缺口。
 
 **完整对齐仍未完成。本表非穷尽，不给完成百分比。** 本索引汇总实际代码及分层专项证据；Word 根批注新建与 XLSX 透视表创建/编辑已有真实浏览器保存、下载和重开证据；最新构建入口与资产连续性单独补验，具体范围以专属验收文档为准。既有专项未重复全测，不冒充本次重新验收。调查、按钮标签、永久禁用、manifest/hash 通过都不计功能交付。并行工作会改变状态，以下稳定符号比行号更适合作后续查找。
 
@@ -223,3 +231,7 @@ Word完整PageBorderDialog、XLSX完整Paste Special、PDF CropDialog/CutoutDial
 ## 2026-11-13 Word 正文跟踪修订增量
 
 已接入顶层简单段落单个连续文本变更的修订记录与保存回读：编辑器 operation 不接收作者/日期，服务端从授权 scope 取用户 ID 并生成 UTC 时间；复杂段落、已有修订及重叠目标继续拒绝。Review 跟踪开关现读取/写入 DOCX `word/settings.xml` 的 `w:trackRevisions`，通过来源 SHA 绑定的文档级 operation 保存，受保护文档只读；设置启停、重开读取、非目标 ZIP 部件保全（排除正常更新的 `docProps/core.xml`）已通过 bridge、Python host 和隔离冻结浏览器验证。详见[Word 跟踪修订设置验收](NATIVE_WORD_TRACK_REVISIONS_ACCEPTANCE_20261113.md)。
+
+## 2026-11-14 Line/Radar 源描边增量
+
+Line/Radar 已消费 reader 的独立 lineColor/lineWidth/noFill；保留填充与点色、支持零线宽及不可解析描边的保守隐藏，默认线宽按固定源 3/2.5。粗描边命中和不可见线段不命中已补，保留点命中优先级。最终174项定向及真实Canvas像素/鼠标检查见[描边专项](NATIVE_XLSX_LINE_RADAR_STROKE_ACCEPTANCE_20261114.md)。只关闭这两个图族的描边投影差异；Area/Combo、marker显示合同、完整图表格式及生产同链仍开放。

@@ -240,7 +240,7 @@ class NativeEditorService:
     ) -> dict[str, Any]:
         started = perf_counter()
         self.require_enabled(context.format)
-        text_edits = context.format == "pdf" and any(op.get("kind") in {"replaceText", "insertText"} for op in operations)
+        text_edits = context.format == "pdf" and any(op.get("kind") in {"replaceText", "insertText", "moveText"} for op in operations)
         if text_edits and not self.pdf_text_enabled:
             raise ReportingError("native_pdf_text_disabled", "PDF 原位文字编辑尚未开放。")
         content = await self.read_file(context)
@@ -340,7 +340,7 @@ class NativeEditorService:
         content = await self.read_file(context)
         try:
             if context.format == "pdf":
-                if any(op.get("kind") in {"replaceText", "insertText"} for op in operations) and not self.pdf_text_enabled:
+                if any(op.get("kind") in {"replaceText", "insertText", "moveText"} for op in operations) and not self.pdf_text_enabled:
                     raise ReportingError("native_pdf_text_disabled", "PDF 原位文字编辑尚未开放。")
                 receipt = await run_office_engine(patch_pdf_with_receipt, content, operations)
                 if expected_preview_digest is not None and receipt["previewDigest"] != expected_preview_digest:
@@ -377,7 +377,7 @@ class NativeEditorService:
         confirmed_preview_digest: str | None = None,
     ) -> dict[str, Any]:
         self.require_enabled(context.format)
-        if context.format == "pdf" and any(op.get("kind") in {"replaceText", "insertText"} for op in operations):
+        if context.format == "pdf" and any(op.get("kind") in {"replaceText", "insertText", "moveText"} for op in operations):
             if not self.pdf_text_enabled:
                 raise ReportingError("native_pdf_text_disabled", "PDF 原位文字编辑尚未开放。")
         if context.format == 'pdf' and any(op.get('kind') in PDF_CONFIRMATION_KINDS for op in operations) and not confirmed_preview_digest:

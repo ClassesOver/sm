@@ -1,6 +1,6 @@
 /** Geometry and pixel-replacement transplant from GenOffice image-edit.ts, pinned ref f8c17004fb730df11f0f743164ffd8b4281bb38c.
  * Electron nativeImage decode is replaced by pdf-lib's own PNG decoder (PNG input only);
- * insertion, deletion, layers and rotation stay excluded. */
+ * deletion is limited to a source-bound page-owned object; insertion stays excluded; layers use the first direct text object as the band boundary. */
 import {createHash} from 'node:crypto'
 import {PNG} from 'pdf-lib/cjs/utils/png'
 import {FPDF_PAGEOBJ_TEXT,chainPdfium,loadPdfium,saveDoc,withDocument,type Pdfium} from '../src/main/text-edit'
@@ -160,7 +160,7 @@ function applyImageGeometry(
 }
 
 
-export interface ExistingEngineImage {pageIndex:number;rect:[number,number,number,number];aboveText:boolean;fingerprint:string;pixelsSha256:string;width:number;height:number;exclusive:boolean;axisAligned:boolean}
+export interface ExistingEngineImage {pageIndex:number;rect:[number,number,number,number];aboveText:boolean;fingerprint:string;pixelsSha256:string;width:number;height:number;exclusive:boolean;axisAligned:boolean;pageOwned:boolean;layerable:boolean}
 /** Page-owned, unrotated and unmirrored (a>0, d>0, b=c=0): its rendered bitmap is exactly the object-space bitmap, so a baked edit written back with SetBitmap keeps orientation. */
 function axisAligned(m:Pdfium,o:ImageObj):boolean{
  if(o.chain.length>0)return false
@@ -185,17 +185,48 @@ function fingerprint(m:Pdfium,o:ImageObj){
   return {fingerprint:digest.digest('hex'),pixelsSha256,width,height}
  }finally{m._free(p)}
 }
+function canLayerPage(m:Pdfium,page:number){
+ if(!m._FPDFPage_InsertObjectAtIndex||firstTextIndex(collectObjects(m,page))===undefined)return false
+ for(let i=0;i<m._FPDFPage_CountObjects(page);i++)if(m._FPDFPageObj_GetType(m._FPDFPage_GetObject(page,i))===5)return false
+ return true
+}
 export async function listExistingEngineImages(bytes:Uint8Array):Promise<ExistingEngineImage[]>{
  const exclusive=formExclusivity(bytes)
  return chainPdfium(async()=>{const m=await loadPdfium();return withDocument(m,bytes,async doc=>{
   const out:ExistingEngineImage[]=[]
   for(let pageIndex=0;pageIndex<m._FPDF_GetPageCount(doc);pageIndex++){
    const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page')
-   try{const textIdx=firstTextIndex(collectObjects(m,page));for(const o of collectImages(m,page)){
+   try{const textIdx=firstTextIndex(collectObjects(m,page)),layerable=canLayerPage(m,page);for(const o of collectImages(m,page)){
     if(o.bounds[2]-o.bounds[0]<3||o.bounds[3]-o.bounds[1]<3)continue
-    out.push({pageIndex,rect:o.bounds,aboveText:textIdx!==undefined&&o.index>textIdx,...fingerprint(m,o),exclusive:await exclusive(pageIndex,o),axisAligned:axisAligned(m,o)})
+    out.push({pageIndex,rect:o.bounds,aboveText:textIdx!==undefined&&o.index>textIdx,...fingerprint(m,o),exclusive:await exclusive(pageIndex,o),axisAligned:axisAligned(m,o),pageOwned:o.chain.length===0,layerable:layerable&&o.chain.length===0})
    }}finally{m._FPDF_ClosePage(page)}
   }return out
+ })})
+}
+/** Move one page-owned image before the first text object or to the page tail. */
+export async function applyExistingImageLayer(bytes:Uint8Array,pageIndex:number,oldRect:Rect,layer:'belowText'|'aboveText'):Promise<Uint8Array>{
+ return chainPdfium(async()=>{const m=await loadPdfium();return withDocument(m,bytes,async doc=>{
+  const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page');let detached=0
+  try{const target=matchImage(collectImages(m,page),oldRect);if(!target||target.chain.length||!canLayerPage(m,page))throw Error('image text layer cannot be changed on this page')
+   if(!m._FPDFPage_RemoveObject(page,target.obj))throw Error('could not detach image object');detached=target.obj
+   const index=layer==='belowText'?firstTextIndex(collectObjects(m,page))!:m._FPDFPage_CountObjects(page)
+   if(layer==='belowText')m._FPDFPage_InsertObjectAtIndex!(page,target.obj,index);else m._FPDFPage_InsertObject(page,target.obj)
+   if(m._FPDFPage_GetObject(page,index)!==target.obj)throw Error('image insertion order not preserved')
+   if(!m._FPDFPage_GenerateContent(page))throw Error('could not regenerate layered image page');return saveDoc(m,doc)
+  }finally{
+   if(detached){let attached=false;for(let i=0;i<m._FPDFPage_CountObjects(page);i++)if(m._FPDFPage_GetObject(page,i)===detached){attached=true;break}if(!attached)m._FPDFPageObj_Destroy(detached)}
+   m._FPDF_ClosePage(page)
+  }
+ })})
+}
+/** Fixed-source deleteImage: detach and destroy one page-owned draw object, then regenerate. */
+export async function applyExistingImageDelete(bytes:Uint8Array,pageIndex:number,oldRect:Rect):Promise<Uint8Array>{
+ return chainPdfium(async()=>{const m=await loadPdfium();return withDocument(m,bytes,async doc=>{
+  const page=m._FPDF_LoadPage(doc,pageIndex);if(!page)throw Error('could not load image page')
+  try{const target=matchImage(collectImages(m,page),oldRect);if(!target||target.chain.length)throw Error('only a page-owned image can be deleted')
+   if(!m._FPDFPage_RemoveObject(page,target.obj))throw Error('could not remove image object');m._FPDFPageObj_Destroy(target.obj)
+   if(!m._FPDFPage_GenerateContent(page))throw Error('could not regenerate image page');return saveDoc(m,doc)
+  }finally{m._FPDF_ClosePage(page)}
  })})
 }
 export async function applyExistingImageTransform(bytes:Uint8Array,pageIndex:number,oldRect:Rect,rect:Rect):Promise<Uint8Array>{

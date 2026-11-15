@@ -13,7 +13,10 @@ import {editDesignTextProperties,formTextPropertiesAvailability,type EditFormTex
 import {inspectFormTextOverflow} from '../src/main/form-text-properties'
 import {appendDesignRadioWidget,formRadioExtensionAvailability,type AppendRadioWidgetOperation} from './form-radio-extension'
 import {replaceStyledText,type StyledReplaceTextOperation} from './replace-text-style'
-import {staticTextAvailability,insertStaticText} from './static-text'
+import {staticTextAvailability,insertStaticTexts} from './static-text'
+import {replaceAndInsertText} from './text-insert-mixed'
+import {moveSourceText} from './source-text-move'
+import {createDesignFields} from './form-batch-create'
 import { inspectSavedDrawings } from './saved-drawings'
 import { inspectSignatureFields, type SignatureFieldModel } from './signature-fields'
 import { inspectDesignWidgets, removeDesignWidgetWithReceipt } from './form-design'
@@ -105,6 +108,7 @@ const operation = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('setMetadata'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),modifiedMs:z.number().int().min(0).max(8640000000000000),metadata:z.custom<MetadataValues>()}).strict(),
   z.object({kind:z.literal('addBates'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),config:z.custom<BatesConfig>(),entries:z.array(z.object({pageId:z.string().min(1),ordinal:z.number().int().min(0),origin:point,rotate:z.union([z.literal(0),z.literal(90),z.literal(180),z.literal(270)]),lineXOffsets:z.tuple([z.number().finite().max(0).min(-100000)])}).strict()).min(1).max(2000)}).strict(),
   z.object({kind:z.literal('setOutline'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),tree:z.array(z.unknown()).max(2000)}).strict(),
+  z.object({kind:z.literal('moveText'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string().min(1),objectId:z.string().min(1).max(256),expectedTextSha256:z.string().regex(/^[a-f0-9]{64}$/),delta:point}).strict(),
   z.object({kind:z.literal('insertText'),sourceSha256:z.string().regex(/^[a-f0-9]{64}$/),pageId:z.string().min(1),origin:point,text:z.string().min(1).max(1000).refine(value=>value.trim().length>0&&!/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(value.replaceAll(String.fromCharCode(10),''))),fontSize:z.number().finite().min(6).max(72),color,align:z.enum(['left','center','right']),font:z.enum(['arial','times','courier']).optional(),bold:z.boolean().optional(),italic:z.boolean().optional(),lineLeading:z.number().finite().positive().optional()}).strict(),
   z.object({ kind:z.literal('removeFormWidget'), sourceSha256:z.string().regex(/^[a-f0-9]{64}$/), fieldName:z.string().min(1).max(256), widgetId:z.string().regex(/^\d+R\d*$/), widgetIdentity:z.string().regex(/^[a-f0-9]{64}$/), expectedWidgetSha256:z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
   z.object({ kind: z.literal('setStamps'), ...identity, watermark: watermarkConfig.nullable(), headerFooter: headerFooterConfig.nullable(), images: z.array(z.string().min(8).max(8_000_000)).min(1).max(1000), stamps: z.array(z.object({ pageId: z.string().min(1), image: z.number().int().min(0), rect, opacity: z.number().min(0).max(1).optional() }).strict()).min(1).max(20000) }).strict(),
@@ -217,7 +221,7 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
   const formDesign = await inspectDesignWidgets(content)
   const signatureFields = inspectSignatureFields(document, formFields, sourceHasXfa ? '含动态表单（XFA）的文档暂不支持放入签名字段' : document.isEncrypted || document.context.trailerInfo.Encrypt ? '加密文档暂不支持放入签名字段' : document.catalog.has(PDFName.of('Perms')) ? '文档有签名权限限制（Perms），暂不支持放入签名字段' : null)
   const staticFillModel=await inspectStaticFills(content)
-  return { sourceSha256, ...signatureModel, pageCount: pages.length, pages, formFields, staticFormFills:staticFillModel.staticFormFills, signatureFields, ...inspectPdfOutline(document,sourceSha256,removalLinks.protectedSource), existingImages:existingImageModel.existingImages, formDesignWidgets:formDesign.widgets, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { ...staticFillModel.capabilities, ...metadataCapability, ...batesAvailability(document), ...existingImageModel.capabilities, protectPdf: protectionAvailable, ...formCreateAvailability, ...formPropertiesAvailability, ...await formRadioExtensionAvailability(content), ...await formTextPropertiesAvailability(content), editFormFieldRequired: formDesign.widgets.some(widget => widget.removable), ...insertAvailability, maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, removeDrawing: drawingPages.some(page => page.drawings.some(drawing => drawing.removable)), removeFormWidget:formDesign.widgets.some(widget => widget.removable || widget.radioRemovalEditable), notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
+  return { sourceSha256, ...signatureModel, pageCount: pages.length, pages, formFields, staticFormFills:staticFillModel.staticFormFills, signatureFields, ...inspectPdfOutline(document,sourceSha256,removalLinks.protectedSource), existingImages:existingImageModel.existingImages, formDesignWidgets:formDesign.widgets, ...inspectAttachments(document, sourceSha256, sourceHasXfa || formFields.some(field => field.kind === 'signature') || document.catalog.has(PDFName.of('Perms'))), capabilities: { ...staticFillModel.capabilities, ...metadataCapability, ...batesAvailability(document), ...existingImageModel.capabilities, protectPdf: protectionAvailable, ...formCreateAvailability, ...formPropertiesAvailability, ...await formRadioExtensionAvailability(content), ...await formTextPropertiesAvailability(content), editFormFieldRequired: formDesign.widgets.some(widget => widget.removable), ...insertAvailability, moveText:insertAvailability.insertText,moveTextReason:insertAvailability.insertTextReason, maxOperations: 500, textAnnotation: { kind: 'stickyNote', width: 20, height: 18 }, cropPage: true, selectionMarkup: true, removeMarkup: true, removeDrawing: drawingPages.some(page => page.drawings.some(drawing => drawing.removable)), removeFormWidget:formDesign.widgets.some(widget => widget.removable || widget.radioRemovalEditable), notes: true, noteReplies: true, savedReplyEdits: true, pendingNoteReplies: canAppendPendingReplies(document, removalLinks.protectedSource), ...pageSizeAvailability(document, sourceHasXfa || formFields.some(field => ['signature', 'unsupported'].includes(field.kind))), coordinates: 'unrotated-pdf-user-space' } }
 }
 
 async function deterministicLayoutDates(source: Uint8Array, output: Uint8Array) {
@@ -235,6 +239,7 @@ async function deterministicLayoutDates(source: Uint8Array, output: Uint8Array) 
 
 export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: unknown, expectedSha256: string) {
   if(Array.isArray(rawOperations)){
+    if(rawOperations.length&&rawOperations.every(op=>op&&typeof op==='object'&&op.kind==='createFormField'))return createDesignFields(content,rawOperations as CreateFormFieldOperation[],expectedSha256)
     const exclusive=rawOperations.find(op=>op&&typeof op==='object'&&['externalPages','createFormField','editFormFieldRequired','editFormWidget','editFormWidgetRects','arrangeFormWidgets','appendRadioWidget','editFormTextProperties','transformExistingImage'].includes(op.kind))
     if(exclusive){
       if(rawOperations.length!==1)throw Error('外部页面操作或表单设计须单独保存')
@@ -250,6 +255,14 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     }
   }
   const ops = operationsSchema.parse(rawOperations)
+  if(ops.some(op=>op.kind==='moveText')){
+    if(!ops.every(op=>op.kind==='moveText'))throw Error('原文移动须单独保存，请先保存或撤销其他类型修改')
+    return moveSourceText(content,ops as Parameters<typeof moveSourceText>[1],expectedSha256)
+  }
+  if(ops.some(op=>op.kind==='insertText')&&ops.some(op=>op.kind==='replaceText')){
+    if(ops.some(op=>op.kind!=='insertText'&&op.kind!=='replaceText'))throw Error('新增文字与原位改字同批时，其他类型修改请分别保存')
+    return replaceAndInsertText(content,ops as Parameters<typeof replaceAndInsertText>[1],expectedSha256)
+  }
   if(ops.some(op=>op.kind==='replaceText'&&(['font','fontSize','color','bold','italic','align','lineLeading','styleRuns'].some(key=>op[key as keyof typeof op]!==undefined)||op.newText.includes(String.fromCharCode(10))))){
     if(ops.some(op=>!['replaceText','addMarkup','highlight','addDrawing'].includes(op.kind)))throw Error('文字样式替换仅可与新增文字标注、安全矢量、PNG图像或安全链接同批；其他类型修改请分别保存')
     if(ops.some(op=>op.kind==='addDrawing'&&!['rect','ellipse','arrow','polygon','ink','image','link','measure','caret'].includes(op.shape)))throw Error('样式改字同批绘图类型不支持，请分别保存')
@@ -400,8 +413,8 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
   }
   const insertion=ops.find(op=>op.kind==='insertText')
   if(insertion){
-    if(ops.length!==1)throw new Error('插入静态文字须单独保存，请先保存或撤销其他修改')
-    return insertStaticText(content,insertion,expectedSha256)
+    if(!ops.every(op=>op.kind==='insertText'))throw new Error('插入静态文字须单独保存，请先保存或撤销其他类型修改')
+    return insertStaticTexts(content,ops as Parameters<typeof insertStaticTexts>[1],expectedSha256)
   }
   const formRemoval = ops.find(op => op.kind === 'removeFormWidget')
   if (formRemoval) {

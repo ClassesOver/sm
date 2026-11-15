@@ -771,9 +771,10 @@ it('routes font-size step controls through the DOCX formatting operation', () =>
   const anchor: DocxAnchor = { docxIndex: 0, blockId: 'block-0', expectedObjectSha256: 'source-block-hash', editable: true }
   const ribbon = createDocxRibbon(editor, true)
   document.body.append(ribbon)
+  editor.commands.setTextSelection({from:1,to:3})
   ribbon.querySelector<HTMLButtonElement>('[data-action="grow-font"]')!.click()
   expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([
-    { kind: 'formatParagraph', blockId: 'block-0', expectedObjectSha256: 'source-block-hash', style: { fontSize: 13 } },
+    { kind: 'formatParagraph', blockId: 'block-0', expectedObjectSha256: 'source-block-hash', style: { fontSize: 14 } },
   ])
   ribbon.querySelector<HTMLButtonElement>('[data-action="shrink-font"]')!.click()
   expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([
@@ -930,4 +931,61 @@ it.each([['网格线', 'gridlines-toggle', 'onShowGrid'], ['标尺', 'ruler-togg
     button.click(); expect(button.getAttribute('aria-pressed')).toBe('false')
     expect(editor.getJSON()).toEqual(before); expect(editor.state.selection.from).toBe(selection)
   } finally {editor.destroy()}
+})
+it('mounts the executable Review presets once and removes disabled placeholder commands',()=>{
+ const host=document.body.appendChild(document.createElement('div')),editor=new Editor({element:host,extensions:[Doc,Paragraph,Text],content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'body'}]}]}})
+ const presets=document.createElement('div');presets.dataset.testid='review-presets'
+ const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,[],undefined,undefined,undefined,undefined,undefined,undefined,[],{open:vi.fn(),applyAll:vi.fn(),batchReason:()=>null,presets:{element:presets}})
+ document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id=review]')!.click()
+ expect(ribbon.querySelectorAll('[data-testid=review-presets]')).toHaveLength(1)
+ const disabled=[...ribbon.querySelectorAll('button:disabled')].map(button=>button.textContent)
+ expect(disabled).not.toContain('编辑器');expect(disabled).not.toContain('翻译');editor.destroy()
+})
+it('Review scope menu passes the selected range and explicit author without broadening to all',()=>{
+ const host=document.body.appendChild(document.createElement('div')),editor=new Editor({element:host,extensions:[Doc,Paragraph,Text],content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'body'}]}]}})
+ const applyScope=vi.fn(),commands={open:vi.fn(),applyAll:vi.fn(),batchReason:()=>null,applyScope,scopeReason:()=>null,authors:()=>['A <script>','B']}
+ const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,[],undefined,undefined,undefined,undefined,undefined,undefined,[],commands);document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id=review]')!.click()
+ const scope=ribbon.querySelector<HTMLSelectElement>('[data-action=revision-scope]')!;scope.value='selection';scope.dispatchEvent(new Event('change'));ribbon.querySelector<HTMLButtonElement>('[data-action=revision-scope-accept]')!.click();expect(applyScope).toHaveBeenCalledWith('accept','selection')
+ scope.value='author';scope.dispatchEvent(new Event('change'));const author=ribbon.querySelector<HTMLSelectElement>('[data-action=revision-scope-author]')!;author.value='B';author.dispatchEvent(new Event('change'));ribbon.querySelector<HTMLButtonElement>('[data-action=revision-scope-reject]')!.click();expect(applyScope).toHaveBeenCalledWith('reject',{author:'B'});expect(ribbon.querySelector('script')).toBeNull();editor.destroy()
+})
+
+
+it('keeps Home caret formatting pending until text is typed instead of rewriting the paragraph', () => {
+ const editor=new Editor({extensions:[Doc,Paragraph,Text,simpleMark('bold'),TextStyle],content:{type:'doc',content:[{type:'docParagraph',attrs:{docxIndex:0},content:[{type:'text',text:'body'}]}]}})
+ const before=editor.getJSON(),ribbon=createDocxRibbon(editor,true);document.body.append(ribbon)
+ editor.commands.setTextSelection(3)
+ ribbon.querySelector<HTMLButtonElement>('[data-action="bold"]')!.click()
+ expect(editor.getJSON()).toEqual(before)
+ expect(editor.state.selection.empty).toBe(true)
+ expect(editor.state.storedMarks?.some(m=>m.type.name==='bold')).toBe(true)
+ editor.commands.insertContent('X')
+ expect((editor.getJSON() as any).content[0].content.filter((n:any)=>n.marks?.some((m:any)=>m.type==='bold')).map((n:any)=>n.text)).toEqual(['X'])
+ editor.destroy()
+})
+
+it('steps pending caret font size through the source Chinese size ladder without modifying text', () => {
+ const editor=new Editor({extensions:[Doc,Paragraph,Text,TextStyle],content:{type:'doc',content:[{type:'docParagraph',attrs:{docxIndex:0},content:[{type:'text',text:'body'}]}]}})
+ const before=editor.getJSON(),ribbon=createDocxRibbon(editor,true);document.body.append(ribbon)
+ editor.commands.setTextSelection(3)
+ ribbon.querySelector<HTMLButtonElement>('[data-action="grow-font"]')!.click()
+ expect(editor.getJSON()).toEqual(before)
+ expect(editor.state.storedMarks?.find(m=>m.type.name==='docTextStyle')?.attrs.sizeHalfPoints).toBe(28)
+ ribbon.querySelector<HTMLButtonElement>('[data-action="grow-font"]')!.click()
+ expect(editor.state.storedMarks?.find(m=>m.type.name==='docTextStyle')?.attrs.sizeHalfPoints).toBe(32)
+ editor.destroy()
+})
+
+it('routes File actions to the real session and refreshes saved-revision-only availability',()=>{
+ const editor=new Editor({extensions:[Doc,Paragraph,Text],content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'body'}]}]}})
+ const open=vi.fn(),save=vi.fn();let dirty=false
+ const files={open,save,reason:(kind:'new'|'save-as')=>kind==='save-as'&&dirty?'请先保存当前修改':null,saveReason:()=>dirty?null:'没有修改'}
+ editor.on('update',()=>{dirty=true})
+ const args:Parameters<typeof createDocxRibbon>=[editor,true];args[25]={files}
+ const ribbon=createDocxRibbon(...args);document.body.append(ribbon)
+ ribbon.querySelector<HTMLButtonElement>('[data-tab-id=file]')!.click()
+ const action=(id:string)=>ribbon.querySelector<HTMLButtonElement>(`[data-file-action="${id}"]`)!
+ action('new').click();action('save-as').click();expect(open.mock.calls).toEqual([['new'],['save-as']]);expect(action('save').disabled).toBe(true)
+ editor.commands.insertContent('change')
+ expect(action('save-as').disabled).toBe(true);expect(action('save-as').title).toContain('先保存');expect(action('new').disabled).toBe(false)
+ action('save').click();expect(save).toHaveBeenCalledTimes(1);editor.destroy()
 })

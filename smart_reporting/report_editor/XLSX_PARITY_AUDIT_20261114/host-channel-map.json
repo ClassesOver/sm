@@ -1,0 +1,686 @@
+[
+  {
+    "name": "selectWorkbook",
+    "channel": "workbook:select",
+    "line": 49,
+    "group": "open",
+    "status": "host_boundary",
+    "boundary": "native workbook attachment/revision context replaces desktop path picker; general desktop-open scope is absent",
+    "localEvidence": "native.py, workbook.py, frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "openEncryptedWorkbook",
+    "channel": "workbook:open-encrypted",
+    "line": 50,
+    "group": "encryption",
+    "status": "missing",
+    "boundary": "encrypted-open/password-change host missing; see core protection row",
+    "localEvidence": "core.md"
+  },
+  {
+    "name": "updateWorkbookPassword",
+    "channel": "workbook:update-password",
+    "line": 51,
+    "group": "encryption",
+    "status": "missing",
+    "boundary": "encrypted-open/password-change host missing; see core protection row",
+    "localEvidence": "core.md"
+  },
+  {
+    "name": "selectWorkbooksForMerge",
+    "channel": "workbook:select-for-merge",
+    "line": 53,
+    "group": "merge",
+    "status": "done_bounded",
+    "boundary": "manual merge upload/planner exists; complex object limits remain",
+    "localEvidence": "data.md"
+  },
+  {
+    "name": "openWorkbooksForMerge",
+    "channel": "workbook:open-for-merge",
+    "line": 55,
+    "group": "merge",
+    "status": "done_bounded",
+    "boundary": "manual merge upload/planner exists; complex object limits remain",
+    "localEvidence": "data.md"
+  },
+  {
+    "name": "readWorkbookRange",
+    "channel": "workbook:read-range",
+    "line": 56,
+    "group": "indexed-read",
+    "status": "partial",
+    "boundary": "in-memory native workbook reads exist; source disk/chunk lazy query host differs",
+    "localEvidence": "storage.md:S01, data.md:F12"
+  },
+  {
+    "name": "readWorkbookFormulas",
+    "channel": "workbook:read-formulas",
+    "line": 57,
+    "group": "indexed-read",
+    "status": "partial",
+    "boundary": "in-memory native workbook reads exist; source disk/chunk lazy query host differs",
+    "localEvidence": "storage.md:S01, data.md:F12"
+  },
+  {
+    "name": "findWorkbookCells",
+    "channel": "workbook:find-cells",
+    "line": 59,
+    "group": "indexed-read",
+    "status": "partial",
+    "boundary": "in-memory native workbook reads exist; source disk/chunk lazy query host differs",
+    "localEvidence": "storage.md:S01, data.md:F12"
+  },
+  {
+    "name": "sidecarCrashed",
+    "channel": "workbook:sidecar-crashed",
+    "line": 64,
+    "group": "sidecar-lifetime",
+    "status": "host_boundary",
+    "boundary": "finite local CLI jobs/browser lifetime differ from long-lived Rust indexed sessions",
+    "localEvidence": "storage.md:S09"
+  },
+  {
+    "name": "reopenWorkbook",
+    "channel": "workbook:reopen",
+    "line": 67,
+    "group": "sidecar-lifetime",
+    "status": "host_boundary",
+    "boundary": "finite local CLI jobs/browser lifetime differ from long-lived Rust indexed sessions",
+    "localEvidence": "storage.md:S09"
+  },
+  {
+    "name": "readWorkbookRowOutline",
+    "channel": "workbook:read-row-outline",
+    "line": 68,
+    "group": "indexed-read",
+    "status": "partial",
+    "boundary": "in-memory native workbook reads exist; source disk/chunk lazy query host differs",
+    "localEvidence": "storage.md:S01, data.md:F12"
+  },
+  {
+    "name": "recalcWorkbook",
+    "channel": "workbook:recalc",
+    "line": 69,
+    "group": "recalculation",
+    "status": "partial",
+    "boundary": "local calculation driver exists; unsupported/shared/streamed cache paths differ",
+    "localEvidence": "data.md:F05-F12"
+  },
+  {
+    "name": "listExternalLinks",
+    "channel": "workbook:list-external-links",
+    "line": 70,
+    "group": "external-links",
+    "status": "done_bounded",
+    "boundary": "limited authorized-file Update/Break/retarget shipped; complex formulas and range relay separate",
+    "localEvidence": "data.md:D04-D05"
+  },
+  {
+    "name": "updateExternalLinks",
+    "channel": "workbook:update-external-links",
+    "line": 71,
+    "group": "external-links",
+    "status": "done_bounded",
+    "boundary": "limited authorized-file Update/Break/retarget shipped; complex formulas and range relay separate",
+    "localEvidence": "data.md:D04-D05"
+  },
+  {
+    "name": "readExternalLinkUsage",
+    "channel": "workbook:read-external-link-usage",
+    "line": 72,
+    "group": "external-links",
+    "status": "done_bounded",
+    "boundary": "limited authorized-file Update/Break/retarget shipped; complex formulas and range relay separate",
+    "localEvidence": "data.md:D04-D05"
+  },
+  {
+    "name": "selectExternalLinkSource",
+    "channel": "workbook:select-external-link-source",
+    "line": 73,
+    "group": "external-links",
+    "status": "done_bounded",
+    "boundary": "limited authorized-file Update/Break/retarget shipped; complex formulas and range relay separate",
+    "localEvidence": "data.md:D04-D05"
+  },
+  {
+    "name": "listWorkbookTabs",
+    "channel": "workbook:list-tabs",
+    "line": 77,
+    "group": "cross-workbook-pick",
+    "status": "missing",
+    "boundary": "no active-workbook tab range relay; external argument picker explicitly throws",
+    "localEvidence": "data.md:F03"
+  },
+  {
+    "name": "armWorkbookPick",
+    "channel": "workbook:pick-arm",
+    "line": 78,
+    "group": "cross-workbook-pick",
+    "status": "missing",
+    "boundary": "no active-workbook tab range relay; external argument picker explicitly throws",
+    "localEvidence": "data.md:F03"
+  },
+  {
+    "name": "sendWorkbookPickSelection",
+    "channel": "workbook:pick-select",
+    "line": 79,
+    "group": "cross-workbook-pick",
+    "status": "missing",
+    "boundary": "no active-workbook tab range relay; external argument picker explicitly throws",
+    "localEvidence": "data.md:F03"
+  },
+  {
+    "name": "cancelWorkbookPick",
+    "channel": "workbook:pick-cancel",
+    "line": 80,
+    "group": "cross-workbook-pick",
+    "status": "missing",
+    "boundary": "no active-workbook tab range relay; external argument picker explicitly throws",
+    "localEvidence": "data.md:F03"
+  },
+  {
+    "name": "workbookPickArmed",
+    "channel": "workbook:pick-armed",
+    "line": 81,
+    "group": "cross-workbook-pick",
+    "status": "missing",
+    "boundary": "no active-workbook tab range relay; external argument picker explicitly throws",
+    "localEvidence": "data.md:F03"
+  },
+  {
+    "name": "workbookPickSelected",
+    "channel": "workbook:pick-selected",
+    "line": 82,
+    "group": "cross-workbook-pick",
+    "status": "missing",
+    "boundary": "no active-workbook tab range relay; external argument picker explicitly throws",
+    "localEvidence": "data.md:F03"
+  },
+  {
+    "name": "workbookPickCancelled",
+    "channel": "workbook:pick-cancelled",
+    "line": 83,
+    "group": "cross-workbook-pick",
+    "status": "missing",
+    "boundary": "no active-workbook tab range relay; external argument picker explicitly throws",
+    "localEvidence": "data.md:F03"
+  },
+  {
+    "name": "revealLinkSource",
+    "channel": "shell:reveal-link-source",
+    "line": 84,
+    "group": "reveal-link",
+    "status": "host_boundary",
+    "boundary": "Web displays authorized file identity, no OS showItemInFolder",
+    "localEvidence": "NATIVE_XLSX_EXTERNAL_LINKS_SOURCE_ACCEPTANCE_20261113.md"
+  },
+  {
+    "name": "readWorkbookMedia",
+    "channel": "workbook:read-media",
+    "line": 85,
+    "group": "media-read",
+    "status": "partial",
+    "boundary": "bounded embedded ordinary/HF media and explicit uploads; external/MIME breadth not established",
+    "localEvidence": "visuals.md:V24,V37,V41"
+  },
+  {
+    "name": "readPivotDefinition",
+    "channel": "workbook:read-pivot-definition",
+    "line": 86,
+    "group": "pivot-definition",
+    "status": "done_bounded",
+    "boundary": "existing pivot read/create/edit path, advanced fields separately limited",
+    "localEvidence": "data.md:P01-P11"
+  },
+  {
+    "name": "readWorkbookRedactions",
+    "channel": "workbook:read-redactions",
+    "line": 88,
+    "group": "redactions",
+    "status": "missing",
+    "boundary": "source gxRedactions and derived-cell withholding not transformed into local AI input",
+    "localEvidence": "core.md, ai.md"
+  },
+  {
+    "name": "readWorkbookQueries",
+    "channel": "workbook:read-queries",
+    "line": 90,
+    "group": "query-metadata",
+    "status": "done_bounded",
+    "boundary": "read-only queries/connections metadata UI exists",
+    "localEvidence": "data.md:D05-D08"
+  },
+  {
+    "name": "readLocalImage",
+    "channel": "shell:read-local-image",
+    "line": 91,
+    "group": "media-read",
+    "status": "partial",
+    "boundary": "bounded embedded ordinary/HF media and explicit uploads; external/MIME breadth not established",
+    "localEvidence": "visuals.md:V24,V37,V41"
+  },
+  {
+    "name": "closeWorkbook",
+    "channel": "workbook:close",
+    "line": 92,
+    "group": "sidecar-lifetime",
+    "status": "host_boundary",
+    "boundary": "finite local CLI jobs/browser lifetime differ from long-lived Rust indexed sessions",
+    "localEvidence": "storage.md:S09"
+  },
+  {
+    "name": "saveWorkbook",
+    "channel": "workbook:save",
+    "line": 93,
+    "group": "save",
+    "status": "done_bounded",
+    "boundary": "identity-bound immutable revision save/download replaces in-place desktop save",
+    "localEvidence": "storage.md:S06"
+  },
+  {
+    "name": "listWorkbookConnections",
+    "channel": "workbook:list-connections",
+    "line": 95,
+    "group": "connection-refresh",
+    "status": "partial",
+    "boundary": "metadata exists but source supported web-table query fetch/refresh missing",
+    "localEvidence": "data.md:D06"
+  },
+  {
+    "name": "refreshWorkbookConnection",
+    "channel": "workbook:refresh-connection",
+    "line": 97,
+    "group": "connection-refresh",
+    "status": "partial",
+    "boundary": "metadata exists but source supported web-table query fetch/refresh missing",
+    "localEvidence": "data.md:D06"
+  },
+  {
+    "name": "saveEditsBegin",
+    "channel": "workbook:save-edits-begin",
+    "line": 99,
+    "group": "edit-transfer",
+    "status": "partial",
+    "boundary": "full operation JSON/budget exists, not ordered chunk transfer store",
+    "localEvidence": "storage.md:S05"
+  },
+  {
+    "name": "saveEditsChunk",
+    "channel": "workbook:save-edits-chunk",
+    "line": 100,
+    "group": "edit-transfer",
+    "status": "partial",
+    "boundary": "full operation JSON/budget exists, not ordered chunk transfer store",
+    "localEvidence": "storage.md:S05"
+  },
+  {
+    "name": "saveEditsAbort",
+    "channel": "workbook:save-edits-abort",
+    "line": 101,
+    "group": "edit-transfer",
+    "status": "partial",
+    "boundary": "full operation JSON/budget exists, not ordered chunk transfer store",
+    "localEvidence": "storage.md:S05"
+  },
+  {
+    "name": "writeWorkbookRecovery",
+    "channel": "workbook:write-recovery",
+    "line": 103,
+    "group": "recovery",
+    "status": "partial",
+    "boundary": "local browser draft recovery, not independent recovered workbook bytes on disk",
+    "localEvidence": "storage.md:S08"
+  },
+  {
+    "name": "recoveryPrompt",
+    "channel": "workbook:recovery-prompt",
+    "line": 105,
+    "group": "recovery",
+    "status": "partial",
+    "boundary": "local browser draft recovery, not independent recovered workbook bytes on disk",
+    "localEvidence": "storage.md:S08"
+  },
+  {
+    "name": "recoveryPromptReply",
+    "channel": "workbook:recovery-prompt-reply",
+    "line": 106,
+    "group": "recovery",
+    "status": "partial",
+    "boundary": "local browser draft recovery, not independent recovered workbook bytes on disk",
+    "localEvidence": "storage.md:S08"
+  },
+  {
+    "name": "autoRenameWorkbook",
+    "channel": "workbook:auto-rename",
+    "line": 107,
+    "group": "rename",
+    "status": "host_boundary",
+    "boundary": "source filename auto-renaming/OS path notifications not equivalent to editor revision labels",
+    "localEvidence": "storage.md, frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "workbookRenamed",
+    "channel": "workbook:renamed",
+    "line": 108,
+    "group": "rename",
+    "status": "host_boundary",
+    "boundary": "source filename auto-renaming/OS path notifications not equivalent to editor revision labels",
+    "localEvidence": "storage.md, frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "pendingEditsChanged",
+    "channel": "workbook:pending-edits",
+    "line": 109,
+    "group": "dirty-close",
+    "status": "partial",
+    "boundary": "local NativeDraft/beforeunload exists; source shell close-save request/receipt lifecycle differs",
+    "localEvidence": "core.md, storage.md"
+  },
+  {
+    "name": "closeSaveRequest",
+    "channel": "workbook:close-save-request",
+    "line": 110,
+    "group": "dirty-close",
+    "status": "partial",
+    "boundary": "local NativeDraft/beforeunload exists; source shell close-save request/receipt lifecycle differs",
+    "localEvidence": "core.md, storage.md"
+  },
+  {
+    "name": "closeSaveResult",
+    "channel": "workbook:close-save-result",
+    "line": 111,
+    "group": "dirty-close",
+    "status": "partial",
+    "boundary": "local NativeDraft/beforeunload exists; source shell close-save request/receipt lifecycle differs",
+    "localEvidence": "core.md, storage.md"
+  },
+  {
+    "name": "exportPdf",
+    "channel": "workbook:export-pdf",
+    "line": 112,
+    "group": "print-export",
+    "status": "host_boundary",
+    "boundary": "browser system print exists; direct PDF/device/copies/collate require host capability",
+    "localEvidence": "visuals.md:V43"
+  },
+  {
+    "name": "printWorkbook",
+    "channel": "workbook:print",
+    "line": 113,
+    "group": "print-export",
+    "status": "host_boundary",
+    "boundary": "browser system print exists; direct PDF/device/copies/collate require host capability",
+    "localEvidence": "visuals.md:V43"
+  },
+  {
+    "name": "listPrinters",
+    "channel": "workbook:list-printers",
+    "line": 114,
+    "group": "print-export",
+    "status": "host_boundary",
+    "boundary": "browser system print exists; direct PDF/device/copies/collate require host capability",
+    "localEvidence": "visuals.md:V43"
+  },
+  {
+    "name": "exportCsv",
+    "channel": "workbook:export-csv",
+    "line": 115,
+    "group": "csv-save",
+    "status": "missing",
+    "boundary": "no native CSV display export/standalone CSV identity save-back",
+    "localEvidence": "data.md:D03, storage.md:S11"
+  },
+  {
+    "name": "csvSaveConfirm",
+    "channel": "workbook:csv-save-confirm",
+    "line": 116,
+    "group": "csv-save",
+    "status": "missing",
+    "boundary": "no native CSV display export/standalone CSV identity save-back",
+    "localEvidence": "data.md:D03, storage.md:S11"
+  },
+  {
+    "name": "createDocument",
+    "channel": "workbook:create-document",
+    "line": 118,
+    "group": "ai-create-document",
+    "status": "host_boundary",
+    "boundary": "source creates standalone documents, local candidate authority does not",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "openExternal",
+    "channel": "shell:open-external",
+    "line": 119,
+    "group": "shell-context",
+    "status": "host_boundary",
+    "boundary": "Web navigation/context and authorized actor differ from shell APIs; no 1:1 IPC requirement",
+    "localEvidence": "core.md, frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "menuAction",
+    "channel": "menu:action",
+    "line": 120,
+    "group": "shell-context",
+    "status": "host_boundary",
+    "boundary": "Web navigation/context and authorized actor differ from shell APIs; no 1:1 IPC requirement",
+    "localEvidence": "core.md, frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "userDisplayName",
+    "channel": "user:display-name",
+    "line": 121,
+    "group": "shell-context",
+    "status": "host_boundary",
+    "boundary": "Web navigation/context and authorized actor differ from shell APIs; no 1:1 IPC requirement",
+    "localEvidence": "core.md, frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "aiGetSettings",
+    "channel": "ai:get-settings",
+    "line": 122,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiSetSettings",
+    "channel": "ai:set-settings",
+    "line": 123,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiSettingsChanged",
+    "channel": "ai:settings-changed",
+    "line": 124,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiOpenModelSettings",
+    "channel": "ai:open-model-settings",
+    "line": 125,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiChat",
+    "channel": "ai:chat",
+    "line": 126,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiStream",
+    "channel": "ai:stream",
+    "line": 127,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiStreamCancel",
+    "channel": "ai:stream-cancel",
+    "line": 128,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiStreamChunk",
+    "channel": "ai:stream-chunk",
+    "line": 129,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiGskStatus",
+    "channel": "ai:gsk-status",
+    "line": 130,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiGskLogin",
+    "channel": "ai:gsk-login",
+    "line": 131,
+    "group": "ai-session",
+    "status": "partial",
+    "boundary": "Agno/local SSE/cancellation exist; source provider settings/login and persistent chat not all mirrored",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiImageSearch",
+    "channel": "ai:image-search",
+    "line": 132,
+    "group": "ai-images",
+    "status": "host_boundary",
+    "boundary": "source external acquisition/generation not registered in workbook candidate host",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiFetchImage",
+    "channel": "ai:fetch-image",
+    "line": 133,
+    "group": "ai-images",
+    "status": "host_boundary",
+    "boundary": "source external acquisition/generation not registered in workbook candidate host",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "aiGenerateImage",
+    "channel": "sheets:ai-generate-image",
+    "line": 135,
+    "group": "ai-images",
+    "status": "host_boundary",
+    "boundary": "source external acquisition/generation not registered in workbook candidate host",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "mcpCommand",
+    "channel": "sheets:mcp-command",
+    "line": 138,
+    "group": "mcp-visible-grid",
+    "status": "missing",
+    "boundary": "no source-equivalent authenticated XLSX visible-grid MCP execution bridge in inspected host",
+    "localEvidence": "source apps/sheets/src/renderer/mcp-bridge.ts; frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "mcpResult",
+    "channel": "sheets:mcp-result",
+    "line": 139,
+    "group": "mcp-visible-grid",
+    "status": "missing",
+    "boundary": "no source-equivalent authenticated XLSX visible-grid MCP execution bridge in inspected host",
+    "localEvidence": "source apps/sheets/src/renderer/mcp-bridge.ts; frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "mcpReady",
+    "channel": "sheets:mcp-ready",
+    "line": 140,
+    "group": "mcp-visible-grid",
+    "status": "missing",
+    "boundary": "no source-equivalent authenticated XLSX visible-grid MCP execution bridge in inspected host",
+    "localEvidence": "source apps/sheets/src/renderer/mcp-bridge.ts; frontend/src/workbook-main.ts"
+  },
+  {
+    "name": "captureScreenSources",
+    "channel": "sheets:capture-screen-sources",
+    "line": 143,
+    "group": "screen-capture",
+    "status": "missing",
+    "boundary": "no workbook desktop-screen source capture picker in inspected native Web flow",
+    "localEvidence": "visuals.md:V31; source desktop-api.ts"
+  },
+  {
+    "name": "captureScreenSource",
+    "channel": "sheets:capture-screen-source",
+    "line": 144,
+    "group": "screen-capture",
+    "status": "missing",
+    "boundary": "no workbook desktop-screen source capture picker in inspected native Web flow",
+    "localEvidence": "visuals.md:V31; source desktop-api.ts"
+  },
+  {
+    "name": "filesPick",
+    "channel": "sheets:files-pick",
+    "line": 145,
+    "group": "attachments",
+    "status": "host_boundary",
+    "boundary": "source indexed chat attachment capabilities not registered by local workbook toolkit",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "filesAdd",
+    "channel": "sheets:files-add",
+    "line": 146,
+    "group": "attachments",
+    "status": "host_boundary",
+    "boundary": "source indexed chat attachment capabilities not registered by local workbook toolkit",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "filesAddPastedImage",
+    "channel": "sheets:files-add-pasted-image",
+    "line": 147,
+    "group": "attachments",
+    "status": "host_boundary",
+    "boundary": "source indexed chat attachment capabilities not registered by local workbook toolkit",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "filesRead",
+    "channel": "sheets:files-read",
+    "line": 148,
+    "group": "attachments",
+    "status": "host_boundary",
+    "boundary": "source indexed chat attachment capabilities not registered by local workbook toolkit",
+    "localEvidence": "ai.md"
+  },
+  {
+    "name": "filesReadImage",
+    "channel": "sheets:files-read-image",
+    "line": 149,
+    "group": "attachments",
+    "status": "host_boundary",
+    "boundary": "source indexed chat attachment capabilities not registered by local workbook toolkit",
+    "localEvidence": "ai.md"
+  }
+]

@@ -1,3 +1,16 @@
+import {tableCellOperationsAvailability,editDocxTableCellOperation} from './docx-table-cell-operations'
+import {tableLifecycleAvailability,editDocxTableLifecycle} from './docx-table-lifecycle'
+import {validateNewRichParagraphOperation,buildNewRichParagraph} from './docx-new-rich-paragraph'
+import {validateDocxMirrorMarginsOperations} from './docx-mirror-margins'
+import {validateTableTailParagraph} from './docx-table-tail-paragraph'
+import {inspectDocxPictureFormats,patchDocxPictureFormat} from './docx-picture-format'
+import {isDocxChartOperation,patchDocxChart,inspectDocxCharts} from './docx-chart'
+import {isDocxFieldOperation,patchDocxField,inspectDocxFields} from './docx-field'
+import {inspectStoryRevisions,resolveStoryRevisions,verifyStoryRevisionOutput} from './docx-story-revisions'
+import {inspectDocxTheme,validateDocxThemeOperations,assertDocxThemeWritten} from './docx-theme'
+import {inspectDocxProtection,validateDocxProtectionOperations,assertDocxProtectionWritten,assertDocxProtectionBatch} from './docx-protection'
+import {inspectDocxInk,validateDocxInkOperations,assertDocxInkWritten} from './docx-ink'
+import {buildDocxInsertObject} from './docx-insert-object.ts'
 import {patchDocxRichPaste} from './docx-rich-paste.ts'
 import {patchDocxMailMerge} from './docx-mail-merge.ts'
 import {inspectDocxEquations,patchDocxEquations,type EquationOperation} from './docx-equations.ts'
@@ -21,7 +34,7 @@ import { tablePropertiesAvailability, editTableProperties, verifyTableProperties
 import { tableAltTextAvailability, editTableAltText, verifyTableAltTextResult } from './docx-table-alt-text.ts'
 import { tableCellWrapAvailability, editTableCellWrap, verifyTableCellWrapResult } from './docx-table-cell-wrap.ts'
 import { tableAlignmentAvailability, editTableAlignment, verifyTableAlignmentResult } from './docx-table-alignment.ts'
-import { tableStyleAvailability, editTableStyle, verifyTableStyleResult } from './docx-table-style.ts'
+import { tableStyleAvailability, editTableStyle, verifyTableStyleResult, validateTableStyleOperation } from './docx-table-style.ts'
 import { tableRowBreakAvailability, editTableRowBreaks, verifyTableRowBreakResult } from './docx-table-row-breaks.ts'
 import { editTableCellMarginOverrides, tableCellMarginOverridesAvailability, verifyTableCellMarginOverridesResult } from './docx-table-cell-margin-overrides.ts'
 import { inspectNestedTables, validateNestedCellOperation, patchNestedCellText, verifyNestedCellModel } from './docx-nested-tables.ts'
@@ -562,7 +575,7 @@ function style(value: unknown): Partial<Run> {
     }
   }
   if (spec.fontSize !== undefined && spec.fontSize !== null) {
-    if (typeof spec.fontSize !== 'number' || !Number.isFinite(spec.fontSize) || spec.fontSize < 1 || spec.fontSize > (spec.fontDialog === true ? 1638 : 200) || !Number.isInteger(spec.fontSize * 2)) fail('style_invalid')
+    if (typeof spec.fontSize !== 'number' || !Number.isFinite(spec.fontSize) || spec.fontSize < 1 || spec.fontSize > 1638 || !Number.isInteger(spec.fontSize * 2)) fail('style_invalid')
     result.sizeHalfPoints = (spec.fontSize as number) * 2
   }
   if (spec.fontFamily !== undefined && spec.fontFamily !== null) {
@@ -596,7 +609,8 @@ function baselineRunProperties(raw = ''): string {
 }
 function generated(block: Block): GeneratedBlock {
   const paragraphOpen = block.originalXml?.match(/^<w:p((?:[^>"']|"[^"]*"|'[^']*')*)>/)?.[1]
-  return { type: block.type as GeneratedBlock['type'], rawPAttrs: paragraphOpen, level: block.level, outlineOnly: block.outlineOnly,
+  // A self-closing source contributes attributes, never its closing slash, to a paired output.
+  return { type: block.type as GeneratedBlock['type'], rawPAttrs: paragraphOpen?.replace(/\/\s*$/, ''), level: block.level, outlineOnly: block.outlineOnly,
     styleId: block.styleId, list: block.list, format: block.format, rawPPr: block.rawPPr,
     // Original unstyled links must stay unstyled even when this paragraph regenerates.
     runs: block.runs!.map(run => ({ ...run, ...(run.link ? { link: { ...run.link,
@@ -789,6 +803,15 @@ function hasRevisionProtection(xml: string | undefined): boolean {
 }
 const revisionProtected = !!parsed.protection?.enforced || hasRevisionProtection(revisionSettingsXml)
 // 固定源 Design ▸ Page Color：整篇 w:background；只读原因与来源摘要随 inspect 下发。
+const documentTheme = inspectDocxTheme(await sourceZip.file('word/theme/theme1.xml')?.async('string') ?? null, revisionProtected)
+const themeRelationships=[...(await parseRels(sourceZip,'word/_rels/document.xml.rels')).values()].filter(rel=>/\/theme$/.test(rel.type))
+if(themeRelationships.length!==1 || !['theme/theme1.xml','/word/theme/theme1.xml'].includes(themeRelationships[0]?.target??'') || themeRelationships[0]?.targetMode==='External'){documentTheme.editable=false;documentTheme.readOnlyReason='非标准主题关系，保持原样'}
+const documentProtection=inspectDocxProtection(revisionSettingsXml ?? '')
+const editablePictureFormats=await inspectDocxPictureFormats(bytes,parsed)
+const editableCharts=await inspectDocxCharts(bytes,parsed)
+const editableFields=await inspectDocxFields(bytes,parsed)
+const storyRevisions=await inspectStoryRevisions(parsed)
+const documentInk=inspectDocxInk(parsed.inks??[],revisionProtected)
 const pageColorModel = inspectDocxPageColor(await sourceZip.file('word/document.xml')?.async('string') ?? '', !!parsed.protection?.enforced)
 // 固定源 Design ▸ Watermark：全部页眉部件摘要绑定来源；受保护文档只读。
 const watermarkSection = readSectionSettings(parsed)
@@ -1091,8 +1114,10 @@ const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c1700
   capabilities: { paragraphs: true, basicStyles: true, simpleTableText: true, simpleTableStructure: true, replaceImage: true, headerFooter: true, pageColor: true, watermark: true },
   stylesPane: { expectedStylesSha256: hash(sourceStylesXml ?? ''), editable: !revisionProtected },
   pageColor: pageColorModel,
+  documentTheme,documentProtection,documentInk,storyRevisions,editableCharts,editableFields,
   // 固定源 Table Design 文档表格样式库：styles.xml 中 table 类型样式（不含默认 TableNormal）。
   tableStyles: [...parsed.styles.values()].filter(style => style.type === 'table' && style.styleId !== 'TableNormal').map(style => ({ styleId: style.styleId, name: style.name })),
+
   watermark: watermarkModel,
   // 全部节（文档顺序，尾节在最后）：编辑器按光标所在块定位当前节。
   sections: allSections.map((section, index) => ({ headersFooters: sectionHfModels[index], sectionId: sectionIdOf(section), expectedSectionSha256: hash(section.sectPrXml), settings: sectionSettingsOf(section),
@@ -1123,9 +1148,12 @@ const model = () => ({ sourceSha256, modelSource: 'genoffice-docx-engine:f8c1700
     rulerIndentReadOnlyReason: rulerIndentEditable(block) ? null : '标尺左／首行／悬挂缩进仅支持单栏非镜像、无字符缩进的可信从左到右正文或标题',
     tabStopsEditable: tabStopsEditable(block),
     tabStopsReadOnlyReason: tabStopsEditable(block) ? null : '制表位仅支持单栏非镜像、无字符缩进的可信LTR单段，来源不得含未知制表位属性或相对定位',
+    insertParagraphAdjacentEditable: block.type==='table'&&!block.hidden&&!block.sdtShell&&!documentProtection.contentLocked&&/^<w:tbl[\s>]/.test(block.originalXml??''),
+    imageFormatEditable: editablePictureFormats.some(item=>item.blockId===blockId(block)),
     editable: editableParagraph(block), readOnlyReason: editableParagraph(block) ? null : 'docx_object_unsupported',
     deletable: editableParagraph(block) || coverMarkerParagraph(block),
-    ...(block.type === 'table' ? { nestedTables: nestedTables.get(blockId(block))!.anchors, ...tableStructureAvailability(block), ...(parsed.protection?.enforced ? { tableStyleEditable: false, tableStyleReadOnlyReason: 'docx_table_style_protected' } : tableStyleAvailability(block)), ...(parsed.protection?.enforced ? { tablePropertiesEditable: false, tablePropertiesReadOnlyReason: 'docx_table_properties_protected' } : tablePropertiesAvailability(block, tableColumnWidthLimit(block))), ...(parsed.protection?.enforced ? { tableAltTextEditable: false, tableAltTextReadOnlyReason: 'docx_table_alt_text_protected' } : tableAltTextAvailability(block)), ...(parsed.protection?.enforced ? { tableCellWrapEditable: false, tableCellWrapReadOnlyReason: 'docx_table_cell_wrap_protected' } : tableCellWrapAvailability(block, parsed)), ...(parsed.protection?.enforced ? { tableAlignmentEditable: false, tableAlignmentReadOnlyReason: 'docx_table_alignment_protected' } : tableAlignmentAvailability(block)), ...(parsed.protection?.enforced ? { rowBreakEditable: false, rowBreakReadOnlyReason: 'docx_table_row_breaks_protected' } : tableRowBreakAvailability(block)), ...cellMarginOverrides.get(blockId(block)), ...(parsed.protection?.enforced ? { tableCellMarginsEditable: false, tableCellMarginsReadOnlyReason: 'docx_table_cell_margins_protected' } : tableCellMarginsAvailability(block)), ...(parsed.protection?.enforced ? { cellAlignmentEditable: false, cellAlignmentReadOnlyReason: 'docx_table_cell_alignment_protected' } : tableCellAlignmentAvailability(block)), ...(parsed.protection?.enforced ? { cellTextDirectionEditable: false, cellTextDirectionReadOnlyReason: 'docx_table_cell_text_direction_protected' } : tableCellTextDirectionAvailability(block)), autoFitSectionId: tableColumnWidthSectionId(block), ...(parsed.protection?.enforced ? { autoFitEditable: false, autoFitReadOnlyReason: 'docx_table_autofit_protected' } : tableAutoFitAvailability(block, tableColumnWidthLimit(block))), columnWidthSectionId: tableColumnWidthSectionId(block), rowHeightSectionId: tableColumnWidthSectionId(block), ...(parsed.protection?.enforced ? { rowHeightEditable: false, rowHeightReadOnlyReason: 'docx_table_row_height_protected' } : tableRowHeightAvailability(block, tableRowHeightLimit(block))), ...(parsed.protection?.enforced ? { columnWidthEditable: false, columnWidthReadOnlyReason: 'docx_table_column_width_protected' } : tableColumnWidthAvailability(block, tableColumnWidthLimit(block))), ...(parsed.protection?.enforced ? { cellShapeEditable: false, cellShapeReadOnlyReason: 'docx_table_cell_shape_protected' } : tableCellShapeAvailability(block)), ...docxCellBordersCapability(block.originalXml!), rowCount: block.table?.rows.length ?? 0, columnCount: block.table?.rows[0]?.length ?? 0, cells: cellXmls(block).map((row, r) => row.map((xml, c) => ({
+    ...(block.type === 'table' ? { ...tableCellOperationsAvailability(block,documentProtection.contentLocked||parsed.trackRevisions===true,tableColumnWidthLimit(block)), ...tableLifecycleAvailability(block,documentProtection.contentLocked||parsed.trackRevisions===true), ...tableStyleAvailability(block,parsed), nestedTables: nestedTables.get(blockId(block))!.anchors, ...tableStructureAvailability(block), ...(parsed.protection?.enforced ? { tablePropertiesEditable: false, tablePropertiesReadOnlyReason: 'docx_table_properties_protected' } : tablePropertiesAvailability(block, tableColumnWidthLimit(block))), ...(parsed.protection?.enforced ? { tableAltTextEditable: false, tableAltTextReadOnlyReason: 'docx_table_alt_text_protected' } : tableAltTextAvailability(block)), ...(parsed.protection?.enforced ? { tableCellWrapEditable: false, tableCellWrapReadOnlyReason: 'docx_table_cell_wrap_protected' } : tableCellWrapAvailability(block, parsed)), ...(parsed.protection?.enforced ? { tableAlignmentEditable: false, tableAlignmentReadOnlyReason: 'docx_table_alignment_protected' } : tableAlignmentAvailability(block)), ...(parsed.protection?.enforced ? { rowBreakEditable: false, rowBreakReadOnlyReason: 'docx_table_row_breaks_protected' } : tableRowBreakAvailability(block)), ...cellMarginOverrides.get(blockId(block)), ...(parsed.protection?.enforced ? { tableCellMarginsEditable: false, tableCellMarginsReadOnlyReason: 'docx_table_cell_margins_protected' } : tableCellMarginsAvailability(block)), ...(parsed.protection?.enforced ? { cellAlignmentEditable: false, cellAlignmentReadOnlyReason: 'docx_table_cell_alignment_protected' } : tableCellAlignmentAvailability(block)), ...(parsed.protection?.enforced ? { cellTextDirectionEditable: false, cellTextDirectionReadOnlyReason: 'docx_table_cell_text_direction_protected' } : tableCellTextDirectionAvailability(block)), autoFitSectionId: tableColumnWidthSectionId(block), ...(parsed.protection?.enforced ? { autoFitEditable: false, autoFitReadOnlyReason: 'docx_table_autofit_protected' } : tableAutoFitAvailability(block, tableColumnWidthLimit(block))), columnWidthSectionId: tableColumnWidthSectionId(block), rowHeightSectionId: tableColumnWidthSectionId(block), ...(parsed.protection?.enforced ? { rowHeightEditable: false, rowHeightReadOnlyReason: 'docx_table_row_height_protected' } : tableRowHeightAvailability(block, tableRowHeightLimit(block))), ...(parsed.protection?.enforced ? { columnWidthEditable: false, columnWidthReadOnlyReason: 'docx_table_column_width_protected' } : tableColumnWidthAvailability(block, tableColumnWidthLimit(block))), ...(parsed.protection?.enforced ? { cellShapeEditable: false, cellShapeReadOnlyReason: 'docx_table_cell_shape_protected' } : tableCellShapeAvailability(block)), ...docxCellBordersCapability(block.originalXml!), rowCount: block.table?.rows.length ?? 0, columnCount: block.table?.rows[0]?.length ?? 0, cells: cellXmls(block).map((row, r) => row.map((xml, c) => ({
+
       cellId: cellId(block, r, c), expectedObjectSha256: hash(xml), row: r, column: c,
       text: block.table?.rows[r]?.[c]?.paras.join('\n') ?? '', editable: editableTable(block) && editableCell(xml),
       paragraphs: cellParagraphXmls(xml).map((paragraph, index) => ({ index, expectedObjectSha256: hash(paragraph), editable: !parsed.protection?.enforced && editableTable(block) && editableCell(xml) && simpleParagraphXml(paragraph) })),
@@ -1145,6 +1173,85 @@ if (request.kind === 'inspect') {
   const sourceIdentity = await stat(sourcePath)
   const outputIdentity = await stat(outputPath).catch(() => undefined)
   if (sourcePath === outputPath || (outputIdentity && sourceIdentity.ino === outputIdentity.ino && sourceIdentity.dev === outputIdentity.dev)) fail('output_overwrites_source')
+  assertDocxProtectionBatch(request.operations.map(object),documentProtection)
+  const cellOperationOps=request.operations.map(object).filter(op=>op.kind==='editTableCells')
+  if(cellOperationOps.length){
+    if(cellOperationOps.length!==1||request.operations.length!==1)fail('table_cells_batch_conflict')
+    const op=cellOperationOps[0],target=parsed.blocks.find(block=>blockId(block)===op.blockId)
+    if(!target||target.docxIndex==null)fail('table_cells_anchor_invalid')
+    const result=editDocxTableCellOperation(target!,op,{blockId:blockId(target!),expectedObjectSha256:hash(target!.originalXml??''),protectedDocument:documentProtection.contentLocked||parsed.trackRevisions===true,maxWidthTwips:tableColumnWidthLimit(target!)})
+    const xml=await sourceZip.file('word/document.xml')!.async('string'),body=/<w:body\b[^>]*>([\s\S]*?)<\/w:body>/.exec(xml)
+    if(!body)fail('table_cells_body_invalid')
+    const children=splitXmlChildren(body![1]),child=children[target!.docxIndex!]
+    if(child?.xml!==result.sourceXml)fail('table_cells_source_serialization_unsupported')
+    let offset=body!.index+body![0].indexOf('>')+1
+    for(let i=0;i<target!.docxIndex!;i++){const at=xml.indexOf(children[i].xml,offset);if(at<0)fail('table_cells_source_invalid');offset=at+children[i].xml.length}
+    const at=xml.indexOf(child.xml,offset);if(at<0)fail('table_cells_source_invalid')
+    const replacement=result.replacementXml||(blocks.filter(block=>block.docxIndex!==target!.docxIndex).length===0?'<w:p/>':'')
+    const expected=xml.slice(0,at)+replacement+xml.slice(at+child.xml.length)
+    sourceZip.file('word/document.xml',expected,{createFolders:false})
+    const output=await sourceZip.generateAsync({type:'uint8array'}),readZip=await loadDocxZip(output)
+    if(await readZip.file('word/document.xml')!.async('string')!==expected)fail('table_cells_write_mismatch')
+    await parseDocx(output)
+    await writeFile(request.output as string,output,{flag:'wx'});process.stdout.write(JSON.stringify({sourceSha256,sha256:hash(output),size:output.length}));process.exit(0)
+  }
+  const tableLifecycleOps=request.operations.map(object).filter(op=>op.kind==='deleteTable'||op.kind==='splitTable')
+  if(tableLifecycleOps.length){
+    if(tableLifecycleOps.length!==1||request.operations.length!==1)fail('table_lifecycle_batch_conflict')
+    const op=tableLifecycleOps[0],target=parsed.blocks.find(block=>blockId(block)===op.blockId)
+    if(!target||target.docxIndex==null)fail('table_lifecycle_anchor_invalid')
+    const result=editDocxTableLifecycle(target!,op,{blockId:blockId(target!),expectedObjectSha256:hash(target!.originalXml??''),protectedDocument:documentProtection.contentLocked||parsed.trackRevisions===true})
+    const xml=await sourceZip.file('word/document.xml')!.async('string'),body=/<w:body\b[^>]*>([\s\S]*?)<\/w:body>/.exec(xml)
+    if(!body)fail('table_lifecycle_body_invalid')
+    const children=splitXmlChildren(body![1]),child=children[target!.docxIndex!]
+    if(child?.xml!==result.sourceXml)fail('table_lifecycle_source_serialization_unsupported')
+    let offset=body!.index+body![0].indexOf('>')+1
+    for(let i=0;i<target!.docxIndex!;i++){const at=xml.indexOf(children[i].xml,offset);if(at<0)fail('table_lifecycle_source_invalid');offset=at+children[i].xml.length}
+    const at=xml.indexOf(child.xml,offset);if(at<0)fail('table_lifecycle_source_invalid')
+    const replacement=result.replacementXml||(blocks.filter(block=>block.docxIndex!==target!.docxIndex).length===0?'<w:p/>':'')
+    const expected=xml.slice(0,at)+replacement+xml.slice(at+child.xml.length)
+    sourceZip.file('word/document.xml',expected,{createFolders:false})
+    const output=await sourceZip.generateAsync({type:'uint8array'}),readZip=await loadDocxZip(output)
+    if(await readZip.file('word/document.xml')!.async('string')!==expected)fail('table_lifecycle_write_mismatch')
+    await parseDocx(output)
+    await writeFile(request.output as string,output,{flag:'wx'});process.stdout.write(JSON.stringify({sourceSha256,sha256:hash(output),size:output.length}));process.exit(0)
+  }
+  const tableStyleOps=request.operations.map(object).filter(op=>op.kind==='setTableStyle')
+  if(tableStyleOps.some(op=>'style' in op || (typeof op.preset==='string' && op.preset.includes('-')))){
+    if(tableStyleOps.length!==1||request.operations.length!==1)fail('table_style_batch_conflict')
+    const op=tableStyleOps[0],target=parsed.blocks.find(block=>blockId(block)===op.blockId)
+    if(!target||target.docxIndex==null)fail('table_style_anchor_invalid')
+    const result=validateTableStyleOperation(target!,op,parsed),xml=await sourceZip.file('word/document.xml')!.async('string'),body=/<w:body\b[^>]*>([\s\S]*?)<\/w:body>/.exec(xml)
+    if(!body)fail('table_style_body_invalid')
+    const children=splitXmlChildren(body![1]),child=children[target!.docxIndex!]
+    if(child?.xml!==target!.originalXml)fail('table_style_source_serialization_unsupported')
+    let offset=body!.index+body![0].indexOf('>')+1
+    for(let i=0;i<target!.docxIndex!;i++){const at=xml.indexOf(children[i].xml,offset);if(at<0)fail('table_style_source_invalid');offset=at+children[i].xml.length}
+    const at=xml.indexOf(child.xml,offset);if(at<0)fail('table_style_source_invalid')
+    sourceZip.file('word/document.xml',xml.slice(0,at)+result.xml+xml.slice(at+child.xml.length),{createFolders:false})
+    const output=await sourceZip.generateAsync({type:'uint8array'}),reread=await parseDocx(output),written=reread.blocks.find(block=>block.docxIndex===target!.docxIndex)
+    if(!written)fail('table_style_write_missing');verifyTableStyleResult(written!,result)
+    await writeFile(request.output as string,output,{flag:'wx'});process.stdout.write(JSON.stringify({sourceSha256,sha256:hash(output),size:output.length}));process.exit(0)
+  }
+  const pictureFormatOps=request.operations.map(object).filter(op=>op.kind==='formatImage')
+  if(pictureFormatOps.length){if(pictureFormatOps.length!==1||request.operations.length!==1)fail('picture_format_batch_conflict');const output=await patchDocxPictureFormat(bytes,pictureFormatOps[0],parsed);await writeFile(request.output as string,output,{flag:'wx'});process.stdout.write(JSON.stringify({sourceSha256,sha256:hash(output),size:output.length}));process.exit(0)}
+  const chartFieldOps=request.operations.map(object).filter(op=>isDocxChartOperation(op)||isDocxFieldOperation(op))
+  if(chartFieldOps.length){
+    if(chartFieldOps.length!==1||request.operations.length!==1)fail('chart_field_batch_conflict')
+    const op=chartFieldOps[0]!,output=isDocxChartOperation(op)?await patchDocxChart(bytes,op,parsed):await patchDocxField(bytes,op,parsed)
+    await writeFile(request.output as string,output,{flag:'wx'})
+    process.stdout.write(JSON.stringify({sourceSha256,sha256:hash(output),size:output.length}));process.exit(0)
+  }
+  const storyOps=request.operations.map(object).filter(op=>op.kind==='resolveStoryRevision')
+  if(storyOps.length){
+    if(storyOps.length!==request.operations.length)fail('story_revision_batch_conflict')
+    const decisions=storyOps.map(({kind,...op})=>op) as unknown as Parameters<typeof resolveStoryRevisions>[1]
+    const storyOptions=await resolveStoryRevisions(parsed,decisions)
+    const output=await saveDocx(parsed,blocks.map(block=>({kind:'original' as const,docxIndex:block.docxIndex!})),storyOptions)
+    await verifyStoryRevisionOutput(parsed,decisions,output)
+    await writeFile(request.output as string,output,{flag:'wx'})
+    process.stdout.write(JSON.stringify({sourceSha256,sha256:hash(output),size:output.length}));process.exit(0)
+  }
   const richPastes=request.operations.filter(raw=>object(raw).kind==='pasteRichContent')
   if(richPastes.length){
     if(richPastes.length!==1||request.operations.length!==1||revisionProtected)fail('rich_paste_batch_conflict')
@@ -1165,7 +1272,7 @@ if (request.kind === 'inspect') {
   if (references.length) {
     if (references.length !== request.operations.length || references.length !== 1) fail('cross_reference_batch_conflict')
     const output = await patchDocxCrossReference(bytes, references[0] as DocxCrossReferenceOperation)
-    await writeFile(request.output as string, output, {flag: 'wx'})
+  await writeFile(request.output as string, output, {flag: 'wx'})
     process.stdout.write(JSON.stringify({sourceSha256, sha256: hash(output), size: output.length}))
     process.exit(0)
   }
@@ -1174,7 +1281,7 @@ if (request.kind === 'inspect') {
     if (captions.length !== request.operations.length || captions.length !== 1) fail('caption_batch_conflict')
     if (revisionProtected) fail('caption_source_unsupported')
     const output = await patchDocxCaption(bytes, captions[0], parsed)
-    await writeFile(request.output as string, output, {flag: 'wx'})
+  await writeFile(request.output as string, output, {flag: 'wx'})
     process.stdout.write(JSON.stringify({sourceSha256, sha256: hash(output), size: output.length}))
     process.exit(0)
   }
@@ -1182,7 +1289,7 @@ if (request.kind === 'inspect') {
   if (bookmarkOperations.length) {
     if (bookmarkOperations.length !== request.operations.length) fail('bookmark_batch_conflict')
     const output = await patchDocxBookmarks(bytes, bookmarkOperations as DocxBookmarkOperation[])
-    await writeFile(request.output as string, output, {flag: 'wx'})
+  await writeFile(request.output as string, output, {flag: 'wx'})
     process.stdout.write(JSON.stringify({sourceSha256, sha256: hash(output), size: output.length}))
     process.exit(0)
   }
@@ -1191,7 +1298,7 @@ if (request.kind === 'inspect') {
     if (tocOperations.length !== request.operations.length || tocOperations.length !== 1) fail('toc_batch_conflict')
     if (revisionProtected) fail('toc_source_unsupported')
     const output = await patchDocxToc(bytes, tocOperations[0], parsed)
-    await writeFile(request.output as string, output, {flag: 'wx'})
+  await writeFile(request.output as string, output, {flag: 'wx'})
     process.stdout.write(JSON.stringify({sourceSha256, sha256: hash(output), size: output.length}))
     process.exit(0)
   }
@@ -1199,7 +1306,7 @@ if (request.kind === 'inspect') {
   if (threadOperations.length) {
     if (threadOperations.length !== request.operations.length) fail('comment_thread_batch_conflict')
     const output = await patchDocxCommentThreads(bytes, threadOperations as CommentThreadOperation[])
-    await writeFile(request.output as string, output, {flag: 'wx'})
+  await writeFile(request.output as string, output, {flag: 'wx'})
     process.stdout.write(JSON.stringify({sourceSha256, sha256: hash(output), size: output.length}))
     process.exit(0)
   }
@@ -1207,7 +1314,7 @@ if (request.kind === 'inspect') {
   if (replies.length) {
     if (replies.length !== request.operations.length) fail('comment_reply_batch_conflict')
     const output = await patchDocxCommentReplies(bytes, replies as CommentReplyOperation[])
-    await writeFile(request.output as string, output, {flag: 'wx'})
+  await writeFile(request.output as string, output, {flag: 'wx'})
     process.stdout.write(JSON.stringify({sourceSha256, sha256: hash(output), size: output.length}))
     process.exit(0)
   }
@@ -1215,7 +1322,7 @@ if (request.kind === 'inspect') {
   if (creations.length) {
     if (creations.length !== request.operations.length) fail('comment_creation_batch_conflict')
     const output = await patchDocxCommentCreation(bytes, creations as CommentCreationOperation[])
-    await writeFile(request.output as string, output, {flag: 'wx'})
+  await writeFile(request.output as string, output, {flag: 'wx'})
     process.stdout.write(JSON.stringify({sourceSha256, sha256: hash(output), size: output.length}))
     process.exit(0)
   }
@@ -1230,7 +1337,7 @@ if (request.kind === 'inspect') {
       return op as unknown as import('./docx-comments.ts').CommentTextOperation
     })
     const output = await patchDocxCommentSource(bytes, operations)
-    await writeFile(request.output as string, output, {flag: 'wx'})
+  await writeFile(request.output as string, output, {flag: 'wx'})
     process.stdout.write(JSON.stringify({ sourceSha256, sha256: hash(output), size: output.length }))
     process.exit(0)
   }
@@ -1354,6 +1461,7 @@ if (request.kind === 'inspect') {
       group.runs=recorded.runs
     }
   }else if(request.revisionAuthor!==undefined||request.revisionDate!==undefined)fail('docx_revision_context_invalid')
+  const mirrorMargins=validateDocxMirrorMarginsOperations(request.operations.map(object).filter(op=>op.kind==='setMirrorMargins'),documentProtection)
   const trackRevisionOperations=request.operations.filter(raw=>object(raw).kind==='setTrackRevisions').map(object)
   if(trackRevisionOperations.length>1)fail('track_revisions_batch_conflict')
   let trackRevisions:boolean|undefined
@@ -1390,13 +1498,20 @@ if (request.kind === 'inspect') {
     finalParagraphs.set(op.blockId as string, compileNoteParagraphRuns(block.runs!, op.runs, noteOperations as Record<string, any>[], notesPlan?.allocated ?? new Map(), op.blockId as string,
       (run, spec) => { const value = object(spec); if (value.fontDialog === true && revisionProtected) fail('font_source_unsupported'); if (!Object.keys(value).length) fail('style_invalid'); return applyRunFormatting(run, style(value), value) }, block.emptyRun))
   }
+  const protectionOps=request.operations.map(object)
+  const protectionOptions=await validateDocxProtectionOperations(protectionOps.filter(op=>op.kind==='setDocumentProtection'),documentProtection)
+  const themeOptions=validateDocxThemeOperations(protectionOps.filter(op=>op.kind==='setDocumentTheme'),documentTheme)
   const pageColor = validateDocxPageColorOperations(request.operations.map(object).filter(op => op.kind === 'setPageColor'), pageColorModel)
   const watermark = validateDocxWatermarkOperations(request.operations.map(object).filter(op => op.kind === 'setWatermark'), watermarkModel)
-  const blockOperations = request.operations.filter(raw => !['setHeaderFooter', 'setHeaderFooterLink', 'setPageColor', 'setWatermark', 'setTrackRevisions', 'upsertStyle', ...noteKinds, 'patchParagraphRuns', 'resolveTextRevision', 'recordTextRevision'].includes(object(raw).kind as string))
+  const blockOperations = request.operations.filter(raw => !['setMirrorMargins', 'setHeaderFooter', 'setHeaderFooterLink', 'setPageColor', 'setWatermark', 'setTrackRevisions', 'setDocumentTheme', 'setDocumentProtection', 'setInk', 'upsertStyle', ...noteKinds, 'patchParagraphRuns', 'resolveTextRevision', 'recordTextRevision'].includes(object(raw).kind as string))
   for (const op of blockOperations.map(object)) if (op.kind === 'setTableCellParagraphProperties' && request.operations.some(raw => {
     const other = object(raw)
-    return other !== op && other.blockId === op.blockId
+    return other !== op && other.blockId === op.blockId && (other.kind !== op.kind || other.cellId !== op.cellId || other.paragraphIndex === op.paragraphIndex)
   })) fail('table_cell_paragraph_properties_batch_conflict')
+  for (const op of blockOperations.map(object)) if (op.kind === 'setTableCellParagraphProperties') {
+    const group = blockOperations.map(object).filter(other => other.kind === op.kind && other.blockId === op.blockId)
+    if (group.some((item, index) => item.paragraphIndex !== Number(group[0]!.paragraphIndex) + index)) fail('table_cell_paragraph_properties_batch_conflict')
+  }
   for (const op of blockOperations.map(object)) if (op.kind === 'applyDocumentStyle' && request.operations.some(raw => {
     const other = object(raw)
     return other !== op && other.blockId === op.blockId
@@ -1439,8 +1554,8 @@ if (request.kind === 'inspect') {
       }
       if (!Object.keys(values).length) fail('section_layout_invalid')
       if (values.orientation !== undefined && !['portrait', 'landscape'].includes(values.orientation as string)) fail('section_layout_invalid')
-      for (const key of ['pageWidth', 'pageHeight'] as const) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || values[key] < 1440 || values[key] > 31680)) fail('section_layout_invalid')
-      for (const key of ['marginTop', 'marginRight', 'marginBottom', 'marginLeft'] as const) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || values[key] < 0 || values[key] > 14400)) fail('section_layout_invalid')
+      for (const key of ['pageWidth', 'pageHeight'] as const) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || values[key] < 144 || values[key] > 31680)) fail('section_layout_invalid')
+      for (const key of ['marginTop', 'marginRight', 'marginBottom', 'marginLeft'] as const) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || values[key] < 0 || values[key] > 31680)) fail('section_layout_invalid')
       if (values.columns !== undefined && (typeof values.columns !== 'number' || !Number.isInteger(values.columns) || values.columns < 1 || values.columns > 3)) fail('section_layout_invalid')
       for (const key of ['headerDist', 'footerDist'] as const) if (values[key] !== undefined && (typeof values[key] !== 'number' || !Number.isInteger(values[key]) || values[key] < 0 || values[key] > 31680)) fail('section_layout_invalid')
       const current = sectionSettingsOf(target)
@@ -1663,6 +1778,12 @@ if (request.kind === 'inspect') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256'])
       return { op, block }
     }
+    if(op.kind==='insertParagraph'&&block.type==='table')return {op,block,value:validateTableTailParagraph(op,block,blockId(block),hash(block.originalXml??''),revisionProtected)}
+    if(op.kind==='insertRichParagraph'){
+      const bindings={styles:parsed.styles,numbering:parsed.numbering,sourceRuns:new Map(parsed.blocks.filter(editableParagraph).map(source=>[blockId(source),{expectedObjectSha256:hash(source.originalXml??''),runs:source.runs??[]}]))}
+      const validated=validateNewRichParagraphOperation(op,{blockId:blockId(block),expectedObjectSha256:hash(block.originalXml??''),type:block.type,editable:editableParagraph(block),hidden:block.hidden,sdtShell:block.sdtShell,protectedDocument:documentProtection.contentLocked,insertParagraphAdjacentEditable:block.type==='table'&&!block.hidden&&!block.sdtShell&&!documentProtection.contentLocked&&/^<w:tbl[\s>]/.test(block.originalXml??'')},bindings)
+      return {op,block,richParagraph:buildNewRichParagraph(validated.paragraph,bindings)}
+    }
     if (!editableParagraph(block) && !((NOTE_LAYOUT_KINDS.has(op.kind as string) || ['setParagraphShading', 'setParagraphBorders'].includes(op.kind as string)) && notesPlanner && editableNoteReferenceBlock(block))) fail('paragraph_unsupported')
     if (op.kind === 'clearParagraphFormatting') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'ranges'])
@@ -1699,6 +1820,11 @@ if (request.kind === 'inspect') {
       if (op.position !== 'before') fail('operation_invalid')
       return { op, block, coverBlocks: coverPageBlocks(op.paras) }
     }
+    if (op.kind === 'insertDocxObject') {
+      keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'object'])
+      if (op.position !== 'before' && op.position !== 'after') fail('operation_invalid')
+      return {op, block, newObjectXml: buildDocxInsertObject(op.object, Math.max(0,...parsed.blocks.flatMap(b=>Array.from((b.originalXml??'').matchAll(/<wp:docPr\b[^>]*\bid=["'](\d+)["']/g), m=>Number(m[1])))) + 1 + blockOperations.indexOf(raw))}
+    }
     if (op.kind === 'insertTable') {
       // 固定源 insertTableAt + editor/new-table.ts wordTableModel：整宽、等分列、autofit window、
       // 单线 0.5pt 边框、单元格垂直居中且段落单倍行距无段后间距；与前端 docx-new-table.ts 同预算。
@@ -1720,7 +1846,7 @@ if (request.kind === 'inspect') {
       // （引擎 SaveBlock {kind:'image'} → media part + 关系 + 内联 drawing）。
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'position', 'image'])
       if (op.position !== 'before' && op.position !== 'after') fail('operation_invalid')
-      return { op, block, image: pastedPicture(op.image) }
+      return { op, block, image: object(op.image).mime==='image/gif'?gifPicture(op.image):pastedPicture(op.image) }
     }
     if (op.kind === 'setParagraphVerticalAlign') {
       keys(op, ['kind', 'blockId', 'expectedObjectSha256', 'value'])
@@ -1883,7 +2009,7 @@ if (request.kind === 'inspect') {
   for (const item of operations) if (item.borders !== undefined && operations.some(other => other.block === item.block && other.op !== item.op && other.op.kind !== 'setParagraphDropCap' && other.op.kind !== 'setParagraphShading' && !NOTE_LAYOUT_KINDS.has(other.op.kind as string))) fail('paragraph_borders_batch_conflict')
   // 段前分页补丁与底纹/边框同规：同段同批次只允许一次分页操作。锚定在该段前/后的
   // 新段插入（空白页 = 新空段 + 后续段分页）只放入 before/after，不改写该段 XML，可共存。
-  const anchoredInsert = (kind: unknown) => kind === 'insertParagraph' || kind === 'insertParagraphImage' || kind === 'insertTable' || kind === 'insertCoverPage'
+  const anchoredInsert = (kind: unknown) => kind === 'insertRichParagraph' || kind === 'insertParagraph' || kind === 'insertParagraphImage' || kind === 'insertTable' || kind === 'insertCoverPage' || kind === 'insertDocxObject'
   // 封面恒在文档开头（固定源语义）：锚点必须是正文首个保留块，每批至多一个封面。
   const covers = operations.filter(item => item.op.kind === 'insertCoverPage')
   for (const item of operations) if (item.op.kind === 'setParagraphDropCap' && operations.filter(other => other.block === item.block && other.op.kind === item.op.kind).length > 1) fail('drop_cap_batch_conflict')
@@ -2157,10 +2283,14 @@ if (request.kind === 'inspect') {
       if (!paragraph) fail('anchor_invalid')
       state.saved = { kind: 'xml', docxIndex: item.block.docxIndex!, xml: current.slice(0, paragraph.start) + item.tableCellParagraphProperties.xml + current.slice(paragraph.end) }
       state.tableStructure = item.tableStructure
+    } else if(item.op.kind==='insertRichParagraph'){
+      if(!item.richParagraph)fail('rich_paragraph_invalid');state[item.op.position as 'before'|'after'].push({kind:'generated',block:item.richParagraph!})
     } else if (item.op.kind === 'insertParagraph') {
       state[item.op.position as 'before' | 'after'].push({ kind: 'generated', block: {type: 'paragraph', runs: [{text:item.value!}], format: { ...(item.op.pageBreakBefore === true ? { pageBreakBefore: true } : {}), ...(item.op.dropCap !== undefined ? { dropCap: normalizeDocxDropCap(item.op.dropCap) ?? undefined } : {}) } } })
     } else if (item.op.kind === 'insertCoverPage') {
       state.before.push(...item.coverBlocks!.map(block => ({ kind: 'generated' as const, block })))
+    } else if (item.op.kind === 'insertDocxObject') {
+      state[item.op.position as 'before' | 'after'].push({kind:'xml', xml:item.newObjectXml!})
     } else if (item.op.kind === 'insertTable') {
       state[item.op.position as 'before' | 'after'].push({ kind: 'xml', xml: item.newTableXml! })
     } else if (item.imageReplacement) {
@@ -2358,6 +2488,9 @@ if (request.kind === 'inspect') {
   const hfOptionKey = (edit: HeaderFooterEdit) =>
     `${edit.part}${edit.variant === 'default' ? '' : edit.variant[0]!.toUpperCase() + edit.variant.slice(1)}` as 'header' | 'footer' | 'headerFirst' | 'footerFirst' | 'headerEven' | 'footerEven'
   const hfOptions = Object.fromEntries([...hfEdits.values()].filter(edit => !edit.afterLink && edit.section === trailingSection).map(edit => [hfOptionKey(edit), edit.value])) as Partial<Record<'header' | 'footer' | 'headerFirst' | 'footerFirst' | 'headerEven' | 'footerEven', HeaderFooter>>
+  const inkAnchors=new Map<number,number>()
+  for(const block of blocks){const state=states.get(blockId(block));if(state&&!state.deleted&&block.docxIndex!=null&&['paragraph','heading','listItem'].includes(block.type)){const index=finalBlocks.indexOf(state.saved);if(index>=0)inkAnchors.set(block.docxIndex,index)}}
+  const inkImages=validateDocxInkOperations(protectionOps.filter(op=>op.kind==='setInk'),documentInk,inkAnchors)
   let output = await saveDocx(parsed, finalBlocks, {
     ...(notesPlan?.footnotes !== undefined ? { footnotes: notesPlan.footnotes } : {}),
     ...(notesPlan?.endnotes !== undefined ? { endnotes: notesPlan.endnotes } : {}),
@@ -2370,8 +2503,10 @@ if (request.kind === 'inspect') {
     ...(hfTitlePg !== undefined ? { titlePg: hfTitlePg } : {}),
     ...(hfEvenOdd !== undefined ? { evenAndOddHeaders: hfEvenOdd } : {}),
     ...(trackRevisions !== undefined ? { trackRevisions } : {}),
+    ...(mirrorMargins !== undefined ? {mirrorMargins} : {}),
     ...(pgNumType ? { pgNumType } : {}),
     ...(pageColor !== undefined ? { pageColor } : {}),
+    ...themeOptions,...protectionOptions,...(inkImages!==undefined?{inks:inkImages}:{}),
     ...(watermark !== undefined ? { watermark } : {}),
   })
   const preserveHfNamespaces = async (input: Uint8Array, selected: HeaderFooterEdit[]) => {
@@ -2752,6 +2887,35 @@ if (request.kind === 'inspect') {
     for (const [identity, group] of revisionGroups) {
       const state = states.get(identity)!, index = finalBlocks.indexOf(state.saved)
       if (index < 0 || reread[index]?.originalXml !== group.xml) fail('revision_write_not_applied')
+    }
+  }
+  if(mirrorMargins!==undefined&&(await parseDocx(output)).mirrorMargins!==mirrorMargins)fail('mirror_margins_write_not_applied')
+  if(themeOptions||Object.prototype.hasOwnProperty.call(protectionOptions,'protection')){const written=await loadDocxZip(output);if(themeOptions)assertDocxThemeWritten(await written.file('word/theme/theme1.xml')?.async('string')??'',themeOptions);if('protection' in protectionOptions)assertDocxProtectionWritten(await written.file('word/settings.xml')?.async('string')??'',protectionOptions.protection!)}
+  if(inkImages!==undefined)assertDocxInkWritten((await parseDocx(output)).inks??[],inkImages)
+  // A paragraph-only cell batch has no package-level edits. Keep the original
+  // package parts and replace only each prevalidated table's surgical XML.
+  if (request.operations.length && request.operations.every(raw => object(raw).kind === 'setTableCellParagraphProperties')) {
+    let documentXml = revisionDocumentXml, cursor = 0
+    const replacements: { start: number; end: number; xml: string }[] = []
+    for (const block of blocks) {
+      if (!block.originalXml) continue
+      const start = documentXml.indexOf(block.originalXml, cursor)
+      if (start < 0) fail('table_cell_paragraph_source_invalid')
+      cursor = start + block.originalXml.length
+      const state = states.get(blockId(block))
+      if (operations.some(item => item.block === block && item.tableCellParagraphProperties)) {
+        if (state?.saved.kind !== 'xml') fail('table_cell_paragraph_write_not_applied')
+        replacements.push({ start, end: cursor, xml: state.saved.xml })
+      }
+    }
+    for (const replacement of replacements.reverse()) documentXml = documentXml.slice(0, replacement.start) + replacement.xml + documentXml.slice(replacement.end)
+    sourceZip.file('word/document.xml', documentXml)
+    output = await sourceZip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
+    const reread = (await parseDocx(output)).blocks.filter(block => !block.hidden)
+    for (const item of operations) if (item.tableCellParagraphProperties) {
+      const written = reread.find(block => block.docxIndex === item.block.docxIndex)
+      const target = item.tableCellParagraphProperties
+      if (!written || cellParagraphXmls(cellXmls(written)[target.row]?.[target.column] ?? '')[target.paragraphIndex] !== target.xml) fail('table_cell_paragraph_write_not_applied')
     }
   }
   await writeFile(request.output as string, output, {flag: 'wx'})

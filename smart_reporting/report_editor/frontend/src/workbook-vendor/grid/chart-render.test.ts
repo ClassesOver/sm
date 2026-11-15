@@ -1,4 +1,6 @@
 import type { ChartReadSpec } from '@sheets-web/xlsx-engine'
+import { createBlankWorkbook, applyChartAdditions, readCharts } from '@sheets-web/xlsx-engine'
+import JSZip from 'jszip'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const registry = vi.hoisted(() => ({ extensions: [] as Array<new () => { draw(...args: unknown[]): void }> }))
@@ -890,4 +892,126 @@ it('previews source gap width, doughnut hole and exploded point geometry instead
  expect(large.ctx.arc.mock.calls[1]![2]).toBeCloseTo(base.ctx.arc.mock.calls[1]![2]!*7/3)
  const exploded=render('pie',[],{series:[{valuesRef:'',values:[3,7],pointExplosions:{1:40}}]}),plain=render('pie',[],{series:[{valuesRef:'',values:[3,7]}]})
  expect(exploded.ctx.arc.mock.calls[0]!.slice(0,2)).toEqual(plain.ctx.arc.mock.calls[0]!.slice(0,2));expect(exploded.ctx.arc.mock.calls[1]!.slice(0,2)).not.toEqual(plain.ctx.arc.mock.calls[1]!.slice(0,2))
+})
+
+it.each(['line','radar'] as const)('%s uses source stroke color and width independently of fill',kind=>{
+ const result=render(kind,[],{series:[{valuesRef:'',values:[2,4,3],color:'#123456',lineColor:'#a020f0',lineWidth:7}]})
+ expect(result.paths.filter(path=>path.color==='#a020f0'&&path.width===7)).toHaveLength(1)
+ expect(result.pathColors).toContain('#123456')
+ expect(result.paths.some(path=>path.color==='#123456')).toBe(false)
+})
+it.each(['line','radar'] as const)('%s preserves fill and points without inventing an invisible stroke',kind=>{
+ for(const style of [{lineColor:'none'},{lineWidth:0},{lineColorUnavailable:true as const}]){
+  const result=render(kind,[],{series:[{valuesRef:'',values:[2,4,3],color:'#123456',...style}]})
+  expect(result.paths.some(path=>path.color==='#123456')).toBe(false)
+  expect(result.pathColors).toContain('#123456')
+  expect(result.ctx.arc).toHaveBeenCalledTimes(3)
+ }
+})
+it.each([['line',3],['radar',2.5]] as const)('%s uses pinned source default stroke width %s', (kind,width)=>{
+ const result=render(kind,[],{series:[{valuesRef:'',values:[2,4,3],color:'#123456'}]})
+ expect(result.paths.find(path=>path.color==='#123456')?.width).toBe(width)
+})
+it('does not register an invisible line segment while preserving real point hits',()=>{
+ const result=render('line',[[3,9]],{series:[{valuesRef:'A1:A2',lineColor:'none'}]})
+ const store=(window as unknown as {__sheetsWebCharts:{store:Map<string,ChartReadSpec[]>}}).__sheetsWebCharts.store
+ const chart=store.get('test-unit::test-sheet')![0]!,[first,last]=result.ctx.arc.mock.calls
+ const x=(first![0]!+last![0]!)/2,y=(first![1]!+last![1]!)/2
+ expect(hitChartElement('test-unit','test-sheet',chart,x,y)).toEqual({kind:'chart'})
+ expect(hitChartElement('test-unit','test-sheet',chart,first![0]!,first![1]!)).toEqual({kind:'point',seriesIndex:0,pointIndex:0})
+})
+
+it.each(['line','radar'] as const)('%s paints the stroke read from actual OOXML without replacing the source fill',async kind=>{
+ const source=await applyChartAdditions(await createBlankWorkbook(),[{worksheetSheetName:'Sheet1',
+  anchor:{fromRow:0,fromColumn:0,fromRowOffset:0,fromColumnOffset:0,toRow:10,toColumn:10,toRowOffset:0,toColumnOffset:0},
+  chart:{chartType:kind,title:'Source stroke',series:[{name:'Source',categories:['A','B','C'],values:[2,4,3],valuesRef:'Sheet1!$A$1:$A$3'}]},
+ }])
+ for(const line of ['<a:ln w="66675"><a:solidFill><a:srgbClr val="A020F0"/></a:solidFill></a:ln>','<a:ln><a:noFill/></a:ln>','<a:ln w="0"><a:solidFill><a:srgbClr val="A020F0"/></a:solidFill></a:ln>']){
+  const zip=await JSZip.loadAsync(source),path='xl/charts/chart1.xml'
+  const xml=(await zip.file(path)!.async('string')).replace(/<c:spPr>[\s\S]*?<\/c:spPr>/,'<c:spPr><a:solidFill><a:srgbClr val="123456"/></a:solidFill>'+line+'</c:spPr>')
+  zip.file(path,xml)
+  const bytes=await zip.generateAsync({type:'uint8array'}),chart=(await readCharts(bytes,'xl/worksheets/sheet1.xml'))[0]!
+  expect(chart.series[0]!.color).toBe('#123456')
+  const result=render(kind,[[2,4,3]],chart)
+  if(line.includes('66675'))expect(result.paths.some(path=>path.color==='#A020F0'&&path.width===7)).toBe(true)
+  else expect(result.paths.some(path=>path.color==='#123456'||path.color==='#A020F0')).toBe(false)
+  expect(result.pathColors).toContain('#123456')
+  expect(await (await JSZip.loadAsync(bytes)).file(path)!.async('string')).toBe(xml)
+ }
+})
+
+it('keeps source strokes per series and includes a visibly thick line in its hit region',()=>{
+ const result=render('line',[],{series:[
+  {valuesRef:'',values:[3,9],color:'#123456',lineColor:'#A020F0',lineWidth:20},
+  {valuesRef:'',values:[1,2],color:'#445566'},
+ ]})
+ expect(result.paths.find(path=>path.color==='#A020F0')?.width).toBe(20)
+ expect(result.paths.find(path=>path.color==='#445566')?.width).toBe(3)
+ const store=(window as unknown as {__sheetsWebCharts:{store:Map<string,ChartReadSpec[]>}}).__sheetsWebCharts.store
+ const chart=store.get('test-unit::test-sheet')![0]!,[first,last]=result.ctx.arc.mock.calls
+ const dx=last![0]!-first![0]!,dy=last![1]!-first![1]!,length=Math.hypot(dx,dy)
+ const x=(first![0]!+last![0]!)/2-dy/length*8,y=(first![1]!+last![1]!)/2+dx/length*8
+ expect(hitChartElement('test-unit','test-sheet',chart,x,y)).toEqual({kind:'series',seriesIndex:0})
+})
+
+it.each([false,true])('selects only the visible thick radar outline beyond the fill (hidden=%s)',hidden=>{
+ const result=render('radar',[],{series:[{valuesRef:'',values:[4,4,4],color:'#123456',lineColor:hidden?'none':'#A020F0',lineWidth:20}]})
+ const vertices=result.ctx.arc.mock.calls as unknown as Array<[number,number]>
+ const [a,b]=vertices,center=vertices.reduce((sum,p)=>[sum[0]+p[0]/3,sum[1]+p[1]/3],[0,0])
+ const mx=(a![0]+b![0])/2,my=(a![1]+b![1])/2,dx=b![0]-a![0],dy=b![1]-a![1],length=Math.hypot(dx,dy)
+ const sign=(-dy*(mx-center[0]!)+dx*(my-center[1]!))>=0?1:-1
+ const x=mx-dy/length*8*sign,y=my+dx/length*8*sign
+ const store=(window as unknown as {__sheetsWebCharts:{store:Map<string,ChartReadSpec[]>}}).__sheetsWebCharts.store
+ const chart=store.get('test-unit::test-sheet')![0]!
+ expect(hitChartElement('test-unit','test-sheet',chart,x,y)).toEqual(hidden?{kind:'chart'}:{kind:'series',seriesIndex:0})
+})
+
+it.each(['column','bar'] as const)('%s stacks raw positive segments in one category lane',kind=>{
+ const result=render(kind,[[2],[3]],{design:{grouping:'stacked'}}),[first,second]=result.fills
+ if(kind==='column'){
+  expect(first!.x).toBeCloseTo(second!.x);expect(first!.width).toBeCloseTo(second!.width)
+  expect(first!.y).toBeCloseTo(second!.y+second!.height)
+  expect(first!.height/second!.height).toBeCloseTo(2/3)
+ }else{
+  expect(first!.y).toBeCloseTo(second!.y);expect(first!.height).toBeCloseTo(second!.height)
+  expect(first!.x+first!.width).toBeCloseTo(second!.x)
+  expect(first!.width/second!.width).toBeCloseTo(2/3)
+ }
+ const store=(window as unknown as {__sheetsWebCharts:{store:Map<string,ChartReadSpec[]>}}).__sheetsWebCharts.store
+ const chart=store.get('test-unit::test-sheet')![0]!
+ expect(hitChartElement('test-unit','test-sheet',chart,first!.x+first!.width/2,first!.y+first!.height/2)).toEqual({kind:'point',seriesIndex:0,pointIndex:0})
+ expect(hitChartElement('test-unit','test-sheet',chart,second!.x+second!.width/2,second!.y+second!.height/2)).toEqual({kind:'point',seriesIndex:1,pointIndex:0})
+})
+it.each(['column','bar'] as const)('%s normalizes percent stacks per category and formats fixed quarter ticks',kind=>{
+ const result=render(kind,[[1,3],[1,1]],{design:{grouping:'percentStacked'},axes:{category:{id:1,hidden:false},value:{id:2,hidden:false,numberFormat:'0.00',scaling:{min:-100,max:500,reversed:false}}}})
+ const [a,b,c,d]=result.fills,size=(r:Rect)=>kind==='bar'?r.width:r.height
+ expect(size(a!)+size(c!)).toBeCloseTo(size(b!)+size(d!))
+ expect(size(a!)/size(c!)).toBeCloseTo(1)
+ expect(size(b!)/size(d!)).toBeCloseTo(3)
+ expect(result.tickTexts.map(t=>t.text)).toEqual(expect.arrayContaining(['0%','25%','50%','75%','100%']))
+})
+it.each(['column','bar'] as const)('%s retains source negative-to-zero stack boundary and missing category slots',kind=>{
+ const result=render(kind,[[3,-5],[7,null]],{design:{grouping:'stacked'}})
+ expect(result.fills).toHaveLength(2)
+})
+it.each(['column','bar'] as const)('%s keeps single-series stacked settings equivalent to grouped',kind=>{
+ expect(render(kind,[[2,3]],{design:{grouping:'stacked'}}).fills).toEqual(render(kind,[[2,3]]).fills)
+})
+it('declines a non-finite stacked total instead of silently drawing grouped bars',()=>{
+ const result=render('column',[[Number.MAX_VALUE],[Number.MAX_VALUE]],{design:{grouping:'stacked'}})
+ expect(result.fills).toHaveLength(0)
+ expect(result.texts.some(t=>t.text.includes('不支持预览'))).toBe(true)
+})
+it('centers stacked value labels on raw segment values, not normalized shares',()=>{
+ const result=render('column',[[2],[3]],{design:{grouping:'percentStacked'},dataLabels:{showValue:true}})
+ expect(result.texts.map(t=>t.text)).toEqual(['2','3'])
+ for(let i=0;i<2;i++)expect(result.texts[i]!.y).toBeCloseTo(result.fills[i]!.y+result.fills[i]!.height/2)
+})
+
+it('keeps stacked labels readable with default ink on pale fills and honors explicit text color',()=>{
+ const extra={design:{grouping:'stacked' as const},dataLabels:{showValue:true},series:[{valuesRef:'',values:[2],color:'#ffffcc'},{valuesRef:'',values:[3],color:'#ffffff'}]}
+ const normal=render('column',[],extra)
+ expect(normal.texts.map(t=>t.color)).toEqual(['#1f2328','#1f2328'])
+ const explicit=render('column',[],{...extra,dataLabels:{showValue:true,style:{color:'#123456'}}})
+ expect(explicit.texts.map(t=>t.color)).toEqual(['#123456','#123456'])
 })

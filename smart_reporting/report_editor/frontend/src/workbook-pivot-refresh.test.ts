@@ -83,7 +83,10 @@ it('refreshes every independent pivot and does not submit a successful prefix wh
 })
 it.each([true,false,'shared'] as const)('rejects formula sources even with a potentially stale cached result: %s',async cached=>{
  const bytes=await fixture(),zip=await createBufferEntrySource(bytes),path='xl/worksheets/sheet1.xml'
- const xml=(await zip.readText(path)).replace(/<c\b[^>]*\br="B2"[^>]*>[\s\S]*?<\/c>/,`<c r="B2">${cached==='shared'?'<f t="shared" si="0"/>':'<f>B3+80</f>'}${cached?'<v>90</v>':''}</c>`)
+ let xml=(await zip.readText(path)).replace(/<c\b[^>]*\br="B2"[^>]*>[\s\S]*?<\/c>/,`<c r="B2">${cached==='shared'?'<f t="shared" si="0"/>':'<f>B3+80</f>'}${cached?'<v>90</v>':''}</c>`)
+ // A real shared follower needs a master. Keep it outside the source area
+ // so this case tests cache freshness rather than malformed-group rejection.
+ if(cached==='shared')xml=xml.replace('</row>','<c r="X1"><f t="shared" si="0">Z1+80</f><v>90</v></c></row>')
  const formula=(await assemblePackage(bytes,{replaced:new Map([[path,xml]]),added:new Map(),addedBinary:new Map(),removedEntries:[],addedEntries:[],touchedEntries:[path]})).buffer,snapshot=formula.slice()
  await expect(refreshWorkbookPivotsPlan(formula)).rejects.toThrow('当前入口无法确认公式结果为最新值，请先将来源计算结果转换为值')
  expect(formula).toEqual(snapshot)

@@ -42,3 +42,40 @@ pytest -q -m integration smart_reporting/reporting/tests/test_native_word_task_c
 在支持 psycopg 异步连接和 ACP 子进程的测试环境中，运行 `pytest -q -m integration smart_reporting/tests/test_report_acp_dsh.py smart_reporting/tests/test_report_acp_persistence.py`。其中原版 DSH 用例通过实际 PostgreSQL 做邀请兑换，重建 HTTP 宿主后复用回执，再继续原 DSH 会话。模型端为本地替身。
 
 如需验证真实模型的 ACP 会话恢复，令 `REPORT_ACP_LIVE_DSH_HOME` 指向已通过 DSH 正常流程配置模型的独立测试目录，再运行 `pytest -q smart_reporting/tests/test_report_acp_dsh.py -k live_model`。测试仅发送随机合成编号，会创建并恢复一个测试会话。凭据从该配置或已有受信环境进入 DSH，无需放入命令行、仓库或聊天。
+
+## 2026-11-15 审查修复回归
+
+本轮修复以 PR #246 的 `d74b34d4` 为起点，随后合入 `code` 的 `9b23f895`，解决前端助手、API 类型、控制器测试及原生候选采纳的五处合并冲突。保留主分支的会话/来源/候选身份复核，同时保留频道任务跟随和独立取消清理语义：旧任务清理失败可重试，但不拖住新任务取消，也不把旧任务的失败算作新任务取消失败。
+
+- 持久化 ACP 使用与内存模式相同的执行中授权监视，撤销后取消当前调用并关闭本地 ACP 子进程；不重放结果未知的原消息。清理异常不会覆盖撤销异常。
+- Word 生成期间监视原 grant；每次 MCP 工具调用在数据库、编辑会话和来源读取前后复核该 grant，候选提交及结果返回前也复核。取消被依赖吞掉时仍拒绝迟到候选。
+- 统一 DOCX 候选把已校验的宿主草稿快照及原 grant 传入 Word 服务。选区、操作及嵌套样式在首次授权 await 前深拷贝，避免二次解析换成另一组选区；新 grant 不接管旧请求。
+
+合并后的本地验证（均选择 asyncio）：
+
+```sh
+python -m pytest -q -o addopts='' -k 'not trio' \
+  smart_reporting/reporting/tests/test_regular_accept_authority.py \
+  smart_reporting/reporting/tests/test_native_word_task_prepare_api.py \
+  smart_reporting/reporting/tests/test_native_word_task_dispatcher.py \
+  smart_reporting/tests/test_report_acp_client.py \
+  smart_reporting/tests/test_document_candidate_word_adapter.py \
+  tests/test_report_channel_api.py
+# 83 passed
+
+python -m pytest -q -o addopts='' -k 'not trio' \
+  smart_reporting/reporting/tests/test_native_ai.py \
+  smart_reporting/reporting/tests/test_native_ai_requests.py \
+  smart_reporting/reporting/tests/test_native_ai_cancel_terminal.py \
+  smart_reporting/reporting/tests/test_native_ai_shutdown_terminal.py
+# 41 passed
+
+# 在 smart_reporting/report_editor/frontend 中：
+npx tsc --noEmit
+npx vitest run src/native-ai.test.ts src/office-assistant-controller.test.ts src/report-channel-share.test.ts
+# 类型检查通过；45 passed
+```
+
+修改的 Python 模块及测试通过 Ruff，合并差异通过 `git diff --check`。初次回归因隔离工作区缺少 Office 引擎依赖而出现初始化错误；按锁文件安装依赖后，上述 Word/PDF 用例全部通过。复用旧前端依赖曾产生 XLSX 类型版本不一致，改用本次检出的锁定依赖后完整类型检查通过。Python 仍有既有 `imghdr` 弃用告警。
+
+本轮没有可用的隔离 PostgreSQL 或原版 DSH/真实模型配置，对应 5 项测试跳过；未重跑前文的 Chromium 保存/重开联合验收。新增子进程测试使用合成 ACP 对端，Word/PDF 回归使用真实格式引擎。它们不能替代真实 DSH 桌面、多宿主 PostgreSQL 或浏览器联合验收。PR 继续保持 Draft，不合并、不部署。

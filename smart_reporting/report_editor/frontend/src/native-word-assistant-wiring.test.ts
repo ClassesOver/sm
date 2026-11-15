@@ -21,3 +21,9 @@ it('Word 阅读独立于编辑开关，图标入口可访问并同步当前选�
  const entry=document.querySelector<HTMLButtonElement>('[data-action=word-read-ai]')!;expect(entry).not.toBeNull();expect(entry.querySelector('svg')).not.toBeNull();entry.click();expect(state.open).toHaveBeenCalledWith('ask')
  window.dispatchEvent(new Event('pagehide'))
 })
+it('Word review presets route authorized targets to the editing candidate panel independently of the reader',async()=>{
+ state.context.mockResolvedValue({context:{documentId:'doc',revision:1,format:'docx',sourceFile:{sha256:'a'.repeat(64),size:10},scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},csrfToken:'csrf',editingEnabled:true,aiEnabled:true,wordReadAIEnabled:true})
+ const preset=vi.fn();state.edit.mockImplementation((root:HTMLElement)=>{const panel=document.createElement('section');panel.className='native-ai';panel.hidden=true;root.append(panel);return {setSelection:state.selection,openPreset:preset,dispose:vi.fn()}})
+ await startNativeEditor();state.options.onAIPreset('校对全文',[{blockId:'b1'}],'document')
+ expect(preset).toHaveBeenCalledWith('校对全文',[{blockId:'b1'}],'document');expect(state.open).not.toHaveBeenCalled();window.dispatchEvent(new Event('pagehide'))
+})
