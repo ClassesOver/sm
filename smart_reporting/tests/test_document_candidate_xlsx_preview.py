@@ -208,3 +208,32 @@ async def test_xlsx_preview_status_is_defensively_copied():
     result = await engine.status(scope, task)
     result["changes"][0]["after"] = 999
     assert (await engine.status(scope, task))["changes"][0]["after"] == 15
+
+
+@pytest.mark.anyio
+async def test_xlsx_preview_rejects_protected_worksheet():
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Sheet1"
+    sheet["A1"] = 12
+    sheet.protection.sheet = True
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    original = output.getvalue()
+    scope = DocumentScope(
+        "channel", "grant", "book", "1", hashlib.sha256(original).hexdigest(),
+        DocumentFormat.XLSX,
+    )
+
+    async def source(_):
+        return original
+
+    async def propose(_):
+        return ({"sheet": "Sheet1", "range": "A1", "value": 15},)
+
+    request = DocumentCandidateRequest(
+        scope, "one", "Edit", ({"sheet": "Sheet1", "range": "A1"},),
+    )
+    with pytest.raises(ValueError, match="xlsx_preview_protected_sheet"):
+        await XlsxLiteralPreviewEngine(source, propose).prepare(request)
