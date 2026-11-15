@@ -4,7 +4,8 @@ import { createSlidesEditorView } from './slides-main'
 import { createEditorShell } from './shell'
 import { NativeDraft } from './native-draft'
 
-vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
+const zoom = vi.hoisted(() => ({ get: vi.fn(() => 0.5), set: vi.fn() }))
+vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {}, getZoom: zoom.get, setZoom: zoom.set }) }))
 vi.mock('./vendor/genoffice/renderer/SlideThumb', () => ({ SlideThumb: ({ slide }: { slide: { nodes: { text?: string }[] } }) => <figure data-source-thumbnail>{slide.nodes.map(node => node.text).join('')}</figure> }))
 const views: ReturnType<typeof createSlidesEditorView>[] = []
 beforeEach(() => {
@@ -152,4 +153,18 @@ it('普通页栏沿既有备注flush合同否决输入法导航，合法未提�
   expect(document.activeElement).toBe(current())
   expect(app.draft.operations).toMatchObject([{notesEdits:[{slideIndex:0,text:'导航时冲刷的备注'}]}])
   expect(app.request.mock.calls.filter(([path]) => path !== 'deck' && path !== 'render-tree')).toEqual([])
+})
+
+it('routes View zoom to the canvas and leaves the presentation draft untouched', async () => {
+  const app = await fixture()
+  const button = (id: string) => app.control<HTMLButtonElement>('[data-command="' + id + '"]')
+  expect(button('viewZoomIn').disabled).toBe(true)
+  button('viewZoomIn').click()
+  expect(zoom.set).not.toHaveBeenCalled()
+  button('normalView').click()
+  await vi.waitFor(() => expect(button('viewZoomIn').disabled).toBe(false))
+  for (const command of ['viewZoomIn', 'viewZoomOut', 'viewZoom100', 'viewZoomFit']) button(command).click()
+  expect(zoom.set.mock.calls).toEqual([[0.66], [0.33], [1], [null]])
+  expect(app.draft.operations).toEqual([])
+  expect(app.request.mock.calls.some(([path]) => path === 'save')).toBe(false)
 })

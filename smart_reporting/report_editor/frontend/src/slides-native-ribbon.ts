@@ -18,7 +18,7 @@ import { IconAlignCenter, IconAlignJustify, IconAlignLeft, IconAlignRight, IconC
 import { genOfficeHomeClipboardLocale } from './vendor/genoffice-slides/components/ribbon-home-clipboard-locales'
 import { slidesLayoutLabel, slidesRibbonLabel } from './slides-native-ribbon-locales'
 import { slidesRibbonIcons, slidesRibbonSourceIcons } from './slides-native-ribbon-icons'
-import { IconPrintLayout, IconArrangeAll, IconOutlineView, IconReadMode } from './vendor/genoffice-slides/components/icons'
+import { IconPrintLayout, IconArrangeAll, IconOutlineView, IconReadMode, IconZoomIn, IconZoomOut, IconZoom100, IconFitWindow } from './vendor/genoffice-slides/components/icons'
 import { createNativeChartGallery, type NativeChartGalleryState } from './slides-native-chart-gallery'
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 
@@ -238,6 +238,12 @@ const tabs: Tab[] = [
       { id: 'slideMaster', label: 'Slide Master', sourceIcon: IconSlideMaster, sourceActionId: 'onSlideMaster' },
     ] },
     { label: 'Show', controls: [{ id: 'ruler', label: 'Ruler', kind: 'toggle', sourceActionId: 'onToggleRuler' }, { id: 'grid', label: 'Gridlines', kind: 'toggle', sourceActionId: 'onToggleGrid' }, { id: 'guides', label: 'Guides', kind: 'toggle', sourceActionId: 'onToggleGuides' }, { id: 'notes', label: 'Notes', kind:'toggle', sourceActionId:'onToggleNotes' }] },
+    { label: 'Zoom', controls: [
+      { id: 'viewZoomIn', label: 'Zoom In', sourceIcon: IconZoomIn, sourceActionId: 'onZoom' },
+      { id: 'viewZoomOut', label: 'Zoom Out', sourceIcon: IconZoomOut, sourceActionId: 'onZoom' },
+      { id: 'viewZoom100', label: '100%', sourceIcon: IconZoom100, sourceActionId: 'onZoom' },
+      { id: 'viewZoomFit', label: 'Fit to Window', sourceIcon: IconFitWindow, sourceActionId: 'onZoomFit' },
+    ] },
   ] },
   { id: 'tableDesign', label: 'Table Design', context: 'table', groups: [{ label: 'Table Styles', controls: [{ id: 'tableStructure', label: 'Rows and Columns', caption: '行列操作', sourceActionId: 'editTableStructure' }, { id: 'tableStyle', label: 'Table Style', caption: '表格样式', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...SLIDES_TABLE_PRESETS.map(item => item.name)], optionLabels: ['来源样式或未选择', ...SLIDES_TABLE_PRESETS.map(item => item.label)] }, { id: 'tableFirstRow', label: '标题行', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableBandRow', label: '斑马纹', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableRtl', label: '从右到左表格', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableShadingWholeTable', label: '底纹作用于整表', sourceActionId: 'onEditTableStyle' }, { id: 'tableShading', label: 'Shading', caption: '底纹', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...TABLE_SHADING_COLORS, 'none'], optionLabels: ['选择底纹', '白色', '浅灰', '浅青', '淡蓝', '灰蓝', '浅黄', '浅橙', '浅桃', '浅绿', '浅紫', '无填充'] }, { id: 'tableAllBorders', label: 'All Borders', caption: '所有边框', sourceActionId: 'onEditTableStyle' }, { id: 'tableNoBorders', label: 'No Borders', caption: '无边框', sourceActionId: 'onEditTableStyle' }] }] },
   { id: 'chartDesign', label: 'Chart Design', context: 'chart', groups: [{ label: 'Chart Elements', controls: [{ id: 'chartElements', label: 'Chart Elements', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Styles', controls: [{ id: 'chartDesignPresets', label: 'Chart Colors and Styles', sourceActionId: 'onEditChart', sourceIcon: IconChart }, { id: 'chartPointColors', label: 'Chart Point Colors', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Data', controls: [{ id: 'chartSwitchRowCol', label: 'Switch Row/Column', sourceActionId: 'onEditChart', sourceIcon: IconSwitchRowCol }, { id: 'chartType', label: 'Change Chart Type', sourceActionId: 'onChartType' }, { id: 'chartData', label: 'Edit Data', sourceActionId: 'onChartData' }] }] },

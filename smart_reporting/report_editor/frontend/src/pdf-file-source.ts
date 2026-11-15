@@ -1,7 +1,7 @@
 import { createNativeApi, type NativeContext, type NativeSaveResponse } from './native-api'
 
 /** The save's open grant binds a PDF file operation to the new revision, not its old session. */
-export async function authorizeSavedPdfSource(context: NativeContext, saved: NativeSaveResponse, operation: '拆分' | '提取' | '导出图片') {
+export async function authorizeSavedPdfSource(context: NativeContext, saved: NativeSaveResponse, operation: '拆分' | '提取' | '导出图片' | '打印') {
   const grant = saved.editor?.openUrl
   const sha256 = saved.artifacts.pdf?.sha256
   if (!saved.revisionRegistered || saved.documentId !== context.documentId || !grant || !sha256) {

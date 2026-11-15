@@ -160,7 +160,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   let markupSelection: PdfMarkupSelection[] = []
   let markupStructureKey = ''
   const markupButtons: { button: HTMLButtonElement; type: MarkupType }[] = []
-  let printing = false
+  let printing = false, preparingPrint = false
   let printRoot: HTMLElement | undefined
   let printTimer: number | undefined
   const tasks = new Set<RenderTask>()
@@ -507,12 +507,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const printButton = documentElement('button', 'pdf-tool pdf-ribbon-big')
   printButton.type = 'button'; printButton.append(createPdfRibbonIcon('print', 22))
   const printLabel = documentElement('span'); printLabel.textContent = pdfRibbonLabel('打印'); printButton.append(printLabel)
-  printButton.title = pdfRibbonLabel('选择页面范围并打印；未保存草稿不可打印')
+  printButton.title = pdfRibbonLabel('选择页面范围并打印')
   printButton.setAttribute('aria-keyshortcuts', 'Control+P Meta+P')
-  const printUnavailable = () => pdfCanPrint({ loaded: !!document, locked, dirty: draft.dirty, previewing, printing, previewDocument: !!previewDocument })
-    ? null : '请先完成保存或返回原稿，再打印 PDF'
-  const printDialog = bindPdfPrintDialog({ root, trigger: printButton, pageCount: () => state().length,
-    currentPage: () => Math.max(1, state().findIndex(page => page.pageId === activeId) + 1),
+  const needsSavedPrintSource = () => !!savedPdfFilePageIds || draft.dirty || hasUnstagedText()
+  const printUnavailable = () => {
+    if (disposed || preparingPrint || !pdfCanPrint({ loaded: !!document, locked, dirty: false, previewing, printing, previewDocument: !!previewDocument })) return '请先完成保存或返回原稿，再打印 PDF'
+    if (draft.closed && !savedPdfFilePageIds) return '请打开已保存的新修订，再打印 PDF'
+    if (needsSavedPrintSource()) return flushForFileOperation ? pdfFileOperationUnavailable('打印') : '请先完成保存，再打印 PDF'
+    return null
+  }
+  const printDialog = bindPdfPrintDialog({ root, trigger: printButton, pageCount: () => pdfFilePageIds().length,
+    currentPage: () => pdfFileCurrentPage(),
     unavailable: printUnavailable,
     print: pages => { void printPdf(pages).catch(showError) } })
   sourceCommand(printButton, 'home.print.print')
@@ -1138,7 +1143,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   let savedPdfFileSource: Awaited<ReturnType<typeof authorizeSavedPdfSource>> | undefined
   let savedPdfFilePageIds: string[] | undefined
-  type PdfFileOperation = '提取' | '导出图片'
+  type PdfFileOperation = '提取' | '导出图片' | '打印'
   function pdfFilePageIds() { return savedPdfFilePageIds ?? state().map(page => page.pageId) }
   function pdfFileCurrentPage() { return Math.max(1, pdfFilePageIds().indexOf(activeId) + 1) }
   function pdfFileOperationUnavailable(operation: PdfFileOperation) {
@@ -2106,17 +2111,34 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     window.removeEventListener('afterprint', cleanupPrint)
     updateControls(); scheduleFit()
   }
-  async function printPdf(visiblePages?: number[]) {
+  async function printPdf(visiblePages: number[]) {
     const unavailable = printUnavailable()
     if (unavailable || !document) throw new Error(unavailable ?? '请先打开 PDF')
-    printing = true; updateControls(); status.textContent = '正在准备 PDF 打印页面…'
+    const needsSavedSource = needsSavedPrintSource()
+    const pageCount = pdfFilePageIds().length
+    preparingPrint = true; updateControls(); status.textContent = '正在准备 PDF 打印页面…'
     let printHost: Awaited<ReturnType<typeof renderPdfPrintHost>> | undefined
+    let printLoading: ReturnType<typeof getDocument> | undefined
     try {
-      const pages = pdfPrintPages(model.pages, draft.operations)
-      const selectedPages = visiblePages ? visiblePages.map(page => pages[page - 1]!) : pages
-      if (!document) throw new Error('PDF 尚未载入')
-      printHost = await renderPdfPrintHost(root, selectedPages, index => document!.getPage(index + 1), AnnotationMode.ENABLE, MAX_PAGE_PIXELS)
-      if (disposed) { printHost.cleanup(); throw new Error('PDF 打印已取消') }
+      let printDocument = document
+      let pages: {index:number;rotation?:number}[]
+      if (needsSavedSource) {
+        const source = await preparePdfFileSource('打印')
+        const content = new Uint8Array(await source.request(target => target.file()))
+        if (await bytesSha256(content) !== source.sha256) throw new Error('打印来源身份校验失败，请重新打开已保存的 PDF')
+        if (disposed) return
+        printLoading = getDocument({ data: content, cMapUrl: `${ASSET_BASE}cmaps/`, cMapPacked: true, standardFontDataUrl: `${ASSET_BASE}standard_fonts/`, wasmUrl: `${ASSET_BASE}wasm/`, enableXfa: false })
+        printDocument = await printLoading.promise
+        if (printDocument.numPages !== pageCount) throw new Error('打印来源的页数已变化，请重新打开已保存的 PDF')
+        pages = visiblePages.map(page => ({index:page-1}))
+      } else {
+        const current = pdfPrintPages(model.pages, draft.operations)
+        pages = visiblePages.map(page => current[page - 1]!)
+      }
+      if (disposed) return
+      printing = true; updateControls()
+      printHost = await renderPdfPrintHost(root, pages, index => printDocument.getPage(index + 1), AnnotationMode.ENABLE, MAX_PAGE_PIXELS)
+      if (disposed) { printHost.cleanup(); return }
       printRoot = printHost.host
       status.textContent = '正在打开浏览器打印对话框…'
       window.addEventListener('afterprint', cleanupPrint, { once: true })
@@ -2126,6 +2148,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       if (printHost) printHost.cleanup()
       cleanupPrint()
       throw error
+    } finally {
+      preparingPrint = false
+      if (printLoading) void printLoading.destroy().catch(() => {})
+      if (!disposed) updateControls()
     }
   }
   function scheduleSearch() {

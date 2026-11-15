@@ -107,4 +107,18 @@ describe('图片格式控制器',()=>{
   expect(errors).toEqual([])
  })
  it('异步自然尺寸返回时文档改变，不写入迟到结果',()=>{let image:any;vi.stubGlobal('Image',class{naturalWidth=1200;naturalHeight=800;onload?:()=>void;src='';constructor(){image=this}});const {editor,controls,errors}=setup();controls.open('resetSize');controls.open('rotateRight');image.onload();expect(editor.state.doc.firstChild!.attrs.imageWidthPx).toBe(192);expect(errors).toHaveLength(1)})
+ it('图片格式下拉读写当前环绕，拒绝过期选择并可撤销',()=>{
+  const {editor,controls,errors}=setup()
+  const initial=controls.wrap()!
+  expect(initial.value).toBe('')
+  initial.pick('front')
+  expect(controls.wrap()?.value).toBe('front')
+  initial.pick('behind')
+  expect(editor.state.doc.firstChild!.attrs.imageFormat).toMatchObject({wrap:'front'})
+  controls.wrap()!.pick('topBottom')
+  expect(editor.state.doc.firstChild!.attrs.imageWrap).toBe('topBottom')
+  editor.commands.undo()
+  expect(controls.wrap()?.value).toBe('front')
+  expect(errors).toEqual([])
+ })
 })

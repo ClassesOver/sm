@@ -39,7 +39,7 @@ it.each([false,true])('routes Layout Arrange through existing picture controls w
   const open = vi.fn()
   let unavailable: string | null = '请选择图片'
   const section = withSection ? { settings: {} as NonNullable<Parameters<typeof createDocxRibbon>[4]>['settings'], onChange: vi.fn() } : undefined
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => null, flipped: () => false, size: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => null, flipped: () => false, size: () => null, wrap: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
   try {
     f.tab('layout').click()
     const arrange = () => f.ribbon.querySelector('section[aria-label="排列"]')!
@@ -59,7 +59,7 @@ it('renders source Picture Format alignment as three immediate pressed buttons',
   const open = vi.fn()
   let alignment: 'left' | 'center' | 'right' = 'left'
   let unavailable: string | null = null
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => alignment, flipped: () => false, size: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } })
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => alignment, flipped: () => false, size: () => null, wrap: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } })
   try {
     f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
     f.tab('pictureFormat').click()
@@ -81,7 +81,7 @@ it('mounts the source Picture Format size fields with units, aspect lock and res
   const open = vi.fn(), resize = vi.fn()
   const f = setupTabNavigation({ pictureFormat: {
     open, reason: () => null, alignment: () => null, flipped: () => false,
-    size: () => ({ key: 'image', width: 192, height: 144, resize }),
+    size: () => ({ key: 'image', width: 192, height: 144, resize }), wrap: () => null,
     closeArrangeMenu: vi.fn(), dispose: vi.fn(),
   } })
   try {
@@ -110,7 +110,7 @@ it('renders picture rotation and flip in GenOffice Adjust and refreshes their pr
   let vertical = true
   const f = setupTabNavigation({ pictureFormat: {
     open, reason: () => null, alignment: () => null, size: () => null,
-    flipped: action => action === 'flipH' ? horizontal : vertical,
+    flipped: action => action === 'flipH' ? horizontal : vertical, wrap: () => null,
     closeArrangeMenu: vi.fn(), dispose: vi.fn(),
   } })
   try {
@@ -131,6 +131,28 @@ it('renders picture rotation and flip in GenOffice Adjust and refreshes their pr
     f.editor.view.dispatch(f.editor.state.tr.setMeta('picture-flip-refresh',true))
     expect(flipH.classList).toContain('active')
     expect(flipV.getAttribute('aria-pressed')).toBe('false')
+  } finally { f.editor.destroy() }
+})
+
+it('renders the selected wrap value and GenOffice keyboard listbox in Picture Format', () => {
+  const pick = vi.fn()
+  const f = setupTabNavigation({ pictureFormat: {
+    open: vi.fn(), reason: () => null, alignment: () => null, size: () => null, flipped: () => false,
+    wrap: () => ({ key: 'picture', value: 'topBottom', pick }),
+    closeArrangeMenu: vi.fn(), dispose: vi.fn(),
+  } })
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    f.tab('pictureFormat').click()
+    const dropdown = f.ribbon.querySelector<HTMLButtonElement>('.rb-wrap-dd button[aria-haspopup="listbox"]')!
+    expect(dropdown.textContent).toContain('上下型环绕')
+    const key = (value: string) => flushSync(() => dropdown.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true })))
+    key('ArrowDown')
+    expect(f.ribbon.querySelectorAll('[role="listbox"] [role="option"]')).toHaveLength(6)
+    key('End')
+    key('Enter')
+    expect(pick).toHaveBeenCalledWith('front')
+    expect(dropdown.getAttribute('aria-expanded')).toBe('false')
   } finally { f.editor.destroy() }
 })
 

@@ -6,7 +6,7 @@ import {zh} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/app/zh'
 import {twipsToPx} from './vendor/genoffice-docs/apps/docs/src/renderer/units'
 export type DocxPictureFormatAction='rotateRight'|'rotateLeft'|'flipH'|'flipV'|'wrap'|'alignLeft'|'alignCenter'|'alignRight'|'resetSize'|'position'
 // GenOffice ContextMenu.tsx WRAP_OPTIONS, shared by the Layout and Picture Format ribbons.
-const wrapOptions=[
+export const pictureWrapOptions=[
  [null,zh.appWrapInline],['square-left',zh.appWrapSquareLeft],['square-right',zh.appWrapSquareRight],
  ['topBottom',zh.appWrapTopBottom],['behind',zh.appWrapBehind],['front',zh.appWrapFront],
 ] as const
@@ -20,6 +20,7 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
   const anchor=anchors.find(a=>a.docxIndex===s.node.attrs.docxIndex)
   return anchor?{node:s.node,pos:s.from,anchor}:null
  }
+ type PictureTarget=NonNullable<ReturnType<typeof selected>>
  const reason=()=>locked()??(!editor.isEditable?'当前文档不可编辑':null)??(selected()?.node.attrs.imageReplace?'图片替换与格式修改需分别保存':null)??(selected()?.anchor.imageFormatEditable?null:'请选择支持原生格式保存的整块图片')
  const alignment=():PictureFormatPatch['align']=>{
   const picture=selected()
@@ -33,7 +34,12 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
   menu.dispose()
  }
  const close=()=>{generation++;closeArrangeMenu()}
- const writePatch=(target:NonNullable<ReturnType<typeof selected>>,patch:PictureFormatPatch,focusEditor:boolean)=>{
+ const currentPicture=(target:PictureTarget,snapshot:Editor['state']['doc'])=>{
+  if(!active||editor.isDestroyed||reason()||editor.state.doc!==snapshot)return false
+  const current=selected()
+  return current?.node===target.node&&current.pos===target.pos
+ }
+ const writePatch=(target:PictureTarget,patch:PictureFormatPatch,focusEditor:boolean)=>{
   const pending:PictureFormatPatch={...target.node.attrs.imageFormat,...patch}
   if(patch.wrap===null){delete pending.posH;delete pending.posV}
   const {imagePosH,imagePosV,imageRelH,imageRelV}=target.node.attrs
@@ -60,9 +66,21 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
   return {
    key:target.anchor.blockId,width,height,
    resize(side:'w'|'h',twips:number,lockAspect:boolean){
-    const current=selected()
-    if(!active||editor.isDestroyed||reason()||editor.state.doc!==snapshot||current?.node!==target.node||current.pos!==target.pos)return
+    if(!currentPicture(target,snapshot))return
     try{writePatch(target,pictureSizeForSide(width,height,side,twipsToPx(twips),lockAspect),false)}catch(error){reportError(error)}
+   },
+  }
+ }
+ const wrap=()=>{
+  const target=selected()
+  if(!target)return null
+  const snapshot=editor.state.doc
+  return {
+   key:target.anchor.blockId,value:String(target.node.attrs.imageWrap??''),
+   pick(value:string){
+    const option=pictureWrapOptions.find(([wrap])=>(wrap??'')===value)
+    if(!option||!currentPicture(target,snapshot))return
+    try{writePatch(target,{wrap:option[0]},true)}catch(error){reportError(error)}
    },
   }
  }
@@ -72,7 +90,7 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    if(arrange&&arrangeMenu&&arrangeMenu.trigger===trigger){close();return}
    const unavailable=reason();if(unavailable)throw new Error(unavailable)
    close();const target=selected()!,snapshot=editor.state.doc,ticket=generation
-   const current=()=>active&&ticket===generation&&!editor.isDestroyed&&!reason()&&editor.state.doc===snapshot&&selected()?.node===target.node&&selected()?.pos===target.pos
+   const current=()=>ticket===generation&&currentPicture(target,snapshot)
    const apply=(patch:PictureFormatPatch)=>{
     if(!current())throw new Error('文档或图片选择已变化，请重新打开图片格式工具')
     writePatch(target,patch,true)
@@ -97,7 +115,7 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
      return item
     }
     const {imageWrap,imagePosH,imagePosV}=target.node.attrs
-    const wrapButton=(wrap:typeof wrapOptions[number][0],label:string)=>{
+    const wrapButton=(wrap:typeof pictureWrapOptions[number][0],label:string)=>{
      const item=button(label,(imageWrap??null)===wrap,{wrap})
      const caption=document.createElement('b')
      caption.textContent=label
@@ -118,7 +136,7 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
       }
      }
     }else{
-     for(const [wrap,label] of wrapOptions){
+     for(const [wrap,label] of pictureWrapOptions){
       const item=wrapButton(wrap,label)
       item.dataset.wrap=wrap??'inline'
       panel.append(item)
@@ -161,5 +179,5 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    }
   }catch(error){reportError(error)}
  }
- return {reason,alignment,flipped,size,open,closeArrangeMenu,dispose(){active=false;close()}}
+ return {reason,alignment,flipped,size,wrap,open,closeArrangeMenu,dispose(){active=false;close()}}
 }

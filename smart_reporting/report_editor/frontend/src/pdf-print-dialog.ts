@@ -88,7 +88,10 @@ export function bindPdfPrintDialog(options: {
     if (disposed || dialog.open || options.trigger.disabled) return
     const reason = options.unavailable?.()
     if (reason) return
-    message.textContent = ''; opener = owner.activeElement instanceof HTMLElement ? owner.activeElement : options.trigger
+    dialog.querySelector<HTMLInputElement>('input[value="all"]')!.checked = true
+    range.value = String(options.currentPage())
+    parity.value = 'all'; onModeChange()
+    opener = owner.activeElement instanceof HTMLElement ? owner.activeElement : options.trigger
     dialog.showModal()
     const selected = dialog.querySelector<HTMLInputElement>('input[name="pdf-print-mode"]:checked')
     selected?.focus()

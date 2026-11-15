@@ -7,12 +7,12 @@ import type {createNativeApi,NativeContextResponse,NativeSaveResponse} from './n
 import {pdfReadingKey} from './pdf-reading-state'
 import {saveViewState} from './genoffice-pdf-reading-state'
 type TestAnnotation = { id:string;annotationType:number;subtype:string;contentsObj:{str:string};inReplyTo?:string }
-const pdfMock=vi.hoisted(()=>({pages:1,detach:false,text:'',annotations:[] as TestAnnotation[]}))
-vi.mock('./source-validation',()=>({bytesSha256:async()=>'a'.repeat(64)}))
+const pdfMock=vi.hoisted(()=>({pages:1,detach:false,text:'',annotations:[] as TestAnnotation[],printed:[] as number[]}))
+vi.mock('./source-validation',()=>({bytesSha256:async(bytes:Uint8Array)=>bytes[0]===91?'b'.repeat(64):'a'.repeat(64)}))
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs',()=>{
  const page={view:[0,0,300,400],rotate:0,userUnit:1,getViewport:({scale}:{scale:number})=>({width:300*scale,height:400*scale,viewBox:[0,0,300,400],convertToPdfPoint:(x:number,y:number)=>[x,y],convertToViewportPoint:(x:number,y:number)=>[x,y]}),getTextContent:async()=>({items:pdfMock.text ? [{str:pdfMock.text,transform:[10,0,0,10,30,100],width:pdfMock.text.length*5,height:10}] : []}),streamTextContent:()=>({}),getAnnotations:async()=>pdfMock.annotations,render:()=>({promise:Promise.resolve(),cancel:vi.fn()})}
  const pdf={get numPages(){return pdfMock.pages},getPage:async()=>page,getMetadata:async()=>({info:{}}),getOutline:async()=>[{title:'章节',dest:[{num:1}],items:[]}],getPageIndex:async()=>0,getAttachments:async()=>new Map([['stored',{filename:'keep.txt',description:'保留附件'}]]),getAttachmentContent:async()=>new Uint8Array([1,2,3]),destroy:async()=>{}}
- return {AnnotationMode:{ENABLE:1},GlobalWorkerOptions:{},TextLayer:class{render(){return Promise.resolve()}},getDocument:({data}:{data:Uint8Array<ArrayBuffer>})=>{if(pdfMock.detach)structuredClone(data.buffer,{transfer:[data.buffer]});return {promise:Promise.resolve(pdf),destroy:async()=>{}}}}
+ return {AnnotationMode:{ENABLE:1},GlobalWorkerOptions:{},TextLayer:class{render(){return Promise.resolve()}},getDocument:({data}:{data:Uint8Array<ArrayBuffer>})=>{const fresh=data[0]===91; if(pdfMock.detach)structuredClone(data.buffer,{transfer:[data.buffer]});return {promise:Promise.resolve(fresh?{...pdf,numPages:2,getPage:async(index:number)=>({...page,rotate:index===1?90:0,render:()=>{pdfMock.printed.push(index);return {promise:Promise.resolve(),cancel:vi.fn()}}})}:pdf),destroy:async()=>{}}}}
 })
 const dialogDescriptors={showModal:Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype,'showModal'),close:Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype,'close')}
 const views:PdfEditorHandle[]=[],sourceSha256='a'.repeat(64),pageId='sha256:'+sourceSha256+':page:0'
@@ -26,7 +26,7 @@ function operation(kind:string):NativeOperation{
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
 async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
- pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??''
+ pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??'';pdfMock.printed=[]
  const notes=options.savedThread?[
   { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
   { annotationId:'6'.repeat(64), expectedAnnotationSha256:'7'.repeat(64), sourceRef:'11R', contents:'reply', editable:true, removable:true, parentAnnotationId:'4'.repeat(64), removalReason:null },
@@ -146,6 +146,39 @@ it('exports all remaining pages via the newly saved revision from the PNG ribbon
  await vi.waitFor(()=>expect(rendered).toHaveBeenCalledWith({expectedSha256:nextSha,pages:[1,2],format:'png',dpi:150}))
  expect(f.api.exportImages).not.toHaveBeenCalled()
  expect(events).toEqual(['save','/reports/v1/native/open/image-save','/reports/v1/native/pdf-object-host/2/api/context','/reports/v1/native/pdf-object-host/2/api/export-images'])
+})
+it.each(['verified','stale'])('prints the verified saved page bytes after saving a draft: %s', async mode => {
+ const events:string[]=[]
+ const nextSha='b'.repeat(64)
+ const flush=vi.fn(async ():Promise<NativeSaveResponse> => {
+  events.push('save')
+  return {documentId:'pdf-object-host',revision:2,parentRevision:1,revisionRegistered:true,artifacts:{pdf:{sha256:nextSha}},editor:{openUrl:'/reports/v1/native/open/print-save'},validation:{ok:false,issues:[]}}
+ })
+ const f=await fixture({exportPages:3,restored:{kind:'deletePage',pageId:'sha256:'+sourceSha256+':page:1'},flushForFileOperation:flush});await f.create()
+ const print=vi.spyOn(window,'print').mockImplementation(()=>{})
+ vi.stubGlobal('fetch',async (input:string|URL) => {
+  const path=new URL(String(input),window.location.href).pathname
+  events.push(path)
+  if(path==='/reports/v1/native/open/print-save')return new Response('authorized')
+  if(path.endsWith('/2/api/context'))return Response.json({csrfToken:'new-csrf',context:{documentId:'pdf-object-host',revision:2,format:'pdf',sourceFile:{sha256:nextSha},scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}})
+  if(path.endsWith('/2/api/file'))return new Response(new Uint8Array([mode==='verified'?91:0]))
+  throw Error('Unexpected path '+path)
+ })
+ const button=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.print.print"]')!
+ expect(button.disabled).toBe(false);button.click()
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="打印 PDF"]')!
+ expect(dialog.open).toBe(true)
+ dialog.querySelector<HTMLSelectElement>('[aria-label="打印页面子集"]')!.value='odd'
+ dialog.querySelector<HTMLButtonElement>('[data-pdf-print-confirm]')!.click()
+ if(mode==='verified'){
+  await vi.waitFor(()=>expect(print).toHaveBeenCalledOnce())
+  expect(pdfMock.printed).toEqual([1]);expect(f.root.querySelectorAll('.pdf-print-page')).toHaveLength(1)
+  window.dispatchEvent(new Event('afterprint'))
+ } else {
+  await vi.waitFor(()=>expect(f.root.textContent).toContain('打印来源身份校验失败'))
+  expect(print).not.toHaveBeenCalled();expect(pdfMock.printed).toEqual([])
+ }
+ expect(events).toEqual(['save','/reports/v1/native/open/print-save','/reports/v1/native/pdf-object-host/2/api/context','/reports/v1/native/pdf-object-host/2/api/file'])
 })
 it('watermark settings expose both source tabs and current slider values without changing the draft',async()=>{
  const f=await fixture();await f.create()

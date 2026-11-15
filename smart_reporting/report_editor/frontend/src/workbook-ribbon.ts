@@ -446,9 +446,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('向下旋转', 'rotate:-90', 'rotate:-90'), action('清除旋转', 'rotate:0', 'rotate:0'),
       action('左对齐', 'align:left', 'align:left'),
       action('居中', 'align:center', 'align:center'), action('右对齐', 'align:right', 'align:right'),
-      action('增加缩进', 'indent-step:increase', 'indent-step:increase'), action('减少缩进', 'indent-step:decrease', 'indent-step:decrease'), action('合并单元格', 'merge:cells', 'merge:cells'),
-      action('合并后居中', 'merge:center', 'merge:center'), action('跨越合并', 'merge:across', 'merge:across'),
-      action('取消单元格合并', 'merge:unmerge', 'merge:unmerge'),
+      action('增加缩进', 'indent-step:increase', 'indent-step:increase'), action('减少缩进', 'indent-step:decrease', 'indent-step:decrease'),
     ] },
     { title: '数字', actions: [
       action('小数', 'format:0.00', 'format:0.00'), action('百分比', 'format:0%', 'format:0%'), action('千位分隔', 'format:#,##0.00', 'format:#,##0.00'),
@@ -585,7 +583,6 @@ const COMMAND_GLYPHS: Record<string, string> = {
   'import-csv': '🗎',
   bold: 'B', italic: 'I', underline: 'U', 'align:left': '≡', 'align:center': '≣', 'align:right': '☰',
   'valign:top': '⤒', 'valign:middle': '↕', 'valign:bottom': '⤓', wrap: '↩',
-  'merge:cells': '⇔', 'merge:center': '⇔', 'merge:across': '⇔', 'merge:unmerge': '⊟',
   'decimal-inc': 'A↑', 'decimal-dec': 'A↓', 'format:0.00': '0.00', 'format:0%': '%',
   'format:#,##0.00': ',', 'border:all': '▦', 'clear-contents': '⌫',
   'insert-row-here': '⊞', 'delete-row-here': '⊟', 'insert-col-here': '⊞', 'delete-col-here': '⊟',
@@ -620,6 +617,15 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
 }> = [
   { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
+  {
+    tab: 'Home', id: 'merge', label: '合并', group: '对齐方式', after: 'indent-step:decrease', icon: '⇔', detail: '合并单元格',
+    choices: [
+      { command: 'merge:center', label: '合并后居中' },
+      { command: 'merge:across', label: '跨越合并' },
+      { command: 'merge:cells', label: '合并单元格' },
+      { command: 'merge:unmerge', label: '取消单元格合并' },
+    ],
+  },
   {
     tab: 'Home', id: 'format-size', label: '格式', group: '单元格', after: 'delete-cells', icon: '⇳', detail: '格式',
     choices: [

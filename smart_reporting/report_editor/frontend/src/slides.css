@@ -543,3 +543,16 @@ dialog.slides-find-replace :is(input,button,[tabindex]):focus-visible { outline:
 @media screen and (max-width:900px), screen and (max-height:480px) {
   .editor-format-pptx .slides-stage:has(> [data-notes-panel]) { grid-template-rows:minmax(120px,1fr) auto auto; }
 }
+
+/* Keep the viewport independent from the Konva page size so large zooms scroll from the top left. */
+.editor-format-pptx .slides-stage > .slides-canvas {
+  height: 100%;
+  min-height: 0;
+  align-self: stretch;
+  overflow: auto;
+  justify-content: safe center;
+  align-items: safe center;
+}
+.slides-canvas > .konvajs-content {
+  flex: none;
+}

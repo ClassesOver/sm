@@ -36,7 +36,8 @@ import { binaryRefreshLock, mountOfficeReportRefresh } from './binary-refresh'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
-import type { SlidesCanvasState } from './slides-canvas'
+import type { mountSlidesCanvas } from './slides-canvas'
+import { nextPreset, prevPreset } from './slides-view-zoom'
 import type { createSlidesSorter } from './slides-view-modes'
 import type { createSlidesOutline, createSlidesReading } from './slides-outline-reading'
 import { applyCanvasEdits } from './slides-canvas-model'
@@ -816,7 +817,16 @@ const outlineHost = document.createElement('div'), readingHost = document.create
 outlineHost.hidden = true; readingHost.hidden = true
 root.querySelector<HTMLElement>('.slides-sidebar')!.append(outlineHost)
 root.querySelector<HTMLElement>('.slides-workspace')!.append(readingHost)
+const viewZoomCommands = ['viewZoomIn', 'viewZoomOut', 'viewZoom100', 'viewZoomFit'] as const
+function syncViewZoomControls() {
+  const available = !!canvas && !locked() && (slidesViewMode === 'normal' || slidesViewMode === 'outline')
+  for (const command of viewZoomCommands) {
+    const button = root.querySelector<HTMLButtonElement>('[data-command="' + command + '"]')
+    if (button) button.disabled = !available
+  }
+}
 function syncSlidesViewMode() {
+  syncViewZoomControls()
   for (const [command, mode] of [['normalView', 'normal'], ['outlineView', 'outline'], ['slideSorter', 'sorter'], ['readingView', 'reading']]) nativeRibbon?.setValue(command!, String(slidesViewMode === mode))
 }
 async function setSlidesViewMode(mode: typeof slidesViewMode) {
@@ -915,7 +925,7 @@ function renderSlideSorter() {
   slideSorter?.update(state); slideOutline?.update(state); slideReading?.update(state)
 }
 let inkControls:ReturnType<typeof mountSlidesInk>|undefined
-let canvas: { update: (state: SlidesCanvasState) => void; destroy?: () => void } | undefined
+let canvas: ReturnType<typeof mountSlidesCanvas> | undefined
 let previewSequence = 0
 let previewTimer: ReturnType<typeof setTimeout> | undefined
 // 每个页面最多一个预览请求在途：服务端每次预览要启动两个引擎进程，连续输入时
@@ -984,6 +994,7 @@ const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
 
 let canvasSelectionGeneration = 0
 function renderCanvas() {
+  syncViewZoomControls()
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   mediaPlayback?.dispose();mediaPlayback=undefined
   animationPreviewOverlay?.dispose()
@@ -2583,6 +2594,14 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     if(notesPane&&!notesPane.flush())return
     if(command==='print'){void openPrint();return}
     if(command==='notes'){notesPane?.setVisible(!notesVisible);syncNotesVisibility();return}
+    if (command === 'viewZoomIn' || command === 'viewZoomOut' || command === 'viewZoom100' || command === 'viewZoomFit') {
+      if (!canvas || loading || locked() || slidesViewMode === 'sorter' || slidesViewMode === 'reading') return
+      const current = canvas.getZoom()
+      canvas.setZoom(command === 'viewZoomFit' ? null : command === 'viewZoom100' ? 1
+        : command === 'viewZoomIn' ? nextPreset(current) : prevPreset(current))
+      ruler.update()
+      return
+    }
     if (command === 'grid') { gridVisible = !gridVisible; syncGrid(); return }
     if (command === 'ruler') { rulerVisible = !rulerVisible; ruler.setVisible(rulerVisible); syncGrid(); return }
     if (command === 'guides') { guidesVisible = !guidesVisible; guides.setVisible(guidesVisible); syncGrid(); return }

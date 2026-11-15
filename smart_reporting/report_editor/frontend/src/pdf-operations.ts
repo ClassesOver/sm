@@ -344,14 +344,14 @@ export function pdfCanPrint(state: { loaded: boolean; locked: boolean; dirty: bo
   return state.loaded && !state.locked && !state.dirty && !state.previewing && !state.printing && !state.previewDocument
 }
 
-export async function renderPdfPrintHost(root: HTMLElement, pages: PdfPageIdentity[], getPage: (sourceIndex: number) => Promise<PDFPageProxy>, annotationMode: number, pixelLimit: number) {
+export async function renderPdfPrintHost(root: HTMLElement, pages: {index: number; rotation?: number}[], getPage: (sourceIndex: number) => Promise<PDFPageProxy>, annotationMode: number, pixelLimit: number) {
   const host = root.ownerDocument.createElement('div')
   host.className = 'pdf-print-document'
   root.append(host)
   try {
     for (const [index, identity] of pages.entries()) {
       const page = await getPage(identity.index)
-      const viewport = page.getViewport({ scale: 1, rotation: identity.rotation })
+      const viewport = page.getViewport({ scale: 1, rotation: identity.rotation ?? page.rotate })
       const dpr = Math.min(1.5, Math.sqrt(pixelLimit / (viewport.width * viewport.height)))
       const canvas = root.ownerDocument.createElement('canvas')
       canvas.width = Math.max(1, Math.floor(viewport.width * dpr)); canvas.height = Math.max(1, Math.floor(viewport.height * dpr))

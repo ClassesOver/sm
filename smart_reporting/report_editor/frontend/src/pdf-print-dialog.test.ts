@@ -50,6 +50,9 @@ it('opens from the print trigger and prints all, current visible page, or a pars
   parity.value = 'even'; parity.dispatchEvent(new Event('change'))
   range.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
   expect(printed).toHaveBeenLastCalledWith([2, 4])
+  trigger.click()
+  expect(parity.value).toBe('all'); expect(range.disabled).toBe(true); expect(range.value).toBe('3')
+  expect(dialog.querySelector<HTMLInputElement>('input[value="all"]')!.checked).toBe(true)
   view.dispose()
 })
 

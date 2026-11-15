@@ -5,6 +5,7 @@ import {createDocxRevisionScopeMenu} from './docx-revision-scope-menu'
 import {showDocxPasteDialog} from './docx-paste-ui'
 import type { createDocxPictureControls } from './docx-picture-controls'
 import { DocxPictureSizeSource } from './docx-picture-size-source'
+import { DocxPictureWrapSource } from './docx-picture-wrap-source'
 import { openDocxPageBorderDialog as openDocxPageBorderSourceDialog } from './docx-page-border-dialog-source'
 import { openDocxFontDialog, docxFontDialogUnavailable } from './docx-font-dialog'
 import { docxDefaultPageBox } from '../../../reporting/doc_engine/bridge/docx-section-settings'
@@ -187,6 +188,15 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   const contextTabs = new Map<string, HTMLButtonElement>()
   const body = document.createElement('div')
   const pictureSize = document.createElement('section')
+  const pictureWrap = document.createElement('div')
+  pictureWrap.className = 'table-tool-row'
+  let pictureWrapRoot: ReturnType<typeof createRoot> | undefined
+  const refreshPictureWrap = () => {
+    const controls = tools?.pictureFormat
+    if (!controls || !body.contains(pictureWrap)) return
+    pictureWrapRoot ??= createRoot(pictureWrap)
+    flushSync(() => pictureWrapRoot!.render(createElement(DocxPictureWrapSource, { controls })))
+  }
   pictureSize.className = 'table-tool-group'
   pictureSize.setAttribute('aria-label', '大小')
   let pictureSizeRoot: ReturnType<typeof createRoot> | undefined
@@ -763,6 +773,10 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if(id==='review'&&label==='保护文档'&&tools?.protect){command.textContent=label;command.dataset.action='review-protect';command.addEventListener('click',tools.protect);items.append(command);continue}
         if(id==='review' && label==='比较' && reviewCommands?.compare){command.textContent=label;command.dataset.action='review-compare';command.addEventListener('click',reviewCommands.compare);items.append(command);continue}
         const pictureFormat = tools?.pictureFormat
+        if (id === 'pictureFormat' && label === '环绕文字' && pictureFormat) {
+          items.append(pictureWrap)
+          continue
+        }
         if (id === 'pictureFormat' && label === '对齐' && pictureFormat) {
           // GenOffice Ribbon.tsx Picture Format Arrange puts these options directly in the ribbon.
           const row = document.createElement('div')
@@ -941,11 +955,16 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     fillDocxCommandIcons(content)
     syncPictureFormatButtons(content)
     body.append(content)
+    refreshPictureWrap()
     refreshPictureSize()
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
     tools?.pictureFormat?.closeArrangeMenu()
+    if (id !== 'pictureFormat' && pictureWrapRoot) {
+      pictureWrapRoot.unmount()
+      pictureWrapRoot = undefined
+    }
     if (active === 'headerFooter' && id !== active) {
       headerFooter?.flushPendingEdits?.()
       headerFooterTarget = undefined
@@ -1330,6 +1349,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if(tools?.files)for(const button of body.querySelectorAll<HTMLButtonElement>('[data-file-action]')){const kind=button.dataset.fileAction as 'new'|'save-as'|'save',reason=kind==='save'?tools.files.saveReason():tools.files.reason(kind);button.disabled=reason!==null;button.title=reason??(kind==='save-as'?'将当前已保存修订另存为独立文档':button.textContent??'')}
 
     syncPictureFormatButtons(body)
+    refreshPictureWrap()
     refreshPictureSize()
     refreshView()
     if (active === 'review') refreshReviewCommands()
@@ -1403,7 +1423,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     closeSpecialIndent?.()
     closeFontDialog?.()
     closeParagraphDialog?.()
-    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount()
+    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount(); pictureWrapRoot?.unmount()
     editor.off('destroy', dispose)
   }
   editor.on('destroy', dispose)

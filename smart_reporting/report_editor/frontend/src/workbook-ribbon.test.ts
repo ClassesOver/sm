@@ -693,7 +693,11 @@ it('surfaces official sort failures and keeps the single-row guard', () => {
 it('renders source-localized Home Alignment and Cells actions with their fixed command ids', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
   const getLabel = (id: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)?.textContent
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => [button.dataset.ribbonCommand!, button.textContent ?? '']))
@@ -703,25 +707,39 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
   expect(labels.get('align:left')).toBe('左对齐')
   expect(labels.get('align:center')).toBe('居中')
   expect(labels.get('align:right')).toBe('右对齐')
-  expect(labels.get('merge:center')).toBe('合并后居中')
-  expect(labels.get('merge:across')).toBe('跨越合并')
-  expect(labels.get('merge:cells')).toBe('合并单元格')
-  expect(labels.get('merge:unmerge')).toBe('取消单元格合并')
+  const merge = document.querySelector<HTMLSelectElement>('[data-ribbon-control="merge"]')!
+  expect(merge).not.toBeNull()
+  expect(merge.disabled).toBe(false)
+  expect(merge.title).toBe('合并单元格')
+  expect(merge.closest('label')?.previousElementSibling?.getAttribute('data-ribbon-command')).toBe('indent-step:decrease')
+  expect(Array.from(merge.options, option => [option.value, option.text])).toEqual([
+    ['', '合并'], ['merge:center', '合并后居中'], ['merge:across', '跨越合并'],
+    ['merge:cells', '合并单元格'], ['merge:unmerge', '取消单元格合并'],
+  ])
+  for (const option of Array.from(merge.options).slice(1)) {
+    merge.value = option.value
+    merge.dispatchEvent(new Event('change'))
+    expect(onCommand).toHaveBeenLastCalledWith(option.value)
+    expect(merge.value).toBe('')
+  }
   expect(labels.get('insert-row-here')).toBe('插入行')
   expect(labels.get('delete-row-here')).toBe('删除行')
   expect(labels.get('insert-col-here')).toBe('插入列')
   expect(labels.get('delete-col-here')).toBe('删除列')
   expect(labels.get('clear-contents')).toBe('清除内容')
-  for (const id of ['valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells']) {
+  for (const id of ['valign:top', 'align:center', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells']) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
     expect(button.disabled, id).toBe(false)
     button.click()
   }
   expect(onCommand.mock.calls.map(([command]) => command)).toEqual([
-    'valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge',
+    'merge:center', 'merge:across', 'merge:cells', 'merge:unmerge', 'valign:top', 'align:center',
     'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells',
   ])
   expect(getLabel('clear-contents')).toBe('清除内容')
+  protectedSheet = true; ribbon.refreshState()
+  expect(merge.disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('wires Find and Replace to the registered Univer dialogs', () => {
