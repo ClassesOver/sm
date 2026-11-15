@@ -256,17 +256,21 @@ function ask() {
     </div></div></section>`
 }
 
-function invalidateKnowledge(space: string) {
-  knowledgeTurns.delete(space)
+function advanceKnowledgeGeneration(space: string) {
   const generation = (knowledgeGeneration.get(space) ?? 0) + 1
   knowledgeGeneration.set(space, generation)
   return generation
 }
 
-async function loadKnowledge(space = currentSpace) {
+function invalidateKnowledge(space: string) {
+  knowledgeTurns.delete(space)
+  return advanceKnowledgeGeneration(space)
+}
+
+async function loadKnowledge(space = currentSpace, { preserveTurns = false } = {}) {
   if (!space) return
   const account = accountGeneration
-  const generation = invalidateKnowledge(space)
+  const generation = preserveTurns ? advanceKnowledgeGeneration(space) : invalidateKnowledge(space)
   try {
     const conversation = conversationOf(space)
     const [result, conversations] = await Promise.all([
@@ -283,7 +287,14 @@ async function loadKnowledge(space = currentSpace) {
     if (!activeKnowledgeConversation.has(space) && !conversations.items.some(item => item.id === 'default')) {
       activeKnowledgeConversation.set(space, crypto.randomUUID())
     }
-  } catch (error) { if (account === accountGeneration && currentSpace === space) status = error instanceof Error ? error.message : '无法读取问答记录。' }
+  } catch (error) {
+    if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
+    if (error instanceof OfficeRequestError && error.status === 403) {
+      knowledgeTurns.delete(space)
+      knowledgeConversations.delete(space)
+    }
+    if (currentSpace === space) status = error instanceof Error ? error.message : '无法读取问答记录。'
+  }
   if (currentSpace === space && view === 'ask') render()
 }
 
@@ -297,11 +308,16 @@ async function sendKnowledge() {
   const controller = new AbortController()
   knowledgePending.set(space, controller); status = ''; render()
   try {
-    await officeRequest<KnowledgeTurn>(`/workspaces/${space}/knowledge`, 'POST', { question, conversation, attachmentIds: (knowledgeAttachments.get(key) ?? []).map(file => file.id) }, controller.signal)
+    const turn = await officeRequest<KnowledgeTurn>(`/workspaces/${space}/knowledge`, 'POST', { question, conversation, attachmentIds: (knowledgeAttachments.get(key) ?? []).map(file => file.id) }, controller.signal)
     if (account !== accountGeneration || controller.signal.aborted) return
     knowledgeInputs.delete(key)
     knowledgeAttachments.delete(key)
-    await loadKnowledge(space)
+    if (conversationOf(space) === conversation) {
+      const turns = knowledgeTurns.get(space) ?? []
+      knowledgeTurns.set(space, [...turns.filter(item => item.id !== turn.id), turn].slice(-30))
+      if (currentSpace === space && view === 'ask') render()
+    }
+    await loadKnowledge(space, { preserveTurns: true })
   } catch (error) { if (account === accountGeneration && currentSpace === space) status = controller.signal.aborted ? '已停止问答。' : error instanceof Error ? error.message : '知识问答失败。' }
   finally { if (account === accountGeneration) { knowledgePending.delete(space); if (currentSpace === space) render() } }
 }
