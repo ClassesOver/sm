@@ -241,3 +241,45 @@ it.each([{format:'docx',outage:false},{format:'docx',outage:true},{format:'pdf',
   expect(draft.operations).toEqual([])
   binding.dispose()
 })
+
+it.each([false, true])('continues queued Word edits only after review and authorization (changed: %s)', async changed => {
+  const root=document.createElement('div')
+  const draft=new NativeDraft({documentId:'word-queue-'+changed,revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
+  const operations=[{kind:'replaceParagraph',blockId:'p1',text:'候选内容'}]
+  const api={
+    aiStart:vi.fn().mockResolvedValueOnce({editId:'first',status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'候选已核验',operations}})
+      .mockResolvedValue({editId:'second',status:'failed'}),
+    aiAccept:vi.fn().mockResolvedValue({operations}),
+    aiCancel:vi.fn().mockResolvedValue({}),
+  }
+  const binding=bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+  try {
+    binding.setSelection([{blockId:'p1'}])
+    binding.open()
+    const input=root.querySelector('textarea')!
+    input.value='首条指令'
+    root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+    await vi.waitFor(()=>expect(root.textContent).toContain('候选已核验'))
+    input.value='排队修改'
+    input.dispatchEvent(new Event('input',{bubbles:true}))
+    input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+    await vi.waitFor(()=>expect(root.querySelector('.ai-queue-toggle')?.textContent).toContain('1 条排队中'))
+    expect(api.aiStart).toHaveBeenCalledOnce()
+    expect(api.aiAccept).not.toHaveBeenCalled()
+    if (changed) {
+      binding.setSelection([{blockId:'other'}])
+      const resume=()=>root.querySelector<HTMLButtonElement>('[aria-label="继续排队"]')!.click()
+      await vi.waitFor(()=>expect(root.querySelector('.ai-queue-strip')?.getAttribute('data-paused')).toBe('true'))
+      resume()
+      await vi.waitFor(()=>expect(root.textContent).toContain('请恢复排队指令的授权选区'))
+      expect(api.aiStart).toHaveBeenCalledOnce()
+      expect(root.querySelector('.ai-queue-toggle')?.textContent).toContain('1 条排队中')
+      binding.setSelection([{blockId:'p1'}])
+      resume()
+    } else {
+      root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click()
+    }
+    await vi.waitFor(()=>expect(api.aiStart).toHaveBeenCalledTimes(2))
+    expect(api.aiStart.mock.calls[1]?.[0]).toMatchObject({instruction:'排队修改',selection:[{blockId:'p1'}],operations:changed?[]:operations})
+  } finally { binding.dispose() }
+})
