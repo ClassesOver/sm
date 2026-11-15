@@ -6,10 +6,10 @@ are only suitable for single-worker prototypes, not production persistence.
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from typing import Any
 
 from .document_candidate_contract import DocumentCandidateRequest, DocumentFormat, DocumentScope
