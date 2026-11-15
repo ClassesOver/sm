@@ -147,3 +147,56 @@ async def test_gateway_rejects_unsafe_task_id_before_adapter_status(task_id):
     with pytest.raises(ValueError, match="document_task_id_invalid"):
         await gateway.status("channel-a", "member", task_id)
     assert invoked == []
+
+
+@pytest.mark.anyio
+async def test_opt_in_document_routes_authorize_and_dispatch():
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from unittest.mock import AsyncMock
+    from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+
+    identity = ConnectorIdentity("dsh", "member", "session")
+    received = []
+
+    class Adapter:
+        format = DocumentFormat.XLSX
+
+        async def prepare(self, request):
+            received.append(request)
+            return "task-one"
+
+        async def status(self, authorized_scope, task_id):
+            return {"status": "pending", "taskId": task_id}
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+    authorized_scope = replace(scope(), format=DocumentFormat.XLSX)
+
+    async def resolve(channel, caller):
+        return authorized_scope if channel == "channel-a" and caller == identity else None
+
+    async def authenticate(request):
+        return identity
+
+    repository = type("Repository", (), {"has_member": AsyncMock(return_value=True)})()
+    app = FastAPI()
+    app.include_router(create_report_channel_router(
+        repository, authenticate, document_gateway=DocumentCandidateGateway(registry, resolve),
+    ))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        path = "/reports/v1/channels/channel-a/document-tasks"
+        response = await http.post(path, json={
+            "request_id": "one", "instruction": "Update", "selection": [{"cell": "A1"}],
+        })
+        assert response.status_code == 202
+        assert response.json() == {"taskId": "task-one"}
+        assert (await http.get(path + "/task-one")).json()["status"] == "pending"
+        assert (await http.post(path, json={
+            "request_id": "two", "instruction": "Update", "selection": [{"cell": "A1"}],
+            "source_sha256": "b" * 64,
+        })).status_code == 422
+        assert (await http.post(path.replace("channel-a", "channel-b"), json={
+            "request_id": "two", "instruction": "Update", "selection": [{"cell": "A1"}],
+        })).status_code == 403
+    assert received[0].scope == authorized_scope
