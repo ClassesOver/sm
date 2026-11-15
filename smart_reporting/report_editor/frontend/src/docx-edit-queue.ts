@@ -63,7 +63,7 @@ export function createDocxEditQueue(editor: Editor, resolve: (selection: TextSel
       if (instruction.length > REQUEST_LIMIT) throw new Error('排队要求合计超过候选请求上限，请缩短要求或分批提交。')
       return { instruction, targets: live.map(({ entry }) => entry.target), ids: live.map(({ entry }) => entry.id) }
     },
-    listen(render: () => void) { editor.on('transaction', render); return () => editor.off('transaction', render) },
+    listen(render: () => void) { editor.on('transaction', render); return () => { editor.off('transaction', render) } },
   }
 }
 
