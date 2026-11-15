@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from contextlib import AsyncExitStack
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -13,8 +14,12 @@ from uuid import uuid4
 from loguru import logger
 
 from ..office.native_access import check as check_office_access
+from ..task_execution.models import AttemptOutcome, TaskExecutionScope, TaskState
+from ..task_execution.repository import TaskExecutionRepositoryError
+from ..task_execution.session import TaskSession
 
 from .agent_event_streams import bind_agent_event_log, event_stream_response
+from .native import bind_native_workspace
 from .native_ai import NativeAIService, _copy_operations, _invalid, _NativeAIJob
 from .native_models import native_digest
 from .workbook_ai import AgnoWorkbookProposalPlanner, WorkbookAIProposal
@@ -28,8 +33,9 @@ class _WorkbookNativeAIJob(_NativeAIJob):
 
 
 class NativeWorkbookAIService(NativeAIService):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, task_repository=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self.task_repository = task_repository
         self._requests: dict[tuple[str, str], str] = {}
 
     @staticmethod
@@ -91,6 +97,7 @@ class NativeWorkbookAIService(NativeAIService):
         if scope not in {"range", "workbook"}:
             raise _invalid("native_ai_selection_invalid", "工作簿授权范围无效。")
         base = _copy_operations(operations)
+        selection = deepcopy(selection)
         request_id = self._request_id(client_request_id)
         fingerprint = native_digest({"context": context.digest(), "instruction": instruction, "operations": base, "selection": selection, "scope": scope})
         self._prune()
@@ -102,12 +109,140 @@ class NativeWorkbookAIService(NativeAIService):
                 raise _invalid("native_ai_snapshot_changed", "相同 AI 请求的内容已变化，请重新发起。")
             return self._serialize(previous)
         self._reserve()
-        job = _WorkbookNativeAIJob(uuid4().hex, context.digest(), self._snapshot(context, base), context.scope.user_id,
+        edit_id = uuid4().hex
+        task_scope = None
+        if self.task_repository is not None:
+            edit_id = native_digest({"context": context.digest(), "request": request_id})
+            task_scope = self._durable_scope(context, edit_id)
+            try:
+                await self.task_repository.create_native_workbook_task(task_scope, instruction, fingerprint)
+            except TaskExecutionRepositoryError as error:
+                if error.code in {"native_workbook_input_conflict", "task_initial_instruction_conflict"}:
+                    raise _invalid("native_ai_snapshot_changed", "相同 AI 请求的内容已变化，请重新发起。") from None
+                raise
+            previous = self._request_job(context, request_id, fingerprint)
+            if previous is not None:
+                return self._serialize(previous)
+            self._reserve()
+        job = _WorkbookNativeAIJob(edit_id, context.digest(), self._snapshot(context, base), context.scope.user_id,
             datetime.now(UTC), client_request_id=request_id, request_sha256=fingerprint)
         self._jobs[job.edit_id] = job
         self._requests[key] = job.edit_id
-        job.task = asyncio.create_task(self._prepare_job(job, context, base, deepcopy(selection), scope, instruction.strip()))
+        args = (job, context, base, selection, scope, instruction.strip())
+        job.task = asyncio.create_task(
+            self._prepare_job(*args) if task_scope is None else self._run_durable_job(task_scope, *args)
+        )
         return self._serialize(job)
+
+    def _durable_scope(self, context, edit_id):
+        return TaskExecutionScope(
+            "native-workbook-ai:" + edit_id, context.scope.user_id, context.scope.thread_id,
+            bind_native_workspace(self.editor.workspace, context.scope) + ":" + context.digest(), "native-workbook-ai",
+        )
+
+    async def _read_durable_candidate(self, scope, context):
+        return await self.task_repository.get_completed_native_workbook_candidate(scope, context.digest())
+
+    async def _job(self, session, edit_id):
+        if self.task_repository is not None and re.fullmatch(r"[0-9a-f]{64}", edit_id):
+            context = await self._context(session)
+            job = self._jobs.get(edit_id)
+            if job is None:
+                receipt = await self._read_durable_candidate(self._durable_scope(context, edit_id), context)
+                if receipt is not None:
+                    job = _WorkbookNativeAIJob(
+                        edit_id, context.digest(), receipt["snapshotSha256"], context.scope.user_id,
+                        datetime.now(UTC), status="succeeded", client_request_id=receipt["clientRequestId"],
+                        proposal=receipt["proposal"],
+                    )
+                    await job.event_log.finish(job.status)
+                    return job, context
+        return await super()._job(session, edit_id)
+
+    async def _run_durable_job(self, task_scope, job, context, base, selection, scope, instruction):
+        repository = self.task_repository
+        task_id = task_scope.external_run_id
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                while job.status == "running":
+                    task = await repository.get_task_snapshot(task_id)
+                    if task is None or task.scope != task_scope:
+                        raise _invalid("native_ai_job_missing", "XLSX 任务不存在或已过期。")
+                    if task.state is TaskState.COMPLETED:
+                        receipt = await self._read_durable_candidate(task_scope, context)
+                        if receipt is None or job.snapshot_sha256 != receipt["snapshotSha256"]:
+                            raise _invalid("native_ai_snapshot_changed", "XLSX 候选快照已变化。")
+                        if job.status == "running":
+                            job.proposal, job.status = receipt["proposal"], "succeeded"
+                        return
+                    if task.state is TaskState.CANCELLED:
+                        job.status = "cancelled"
+                        return
+                    now = datetime.now(UTC)
+                    if task.state is TaskState.FAILED or task.deadline_at <= now:
+                        raise _invalid("native_ai_not_ready", "XLSX 任务已结束。")
+                    if task.lease_owner and task.lease_expires_at and task.lease_expires_at > now:
+                        await asyncio.sleep(0.25)
+                        continue
+                    async with AsyncExitStack() as stack:
+                        try:
+                            claim = await stack.enter_async_context(TaskSession(repository, task_scope))
+                        except TaskExecutionRepositoryError as error:
+                            if error.code != "task_lease_conflict":
+                                raise
+                        else:
+                            await self._execute_durable_job(claim, job, context, base, selection, scope, instruction)
+                            return
+                    await asyncio.sleep(0.25)
+        except asyncio.CancelledError:
+            job.status = "cancelled"
+            raise
+        except Exception as error:
+            if job.status == "running":
+                logger.warning("native_workbook_durable_ai_failed edit_id={} error_type={}", job.edit_id, type(error).__name__)
+                job.status = "failed"
+                job.error = {"code": getattr(error, "code", "native_ai_proposal_invalid"),
+                             "message": "XLSX 候选未能完成，人工草稿已保留。"}
+        finally:
+            await job.event_log.finish(job.status)
+
+    async def _execute_durable_job(self, claim, job, context, base, selection, scope, instruction):
+        repository = self.task_repository
+        task_scope = claim.scope
+        task_id = task_scope.external_run_id
+        task = await repository.get_task_snapshot(task_id)
+        if task.state is TaskState.NEW:
+            task, _ = await repository.open_initial(task_id, claim.lease, task.state_version)
+        elif task.state in {TaskState.ACTIVE, TaskState.SUSPENDED}:
+            task, _ = await repository.resume_current(task_id, claim.lease, task.state_version)
+        elif task.state is TaskState.FINISHING:
+            await repository.finalize_finish(task_id, claim.lease, task.state_version, agno_status="recovered")
+            receipt = await self._read_durable_candidate(task_scope, context)
+            if receipt is None or job.snapshot_sha256 != receipt["snapshotSha256"]:
+                raise _invalid("native_ai_snapshot_changed", "XLSX 候选快照已变化。")
+            if job.status == "running":
+                job.proposal, job.status = receipt["proposal"], "succeeded"
+            return
+        else:
+            raise _invalid("native_ai_not_ready", "XLSX 任务已结束。")
+
+        async def persist(proposal):
+            claim.assert_alive()
+            finishing = await repository.request_native_workbook_finish(
+                task_scope, claim.lease, task.state_version, job.request_sha256,
+                {"contextSha256": job.context_sha256, "snapshotSha256": job.snapshot_sha256,
+                 "clientRequestId": job.client_request_id, "proposal": proposal},
+            )
+            await repository.finalize_finish(task_id, claim.lease, finishing.state_version, agno_status="completed")
+
+        await self._prepare_job(job, context, base, selection, scope, instruction, persist=persist)
+        if job.status == "failed":
+            current = await repository.get_task_snapshot(task_id)
+            if current.state is TaskState.ACTIVE and current.lease_owner == claim.lease.owner:
+                await repository.close_and_decide(
+                    task_id, claim.lease, current.state_version, outcome=AttemptOutcome.ERROR,
+                    agno_status="error", error=job.error["code"], create_next=False,
+                )
 
     @staticmethod
     def _selection(model, selection):
@@ -146,7 +281,7 @@ class NativeWorkbookAIService(NativeAIService):
                     or not selection["startColumn"] <= edit["column"] <= selection["endColumn"]):
                     raise _invalid("native_ai_selection_mismatch", "候选修改了授权选区之外的单元格。")
 
-    async def _prepare_job(self, job, context, base, selection, scope, instruction):
+    async def _prepare_job(self, job, context, base, selection, scope, instruction, *, persist=None):
         try:
             await job.event_log.emit("phase", label="正在准备工作簿上下文")
             preview = await self.editor.preview(context, expected_sha256=context.source_file.sha256, operations=base)
@@ -199,8 +334,11 @@ class NativeWorkbookAIService(NativeAIService):
             await check_office_access(context.document_id, write=True)
             if job.status != "running":
                 return
-            job.proposal = {"summary": planned.summary, "operations": candidate, "previewSha256": preview["draftSha256"]}
-            job.status = "succeeded"
+            proposal = {"summary": planned.summary, "operations": candidate, "previewSha256": preview["draftSha256"]}
+            if persist is not None:
+                await persist(proposal)
+            if job.status == "running":
+                job.proposal, job.status = proposal, "succeeded"
         except asyncio.CancelledError:
             job.status = "cancelled"
             raise
@@ -212,7 +350,8 @@ class NativeWorkbookAIService(NativeAIService):
             job.error = {"code": getattr(error, "code", "native_ai_proposal_invalid"),
                 "message": getattr(error, "message", "XLSX 候选格式、范围或引擎预览失败，人工草稿已保留。")}
         finally:
-            await job.event_log.finish(job.status)
+            if persist is None:
+                await job.event_log.finish(job.status)
 
     async def event_stream(self, session, edit_id, after=0):
         job, _ = await self._job(session, edit_id)

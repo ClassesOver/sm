@@ -121,7 +121,7 @@ async def test_native_xlsx_ai_http_scope_csrf_selection_and_cancel_request():
         def csrf_token(self, _raw): return 'csrf'
         async def lookup_session(self, raw):
             assert raw == 'session'
-            return SimpleNamespace(report_id='workbook', revision=1)
+            return SimpleNamespace(report_id='workbook', revision=1, capabilities={})
     async def planner(*_args, **_kwargs): return proposal()
     editor = Editor(); ai = NativeWorkbookAIService(editor, planner=planner, enabled=True)
     app = FastAPI(); app.include_router(create_native_workbook_ai_router(Grants(), editor=editor, ai=ai, allowed_origin='https://editor.test'))
