@@ -20,7 +20,7 @@ async def test_word_adapter_delegates_only_authorized_matching_source():
     )
     word = SimpleNamespace(
         repository=repository,
-        _draft=AsyncMock(return_value=SimpleNamespace(source_sha256="a" * 64)),
+        _draft=AsyncMock(return_value=SimpleNamespace(source_sha256="a" * 64, selection=[{"paragraph": "1"}])),
         start=AsyncMock(return_value={"taskId": "word-task"}),
         status=AsyncMock(return_value={"taskId": "word-task", "status": "pending"}),
     )
@@ -49,11 +49,32 @@ async def test_word_adapter_rejects_changed_source_before_delegation():
             member_grant=AsyncMock(return_value="grant"),
             grant_active=AsyncMock(return_value=True),
         ),
-        _draft=AsyncMock(return_value=SimpleNamespace(source_sha256="b" * 64)),
+        _draft=AsyncMock(return_value=SimpleNamespace(source_sha256="b" * 64, selection=[{"paragraph": "1"}])),
         start=AsyncMock(),
     )
     adapter = ChannelWordCandidateAdapter(word, lambda scope: resolve_identity(identity))
     request = DocumentCandidateRequest(scope, "request-one", "Revise", ({"paragraph": "1"},))
     with pytest.raises(PermissionError, match="document_source_changed"):
+        await adapter.prepare(request)
+    word.start.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_word_adapter_rejects_selection_mismatch_without_starting_edit():
+    identity = ConnectorIdentity("dsh", "subject", "session")
+    scope = DocumentScope("channel", "grant", "document", "1", "a" * 64, DocumentFormat.DOCX)
+    word = SimpleNamespace(
+        repository=SimpleNamespace(
+            member_grant=AsyncMock(return_value="grant"),
+            grant_active=AsyncMock(return_value=True),
+        ),
+        _draft=AsyncMock(return_value=SimpleNamespace(
+            source_sha256="a" * 64, selection=[{"paragraph": "2"}],
+        )),
+        start=AsyncMock(),
+    )
+    adapter = ChannelWordCandidateAdapter(word, lambda scope: resolve_identity(identity))
+    request = DocumentCandidateRequest(scope, "request-one", "Revise", ({"paragraph": "1"},))
+    with pytest.raises(ValueError, match="document_selection_mismatch"):
         await adapter.prepare(request)
     word.start.assert_not_awaited()
