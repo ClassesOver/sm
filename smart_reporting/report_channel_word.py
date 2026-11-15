@@ -63,6 +63,9 @@ class ReportChannelWordAssistant:
         request_hash = hashlib.sha256(f"{grant}:{payload.request_id}".encode()).hexdigest()[:63]
         try:
             draft = await self._draft(channel)
+            # Draft resolution may await I/O while the invitation is revoked.
+            if not await authorized():
+                raise HTTPException(403, "report_channel_membership_required")
             job = await self.ai.start_edit(
                 draft.session,
                 instruction=payload.instruction,
