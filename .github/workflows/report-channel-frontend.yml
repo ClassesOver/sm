@@ -9,6 +9,11 @@ on:
       - "smart_reporting/report_editor/frontend/src/native-api.ts"
       - "smart_reporting/report_editor/frontend/src/office-assistant-controller.ts"
       - "smart_reporting/report_editor/frontend/src/native-ai.test.ts"
+      - "smart_reporting/report_editor/frontend/src/report-channel-share.test.ts"
+      - "smart_reporting/report_editor/frontend/src/docx-mail-merge.ts"
+      - "smart_reporting/reporting/doc_engine/**"
+      - "smart_reporting/reporting/workbook_engine/**"
+      - "smart_reporting/reporting/slides_engine/**"
       - "smart_reporting/report_editor/frontend/src/office-assistant-controller.test.ts"
       - ".github/workflows/report-channel-frontend.yml"
   pull_request:
@@ -38,6 +43,11 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: smart_reporting/report_editor/frontend/package-lock.json
+      - name: Install locked engine workspace dependencies
+        run: |
+          npm ci --prefix ../../reporting/slides_engine --no-audit --no-fund
+          npm ci --prefix ../../reporting/doc_engine --no-audit --no-fund
+          npm ci --prefix ../../reporting/workbook_engine --no-audit --no-fund
       - name: Install locked frontend dependencies
         run: npm ci --no-audit --no-fund
       - name: TypeScript type check
