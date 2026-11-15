@@ -89,3 +89,31 @@ async def test_office_read_cross_scope_cannot_poll_existing_task(office_http):
     service.editor.context_for_session = changed
     response = await client.get(BASE + '/ai/office-read/' + started['taskId'])
     assert response.status_code in {403, 404}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("office_sample", ["pptx"], indirect=True)
+async def test_pptx_pdf_preview_reports_unavailable_renderer_and_preserves_source(office_sample, monkeypatch):
+    from smart_reporting.reporting.delivery import office_engine
+
+    editor, context, _, _, source = office_sample
+
+    def unavailable(*args, **kwargs):
+        raise office_engine.OfficeConversionError("renderer unavailable")
+
+    monkeypatch.setattr(office_engine, "libreoffice_to_pdf", unavailable)
+    app = FastAPI()
+    app.include_router(create_native_editor_router(editor.grants, editor=editor))
+    raw, _ = await editor.grants.issue(context, capabilities=editor.capabilities(context))
+    token, _ = await editor.grants.exchange(raw)
+    headers = {"Origin": "http://test", "X-CSRF-Token": editor.grants.csrf_token(token)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        client.cookies.set(NATIVE_SESSION_COOKIE, token)
+        original = await client.get(BASE + "/preview.pdf")
+        draft = await client.post(BASE + "/preview.pdf", headers=headers, json={
+            "expectedSha256": context.source_file.sha256, "operations": [],
+        })
+        for result in (original, draft):
+            assert result.status_code == 503
+            assert result.json()["detail"]["code"] == "native_engine_unavailable"
+        assert (await client.get(BASE + "/file")).content == source
