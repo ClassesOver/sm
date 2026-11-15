@@ -223,6 +223,10 @@ function ask() {
   const turns = knowledgeTurns.get(currentSpace) ?? []
   const pending = knowledgePending.has(currentSpace)
   const conversation = conversationOf(currentSpace)
+  const key = draftKey(currentSpace)
+  const draft = knowledgeInputs.get(key) ?? ''
+  const pendingQuestion = pending ? draft.trim() : ''
+  const hasMessages = turns.length > 0 || Boolean(pendingQuestion)
   const conversations = knowledgeConversations.get(currentSpace) ?? []
   const ready = knowledgeConversations.has(currentSpace)
   const listed = conversations.some(item => item.id === conversation)
@@ -235,7 +239,7 @@ function ask() {
       </select>
       ${listed ? `<button data-action="kb-delete" ${pending || busy ? 'disabled' : ''}>删除会话</button>` : ''}
     </div>
-    <div class="kb-thread ${turns.length ? 'has-messages' : ''}" data-thread="${escape(draftKey(currentSpace))}" data-last-turn="${escape(turns.at(-1)?.id ?? '')}">${turns.length ? turns.map(turn => `<article class="kb-turn">
+    <div class="kb-thread ${hasMessages ? 'has-messages' : ''}" data-thread="${escape(key)}" data-last-turn="${escape(pendingQuestion ? 'pending' : turns.at(-1)?.id ?? '')}">${hasMessages ? turns.map(turn => `<article class="kb-turn">
       <div class="kb-question">${escape(turn.question)}</div><div class="kb-answer">${formatOfficeAnswer?.(turn.answer) ?? escape(turn.answer)}</div>
       ${turn.citations.length && canWrite() ? `<div class="kb-citations"><button data-answer-docx="${escape(turn.id)}" ${busy ? 'disabled' : ''}>另存为 Word</button></div>` : ''}
       <div class="kb-citations">${turn.citations.map(citation => `<button data-citation="${escape(citation.fileId)}" data-revision="${citation.revision}">${icon('file', 14)} ${escape(citation.name)} · 修订 ${citation.revision}</button>`).join('')}</div>
@@ -244,12 +248,12 @@ function ask() {
       <p>把常读的文件点上星，AI 就能跨文件检索、引用原文回答<br>——来源点一下就能打开。</p>
       <div class="kb-steps">${[['收藏文件', '在最近或文件夹里，点文件行上的星标'], ['回来提问', '像聊天一样问，不用先打开任何文档'], ['点击引用', '回答标注来源文件，点引用直接跳过去']].map(([title, body], i) => `<div><b>${i + 1}</b><span>${title}<small>${body}</small></span></div>`).join('')}</div>
       <button class="kb-cta" data-view="recent">${icon('star', 14)} 去最近文件收藏</button>
-    </div>`}</div>
-    <div class="kb-bottom"><p>${pending ? '正在检索和阅读收藏文件…' : `当前工作区已收藏 ${library.entries.filter(item => item.starred).length} 个文件。回答会注明来源文件。`}</p><div class="composer">
-      <div class="kb-citations">${(knowledgeAttachments.get(draftKey(currentSpace)) ?? []).map(file =>
+    </div>`}${pendingQuestion ? `<article class="kb-turn" aria-busy="true"><div class="kb-question">${escape(pendingQuestion)}</div></article>` : ''}</div>
+    <div class="kb-bottom"><p aria-live="polite">${pending ? '正在检索和阅读工作区资料…' : `当前工作区已收藏 ${library.entries.filter(item => item.starred).length} 个文件。回答会注明来源文件。`}</p><div class="composer">
+      <div class="kb-citations">${(knowledgeAttachments.get(key) ?? []).map(file =>
         `<button data-remove-attachment="${escape(file.id)}" ${pending ? 'disabled' : ''}
           aria-label="移除附件 ${escape(file.name)}">${escape(file.name)} ×</button>`).join('')}</div>
-      <textarea aria-label="向知识库提问" placeholder="问一个关于收藏文件的问题…" maxlength="8000" ${pending || !ready || !currentUser ? 'disabled' : ''}>${escape(knowledgeInputs.get(draftKey(currentSpace)) ?? '')}</textarea>
+      <textarea aria-label="向知识库提问" placeholder="问一个关于收藏文件的问题…" maxlength="8000" ${pending || !ready || !currentUser ? 'disabled' : ''}>${pending ? '' : escape(draft)}</textarea>
       <div><span class="kb-model">默认模型</span><button data-action="kb-attach" ${ready && canWrite() && !pending ? '' : 'disabled'} aria-label="添加附件">${icon('plus')}</button>
       ${pending ? '<button data-action="kb-stop" class="send">停止</button>' :
         `<button data-action="kb-send" ${!ready || !currentUser ? 'disabled' : ''} class="send" aria-label="发送"><img alt="" src="${assets}send-enter-off.png"></button>`}</div>
