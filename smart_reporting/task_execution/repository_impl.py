@@ -219,6 +219,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             Column("native_word_input_sha256", String(64)),
             Column("native_workbook_request_sha256", String(64)),
             Column("native_workbook_accepted_at", DateTime(timezone=True)),
+            Column("native_workbook_discarded_at", DateTime(timezone=True)),
             Column("native_workbook_candidate", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_candidate_receipt", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_candidate_sha256", String(64)),
@@ -456,6 +457,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                 ("native_workbook_request_sha256", "VARCHAR(64)"),
                 ("native_workbook_candidate", "JSONB"),
                 ("native_workbook_accepted_at", "TIMESTAMP WITH TIME ZONE"),
+                ("native_workbook_discarded_at", "TIMESTAMP WITH TIME ZONE"),
                 ("native_word_candidate_receipt", "JSONB"),
                 ("native_word_candidate_sha256", "VARCHAR(64)"),
                 ("acceptance_contract", "JSONB"),
@@ -1253,6 +1255,51 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             scope, instruction, _native_workbook_request_sha256=request_sha256,
         )
 
+    async def is_native_workbook_task_cancelled(self, scope: TaskExecutionScope) -> bool:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:
+            row = await connection.execute(select(self.tasks.c.external_run_id).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.native_workbook_request_sha256.is_not(None),
+                or_(self.tasks.c.status == TaskState.CANCELLED,
+                    self.tasks.c.native_workbook_discarded_at.is_not(None)),
+            ))
+            return row.scalar_one_or_none() is not None
+
+    async def cancel_native_workbook_task(self, scope: TaskExecutionScope, *, create_tombstone=False) -> bool:
+        if create_tombstone and await self.get_task_snapshot(scope.external_run_id) is None:
+            try:
+                await self.create_task_with_initial_attempt(
+                    scope, "Cancelled workbook request.",
+                    _native_workbook_request_sha256=hashlib.sha256(b"native-workbook-cancelled").hexdigest(),
+                    _native_workbook_cancelled=True,
+                )
+                return True
+            except TaskExecutionRepositoryError as error:
+                if error.code not in {"task_initial_instruction_conflict", "native_workbook_input_conflict"}:
+                    raise
+        for _ in range(3):
+            try:
+                task = await self.cancel_and_reject(scope)
+                break
+            except TaskExecutionRepositoryError as error:
+                if error.code != "task_cas_conflict":
+                    raise
+        else:
+            raise TaskExecutionRepositoryError("task_cas_conflict", "XLSX 任务状态已发生变化。")
+        if task.state is not TaskState.COMPLETED:
+            return task.state is TaskState.CANCELLED
+        async with self.db.db_engine.begin() as connection:
+            result = await connection.execute(update(self.tasks).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.status == TaskState.COMPLETED,
+                self.tasks.c.native_workbook_candidate.is_not(None),
+                self.tasks.c.native_workbook_accepted_at.is_(None),
+            ).values(native_workbook_discarded_at=func.coalesce(
+                self.tasks.c.native_workbook_discarded_at, func.clock_timestamp(),
+            )))
+            return result.rowcount == 1
+
     async def create_task_with_initial_attempt(
         self,
         scope: TaskExecutionScope,
@@ -1263,6 +1310,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         max_instruction_bytes: int = MAX_INSTRUCTION_BYTES,
         _native_word_input: dict[str, Any] | None = None,
         _native_workbook_request_sha256: str | None = None,
+        _native_workbook_cancelled: bool = False,
     ) -> TaskSnapshot:
         # Private creation arguments are used by the native Office services.
         # Do not expose this argument in task HTTP/model tools.
@@ -1319,7 +1367,8 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                         thread_id=scope.thread_id,
                         agent_id=scope.executor_id,
                         sandbox_id=scope.sandbox_id,
-                        status=TaskState.NEW,
+                        status=TaskState.CANCELLED if _native_workbook_cancelled else TaskState.NEW,
+                        completed_at=now if _native_workbook_cancelled else None,
                         native_word_input=word_payload,
                         native_word_input_sha256=word_digest,
                         native_workbook_request_sha256=_native_workbook_request_sha256,
@@ -1341,7 +1390,9 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                         internal_run_id=internal_run_id,
                         external_run_id=scope.external_run_id,
                         continuation_index=0,
-                        status=AttemptState.CREATED,
+                        status=AttemptState.CLOSED if _native_workbook_cancelled else AttemptState.CREATED,
+                        outcome=AttemptOutcome.CANCELLED if _native_workbook_cancelled else None,
+                        completed_at=now if _native_workbook_cancelled else None,
                         resume_count=0,
                         lease_epoch=0,
                         created_at=now,
@@ -1896,6 +1947,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             row = (await connection.execute(select(self.tasks).where(
                 *self._task_scope_conditions(self.tasks, scope),
                 self.tasks.c.native_workbook_request_sha256.is_not(None),
+                self.tasks.c.native_workbook_discarded_at.is_(None),
                 self.tasks.c.status == TaskState.COMPLETED,
                 exists(select(self.runs.c.internal_run_id).where(
                     self.runs.c.internal_run_id == self.tasks.c.current_internal_run_id,
@@ -1924,6 +1976,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             result = await connection.execute(update(self.tasks).where(
                 *self._task_scope_conditions(self.tasks, scope),
                 self.tasks.c.status == TaskState.COMPLETED,
+                self.tasks.c.native_workbook_discarded_at.is_(None),
                 self.tasks.c.native_workbook_candidate == candidate,
                 self.tasks.c.finish_receipt["kind"].as_string() == "native_workbook_candidate",
                 self.tasks.c.finish_receipt["sha256"].as_string() == pointer_sha,

@@ -66,6 +66,13 @@ class NativeWorkbookAIService(NativeAIService):
     async def cancel_request(self, session, client_request_id):
         context = await self._context(session)
         request_id = self._request_id(client_request_id)
+        if self.task_repository is not None:
+            edit_id = self._durable_edit_id(context, request_id)
+            if await self.task_repository.cancel_native_workbook_task(
+                self._durable_scope(context, edit_id), create_tombstone=True,
+            ):
+                return self._serialize(await self._cancelled_projection(context, edit_id, request_id))
+            return await self.wait_edit_status(session, edit_id, wait_ms=0)
         self._prune()
         key = (context.digest(), request_id)
         edit_id = self._requests.get(key)
@@ -112,12 +119,16 @@ class NativeWorkbookAIService(NativeAIService):
         edit_id = uuid4().hex
         task_scope = None
         if self.task_repository is not None:
-            edit_id = native_digest({"context": context.digest(), "request": request_id})
+            edit_id = self._durable_edit_id(context, request_id)
             task_scope = self._durable_scope(context, edit_id)
+            if await self.task_repository.is_native_workbook_task_cancelled(task_scope):
+                return self._serialize(await self._cancelled_projection(context, edit_id, request_id))
             try:
                 await self.task_repository.create_native_workbook_task(task_scope, instruction, fingerprint)
             except TaskExecutionRepositoryError as error:
                 if error.code in {"native_workbook_input_conflict", "task_initial_instruction_conflict"}:
+                    if await self.task_repository.is_native_workbook_task_cancelled(task_scope):
+                        return self._serialize(await self._cancelled_projection(context, edit_id, request_id))
                     raise _invalid("native_ai_snapshot_changed", "相同 AI 请求的内容已变化，请重新发起。") from None
                 raise
             previous = self._request_job(context, request_id, fingerprint)
@@ -133,6 +144,38 @@ class NativeWorkbookAIService(NativeAIService):
             self._prepare_job(*args) if task_scope is None else self._run_durable_job(task_scope, *args)
         )
         return self._serialize(job)
+
+    @staticmethod
+    def _durable_edit_id(context, request_id):
+        return native_digest({"context": context.digest(), "request": request_id})
+
+    async def _cancelled_projection(self, context, edit_id, request_id=""):
+        job = self._jobs.get(edit_id)
+        if job is None:
+            job = _WorkbookNativeAIJob(
+                edit_id, context.digest(), "", context.scope.user_id, datetime.now(UTC),
+                client_request_id=request_id,
+            )
+        job.status = "cancelled"
+        job.proposal = job.error = None
+        if job.task and not job.task.done():
+            job.task.cancel()
+        await job.event_log.finish(job.status)
+        return job
+
+    async def cancel_edit(self, session, edit_id):
+        if self.task_repository is None or re.fullmatch(r"[0-9a-f]{64}", edit_id) is None:
+            return await super().cancel_edit(session, edit_id)
+        context = await self._context(session)
+        try:
+            cancelled = await self.task_repository.cancel_native_workbook_task(self._durable_scope(context, edit_id))
+        except TaskExecutionRepositoryError as error:
+            if error.code in {"task_not_found", "task_scope_mismatch"}:
+                raise _invalid("native_ai_job_missing", "XLSX 任务不存在或已过期。") from None
+            raise
+        if cancelled:
+            return self._serialize(await self._cancelled_projection(context, edit_id))
+        return await self.wait_edit_status(session, edit_id, wait_ms=0)
 
     def _durable_scope(self, context, edit_id):
         return TaskExecutionScope(
@@ -161,9 +204,12 @@ class NativeWorkbookAIService(NativeAIService):
     async def _job(self, session, edit_id):
         if self.task_repository is not None and re.fullmatch(r"[0-9a-f]{64}", edit_id):
             context = await self._context(session)
+            scope = self._durable_scope(context, edit_id)
+            if await self.task_repository.is_native_workbook_task_cancelled(scope):
+                return await self._cancelled_projection(context, edit_id), context
             job = self._jobs.get(edit_id)
             if job is None or job.status == "succeeded":
-                receipt = await self._read_durable_candidate(self._durable_scope(context, edit_id), context)
+                receipt = await self._read_durable_candidate(scope, context)
                 if receipt is not None:
                     if job is None:
                         job = _WorkbookNativeAIJob(
@@ -254,7 +300,9 @@ class NativeWorkbookAIService(NativeAIService):
         await self._prepare_job(job, context, base, selection, scope, instruction, persist=persist)
         if job.status == "failed":
             current = await repository.get_task_snapshot(task_id)
-            if current.state is TaskState.ACTIVE and current.lease_owner == claim.lease.owner:
+            if current.state is TaskState.CANCELLED:
+                job.status, job.error = "cancelled", None
+            elif current.state is TaskState.ACTIVE and current.lease_owner == claim.lease.owner:
                 await repository.close_and_decide(
                     task_id, claim.lease, current.state_version, outcome=AttemptOutcome.ERROR,
                     agno_status="error", error=job.error["code"], create_next=False,

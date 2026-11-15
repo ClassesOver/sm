@@ -241,3 +241,27 @@ async def test_workbook_candidate_finish_is_fenced_and_recoverable(durable):
     assert await repository.get_completed_native_workbook_candidate(
         replace(scope, owner_user_id='foreign'), context.digest(),
     ) is None
+
+@pytest.mark.parametrize("accepted_before_cancel", [False, True])
+async def test_completed_workbook_cancellation_respects_explicit_acceptance(durable, accepted_before_cancel):
+    d = durable
+    first = d["service"]()
+    started = await first.start_edit(d["session"], **d["request"])
+    edit_id = started["editId"]
+    candidate = await first.wait_edit_status(d["session"], edit_id)
+    assert candidate["status"] == "succeeded", candidate
+    adoption = dict(expected_sha256=d["request"]["expected_sha256"], operations=[],
+                    snapshot_sha256=candidate["snapshotSha256"])
+    if accepted_before_cancel:
+        await first.accept_edit(d["session"], edit_id, **adoption)
+
+    second = d["service"](never_call)
+    response = await second.cancel_edit(d["session"], edit_id)
+    if accepted_before_cancel:
+        assert response["status"] == "succeeded" and response["accepted"]
+    else:
+        assert response["status"] == "cancelled" and "proposal" not in response
+        projected = await first.wait_edit_status(d["session"], edit_id)
+        assert projected["status"] == "cancelled" and "proposal" not in projected
+        with pytest.raises(ReportingError):
+            await first.accept_edit(d["session"], edit_id, **adoption)
