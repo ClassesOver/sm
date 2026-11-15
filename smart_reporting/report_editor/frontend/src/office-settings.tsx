@@ -27,6 +27,8 @@ export async function showOfficeSettings(host: HTMLElement, options: { user: Off
     value = saved; applyOfficeTheme(saved.theme); return saved
   }} onLogout={async () => {
     if (!options.isCurrent()) throw new Error('账户已变化，请重新打开设置。')
-    await officeRequest('/logout', 'POST'); applyOfficeTheme('system'); options.onLogout()
+    await officeRequest('/logout', 'POST')
+    if (!options.isCurrent()) throw new Error('账户已变化，请重新打开设置。')
+    applyOfficeTheme('system'); options.onLogout()
   }} />)
 }
