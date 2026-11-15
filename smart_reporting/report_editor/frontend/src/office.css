@@ -57,6 +57,7 @@ nav { display: grid; gap: 2px; }
 .folder-row .folder-actions { margin-left: auto; flex: none; opacity: 0; }
 .folder-row:hover .folder-actions, .folder-row:focus-within .folder-actions { opacity: 1; }
 .folder-row button:last-child { flex: 1; }
+.folder-create-row input { min-width: 0; width: 100%; margin-left: 18px; font: inherit; }
 .folder-row button[aria-expanded=false] svg { transform: rotate(-90deg); }
 footer { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 18px 8px 7px; border-top: 1px solid #eee; font-weight: 600; }
 footer span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: #e8ebef; color: #59626f; }

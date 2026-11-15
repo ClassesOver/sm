@@ -1,3 +1,4 @@
+import {openInlineFolder} from './office-inline-folder'
 import type { renderOfficeAnswer } from './office-answer'
 import { showOfficeAssistantPreferences } from './office-assistant-preferences'
 import { showOfficeReport } from './office-report'
@@ -693,6 +694,14 @@ async function duplicateOfficeEntry(entry: Entry) {
   }, grantPath(result.editor.url))
 }
 
+function expandOfficeFolderPath(id: string) {
+  let changed = false
+  for (let ancestor: string | undefined = id; ancestor; ancestor = library.folders.find(item => item.id === ancestor)?.parent) {
+    changed = setFolderCollapsed(ancestor, false) || changed
+  }
+  return changed
+}
+
 async function revealOfficeFile(entry: Entry) {
   const account = accountGeneration
   let targetPath: string | undefined
@@ -704,9 +713,7 @@ async function revealOfficeFile(entry: Entry) {
     currentSpace = entry.space
     installLibrary(result)
     folder = file.folder ?? rootFolder
-    for (let ancestor: string | undefined = folder; ancestor; ancestor = library.folders.find(item => item.id === ancestor)?.parent) {
-      setFolderCollapsed(ancestor, false)
-    }
+    expandOfficeFolderPath(folder)
     selectedFiles.clear()
     view = 'folder'
     filter = ''
@@ -747,16 +754,20 @@ async function renameOfficeTab(entry: Entry) {
 }
 
 function createOfficeFolder(parent: string) {
-    const name = window.prompt('新建文件夹', '新建文件夹')?.trim()
-    if (!name) return
+  if (!canWrite() || busy) return
+  const space = currentSpace
+  if (expandOfficeFolderPath(parent)) render()
+  const row = root.querySelector<HTMLElement>(`.folder-row[data-drop-folder="${CSS.escape(parent)}"]`)
+  if (!row) return
+  openInlineFolder(row, name => {
+    if (space !== currentSpace || !canWrite()) return
     void withImport(async () => {
-      const created = await officeRequest<Folder>(`/workspaces/${currentSpace}/folders`, 'POST',
-        { name, parent: parent === rootFolder ? null : parent })
+      await officeRequest<Folder>(`/workspaces/${space}/folders`, 'POST',
+        {name, parent: parent === rootFolder ? null : parent})
       setFolderCollapsed(parent, false)
-      folder = created.id
-      view = 'folder'; filter = ''
       await refreshLibrary()
     })
+  })
 }
 
 root.addEventListener('contextmenu', event => {
@@ -788,7 +799,7 @@ root.addEventListener('contextmenu', event => {
     menu.append(item)
     if (enabled) items.push(item)
   }
-  if (parent) add('新建子文件夹', () => createOfficeFolder(parent))
+  if (parent) add('新建子文件夹', () => requestAnimationFrame(() => createOfficeFolder(parent)))
   if (tabEntry) {
     if (canWrite(tabEntry.space)) {
       add('重命名', () => void withImport(() => renameOfficeTab(tabEntry)))
