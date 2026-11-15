@@ -95,6 +95,42 @@ afterEach(() => {
   document.body.replaceChildren()
 })
 
+it('writes automatic font color and no fill while retaining the formula and other styles', async () => {
+  const source = await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: null, formula: '=1+2' },
+      style: { fontColor: '#123456', fillColor: '#FFAA00', bold: true } },
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 'keep' },
+      style: { fillColor: '#FFAA00' } },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let output: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    output = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/colors.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('A1').activate()
+    grid.ribbon('font-color:auto')
+    await vi.waitFor(() => expect(draft.operations).toMatchObject([
+      { kind: 'applyCellEdits', edits: [{ writeValue: false, style: { fontColor: null } }] },
+    ]))
+    grid.ribbon('fill:none')
+    await vi.waitFor(() => expect(draft.operations).toMatchObject([
+      { kind: 'applyCellEdits', edits: [{ style: { fontColor: null } }] },
+      { kind: 'applyCellEdits', edits: [{ writeValue: false, style: { fillColor: null } }] },
+    ]))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = await readWorkbook(output!)
+    const { importedStyleOf } = await import('./workbook-vendor/core/session-core')
+    expect(saved.sheets[0]!.cells.A1?.formula).toBe('=1+2')
+    expect(importedStyleOf(saved, 'Sheet1', 'A1')).toMatchObject({ bold: true })
+    expect(importedStyleOf(saved, 'Sheet1', 'A1')?.fontColor).not.toBe('#123456')
+    expect(importedStyleOf(saved, 'Sheet1', 'A1')?.fillColor).toBeUndefined()
+    expect(importedStyleOf(saved, 'Sheet1', 'A2')?.fillColor).toBe('#FFAA00')
+  } finally { current.view?.dispose() }
+})
+
 it('clears only the selection hyperlinks through the draft and preserves cell content', async () => {
   const source = await applySheetHyperlinks(await applyCellEdits(await createBlankWorkbook(), [
     { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'Label' }, style: { bold: true, underline: true, fontColor: '#0563C1' } },

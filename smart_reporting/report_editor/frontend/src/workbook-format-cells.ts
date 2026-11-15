@@ -72,7 +72,7 @@ export function formatCellsOperation(target: FormatCellsTarget, commands: readon
       case 'italic': style.italic = flag(value); break
       case 'underline': style.underline = flag(value); if (style.underline) style.underlineStyle = 'single'; break
       case 'strike': style.strikethrough = flag(value); break
-      case 'font-color': style.fontColor = color(value); break
+      case 'font-color': style.fontColor = value === 'auto' ? null : color(value); break
       case 'fill': style.fillColor = value === 'none' ? null : color(value); break
       case 'align': style.horizontalAlignment = value as WorkbookStyleEdit['horizontalAlignment']; break
       case 'valign': style.verticalAlignment = (value === 'middle' ? 'center' : value) as WorkbookStyleEdit['verticalAlignment']; break

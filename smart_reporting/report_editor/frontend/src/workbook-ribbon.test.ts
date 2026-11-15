@@ -200,6 +200,26 @@ it('commits a typed font family outside suggestions and reflects workbook protec
   ribbon.dispose()
 })
 
+it('dispatches source automatic font color and no fill alongside the color pickers', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0,
+    format: () => ({ ...selectedWorkbookFormat(null),
+      fontColor: { kind: 'value' as const, value: '#123456' }, fillColor: { kind: 'value' as const, value: '#FFAA00' } }),
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const automatic = document.querySelector<HTMLButtonElement>('button[aria-label="自动颜色"]')!
+  const noFill = document.querySelector<HTMLButtonElement>('button[aria-label="无填充"]')!
+  expect(automatic).not.toBeNull(); expect(noFill).not.toBeNull()
+  automatic.click(); noFill.click()
+  expect(command.mock.calls).toEqual([['font-color:auto'], ['fill:none']])
+  protectedSheet = true; ribbon.refreshState()
+  expect([automatic, noFill].every(button => button.disabled)).toBe(true)
+  expect(document.querySelector<HTMLInputElement>('[data-ribbon-control="font-color"]')!.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()
   const open = (editable: boolean) => {

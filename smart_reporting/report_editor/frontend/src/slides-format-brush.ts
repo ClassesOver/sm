@@ -1,6 +1,7 @@
 import {projectParagraphs,uniformParagraphValue,type ParagraphFormatting,type ParagraphSourceFormatting,type ParagraphList} from './slides-paragraph'
+import type { ShapeStroke } from '../../../reporting/slides_engine/bridge/pptx-outline'
 export type BrushText={fontSizePt?:number;fontFamily?:string;color?:string;bold?:boolean;italic?:boolean;underline?:boolean}
-export type BrushShape={fill?:string;stroke?:{color:string;widthPt:number}|null}
+export type BrushShape={fill?:string;stroke?:ShapeStroke|null}
 export type BrushSource={supported:boolean;text?:BrushText;align?:'left'|'center'|'right'|'justify';shape?:BrushShape;reason?:string}
 export type SlidesBrush=Omit<BrushSource,'supported'|'reason'>
 export type BrushElement={slideIndex:number;id:string;type:string;editable:boolean;text:string;brushSource?:BrushSource;paragraphFormatting?:ParagraphSourceFormatting[];paragraphLists?:ParagraphList[]}

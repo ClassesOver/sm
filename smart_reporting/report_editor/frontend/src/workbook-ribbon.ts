@@ -86,6 +86,8 @@ type RibbonCommand =
   | 'insert-sheet'
   | `font-family:${string}`
   | `font-size:${number}`
+  | 'font-color:auto'
+  | 'fill:none'
   | `font-color:#${string}`
   | `fill:#${string}`
   | `border:${RibbonBorderPreset}`
@@ -1418,7 +1420,8 @@ export function mountWorkbookRibbon(
       wrapper.dataset.formatState = state.kind
       wrapper.dataset.formatValue = state.kind === 'value' ? state.value : ''
       input.hidden = !color
-      input.disabled = !editable || state.kind === 'unavailable'
+      input.disabled = !!fontBlocked || state.kind === 'unavailable'
+      wrapper.querySelector<HTMLButtonElement>('[data-color-reset]')!.disabled = input.disabled
       if (color) input.value = color
       input.title = state.kind === 'unavailable' ? state.reason : color ?? (state.kind === 'mixed' ? '混合颜色' : state.kind === 'value' && state.value === 'none' ? '无填充' : '自动颜色')
       input.setAttribute('aria-description', input.title)
@@ -1427,9 +1430,9 @@ export function mountWorkbookRibbon(
       label.hidden = !!color
       // The picker remains actionable for automatic/no-fill/mixed states without
       // displaying its browser fallback black as a claimed selection color.
-      label.tabIndex = !editable || state.kind === 'unavailable' ? -1 : 0
+      label.tabIndex = input.disabled ? -1 : 0
       label.setAttribute('role', 'button')
-      label.setAttribute('aria-disabled', String(!editable || state.kind === 'unavailable'))
+      label.setAttribute('aria-disabled', String(input.disabled))
     }
     const number = body.querySelector<HTMLSelectElement>('[data-ribbon-control="number-format"]')
     if (number) {
@@ -1564,7 +1567,7 @@ export function mountWorkbookRibbon(
           section.append(button)
         }
         for (const [control, label] of [['font-color', '字体颜色'], ['fill', '填充颜色']] as const) {
-          const wrapper = document.createElement('label')
+          const wrapper = document.createElement('div')
           wrapper.className = 'workbook-ribbon-color'; wrapper.title = label; wrapper.setAttribute('aria-label', label)
           const input = document.createElement('input')
           input.type = 'color'; input.hidden = true; input.dataset.ribbonControl = control; input.setAttribute('aria-label', label)
@@ -1573,7 +1576,13 @@ export function mountWorkbookRibbon(
           const pick = () => { if (!input.disabled) { if (typeof input.showPicker === 'function') input.showPicker(); else input.click() } }
           status.addEventListener('click', event => { event.preventDefault(); pick() })
           status.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pick() } })
-          wrapper.append(input, status); section.append(wrapper)
+          const reset = document.createElement('button')
+          const resetLabel = control === 'font-color' ? '自动颜色' : '无填充'
+          reset.type = 'button'; reset.dataset.colorReset = ''
+          reset.setAttribute('aria-label', resetLabel); reset.title = resetLabel
+          reset.textContent = control === 'font-color' ? '自动' : '无'
+          reset.addEventListener('click', () => { if (!reset.disabled) onCommand(control === 'font-color' ? 'font-color:auto' : 'fill:none') })
+          wrapper.append(input, status, reset); section.append(wrapper)
         }
         const border = document.createElement('select')
         border.className = 'workbook-ribbon-select'

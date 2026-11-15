@@ -28,6 +28,7 @@ import { createHash } from 'node:crypto'
 import shapePresets from './shape-presets.json' with { type: 'json' }
 import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addImageMediaAndRel, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAdvanceTime, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAdvanceTime, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import type { SlideElement } from '@genoffice/pptx-engine'
+import { isOutlineDash, type ShapeStroke } from './pptx-outline'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -193,12 +194,13 @@ type Input = {
 const numberingTypes = ['arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'alphaUcPeriod', 'alphaLcParenR', 'alphaLcPeriod', 'romanLcPeriod', 'circleNumDbPlain', 'ea1ChsPeriod']
 const maxParagraphEmu = 51206400 // ECMA-376 ST_TextMargin/ST_TextIndent, 56 inches.
 const colorPattern = /^#[0-9a-fA-F]{6}$/
-type ShapeColors = { fill?: string; stroke?: { color: string; widthPt: number } | null }
+type ShapeColors = { fill?: string; stroke?: ShapeStroke | null }
 function validShapeColors({ fill, stroke }: ShapeColors) {
   return (fill === undefined || fill === 'none' || (typeof fill === 'string' && colorPattern.test(fill))) &&
-    (stroke == null || (typeof stroke === 'object' && Object.keys(stroke).sort().join() === 'color,widthPt' &&
+    (stroke == null || (typeof stroke === 'object' && Object.keys(stroke).every(key => ['color', 'widthPt', 'dash'].includes(key)) &&
       typeof stroke.color === 'string' && colorPattern.test(stroke.color) &&
-      Number.isFinite(stroke.widthPt) && stroke.widthPt >= 0.01 && stroke.widthPt <= 100))
+      Number.isFinite(stroke.widthPt) && stroke.widthPt >= 0.01 && stroke.widthPt <= 100 &&
+      (stroke.dash === undefined || isOutlineDash(stroke.dash))))
 }
 const deletableTypes = new Set(['text', 'shape', 'picture'])
 const validSlideIndex = (value: unknown, count: number): value is number =>
@@ -991,9 +993,10 @@ if (request.action === 'inspect') {
     if (style.fill !== undefined && !setElementFill(opened, slide, style.elementId, style.fill)) throw new Error('shape_fill_failed')
     if (style.stroke !== undefined) {
       const target = element as typeof element & { stroke?: unknown; dirtyStroke?: boolean }
+      const dash = style.stroke?.dash ?? (element.type === 'picture' ? element.stroke?.dash : undefined)
       const patch = style.stroke ? strokePatchToModel({
         color: style.stroke.color.toUpperCase(), widthEmu: Math.round(style.stroke.widthPt * 12700),
-        ...(element.type === 'picture' && element.stroke?.dash ? { dash: element.stroke.dash } : {}),
+        ...(dash ? { dash } : {}),
       }) : undefined
       target.stroke = patch
       target.dirtyStroke = true
@@ -1106,6 +1109,12 @@ if (request.action === 'inspect') {
       }),
     })
     if (shape.fill === 'none' && !setElementFill(opened, slide, inserted.id, 'none')) throw new Error('shape_fill_failed')
+    if (shape.stroke?.dash) {
+      inserted.stroke = strokePatchToModel({
+        color: shape.stroke.color, widthEmu: Math.round(shape.stroke.widthPt * 12700), dash: shape.stroke.dash,
+      })
+      inserted.dirtyStroke = true
+    }
     const spid = elementSpid(inserted)
     if (shape.draftKey && spid !== null) draftShapes.push({ path: slide.path, draftKey: shape.draftKey, spid })
   }

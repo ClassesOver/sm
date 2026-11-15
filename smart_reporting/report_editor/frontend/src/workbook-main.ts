@@ -989,6 +989,18 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   // 固定源六页签：整批预校验后经现有文件重放与草稿历史保存。
   let formatCellsTarget: ReturnType<typeof captureNumberFormatTarget>
   let formatCellsSource: Uint8Array | undefined
+  const applyFormatCellsPatch = async (target: ReturnType<typeof captureNumberFormatTarget>, commands: readonly string[], validate: () => void) => {
+    validate()
+    const sheetName = target!.sheet.getSheetName?.()
+    const operation = formatCellsOperation(target!, commands)
+    if (!operation.edits.length) return
+    await applyWorkbookDraftOperation(validate, operation, '单元格格式已更新，值和公式保持不变；修改尚未保存。')
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === sheetName)
+    if (sheet) {
+      workbook!.setActiveSheet(sheet)
+      sheet.getRange(target!.row, target!.column, target!.height, target!.width).activate()
+    }
+  }
   const formatCellsDialog = createFormatCellsDialog(shell.editor, {
     current: () => {
       validateFormatCellsTarget(formatCellsTarget, formatWorkbook(), editable())
@@ -1004,16 +1016,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         if (original !== formatCellsSource) throw new Error('来源文件已变化，请重新打开单元格格式')
         if (sheetProtected(target.sheetId)) throw new Error('工作表受保护，请先撤销保护')
       }
-      validate()
-      const sheetName = target!.sheet.getSheetName?.()
-      const operation = formatCellsOperation(target!, commands)
-      if (!operation.edits.length) return
-      await applyWorkbookDraftOperation(validate, operation, '单元格格式已更新，值和公式保持不变；修改尚未保存。')
-      const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheets().find(sheet => sheet.getSheetName() === sheetName)
-      if (sheet) {
-        workbook!.setActiveSheet(sheet)
-        sheet.getRange(target!.row, target!.column, target!.height, target!.width).activate()
-      }
+      await applyFormatCellsPatch(target, commands, validate)
     },
   })
   const noteWorkbook = () => runtime.univerAPI.getActiveWorkbook() as unknown as NoteWorkbook | null
@@ -2591,6 +2594,17 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           const target = captureAxisTarget(runtime.univerAPI.getActiveWorkbook() as never, command === 'row-height-open' ? 'row' : 'col')
           if (!target) throw new Error('请先选择单元格或区域')
           axisDialog.open(target)
+          return
+        }
+        if (command === 'font-color:auto' || command === 'fill:none') {
+          const { validate } = captureClearSelection('颜色')
+          const target = captureNumberFormatTarget(formatWorkbook())
+          void applyFormatCellsPatch(target, [command], () => {
+            validate()
+            validateFormatCellsTarget(target, formatWorkbook(), editable())
+            const state = formatState()[command === 'font-color:auto' ? 'fontColor' : 'fillColor']
+            if (state.kind === 'unavailable') throw new Error(state.reason)
+          }).catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
           return
         }
         if (command === 'format-cells') {

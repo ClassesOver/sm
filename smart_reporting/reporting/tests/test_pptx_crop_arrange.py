@@ -145,7 +145,7 @@ def test_unsaved_shape_kind_change_writes_only_the_final_inserted_geometry():
 def test_unsaved_shape_styles_write_native_fill_and_outline():
     content, _ = _presentation()
     shape = {'slideIndex': 0, 'kind': 'hexagon', 'geometry': {'x': 12, 'y': 24, 'width': 80, 'height': 40}}
-    styled = {**shape, 'fill': '#123456', 'stroke': {'color': '#224466', 'widthPt': 2.25}}
+    styled = {**shape, 'fill': '#123456', 'stroke': {'color': '#224466', 'widthPt': 2.25, 'dash': 'dashDot'}}
     clear = {**shape, 'fill': 'none', 'stroke': None}
     updated = patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [styled, clear]}])
     slides = Presentation(BytesIO(updated)).slides
@@ -153,9 +153,20 @@ def test_unsaved_shape_styles_write_native_fill_and_outline():
     assert str(first.fill.fore_color.rgb) == '123456'
     assert str(first.line.color.rgb) == '224466'
     assert first.line.width == Pt(2.25)
+    assert first._element.xpath('./p:spPr/a:ln/a:prstDash[@val="dashDot"]')
     assert second._element.xpath('./p:spPr/a:noFill')
     assert second._element.xpath('./p:spPr/a:ln') == []
-    for invalid in ({**styled, 'fill': 'transparent'}, {**styled, 'kind': 'line'}):
+    source = _target(updated, first.name)
+    assert source['brushSource']['shape']['stroke'] == styled['stroke']
+    solid = patch_office('pptx', updated, [{'kind': 'editSlides', 'shapeStyles': [
+        {'slideIndex': 0, 'elementId': source['id'], 'stroke': {**styled['stroke'], 'dash': 'solid'}},
+    ]}])
+    solid_shape = Presentation(BytesIO(solid)).slides[0].shapes[-2]
+    assert solid_shape._element.xpath('./p:spPr/a:ln/a:prstDash') == []
+    assert str(solid_shape.line.color.rgb) == '224466'
+    assert solid_shape.line.width == Pt(2.25)
+    for invalid in ({**styled, 'fill': 'transparent'}, {**styled, 'kind': 'line'},
+                    {**styled, 'stroke': {**styled['stroke'], 'dash': 'custom'}}):
         with pytest.raises(ValueError):
             patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [invalid]}])
 

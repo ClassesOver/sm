@@ -144,8 +144,17 @@ it('changes, formats and deletes an unsaved drawn shape using its insertion iden
   outline.dispatchEvent(new Event('change',{bubbles:true}))
   await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toContainEqual(expect.objectContaining({stroke:{color:'#224466',widthPt:1}})))
   app.shell.editor.querySelector<HTMLButtonElement>('[data-command="shapeOutlineWidth"] [data-outline-width="0.5"]')!.click()
-  const styled={...inserted,kind:'hexagon',fill:'#12AB34',stroke:{color:'#224466',widthPt:0.5}}
+  const outlined={...inserted,kind:'hexagon',fill:'#12AB34',stroke:{color:'#224466',widthPt:0.5}}
+  await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([outlined]))
+  app.command('shapeOutlineMenu').click()
+  const dashes=app.shell.editor.querySelector<HTMLFieldSetElement>('[data-command="shapeOutlineDash"]')!
+  expect([...dashes.querySelectorAll<HTMLButtonElement>('[data-outline-dash]')].map(item=>item.dataset.outlineDash))
+   .toEqual(['solid','dash','sysDot','dashDot'])
+  expect(dashes.querySelector('[aria-pressed="true"]')?.getAttribute('data-outline-dash')).toBe('solid')
+  dashes.querySelector<HTMLButtonElement>('[data-outline-dash="dashDot"]')!.click()
+  const styled={...outlined,stroke:{...outlined.stroke,dash:'dashDot'}}
   await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([styled]))
+  expect(dashes.querySelector('[aria-pressed="true"]')?.getAttribute('data-outline-dash')).toBe('dashDot')
   expect(draft.operations[0]?.shapeStyles).toBeUndefined()
   app.command('shapeFillMenu').click()
   app.command('shapeNoFill').click()

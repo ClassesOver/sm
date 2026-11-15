@@ -31,6 +31,9 @@
 .workbook-ribbon-color { display:inline-flex; justify-self:start; align-items:center; justify-content:center; gap:4px; min-width:32px; height:var(--office-control-height); box-sizing:border-box; padding:2px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); }
 .workbook-ribbon-color input { width:20px; height:20px; min-height:0; flex:none; padding:0; border:0; background:transparent; cursor:pointer; }
 .workbook-ribbon-color:has(input:disabled) { background:var(--color-bg-soft); }
+.workbook-ribbon-color:has(> button[data-color-reset]) { width:100%; min-width:0; overflow:hidden; }
+.workbook-ribbon-color > button[data-color-reset] { min-width:0; min-height:0; height:100%; padding:0 2px; font-size:var(--font-size-xs); }
+.workbook-ribbon-color:has(> button[data-color-reset]) > .workbook-ribbon-color-state { min-width:0; max-width:22px; }
 .workbook-ribbon-color[data-mixed="true"] { border-style:dashed; }
 .workbook-ribbon-chart-menu { display:inline-flex; align-items:center; gap:4px; }
 .workbook-ribbon-group:has(> [data-ribbon-command="wrap"]) > label:has(> [data-ribbon-control="text-orientation"]) { grid-column:span 3; }

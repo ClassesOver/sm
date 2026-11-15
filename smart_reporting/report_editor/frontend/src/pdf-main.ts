@@ -146,6 +146,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   root.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
     if (event.target instanceof HTMLElement && event.target.closest('input,textarea,select,[contenteditable],dialog')) return
+    if (ordinaryImagePlacement()) {
+      if (root.ownerDocument.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return
+      event.preventDefault()
+      cancelImagePlacement()
+      return
+    }
     if (!(mode === 'draw' && drawShape === 'measure') && !measureRecalibrate) return
     event.preventDefault()
     setMode('select')
@@ -1422,14 +1428,20 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   function ordinaryImagePlacement() {
     return mode === 'draw' && drawShape === 'image' && !!pendingImage && !pendingImageIsSignature
   }
+  function cancelImagePlacement() {
+    imagePickGeneration++
+    pendingImage = ''
+    pendingImageSize = undefined
+    setMode('select')
+    status.textContent = '已取消放置图像'
+  }
   function openOrCancelImagePicker() {
     if (!canPickImage()) return
-    imagePickGeneration++
     if (ordinaryImagePlacement()) {
-      pendingImage = ''; pendingImageSize = undefined
-      setMode('select'); status.textContent = '已取消放置图像'
+      cancelImagePlacement()
       return
     }
+    imagePickGeneration++
     imageFile.value = ''
     imageFile.click()
   }

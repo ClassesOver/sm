@@ -685,14 +685,13 @@ it('offers source-bound Home formatting and leaves unsupported Ribbon commands d
   const size = ribbon.querySelector<HTMLInputElement>('[data-action="font-size"]')!
   size.value = '16'
   size.dispatchEvent(new Event('input', { bubbles: true }))
-  const color = ribbon.querySelector<HTMLInputElement>('[data-action="font-color"]')!
-  color.value = '#aabbcc'
-  color.dispatchEvent(new Event('input', { bubbles: true }))
+  flushSync(()=>ribbon.querySelector<HTMLButtonElement>('[data-action="font-color-palette"]')!.click())
+  flushSync(()=>ribbon.querySelector<HTMLButtonElement>('.gcp-standard-row [aria-label="绿色"]')!.click())
 
   expect(docxOperations(original, editor.getJSON() as any, [anchor])).toEqual([
     { kind: 'insertParagraph', blockId: 'block-0', expectedObjectSha256: 'source-block-hash', position: 'after', text: '新段落' },
     { kind: 'formatParagraph', blockId: 'block-0', expectedObjectSha256: 'source-block-hash',
-      style: { bold: true, italic: true, underline: true, strike: true, fontFamily: 'Microsoft YaHei', fontSize: 16, color: 'AABBCC' } },
+      style: { bold: true, italic: true, underline: true, strike: true, fontFamily: 'Microsoft YaHei', fontSize: 16, color: '00B050' } },
   ])
   ribbon.querySelector<HTMLButtonElement>('[data-action="delete-paragraph"]')!.click()
   expect(onParagraphCommand).toHaveBeenCalledWith('delete')
@@ -701,6 +700,30 @@ it('offers source-bound Home formatting and leaves unsupported Ribbon commands d
     { kind: 'deleteParagraph', blockId: 'block-0', expectedObjectSha256: 'source-block-hash' },
   ])
   editor.destroy()
+})
+
+it('routes GenOffice Home font color pen and Automatic through the selected text range', () => {
+  const host=document.body.appendChild(document.createElement('div'))
+  const editor=new Editor({element:host,extensions:[Doc,Paragraph,Text,TextStyle],content:{type:'doc',content:[
+    {type:'docParagraph',attrs:{docxIndex:0},content:[{type:'text',text:'正文内容'}]},
+  ]}})
+  const anchors=[{docxIndex:0,blockId:'p0',expectedObjectSha256:'a'.repeat(64),editable:true}]
+  const baseline=editor.getJSON()
+  const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,anchors)
+  document.body.append(ribbon)
+  const click=(selector:string)=>flushSync(()=>ribbon.querySelector<HTMLButtonElement>(selector)!.click())
+  try {
+    editor.commands.setTextSelection({from:1,to:3})
+    click('[data-action="font-color"]')
+    expect(docxOperations(baseline,editor.getJSON(),anchors)).toMatchObject([{kind:'formatRange',from:0,to:2,style:{color:'FF0000'}}])
+    click('[data-action="font-color-palette"]')
+    expect(ribbon.querySelector('.gcp-standard-row [aria-label="红色"]')?.getAttribute('aria-selected')).toBe('true')
+    click('.gcp-auto')
+    expect(docxOperations(baseline,editor.getJSON(),anchors)).toEqual([])
+    const first=editor.getJSON()
+    click('[data-action="font-color"]')
+    expect(editor.getJSON()).toEqual(first)
+  } finally {editor.destroy()}
 })
 
 it('routes source paragraph line-spacing presets and before/after toggles through DOCX operations', () => {

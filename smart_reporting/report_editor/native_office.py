@@ -564,9 +564,10 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
         return (
             ('fill' not in item or fill == 'none' or isinstance(fill, str) and _HEX_COLOR.fullmatch(fill))
             and (stroke is None or (
-                isinstance(stroke, dict) and set(stroke) == {'color', 'widthPt'}
+                isinstance(stroke, dict) and {'color', 'widthPt'} <= set(stroke) <= {'color', 'widthPt', 'dash'}
                 and isinstance(stroke['color'], str) and _HEX_COLOR.fullmatch(stroke['color'])
                 and _number(stroke['widthPt'], 0.01, 100)
+                and ('dash' not in stroke or stroke['dash'] in ('solid', 'dash', 'sysDot', 'dashDot'))
             ))
         )
 

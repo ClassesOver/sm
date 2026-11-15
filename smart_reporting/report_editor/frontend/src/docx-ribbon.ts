@@ -1313,6 +1313,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         break
       }
     }
+    const currentColor = editor.getAttributes('docTextStyle').color
     flushSync(() => homeRoot.render(createElement(DocxHomeSource, {
       editable: editable && editor.isEditable,
       onAssistant,
@@ -1387,7 +1388,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           try { applyDocxCellBorders(editor, mode, cellBorderState.pen, anchors) } catch (error) { reportError?.(error) }
         },
       } : undefined,
-      onColor: (color: string) => applyTextStyle({ color }),
+      onColor: (color: string | null) => applyTextStyle({ color }),
+      fontColor: typeof currentColor === 'string' && /^#?[0-9a-f]{6}$/i.test(currentColor) ? currentColor.replace(/^#/,'') : null,
       onAlignment: (value: 'left' | 'center' | 'right' | 'justify') => { setSelectionAlign(editor, value) },
       onIndent: adjustIndent,
       indentLeft,

@@ -1,6 +1,7 @@
 import {isConnectorXml,type SlideElement,type TextRun} from '@genoffice/pptx-engine'
+import { isOutlineDash, type ShapeStroke } from './pptx-outline'
 type Text={fontSizePt?:number;fontFamily?:string;color?:string;bold?:boolean;italic?:boolean;underline?:boolean}
-type Shape={fill?:string;stroke?:{color:string;widthPt:number}|null}
+type Shape={fill?:string;stroke?:ShapeStroke|null}
 export type BrushSource={supported:boolean;text?:Text;align?:'left'|'center'|'right'|'justify';shape?:Shape;reason?:string}
 const hex=(value:unknown):value is string=>typeof value==='string'&&/^#[0-9a-f]{6}$/i.test(value)
 /** 只摘要已解析模型，所有非空正文 run 一致且明确的字段才可复制。 */
@@ -35,11 +36,14 @@ export function inspectBrushSource(element:SlideElement):BrushSource{
  // 不把继承主题线、未知属性或未解析子节点当作可无损复制的来源。
  const spPr=/<p:spPr\b[^>]*>([\s\S]*?)<\/p:spPr>/.exec(element.anchor.originalXml)?.[1]
  const line=spPr?.match(/<a:ln\b[^>]*>[\s\S]*?<\/a:ln>/g)
- const simpleLine=line?.length===1?/^<a:ln\s+w="(\d+)"\s*>\s*<a:solidFill>\s*<a:srgbClr\s+val="([0-9a-f]{6})"\s*\/?>\s*(?:<\/a:srgbClr>\s*)?<\/a:solidFill>\s*(?:<a:prstDash\s+val="solid"\s*\/>\s*)?<\/a:ln>$/i.exec(line[0]!):null
+ const simpleLine=line?.length===1?/^<a:ln\s+w="(\d+)"\s*>\s*<a:solidFill>\s*<a:srgbClr\s+val="([0-9a-f]{6})"\s*\/?>\s*(?:<\/a:srgbClr>\s*)?<\/a:solidFill>\s*(?:<a:prstDash\s+val="([^"]+)"\s*\/>\s*)?<\/a:ln>$/i.exec(line[0]!):null
+ const rawDash = simpleLine?.[3] ?? 'solid'
  if(line?.length===1&&/^<a:ln(?:\s+w="\d+")?\s*>\s*<a:noFill\s*\/>\s*<\/a:ln>$/.test(line[0]!))shape.stroke=null
  if(stroke?.fill.type==='solid'&&hex(stroke.fill.color)&&Number.isFinite(stroke.width)&&stroke.width>0&&stroke.width<=1270000
   &&simpleLine&&Number(simpleLine[1])===stroke.width&&`#${simpleLine[2]}`.toUpperCase()===stroke.fill.color.toUpperCase()
-  &&(!stroke.dash||stroke.dash==='solid')&&!stroke.cap&&!stroke.join&&(!stroke.compound||stroke.compound==='sng')&&!stroke.headEnd&&!stroke.tailEnd)shape.stroke={color:stroke.fill.color.toUpperCase(),widthPt:stroke.width/12700}
+  &&isOutlineDash(rawDash)&&rawDash===(stroke.dash??'solid')&&!stroke.cap&&!stroke.join&&(!stroke.compound||stroke.compound==='sng')&&!stroke.headEnd&&!stroke.tailEnd)shape.stroke={
+    color:stroke.fill.color.toUpperCase(),widthPt:stroke.width/12700,...(rawDash !== 'solid' ? { dash: rawDash } : {}),
+  }
  const align=paragraphs[0]?.align
  const uniformAlign=align&&['left','center','right','justify'].includes(align)&&paragraphs.every(p=>p.align===align)?align:undefined
  return {supported:true,...(Object.keys(text).length?{text}:{}),...(uniformAlign?{align:uniformAlign}:{}),...(Object.keys(shape).length?{shape}:{})}

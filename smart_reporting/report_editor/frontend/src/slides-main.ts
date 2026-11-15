@@ -38,6 +38,7 @@ import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
 import type { mountSlidesCanvas } from './slides-canvas'
 import type { DrawRect } from './vendor/genoffice-slides/draw-shape'
+import { isOutlineDash, type ShapeStroke } from '../../../reporting/slides_engine/bridge/pptx-outline'
 import { nextPreset, notchStep, prevPreset } from './slides-view-zoom'
 import { createWheelPager, createZoomWheelClassifier } from './docx-view-wheel'
 import type { createSlidesSorter } from './slides-view-modes'
@@ -102,7 +103,7 @@ type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y:
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 /** 固定源 Shape Format 填充/轮廓（setFill / setStroke） */
-type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; stroke?: { color: string; widthPt: number } | null }
+type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; stroke?: ShapeStroke | null }
 type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number }; flipH?: boolean; flipV?: boolean; draftKey?: string; fill?: string; stroke?: ShapeStyleEdit['stroke'] }
 type SlidesPreviewSlide = RenderSlide & {
   slideIndex: number; slideIdentity?: string; mediaSources?: SlideMediaSource[]; modelSources?: ModelSource[]
@@ -2179,11 +2180,16 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   if (!Array.isArray(restoredReset) || new Set(restoredReset).size !== restoredReset.length || restoredReset.some(index => !Number.isInteger(index) || index < 0 || index >= deck.slides.length || restoredDeleted.includes(index))) throw new Error('草稿中的重置版式无效；原草稿已保留')
   const restoredStyles = changes.shapeStyles ?? []
   const hex = (value: unknown) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
+  const validStroke = (stroke: ShapeStroke | null | undefined) => stroke == null || (
+    typeof stroke === 'object' && Object.keys(stroke).every(key => ['color', 'widthPt', 'dash'].includes(key)) &&
+    hex(stroke.color) && Number.isFinite(stroke.widthPt) && stroke.widthPt >= 0.01 && stroke.widthPt <= 100 &&
+    (stroke.dash === undefined || isOutlineDash(stroke.dash))
+  )
   if (!Array.isArray(restoredStyles) || restoredStyles.length > 500 || restoredStyles.some(item => !item || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
     || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId &&
       (['text', 'shape'].includes(element.type) || (item.fill === undefined && pictureOutlineEnabled(element))))
     || Object.keys(item).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || (item.fill === undefined && item.stroke === undefined)
-    || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || (item.stroke !== undefined && item.stroke !== null && (!hex(item.stroke.color) || !(item.stroke.widthPt > 0 && item.stroke.widthPt <= 100))))) throw new Error('草稿中的形状样式无效；原草稿已保留')
+    || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || !validStroke(item.stroke))) throw new Error('草稿中的形状样式无效；原草稿已保留')
   const restoredSmartArts = changes.smartArts ?? []
   if (!Array.isArray(restoredSmartArts) || restoredSmartArts.length > 50 || restoredSmartArts.some(item => !item || Object.keys(item).sort().join() !== 'items,layout,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
     || !SMARTART_GALLERY.some(entry => entry.layout === item.layout) || !Array.isArray(item.items) || item.items.length < 1 || item.items.length > SMARTART_MAX_ITEMS || item.items.some(text => typeof text !== 'string' || text.length > 200))) throw new Error('草稿中的新增 SmartArt 无效；原草稿已保留')
@@ -2237,9 +2243,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
     restoredDeleted.includes(item.slideIndex) || !SHAPE_PRESETS.includes(item.kind) ||
     ((item.fill !== undefined || item.stroke !== undefined) && LINE_SHAPE_KINDS.includes(item.kind)) ||
     (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) ||
-    (item.stroke !== undefined && item.stroke !== null && (
-      typeof item.stroke !== 'object' || Object.keys(item.stroke).sort().join() !== 'color,widthPt' ||
-      !hex(item.stroke.color) || !Number.isFinite(item.stroke.widthPt) || item.stroke.widthPt < 0.01 || item.stroke.widthPt > 100)) ||
+    !validStroke(item.stroke) ||
     !item.geometry || (LINE_SHAPE_KINDS.includes(item.kind)
       ? !(item.geometry.width >= 0 && item.geometry.height >= 0 && (item.geometry.width > 0 || item.geometry.height > 0))
       : !(item.geometry.width >= 1 && item.geometry.height >= 1)) ||
@@ -3052,6 +3056,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'shapeNoFill':
       case 'shapeOutline':
       case 'shapeOutlineWidth':
+      case 'shapeOutlineDash':
       case 'shapeNoOutline': {
         if(shapeFormatPane){shapeFormatPane.command(command,value);break}
         const element = currentElement()

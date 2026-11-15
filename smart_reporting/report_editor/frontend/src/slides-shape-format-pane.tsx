@@ -3,13 +3,13 @@ import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
 import { SlidesFormatColorWell } from './slides-chart-format-pane'
 import type { BrushSource } from './slides-format-brush'
+import { isOutlineDash, type ShapeStroke } from '../../../reporting/slides_engine/bridge/pptx-outline'
 import './slides-shape-format-pane.css'
 
-type Stroke = { color: string; widthPt: number }
-type Style = { slideIndex: number; elementId: string; fill?: string; stroke?: Stroke | null }
+type Style = { slideIndex: number; elementId: string; fill?: string; stroke?: ShapeStroke | null }
 type Draft = { shapeStyles?: Style[] }
 type Context<T extends Draft> = { slideIndex: number; element?: { id: string; type: string; brushSource?: BrushSource }; changes: T; reason?: string }
-const commands = new Set(['shapeFill','shapeNoFill','shapeOutline','shapeOutlineWidth','shapeNoOutline','shapeResetFill','shapeResetStroke'])
+const commands = new Set(['shapeFill','shapeNoFill','shapeOutline','shapeOutlineWidth','shapeOutlineDash','shapeNoOutline','shapeResetFill','shapeResetStroke'])
 const hex = (value: unknown): value is string => typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
 const equal = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
 function values<T extends Draft>(context: Context<T>) {
@@ -24,6 +24,10 @@ export function shapeStyleForCommand(command: string, value: unknown, previous: 
   else if (command === 'shapeNoFill') style.fill = 'none'
   else if (command === 'shapeOutline') { if (!hex(value)) return; style.stroke = { ...outline,color:value.toUpperCase() } }
   else if (command === 'shapeOutlineWidth') { const width = Number(value); if (!Number.isFinite(width) || !(width > 0 && width <= 100)) return; style.stroke = { ...outline,widthPt:width } }
+  else if (command === 'shapeOutlineDash') {
+    if (!isOutlineDash(value)) return
+    style.stroke = { color: outline.color, widthPt: outline.widthPt, ...(value !== 'solid' ? { dash: value } : {}) }
+  }
   else if (command === 'shapeNoOutline') style.stroke = null
   else return
   return style
@@ -119,16 +123,20 @@ export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => C
       ['shapeFillMenu','fill',''], ['shapeFill','fill',current.fill === 'none' ? '' : current.fill], ['shapeNoFill','fill',''],
       ['shapeOutlineMenu','stroke',''], ['shapeOutline','stroke',current.stroke?.color], ['shapeNoOutline','stroke',''],
       ['shapeOutlineWidth','stroke',String(current.stroke?.widthPt ?? '')],
+      ['shapeOutlineDash','stroke',current.stroke ? current.stroke.dash ?? 'solid' : ''],
     ] as const) {
       for (const control of ribbonHost?.querySelectorAll<HTMLInputElement | HTMLFieldSetElement | HTMLButtonElement>(`[data-command="${command}"]`) ?? []) {
         const unavailable = locked || !!context.reason || context.element?.brushSource?.supported !== true || current[field] === undefined
         control.disabled = unavailable; control.title = unavailable ? `来源${field === 'fill' ? '填充' : '轮廓'}暂不支持安全修改` : ''
         if (control instanceof HTMLInputElement) control.value = value ?? ''
         else if (control instanceof HTMLFieldSetElement) {
-          if (value) control.setAttribute('aria-description', `${value} pt`)
+          if (value && command === 'shapeOutlineWidth') control.setAttribute('aria-description', `${value} pt`)
           else control.removeAttribute('aria-description')
           for (const width of control.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
             width.setAttribute('aria-pressed', String(width.dataset.outlineWidth === value))
+          }
+          for (const dash of control.querySelectorAll<HTMLButtonElement>('[data-outline-dash]')) {
+            dash.setAttribute('aria-pressed', String(dash.dataset.outlineDash === value))
           }
         }
         if (command === 'shapeNoFill' || command === 'shapeNoOutline') control.setAttribute('aria-pressed',

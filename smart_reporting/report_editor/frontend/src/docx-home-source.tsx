@@ -3,7 +3,7 @@ import {
   IconAlignCenter, IconAlignJustify, IconAlignLeft, IconAlignRight, IconBorderAll, IconBorderBottom,
   IconBorderLeft, IconBorderNone, IconBorderRight, IconBorderTop, IconBullets,
   IconChangeCase, IconClearFormat, IconCopy, IconCut, IconFormatPainter,
-  IconGrowFont, IconHighlight, IconIndentDec, IconIndentInc, IconLineSpacing,
+  IconGrowFont, IconHighlight, IconIndentDec, IconIndentInc, IconLineSpacing, IconFontColorA,
   IconNumbered, IconPaste, IconPasteMerge, IconPasteSource, IconPasteText, IconPicture, IconShading,
   IconShrinkFont, IconSubscript, IconSuperscript, IconCaret, IconSelectAll, IconSearch, IconReplace, IconConvert,
   IconPilcrow,
@@ -50,7 +50,8 @@ type Props = {
   onHighlight?: (value: string) => void
   highlight?: string | null
   highlightAvailable?: boolean
-  onColor: (value: string) => void
+  onColor: (value: string | null) => void
+  fontColor?: string | null
   onAlignment: (value: 'left' | 'center' | 'right' | 'justify') => void
   onIndent: (delta: -1 | 1) => void
   alignment?: string
@@ -103,7 +104,7 @@ const unavailable = '原版控件保留；当前 DOCX 原生操作协议未支�
  * recorded in SOURCE-SHA256.json). Its App callbacks are replaced by Native
  * Tiptap/DOCX operations; unsupported commands remain visible and disabled.
  */
-export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, documentSummaryUnavailable, onPolish, polishUnavailable, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, tableBorders, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
+export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, documentSummaryUnavailable, onPolish, polishUnavailable, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, fontColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, tableBorders, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
   const fontListId = useId()
   const [caseOpen, setCaseOpen] = useState(false)
   const caseWrap = useRef<HTMLDivElement>(null)
@@ -120,6 +121,10 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
   useDismissablePopover(highlightOpen, () => setHighlightOpen(false), { inside: () => [highlightWrap.current], escape: true })
   const canHighlight = editable && !!highlightAvailable && !!onHighlight
   const highlightTip = '文字突出显示颜色；作用于选中文字，未选文字时作用于整段'
+  const [penFontColor, setPenFontColor] = useState<string | null>('FF0000')
+  const [fontColorOpen, setFontColorOpen] = useState(false)
+  const fontColorWrap = useRef<HTMLDivElement>(null)
+  useDismissablePopover(fontColorOpen && editable, () => setFontColorOpen(false), { inside: () => [fontColorWrap.current], escape: true })
   const [shadingOpen, setShadingOpen] = useState(false)
   const shadingWrap = useRef<HTMLDivElement>(null)
   const canShading = editable && !!shadingAvailable && !!onShading
@@ -299,7 +304,21 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
             <button type="button" className={`color-none color-highlight-none${highlight == null || highlight === 'none' ? ' selected' : ''}`} data-action="highlight-none" onClick={() => onHighlight?.('none')}>{ribbonZh.ribbonNoColor}</button>
           </div>}
         </div>
-        <input className="rb-color-input" data-action="font-color" data-editable-action="true" type="color" aria-label={zh.ribbonFontColor} title={zh.ribbonFontColor} disabled={!editable} onInput={event => onColor(event.currentTarget.value.slice(1).toUpperCase())} />
+        <div className="rb-split-wrap" ref={fontColorWrap} onMouseDown={event=>{if ((event.target as HTMLElement).closest('button')) event.preventDefault()}}>
+          <button type="button" className="rb-icon rb-color-btn" data-action="font-color" data-editable-action="true"
+            aria-label={zh.ribbonFontColor} title={zh.ribbonFontColor} disabled={!editable} onClick={()=>onColor(penFontColor)}>
+            <span className="rb-color-glyph rb-color-glyph-svg">
+              <IconFontColorA /><span className="rb-color-bar" style={{background:`#${penFontColor??'000000'}`}} />
+            </span>
+          </button>
+          <button type="button" className={`rb-caret rb-color-caret${fontColorOpen?' active':''}`} data-action="font-color-palette"
+            aria-label="字体颜色选择" aria-expanded={fontColorOpen && editable} disabled={!editable}
+            onClick={()=>setFontColorOpen(open=>!open)}><IconCaret /></button>
+          {fontColorOpen && editable && <RibbonColorPalette current={fontColor??null} noneLabel={ribbonZh.ribbonAutomatic} onPick={color=>{
+            setPenFontColor(color)
+            onColor(color)
+          }} />}
+        </div>
       </div>
     </>)}
     <div className="ribbon-sep" />

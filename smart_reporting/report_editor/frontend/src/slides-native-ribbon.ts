@@ -26,6 +26,7 @@ import iconCrop from './vendor/genoffice-slides/components/icon-crop.png'
 import { IconFillColor, IconPageBorders } from './vendor/genoffice-slides/components/icons'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import { ShapePreview } from './vendor/genoffice-docs/packages/ui/src/shape-gallery'
+import { OUTLINE_DASHES } from '../../../reporting/slides_engine/bridge/pptx-outline'
 
 /**
  * Native web subset of GenOffice Slides Ribbon at f8c17004fb730df11f0f743164ffd8b4281bb38c.
@@ -278,6 +279,7 @@ const tabs: Tab[] = [
     { label: 'Outline', controls: [
       { id: 'shapeOutline', label: 'Outline', caption: '颜色', kind: 'color', sourceActionId: 'onPictureStroke' },
       { id: 'shapeOutlineWidth', label: 'Outline Weight', options: OUTLINE_WIDTHS, optionLabels: OUTLINE_WIDTHS.map(value => value + ' pt'), sourceActionId: 'onPictureStroke' },
+      { id: 'shapeOutlineDash', label: 'Line Style', options: [...OUTLINE_DASHES], optionLabels: ['Solid Line', 'Dashed Line', 'Dotted Line', 'Dash-Dot Line'], sourceActionId: 'onPictureStroke' },
       { id: 'shapeNoOutline', label: 'No Outline', sourceActionId: 'onPictureStroke' },
     ] },
   ] },
@@ -487,7 +489,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (pictureOutline) closePictureOutline = close
         else shapeFormatMenus.set(id, close)
         menu.addEventListener('click', event => {
-          if (event.target instanceof Element && event.target.closest('[data-outline-width], [data-command="pictureNoOutline"], [data-command="shapeNoFill"], [data-command="shapeNoOutline"]')) close(true)
+          if (event.target instanceof Element && event.target.closest('[data-outline-width], [data-outline-dash], [data-command="pictureNoOutline"], [data-command="shapeNoFill"], [data-command="shapeNoOutline"]')) close(true)
         })
       }
       if (groupDefinition.label === 'AI 助手') {
@@ -586,22 +588,23 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           shapeGalleries.set(tab.id, close)
           controlHost.append(trigger, menu)
           element = trigger
-        } else if (control.id === 'pictureOutlineWidth' || control.id === 'shapeOutlineWidth') {
-          const widths = document.createElement('fieldset')
-          widths.dataset.command = control.id
+        } else if (control.id === 'pictureOutlineWidth' || control.id === 'shapeOutlineWidth' || control.id === 'shapeOutlineDash') {
+          const presets = document.createElement('fieldset')
+          presets.dataset.command = control.id
+          const selectionKey = control.id === 'shapeOutlineDash' ? 'outlineDash' : 'outlineWidth'
           const legend = document.createElement('legend')
           legend.textContent = localizedLabel
-          widths.append(legend)
+          presets.append(legend)
           for (const [index, value] of (control.options ?? []).entries()) {
             const button = document.createElement('button')
             button.type = 'button'
-            button.dataset.outlineWidth = value
-            button.textContent = control.optionLabels?.[index] ?? value
+            button.dataset[selectionKey] = value
+            button.textContent = localize(control.optionLabels?.[index] ?? value)
             button.setAttribute('aria-pressed', 'false')
             button.onclick = () => options.onAction(control.id, value)
-            widths.append(button)
+            presets.append(button)
           }
-          element = widths
+          element = presets
         } else if (control.kind === 'select') {
           const select = document.createElement('select')
           select.setAttribute('aria-label', localizedLabel)
