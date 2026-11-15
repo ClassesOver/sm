@@ -114,3 +114,39 @@ it('任务在隐藏期间完成后，展开仍在跟随的面板显示最新内�
  await vi.waitFor(()=>expect(position).toBe(800))
  f.view.dispose()
 })
+
+it('ignores the WebKit confirming Enter after compositionend and sends on the next deliberate Enter', async () => {
+ const f = fixture()
+ const key = () => {
+  const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+  f.input.dispatchEvent(event)
+  return event
+ }
+ f.input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+ expect(key().defaultPrevented).toBe(false)
+ f.input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
+ expect(key().defaultPrevented).toBe(false)
+ expect(f.submit).not.toHaveBeenCalled()
+ await new Promise(resolve => setTimeout(resolve, 0))
+ expect(key().defaultPrevented).toBe(true)
+ expect(f.submit).toHaveBeenCalledOnce()
+ f.view.dispose()
+})
+
+it('stops a running task with Escape from the focused result region and keeps the panel open', () => {
+ const f = fixture()
+ const stop = vi.fn(() => { f.cancel.disabled = true })
+ f.cancel.disabled = false
+ f.cancel.addEventListener('click', stop)
+ const body = f.panel.querySelector<HTMLElement>('.office-assistant-body')!
+ body.focus()
+ const escape = (repeat = false) => body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', repeat, bubbles: true, cancelable: true }))
+ escape()
+ escape(true)
+ expect(stop).toHaveBeenCalledOnce()
+ expect(f.onClose).not.toHaveBeenCalled()
+ expect(f.panel.hidden).toBe(false)
+ escape()
+ expect(f.onClose).toHaveBeenCalledOnce()
+ f.view.dispose()
+})

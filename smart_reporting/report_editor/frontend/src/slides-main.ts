@@ -59,7 +59,7 @@ import { mountSlidesGuides } from './slides-guides'
 import { showSlidesSettingsDialog } from './slides-settings-dialog'
 import { formatClock } from './vendor/genoffice/renderer/slideshow-utils'
 import { equationTextBox, openSlidesEquationDialog } from './slides-equation'
-import { EFFECT_LABELS, SEQUENCE_EFFECTS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, itemElementId, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceEffect, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
+import { EFFECT_LABELS, MOTION_PATHS, SEQUENCE_EFFECTS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, itemElementId, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceEffect, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 import { openSlidesFindReplace } from './slides-find-replace'
 import { pickSlideImage, prepareSlideImage } from './slides-native-images'
@@ -319,6 +319,9 @@ let rehearsalDialog: HTMLDialogElement | undefined
 let showOpening = false
 let animationPreviewOverlay: { dispose(): void } | undefined
 let animationPreviewGeneration = 0
+let animationHoverOverlay: { dispose(): void } | undefined
+let animationHoverGeneration = 0
+let animationHoverSlide: (() => RenderSlide) | undefined
 const pendingGroup = (slideIndex: number) => groupEdits.some(item => item.slideIndex === slideIndex)
 const pictureCrops: NonNullable<SlideChanges['pictureCrops']> = []
 const pictureOpacities: NonNullable<SlideChanges['pictureOpacities']> = []
@@ -1148,6 +1151,8 @@ function renderCanvas() {
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   mediaPlayback?.dispose();mediaPlayback=undefined
   animationPreviewOverlay?.dispose()
+  nativeRibbon?.cancelAnimationHover()
+  animationHoverSlide = undefined
   renderSlideSorter()
   const source = renderTree?.slides.find(item => item.slideIndex === selectedSlide)
   geometryPane?.setPictureSource(editKey(selectedSlide,selectedElement),source?.nodes.find(node=>node.sourceId===selectedElement),pictureReplacements.some(item=>item.slideIndex===selectedSlide&&item.elementId===selectedElement))
@@ -1185,12 +1190,15 @@ function renderCanvas() {
   })
   renderMediaControls(source)
   modelControls?.update()
+  const projectedSlide = {...slide,nodes:listedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}
+  const projectedEdits = [...[...edits.values()].filter(item => item.slideIndex === selectedSlide),
+    ...draftShapes.map(shape => ({ elementId: draftShapeId(shape.draftKey!), geometry: shape.geometry }))]
+  animationHoverSlide = () => applyCanvasEdits(projectedSlide, projectedEdits)
   canvas.update({
-    slide: {...slide,nodes:listedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
+    slide: projectedSlide, selectedId: selectedElement, selectedIds:[...selectedObjects],
     selectableIds: new Set(locked()?[]:slideAt(selectedSlide).elements.filter(item=>!deletions.has(editKey(selectedSlide,item.id))).map(item=>item.id)),
     editableIds: new Set(locked() || pendingGroup(selectedSlide) ? [] : slideAt(selectedSlide).elements.filter(item => (item.editable || item.arrangeEditable || item.type === 'draftShape') && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
-    edits: [...[...edits.values()].filter(item => item.slideIndex === selectedSlide),
-      ...draftShapes.map(shape => ({ elementId: draftShapeId(shape.draftKey!), geometry: shape.geometry }))],
+    edits: projectedEdits,
     shapeDrawing: !locked() && slidesViewMode === 'normal' ? shapeDrawing : undefined,
     onMediaPlayback: id => playMedia(id),
     onSelect: (id, additive) => {
@@ -1770,9 +1778,46 @@ async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow, mod
   finally { showOpening=false }
 }
 
+/** Fixed source animation-actions.ts hoverPreviewAnimation using the current editor canvas. */
+async function previewHoveredAnimation(effect: string | null) {
+  const generation = ++animationHoverGeneration
+  animationHoverOverlay?.dispose()
+  if (!effect || disposed || locked() || slidesViewMode !== 'normal' || animationPreviewOverlay
+    || showOverlay || cropOverlay || !animationHoverSlide) return
+  const target = currentElement()
+  if (!target || animationGalleryTarget(target) !== 'shape') return
+  const slide = animationHoverSlide()
+  const hasTarget = (nodes: RenderSlide['nodes']): boolean => nodes.some(node =>
+    (!node.decoration && node.sourceId === target.id) || (node.type === 'group' && hasTarget(node.children)))
+  if (!hasTarget(slide.nodes)) return
+  const isPath = Object.hasOwn(MOTION_PATHS, effect)
+  if (!isPath && (!SEQUENCE_EFFECTS.includes(effect as SequenceEffect) || effect === 'motionPath' || effect.startsWith('media'))) return
+  try {
+    const [{ openSlidesAnimationPreview }, { previewAnimationItems }, { animGalleryItem }] = await Promise.all([
+      import('./slides-animation-preview'), import('./slides-animation-preview-model'), import('./vendor/genoffice/renderer/animation-play'),
+    ])
+    if (generation !== animationHoverGeneration || disposed || locked() || slidesViewMode !== 'normal'
+      || animationPreviewOverlay || showOverlay || cropOverlay || currentElement()?.id !== target.id) return
+    // The original canvas content stays in place and provides the preview's geometry and zoom.
+    const page = slideContent()
+    if (!page || canvasHost.hidden) return
+    const item = isPath ? motionPathAnimation(target.id, effect) : {
+      elementId: target.id, ...animGalleryItem(effect as SequenceEffect),
+      trigger: 'onClick' as const, durationMs: defaultAnimationDuration(effect), delayMs: 0,
+    }
+    const { items } = previewAnimationItems([item], [], [target.id])
+    animationHoverOverlay = openSlidesAnimationPreview(page, {
+      slide, items, hover: true, onClose: () => { animationHoverOverlay = undefined },
+    })
+  } catch {
+    // Hover is optional feedback. Explicit preview retains its own error handling.
+  }
+}
+
 /** 固定源编辑画布 Preview：读取同一原生草稿的渲染快照及来源+草稿动画，不提交修改。 */
 async function startAnimationPreview() {
   if (!nativeDraft || disposed || locked() || showOverlay || cropOverlay) return
+  nativeRibbon?.cancelAnimationHover()
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
   if (slidesViewMode === 'sorter' || slidesViewMode === 'reading') await setSlidesViewMode('normal')
   animationPreviewOverlay?.dispose()
@@ -2856,6 +2901,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   imageExportAvailable: !!nativeDraft,
   nameWithAiAvailable: !!(namingController && saveAsActions),
   onAssistant: sharedShell?.onAssistant ?? (sharedShell?.nativeAI ? () => nativeAIHost?.open() : undefined),
+  onAnimationHover: effect => { void previewHoveredAnimation(effect) },
   onAction(command, value) {
     if (command === 'openFile') {
       if (!loading && !locked() && !mutationPending) openFileDialog?.open()

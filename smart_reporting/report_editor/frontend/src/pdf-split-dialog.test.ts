@@ -19,6 +19,25 @@ function fixture(){
   const view=bindPdfSplitDialog({root,pageCount:()=>3,unavailable:()=>null,prepareSource})
   return{root,view,split,prepareSource,input:root.querySelector('input')!,apply:root.querySelector<HTMLButtonElement>('[data-pdf-split-apply]')!}
 }
+it('shows the current split size range and uses Enter without swallowing input composition', async () => {
+  const f=fixture();f.view.open()
+  expect(document.activeElement).toBe(f.input)
+  expect(f.input.placeholder).toBe('1–2')
+  const enter=(options:KeyboardEventInit={})=>f.input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,...options}))
+  f.input.value='3'
+  expect(enter({isComposing:true})).toBe(true)
+  expect(enter({keyCode:229})).toBe(true)
+  expect(f.input.hasAttribute('aria-invalid')).toBe(false)
+  expect(enter()).toBe(false)
+  expect(f.input.getAttribute('aria-invalid')).toBe('true')
+  expect(f.prepareSource).not.toHaveBeenCalled()
+  f.input.value='2';f.input.dispatchEvent(new Event('input',{bubbles:true}))
+  expect(f.input.hasAttribute('aria-invalid')).toBe(false)
+  expect(enter()).toBe(false)
+  await vi.waitFor(()=>expect(f.split).toHaveBeenCalledOnce())
+  expect(f.split.mock.calls[0]?.[0]).toMatchObject({chunkSize:2})
+  await vi.waitFor(()=>expect(f.root.querySelector('a')?.getAttribute('href')).toBe('/verified/first'))
+})
 it('先flush保存来源再提交新身份，并逐份保留下载及具体失败原因',async()=>{
   const f=fixture();f.view.open();f.input.value='2';f.apply.click()
   await vi.waitFor(()=>expect(f.root.querySelectorAll('a')).toHaveLength(1))

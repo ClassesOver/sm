@@ -178,3 +178,14 @@
 }
   .docx-native.view-story .editor-scroll :is(.page-gap, .page-gap-cut) { display: none !important; }
 }
+.docx-zoom-dialog { width:min(440px,calc(100vw - 32px)); box-sizing:border-box; }
+.docx-zoom-dialog h2 { margin:0 0 18px; font-size:var(--font-size-lg); color:var(--color-ink); }
+.zoom-dialog-group { margin:0 0 14px; padding:8px 14px 12px; border:1px solid var(--color-border); border-radius:var(--radius-sm); }
+.zoom-dialog-group legend { padding:0 4px; color:var(--color-text-muted); font-size:var(--font-size-sm); }
+.zoom-dialog-radios { display:grid; grid-template-columns:1fr 1fr; gap:6px 14px; }
+.docx-zoom-dialog :is(.zoom-dialog-radio,.zoom-dialog-percent) { display:flex; align-items:center; gap:8px; color:var(--color-ink); }
+.zoom-dialog-radio:has(input:disabled) { opacity:0.6; }
+.docx-zoom-dialog :is(.zoom-dialog-radio,.zoom-dialog-percent) input { display:inline-block; margin:0; width:auto; height:auto; }
+.docx-zoom-dialog .zoom-dialog-percent input { width:84px; height:30px; }
+.zoom-dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+.docx-zoom-dialog :is(button,input):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }

@@ -886,7 +886,10 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const split = createDocxSplitPane({host:host.querySelector<HTMLElement>('.docx-document-stack')!,editor,
     onVisibilityChange:()=>{editor.commands.setMeta('native-view-state',true)},onError:reportError})
   const view = createDocxViewCommands({ root: host, scroller: host.querySelector<HTMLElement>('.editor-scroll')!, page: editor.view.dom,
-    pageSize: () => { const current = docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection)); return { width: px(current.pageWidth), height: px(current.pageHeight) } },
+    pageSize: () => {
+      const current = docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection))
+      return { width: px(current.pageWidth), height: px(current.pageHeight), textWidth: px(current.pageWidth - current.marginLeft - current.marginRight) }
+    },
     reading:{setActive(active){if(!ready||editor.isDestroyed){readingMode=active;return}flushPendingEdits();readingMode=active;editor.setEditable(context.editingEnabled&&!active&&!documentToolModels.protection?.contentLocked&&!saving&&!draft.saving&&!draft.closed,false);pendingHfEditor?.setEditable(editor.isEditable)}},
     pageColor:()=>effectiveDocxPageColor(nativeOperations(),pageColorModel),
     story:{setActive:active=>{if(!editor.isDestroyed)editor.commands.setStoryViewActive(active)}},

@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { IconAiPanel, IconClose, IconNewChat, IconSparkle, IconStop } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { createImeEnterGuard } from './vendor/genoffice-docs/packages/ui/src/ime-enter'
 import './office-assistant-panel.css'
 
 export function createOfficeNewChatButton() {
@@ -84,14 +85,11 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
     const target = trigger?.isConnected ? trigger : fallback
     target?.focus({preventScroll:true})
   }
+  const ime = createImeEnterGuard()
+  input.addEventListener('compositionstart', ime.handleCompositionStart)
+  input.addEventListener('compositionend', ime.handleCompositionEnd)
   const onInputKey = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
-    if (event.key === 'Escape' && !cancel.hidden && !cancel.disabled) {
-      event.preventDefault()
-      event.stopPropagation()
-      cancel.click()
-      return
-    }
+    if (event.defaultPrevented || ime.isImeConfirm(event)) return
     if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
     event.preventDefault()
     event.stopPropagation()
@@ -99,8 +97,12 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   }
   input.addEventListener('keydown', onInputKey)
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return
-    event.preventDefault();event.stopPropagation();closePanel()
+    if (event.key !== 'Escape' || event.defaultPrevented || ime.isImeConfirm(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.repeat) return
+    if (!cancel.hidden && !cancel.disabled) cancel.click()
+    else closePanel()
   }
   close.addEventListener('click',closePanel);panel.addEventListener('keydown',onKeyDown)
   return {
@@ -111,6 +113,19 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
       if (followFrame !== undefined) cancelAnimationFrame(followFrame)
       followFrame = requestAnimationFrame(() => { followFrame=undefined; if (!panelDisposed && !panel.hidden && stickToBottom) body.scrollTop = body.scrollHeight })
     },
-    dispose() {panelDisposed=true;if(followFrame!==undefined)cancelAnimationFrame(followFrame);contentObserver.disconnect();body.removeEventListener('scroll',onBodyScroll);parts.headerAction?.removeEventListener('click',resetFollowing);observer.disconnect();close.removeEventListener('click',closePanel);panel.removeEventListener('keydown',onKeyDown);input.removeEventListener('keydown',onInputKey);body.removeEventListener('keydown',readKeys)},
+    dispose() {
+      panelDisposed = true
+      if (followFrame !== undefined) cancelAnimationFrame(followFrame)
+      contentObserver.disconnect()
+      body.removeEventListener('scroll', onBodyScroll)
+      parts.headerAction?.removeEventListener('click', resetFollowing)
+      observer.disconnect()
+      close.removeEventListener('click', closePanel)
+      panel.removeEventListener('keydown', onKeyDown)
+      input.removeEventListener('keydown', onInputKey)
+      input.removeEventListener('compositionstart', ime.handleCompositionStart)
+      input.removeEventListener('compositionend', ime.handleCompositionEnd)
+      body.removeEventListener('keydown', readKeys)
+    },
   }
 }

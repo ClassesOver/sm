@@ -1,23 +1,27 @@
+import { createElement } from 'react'
+import { flushSync } from 'react-dom'
+import { createRoot } from 'react-dom/client'
 import { createModal } from './modal'
 import { buttonClasses } from './button'
+import { DocxZoomDialog, DOCX_ZOOM_MAX, DOCX_ZOOM_MIN, type DocxZoomFit } from './docx-zoom-dialog-source'
 import { createZoomWheelClassifier, clampZoom, notchStep } from './docx-view-wheel'
 import './docx-view.css'
 
-// Fixed GenOffice f8c17004 docs/wheel-zoom.ts: 10–500%, ten points per button.
-export const DOCX_ZOOM_MIN = 10
-export const DOCX_ZOOM_MAX = 500
-export type DocxZoomFit = 'width' | 'page'
+export { DOCX_ZOOM_MAX, DOCX_ZOOM_MIN, type DocxZoomFit }
 export interface DocxViewCommands {
   run(label: string): void
   reason(label: string): string | null
   active?(label: string): boolean
 }
 
-export function docxFitZoom(mode: DocxZoomFit, viewport: { width: number; height: number }, page: { width: number; height: number }): number | undefined {
-  if (![viewport.width, viewport.height, page.width, page.height].every(value => Number.isFinite(value) && value > 0)) return undefined
-  const width = Math.max(1, viewport.width - 48) / page.width * 100
+type PageSize = { width: number; height: number; textWidth?: number }
+
+export function docxFitZoom(mode: DocxZoomFit, viewport: { width: number; height: number }, page: PageSize): number | undefined {
+  const fitWidth = mode === 'text' ? page.textWidth ?? 0 : page.width
+  if (![viewport.width, viewport.height, fitWidth, page.height].every(value => Number.isFinite(value) && value > 0)) return undefined
+  const width = Math.max(1, viewport.width - 48) / fitWidth * 100
   const height = Math.max(1, viewport.height - 48) / page.height * 100
-  const value = Math.floor(mode === 'width' ? width : Math.min(width, height))
+  const value = Math.floor(mode === 'page' ? Math.min(width, height) : width)
   return Math.max(DOCX_ZOOM_MIN, Math.min(DOCX_ZOOM_MAX, value))
 }
 
@@ -26,7 +30,7 @@ export function createDocxViewCommands(options: {
   root: HTMLElement
   scroller: HTMLElement
   page: HTMLElement
-  pageSize(): { width: number; height: number }
+  pageSize(): PageSize
   onPaginationPreview(): void
   onZoomChange?(): void
   onViewChange?(): void
@@ -84,38 +88,33 @@ export function createDocxViewCommands(options: {
     zoom = value
     update()
   }
+  const fitValue = (mode: DocxZoomFit) => docxFitZoom(mode, { width: options.scroller.clientWidth, height: options.scroller.clientHeight }, options.pageSize()) ?? null
   const refit = () => {
     if (disposed) return
     syncAppearance()
     if (!fit) return
-    const next = docxFitZoom(fit, { width: options.scroller.clientWidth, height: options.scroller.clientHeight }, options.pageSize())
-    if (next !== undefined) { zoom = next; update() }
+    const next = fitValue(fit)
+    if (next !== null) { zoom = next; update() }
   }
   const applyFit = (mode: DocxZoomFit) => {
-    const next = docxFitZoom(mode, { width: options.scroller.clientWidth, height: options.scroller.clientHeight }, options.pageSize())
-    if (next === undefined) return
+    const next = fitValue(mode)
+    if (next === null) return
     fit = mode
     zoom = next
     update()
   }
-  const modal = createModal({ root: options.root, label: 'Word 显示比例', cardClass: 'docx-zoom-dialog', closeLabel: '关闭显示比例', content: `
-    <h2>显示比例</h2><form class="docx-zoom-form">
-      <label>百分比<input type="number" min="10" max="500" step="1" aria-label="显示比例（%）" aria-describedby="docx-zoom-error"></label>
-      <p>仅调整屏幕显示，不改变文档尺寸、内容或导出结果。</p>
-      <p id="docx-zoom-error" role="alert"></p>
-      <div class="docx-zoom-actions"><button type="button" class="${buttonClasses('secondary')}" data-action="cancel">取消</button><button type="submit" class="${buttonClasses('primary')}">应用</button></div>
-    </form>` })
-  const input = modal.card.querySelector<HTMLInputElement>('input')!
-  const error = modal.card.querySelector<HTMLElement>('[role=alert]')!
-  modal.card.querySelector('[data-action=cancel]')!.addEventListener('click', modal.close)
-  modal.card.querySelector('form')!.addEventListener('submit', event => {
-    event.preventDefault()
-    try {
-      if (!input.value.trim()) throw new Error('请输入显示比例')
-      set(Number(input.value))
-      modal.close()
-    } catch (cause) { error.textContent = (cause as Error).message; input.setAttribute('aria-invalid', 'true') }
-  })
+  const modal = createModal({ root: options.root, label: 'Word 显示比例', cardClass: 'docx-zoom-dialog', content: '' })
+  const zoomRoot = createRoot(modal.card)
+  let zoomDialogVersion = 0
+  const openZoom = () => {
+    if (!modal.overlay.hidden) return
+    flushSync(() => zoomRoot.render(createElement(DocxZoomDialog, {
+      key: ++zoomDialogVersion,
+      zoom, fitValue, onClose: modal.close,
+      onApply: target => typeof target === 'number' ? set(target) : applyFit(target),
+    })))
+    modal.open(modal.card.querySelector<HTMLInputElement>('input[type=number]'))
+  }
   const setReading = (value: boolean) => {
     if (reading === value || !options.reading) return
     options.reading.setActive(value)
@@ -212,7 +211,7 @@ export function createDocxViewCommands(options: {
       else if (label === '页宽') applyFit('width')
       else if (label === '整页') applyFit('page')
       else if (label === '分页预览') options.onPaginationPreview()
-      else { input.value = String(zoom); error.textContent = ''; input.removeAttribute('aria-invalid'); modal.open(input) }
+      else openZoom()
     },
   }
   const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(refit) : undefined
@@ -229,7 +228,7 @@ export function createDocxViewCommands(options: {
     exit.remove()
     classNames.forEach((name, index) => options.root.classList.toggle(name, previousClasses[index]))
     options.scroller.classList.toggle('page-dark', previousScrollerDark)
-    observer?.disconnect(); window.removeEventListener('resize', refit); modal.remove(); status.remove()
+    observer?.disconnect(); window.removeEventListener('resize', refit); zoomRoot.unmount(); modal.remove(); status.remove()
     if (previousZoom) options.page.style.setProperty('zoom', previousZoom); else options.page.style.removeProperty('zoom')
     if (previousData === null) options.root.removeAttribute('data-docx-zoom'); else options.root.setAttribute('data-docx-zoom', previousData)
   } }

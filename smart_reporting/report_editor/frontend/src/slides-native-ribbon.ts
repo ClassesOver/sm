@@ -4,7 +4,7 @@ import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
 import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
 import { SLIDE_TRANSITIONS } from './slides-transitions'
 import { AnimEffectIcon } from './vendor/genoffice-slides/components/icons'
-import { EFFECT_LABELS, type SequenceEffect } from './slides-animation-sequence'
+import { EFFECT_LABELS, MOTION_PATHS, type SequenceEffect } from './slides-animation-sequence'
 import { IconApplyAll, IconTransCircle, IconTransCover, IconTransDissolve, IconTransFade, IconTransMorph, IconTransNone, IconTransPull, IconTransPush, IconTransRandom, IconTransSplit, IconTransWipe, IconTransZoom } from './vendor/genoffice-slides/components/icons'
 import { SMARTART_GALLERY } from './vendor/genoffice-slides/components/smartart-gallery-data'
 import { CHART_GALLERY } from './vendor/genoffice-slides/components/chart-gallery-data'
@@ -111,6 +111,7 @@ export interface NativeSlidesRibbon {
   setTransitionEditEnabled(enabled: boolean, reason?: string): void
   setTransitionApplyAllEnabled(enabled: boolean, reason?: string): void
   setAnimationGallery(target: 'shape' | 'media' | null, effect: string): void
+  cancelAnimationHover(): void
   setLocked(locked: boolean): void
   dispose(): void
 }
@@ -420,6 +421,7 @@ function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOp
 
 export function createSlidesNativeRibbon(host: HTMLElement, options: {
   onAction: NativeSlidesAction
+  onAnimationHover?: (effect: string | null) => void
   onAssistant?: () => void
   pdfExportAvailable?: boolean
   saveAsAvailable?: boolean
@@ -493,6 +495,32 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
   let animationTarget: 'shape' | 'media' | null = null
   let appliedAnimation = ''
+  let animationHoverTimer: number | undefined
+  let animationHoveredButton: HTMLButtonElement | undefined
+  const cancelAnimationHover = () => {
+    if (!animationHoveredButton) return
+    window.clearTimeout(animationHoverTimer)
+    animationHoverTimer = undefined
+    animationHoveredButton = undefined
+    options.onAnimationHover?.(null)
+  }
+  const bindAnimationHover = (button: HTMLButtonElement, effect: string) => {
+    if (!options.onAnimationHover) return
+    button.addEventListener('mouseenter', () => {
+      cancelAnimationHover()
+      if (locked || button.disabled || activeTab !== 'animations' || animationTarget !== 'shape') return
+      animationHoveredButton = button
+      animationHoverTimer = window.setTimeout(() => {
+        animationHoverTimer = undefined
+        if (animationHoveredButton === button) options.onAnimationHover?.(effect)
+      }, 350)
+    })
+    button.addEventListener('mouseleave', () => {
+      if (animationHoveredButton === button) cancelAnimationHover()
+    })
+    button.addEventListener('pointerdown', cancelAnimationHover)
+    button.addEventListener('click', cancelAnimationHover, true)
+  }
   const updateAnimationGallery = () => {
     for (const element of controls.get('applyAnimationEffect') ?? []) {
       const button = element as HTMLButtonElement
@@ -503,6 +531,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     for (const button of controls.get('animationNone') ?? []) (button as HTMLButtonElement).disabled = locked || !animationTarget
   }
   const selectTab = (id: string) => {
+    if (id !== 'animations') cancelAnimationHover()
     if (id !== 'chartDesign') chartGallery?.close()
     if (id !== 'pictureFormat') closePictureMenus()
     if (id !== 'shapeFormat') closeShapeFormatMenus()
@@ -864,6 +893,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (locked) (element as HTMLButtonElement).disabled = true
         }
         if (control.sourceActionId) element.dataset.sourceAction = control.sourceActionId
+        if (element instanceof HTMLButtonElement && Object.hasOwn(MOTION_PATHS, control.id)) bindAnimationHover(element, control.id)
         if (!element.title) element.title = localizedLabel
         if (control.id === 'openFile' && !unavailable) element.setAttribute('aria-keyshortcuts', 'Control+O Meta+O')
         if (control.id === 'saveAs' && !unavailable) element.setAttribute('aria-keyshortcuts', 'Control+Shift+S Meta+Shift+S')
@@ -895,6 +925,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           button.dataset.command = 'applyAnimationEffect'
           button.dataset.sourceAction = 'onApplyAnimation'
           button.dataset.animationEffect = kind
+          if (!kind.startsWith('media')) bindAnimationHover(button, kind)
           button.innerHTML = renderToStaticMarkup(reactElement(AnimEffectIcon, { kind, size: 24 }))
           button.append(document.createTextNode(document.documentElement.lang.toLowerCase().startsWith('zh')
             ? animationCardChineseLabels[kind] ?? EFFECT_LABELS[kind] ?? label : label))
@@ -956,7 +987,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     setAIEditEnabled(enabled, reason) { aiEditReady = enabled; aiEditReason = reason; updateAIEdit() },
     setTransitionEditEnabled(enabled, reason) { transitionEditReady = enabled; transitionEditReason = reason; updateTransitionEdit() },
     setTransitionApplyAllEnabled(enabled, reason) { transitionApplyAllReady = enabled; transitionApplyAllReason = reason; updateTransitionApplyAll() },
-    setAnimationGallery(target, effect) { animationTarget = target; appliedAnimation = effect; updateAnimationGallery() },
+    setAnimationGallery(target, effect) {
+      if (target !== animationTarget) cancelAnimationHover()
+      animationTarget = target; appliedAnimation = effect; updateAnimationGallery()
+    },
+    cancelAnimationHover,
     setSlideOrientationEnabled(enabled) {
       hasWritableSlideSize = enabled
       updateSlideOrientationState()
@@ -1027,6 +1062,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
+      if (value) cancelAnimationHover()
       if (value) { closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus() }
       chartGallery?.setLocked(value)
       for (const elements of controls.values()) for (const element of elements) {
@@ -1044,7 +1080,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateCommentEdit()
       updateAIEdit()
     },
-    dispose() { chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
+    dispose() { cancelAnimationHover(); chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

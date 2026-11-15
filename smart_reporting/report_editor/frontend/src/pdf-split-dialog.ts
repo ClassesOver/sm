@@ -38,11 +38,28 @@ export function bindPdfSplitDialog(options: {
   dialog.addEventListener('close',()=>{generation++;if(opener?.isConnected&&!opener.matches(':disabled')&&!owner.querySelector('dialog[open]'))opener.focus({preventScroll:true})})
   for(const button of [close,topClose])button.addEventListener('click',()=>dialog.close())
   apply.addEventListener('click',()=>{void submit()})
+  input.addEventListener('keydown',event=>{
+    if(event.key!=='Enter'||event.defaultPrevented||event.isComposing||event.keyCode===229)return
+    event.preventDefault()
+    void submit()
+  })
+  input.addEventListener('input',()=>{
+    if(!input.hasAttribute('aria-invalid'))return
+    input.removeAttribute('aria-invalid')
+    message.textContent=''
+  })
   async function submit(){
     if(disposed||busy||!dialog.open)return
     const reason=options.unavailable();if(reason){message.textContent=reason;return}
     const text=input.value.trim(),chunkSize=Number(text)
-    if(!/^\d+$/.test(text)||!Number.isSafeInteger(chunkSize)||chunkSize<1||chunkSize>=options.pageCount()){message.textContent='每份页数须为大于0且小于总页数的整数';return}
+    const maxChunkSize=options.pageCount()-1
+    if(!/^\d+$/.test(text)||!Number.isSafeInteger(chunkSize)||chunkSize<1||chunkSize>maxChunkSize){
+      input.setAttribute('aria-invalid','true')
+      message.textContent= `每份页数须为 1–${maxChunkSize} 的整数`
+      input.focus()
+      return
+    }
+    input.removeAttribute('aria-invalid')
     const token=generation;busy=true;input.disabled=apply.disabled=true;dialog.setAttribute('aria-busy','true');message.textContent='正在保存当前修改并拆分 PDF…'
     try{
       const source=await options.prepareSource()
@@ -54,7 +71,7 @@ export function bindPdfSplitDialog(options: {
     finally{busy=false;if(!disposed){input.disabled=apply.disabled=false;dialog.setAttribute('aria-busy','false')}}
   }
   return{
-    open(){if(disposed||busy||dialog.open)return;const reason=options.unavailable();if(reason)return;generation++;if(cached)show(cached);else message.textContent='';opener=owner.activeElement instanceof HTMLElement?owner.activeElement:null;dialog.showModal();input.focus()},
+    open(){if(disposed||busy||dialog.open)return;const reason=options.unavailable();if(reason)return;generation++;input.placeholder='1–'+(options.pageCount()-1);input.removeAttribute('aria-invalid');if(cached)show(cached);else message.textContent='';opener=owner.activeElement instanceof HTMLElement?owner.activeElement:null;dialog.showModal();input.focus()},
     dispose(){if(disposed)return;disposed=true;generation++;releaseFocus();dialog.remove()},
   }
 }

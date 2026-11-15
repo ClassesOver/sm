@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import { flushSync } from 'react-dom'
 import { createDocxViewCommands, docxFitZoom } from './docx-view'
 
 const views: ReturnType<typeof createDocxViewCommands>[] = []
@@ -57,17 +58,46 @@ it('keeps fit responsive until the user chooses a manual zoom and restores the o
   f.view.dispose(); expect(f.page.style.getPropertyValue('zoom')).toBe('')
   expect(f.root.hasAttribute('data-docx-zoom')).toBe(false)
 })
-it('validates the actual zoom dialog and cancels without altering the current view', () => {
-  const f = setup(); f.view.run('缩放')
-  const input = f.root.querySelector<HTMLInputElement>('input')!, form = f.root.querySelector('form')!
-  input.value = '501'; form.dispatchEvent(new Event('submit', { cancelable: true }))
-  expect(f.view.zoom).toBe(100); expect(f.root.querySelector('[role=alert]')!.textContent).toContain('10–500')
-  input.value = ''; form.dispatchEvent(new Event('submit', { cancelable: true }))
+it('previews source zoom presets and text-width fit, applies on confirmation and cancels on Escape', () => {
+  const f = setup({ pageSize: () => ({ width: 800, height: 1000, textWidth: 640 }) })
+  const opener = document.createElement('button'); f.root.append(opener); opener.focus()
+  f.view.run('缩放')
+  const input = f.root.querySelector<HTMLInputElement>('input[type=number]')!
+  const choose = (label: string) => {
+    const radio = Array.from(f.root.querySelectorAll('label')).find(item => item.textContent === label)?.querySelector('input')
+    expect(radio).toBeDefined()
+    flushSync(() => radio!.click())
+  }
+  expect(input.value).toBe('100')
+  choose('200%'); expect(input.value).toBe('200')
+  choose('文字宽度'); expect(input.value).toBe('125')
   expect(f.view.zoom).toBe(100)
-  input.value = '125'; form.dispatchEvent(new Event('submit', { cancelable: true }))
-  expect(f.view.zoom).toBe(125)
-  f.view.run('缩放'); input.value = '250'; f.root.querySelector<HTMLButtonElement>('[data-action=cancel]')!.click()
-  expect(f.view.zoom).toBe(125)
+  f.root.querySelector<HTMLButtonElement>('[type=submit]')!.click()
+  expect(f.view.zoom).toBe(125); expect(document.activeElement).toBe(opener)
+  Object.defineProperty(f.scroller, 'clientWidth', { value: 688 }); f.view.refresh()
+  expect(f.view.zoom).toBe(100)
+  f.view.run('缩放'); choose('75%')
+  f.root.querySelector('input[type=number]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(f.view.zoom).toBe(100); expect(document.activeElement).toBe(opener)
+})
+
+it('rounds and clamps typed percentages using the GenOffice dialog rules', () => {
+  const f = setup()
+  const applyPercent = (value: string) => {
+    f.view.run('缩放')
+    const input = f.root.querySelector<HTMLInputElement>('input[type=number]')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    flushSync(() => {
+      setValue.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    f.root.querySelector<HTMLButtonElement>('[type=submit]')!.click()
+    return f.view.zoom
+  }
+  expect(applyPercent('125.4')).toBe(125)
+  expect(applyPercent('')).toBe(125)
+  expect(applyPercent('501')).toBe(500)
+  expect(applyPercent('1')).toBe(10)
 })
 
 it('routes heading navigation and outline modes without changing zoom or paper content', () => {

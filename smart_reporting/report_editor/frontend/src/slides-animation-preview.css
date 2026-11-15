@@ -5,6 +5,8 @@
 .slides-animation-preview .anim-preview-overlay { cursor: pointer; line-height: 0; background: white; }
 .slides-animation-preview-controls { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--office-muted); font-size: 11px; }
 .slides-animation-preview-controls button { flex-shrink: 0; border: 1px solid var(--office-border); border-radius: 4px; padding: 5px 8px; color: var(--office-text); background: var(--office-paper, white); cursor: pointer; }
+.slides-animation-hover-preview { position: absolute; inset: 0; z-index: 8; display: grid; overflow: hidden; pointer-events: none; }
+.slides-animation-hover-preview .anim-preview-overlay { line-height: 0; background: var(--office-paper, white); }
 @media (max-height: 480px) {
   .slides-animation-preview { position: fixed; inset: 8px 8px 40px; z-index: 1000; max-height: none; }
 }

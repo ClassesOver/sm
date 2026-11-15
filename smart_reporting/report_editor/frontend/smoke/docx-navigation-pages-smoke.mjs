@@ -103,7 +103,7 @@ try {
     await panel.locator('[data-navigation-tab=pages]').click(); await thumbs.nth(2).waitFor({ timeout: 30000 })
     await page.locator('[data-action="view-缩放"]').click()
     await page.getByRole('spinbutton', { name: '显示比例（%）' }).fill('150')
-    await page.getByRole('button', { name: '应用', exact: true }).click()
+    await page.getByRole('dialog', { name: 'Word 显示比例' }).getByRole('button', { name: '确定', exact: true }).click()
     await thumbs.nth(2).waitFor({ timeout: 30000 }); assert.equal(await thumbs.count(), 3)
     await thumbs.nth(2).click(); assert.equal(await editor.evaluate(node => node.editor.state.selection.$from.parent.textContent), '第三页标题')
     await page.locator('[data-action="view-outline"]').click()
