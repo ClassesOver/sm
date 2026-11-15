@@ -6,6 +6,8 @@ still verify formula dependencies and source identity against the actual file.
 from __future__ import annotations
 
 from typing import Any
+import math
+import unicodedata
 
 from .document_candidate_xlsx_targets import validate_xlsx_selection
 
@@ -22,6 +24,10 @@ def validate_xlsx_operations(
     for operation in operations:
         if not isinstance(operation, dict) or set(operation) != {"sheet", "range", "value"}:
             raise ValueError("xlsx_operation_invalid")
+        # Validate shape before using target values as dictionary/set keys.
+        validate_xlsx_selection(({
+            "sheet": operation["sheet"], "range": operation["range"],
+        },))
         target = (operation["sheet"], operation["range"])
         if target not in allowed or target in seen:
             raise ValueError("xlsx_operation_target_unapproved")
@@ -30,13 +36,12 @@ def validate_xlsx_operations(
         # Formula edits and formulas disguised as strings require a separate
         # dependency-aware engine. No untrusted formula is accepted here.
         if not isinstance(value, (str, int, float, bool)) or isinstance(value, str) and (
-            value.lstrip().startswith(("=", "+", "-", "@")) or
-            any(ord(char) < 32 for char in value)
+            unicodedata.normalize("NFKC", value).lstrip().startswith(("=", "+", "-", "@")) or
+            any(unicodedata.category(char) in {"Cc", "Cf"} for char in value)
         ):
             raise ValueError("xlsx_formula_or_value_unsafe")
         if isinstance(value, str) and len(value) > 32767:
             raise ValueError("xlsx_value_too_long")
         if isinstance(value, float):
-            import math
             if not math.isfinite(value):
                 raise ValueError("xlsx_value_non_finite")
