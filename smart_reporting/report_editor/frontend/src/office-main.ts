@@ -45,6 +45,7 @@ const selectedFiles = new Set<string>()
 let folderTreeKey = ''
 const tabs = new Map<string, HTMLIFrameElement>()
 const activeKnowledgeConversation = new Map<string, string>()
+const newKnowledgeConversations = new Map<string, string>()
 const knowledgeConversations = new Map<string, {id: string; title: string}[]>()
 const conversationOf = (space: string) => activeKnowledgeConversation.get(space) ?? 'default'
 const draftKey = (space: string) => space + '/' + conversationOf(space)
@@ -143,7 +144,7 @@ function clearAccount() {
   closedTabs.length = 0
   knowledgeTurns.clear(); knowledgeInputs.clear(); knowledgeAttachments.clear(); savedKnowledgeDocuments.clear()
   for (const controller of knowledgePending.values()) controller.abort()
-  knowledgePending.clear(); knowledgeGeneration.clear(); activeKnowledgeConversation.clear(); knowledgeConversations.clear()
+  knowledgePending.clear(); knowledgeGeneration.clear(); activeKnowledgeConversation.clear(); newKnowledgeConversations.clear(); knowledgeConversations.clear()
   currentUser = undefined; spaces = []; currentSpace = ''; selectedTab = ''
   library = { folders: [], entries: [] }
   favoriteGroup = ''
@@ -249,6 +250,23 @@ function knowledgeDraftStorageKey(space: string, conversation: string) {
   return 'genoffice:knowledge-draft:' + JSON.stringify([currentUser?.user, space, conversation])
 }
 
+function createKnowledgeConversation(space: string) {
+  const id = crypto.randomUUID()
+  newKnowledgeConversations.set(space, id)
+  return id
+}
+
+function canStoreKnowledgeDraft(space: string, conversation: string) {
+  return newKnowledgeConversations.get(space) === conversation ||
+    knowledgeConversations.get(space)?.some(item => item.id === conversation)
+}
+
+function rememberNewKnowledgeDraft(space: string, conversation: string) {
+  if (newKnowledgeConversations.get(space) === conversation && conversationOf(space) === conversation) {
+    sessionStorage.setItem(knowledgeConversationKey(space), 'new:' + conversation)
+  }
+}
+
 function knowledgeDraft(space: string): string {
   const cached = knowledgeInputs.get(draftKey(space))
   if (cached !== undefined) return cached
@@ -263,8 +281,9 @@ function setKnowledgeDraft(space: string, value: string, conversation = conversa
   const storageKey = knowledgeDraftStorageKey(space, conversation)
   try {
     if (!value) sessionStorage.removeItem(storageKey)
-    else if (knowledgeConversations.get(space)?.some(item => item.id === conversation)) {
+    else if (canStoreKnowledgeDraft(space, conversation)) {
       sessionStorage.setItem(storageKey, value)
+      rememberNewKnowledgeDraft(space, conversation)
     }
   } catch { /* The in-page draft is still available. */ }
 }
@@ -288,8 +307,9 @@ function setKnowledgeDraftAttachments(space: string, ids: string[], conversation
   const storageKey = knowledgeDraftStorageKey(space, conversation) + ':attachments'
   try {
     if (!ids.length) sessionStorage.removeItem(storageKey)
-    else if (knowledgeConversations.get(space)?.some(item => item.id === conversation)) {
+    else if (canStoreKnowledgeDraft(space, conversation)) {
       sessionStorage.setItem(storageKey, JSON.stringify(ids))
+      rememberNewKnowledgeDraft(space, conversation)
     }
   } catch { /* Keep the in-page attachments. */ }
 }
@@ -299,12 +319,12 @@ function ask() {
   const pending = knowledgePending.has(currentSpace)
   const conversation = conversationOf(currentSpace)
   const key = draftKey(currentSpace)
-  const draft = knowledgeDraft(currentSpace)
+  const ready = knowledgeConversations.has(currentSpace)
+  const draft = ready ? knowledgeDraft(currentSpace) : ''
   const canSend = canSendKnowledge(draft)
   const pendingQuestion = pending ? draft.trim() : ''
   const hasMessages = turns.length > 0 || Boolean(pendingQuestion)
   const conversations = knowledgeConversations.get(currentSpace) ?? []
-  const ready = knowledgeConversations.has(currentSpace)
   const listed = conversations.some(item => item.id === conversation)
   return `<section class="kb">
     <div class="kb-citations">
@@ -326,7 +346,7 @@ function ask() {
       <button class="kb-cta" data-view="recent">${icon('star', 14)} 去最近文件收藏</button>
     </div>`}${pendingQuestion ? `<article class="kb-turn" aria-busy="true"><div class="kb-question">${escape(pendingQuestion)}</div></article>` : ''}</div>
     <div class="kb-bottom"><p aria-live="polite">${pending ? '正在检索和阅读工作区资料…' : `当前工作区已收藏 ${library.entries.filter(item => item.starred).length} 个文件。回答会注明来源文件。`}</p><div class="composer">
-      <div class="kb-citations">${knowledgeDraftAttachments(currentSpace).map(file =>
+      <div class="kb-citations">${(ready ? knowledgeDraftAttachments(currentSpace) : []).map(file =>
         `<button data-remove-attachment="${escape(file.id)}" ${pending ? 'disabled' : ''}
           aria-label="移除附件 ${escape(file.name)}">${escape(file.name)} ×</button>`).join('')}</div>
       <textarea aria-label="向知识库提问" placeholder="问一个关于收藏文件的问题…" maxlength="8000" ${pending || !ready || !currentUser ? 'disabled' : ''}>${pending ? '' : escape(draft)}</textarea>
@@ -362,9 +382,19 @@ async function loadKnowledge(space = currentSpace, { preserveTurns = false } = {
       const { items } = await listing
       if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
       let saved: string | null = null
-      try { saved = sessionStorage.getItem(knowledgeConversationKey(space)) } catch { /* Use the normal default. */ }
-      conversation = items.find(item => item.id === saved)?.id ??
-        items.find(item => item.id === 'default')?.id ?? items[0]?.id ?? crypto.randomUUID()
+      try {
+        saved = sessionStorage.getItem(knowledgeConversationKey(space))
+        const unsent = saved?.match(/^new:([0-9a-f-]{36})$/)?.[1]
+        if (unsent && !items.some(item => item.id === unsent)) {
+          const draftKey = knowledgeDraftStorageKey(space, unsent)
+          if (sessionStorage.getItem(draftKey) || sessionStorage.getItem(draftKey + ':attachments')) {
+            newKnowledgeConversations.set(space, unsent)
+            conversation = unsent
+          }
+        }
+      } catch { /* Use the normal default. */ }
+      conversation ??= items.find(item => item.id === saved || 'new:' + item.id === saved)?.id ??
+        items.find(item => item.id === 'default')?.id ?? items[0]?.id ?? createKnowledgeConversation(space)
     }
     const [result, conversations] = await Promise.all([
       officeRequest<{ items: KnowledgeTurn[] }>(`/workspaces/${space}/knowledge?conversation=${encodeURIComponent(conversation)}`),
@@ -379,6 +409,7 @@ async function loadKnowledge(space = currentSpace, { preserveTurns = false } = {
     knowledgeTurns.set(space, result.items)
     knowledgeConversations.set(space, conversations.items)
     if (conversations.items.some(item => item.id === conversation)) {
+      if (newKnowledgeConversations.get(space) === conversation) newKnowledgeConversations.delete(space)
       try { sessionStorage.setItem(knowledgeConversationKey(space), conversation) } catch { /* Page state remains available. */ }
     }
   } catch (error) {
@@ -1144,13 +1175,13 @@ root.addEventListener('click', event => {
       if (account !== accountGeneration) return
       setKnowledgeDraft(space, '', conversation)
       setKnowledgeDraftAttachments(space, [], conversation)
-      activeKnowledgeConversation.set(space, crypto.randomUUID())
+      activeKnowledgeConversation.set(space, createKnowledgeConversation(space))
       await loadKnowledge(space)
     })
     return
   }
   if (data.action === 'kb-new') {
-    activeKnowledgeConversation.set(currentSpace, crypto.randomUUID())
+    activeKnowledgeConversation.set(currentSpace, createKnowledgeConversation(currentSpace))
     void loadKnowledge()
     render()
     root.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()
