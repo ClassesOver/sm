@@ -149,9 +149,10 @@ class KnowledgeTools:
 
 
 class OfficeKnowledge:
-    def __init__(self, office, documents, model=None, *, planner=None, parser=parse_knowledge_file):
+    def __init__(self, office, documents, model=None, *, planner=None, parser=parse_knowledge_file, enabled=True):
         self.office, self.documents, self.model = office, documents, model
         self.planner, self.parser = planner, parser
+        self.enabled = enabled
 
     async def ask(self, actor, space, question, *, attachment_ids=(), conversation="default"):
         question = question.strip()
@@ -164,7 +165,7 @@ class OfficeKnowledge:
             raise OfficeError('office_knowledge_file_denied', '附件不在当前工作区或无权访问。', 403)
         if not entries:
             raise OfficeError('office_knowledge_empty', '请先收藏要提问的文件。', 422)
-        if self.model is None and self.planner is None:
+        if not self.enabled:
             raise OfficeError('office_knowledge_unavailable', '知识问答模型尚未配置或已关闭。', 503)
         history = await tools.prepare_history(history)
         try:
@@ -214,6 +215,8 @@ class OfficeKnowledge:
         from .settings import OfficeSettings
         personal = OfficeSettings(self.office)
         model = await personal.model(tools.actor, self.model)
+        if model is None:
+            raise OfficeError("office_knowledge_unavailable", "知识问答模型尚未配置或已关闭。", 503)
         modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(
             model.id, configured_mode=modes.get('standard') if isinstance(modes, dict) else None,

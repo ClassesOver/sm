@@ -368,7 +368,7 @@ office_documents = OfficeDocuments(
     office_repository, native_import, native_document_repository, report_editor_grants,
     editor=native_editor,
 )
-office_search = OfficeSearch(office_repository, office_documents, model=genoffice_model if settings.native_ai_enabled else None)
+office_search = OfficeSearch(office_repository, office_documents, model=genoffice_model, enabled=settings.native_ai_enabled)
 office_documents.search = office_search
 native_editor.office_authorize = office_documents.authorize
 native_editor.office_saved = office_documents.saved
@@ -402,7 +402,7 @@ def create_base_app(
     from .office.source_runtime import OfficeSourceRuntime
     office_documents.sources = OfficeSourceRuntime(office_repository, source_vault) if source_vault else None
     office_knowledge = OfficeKnowledge(office_repository, office_documents,
-        genoffice_model if settings.native_ai_enabled else None)
+        genoffice_model, enabled=settings.native_ai_enabled)
     from .management.scopes import ScopeService
     management_scopes = ScopeService(management_auth)
     business_documents = BusinessDocumentService(management_scopes, BusinessOriginalStore(

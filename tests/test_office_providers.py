@@ -829,3 +829,66 @@ async def test_image_generation_matches_native_size_and_source_deadline(provider
 
     service.runtime.http = ProviderHTTP(transport=httpx.MockTransport(respond))
     await service.generate(user, "white square")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("feature", ["knowledge", "search"])
+@pytest.mark.parametrize("mode", ["configured", "unconfigured", "provider_disabled", "deployment_disabled"])
+async def test_company_model_runs_without_deployment_fallback(providers, monkeypatch, feature, mode):
+    from types import SimpleNamespace
+    from smart_reporting.office.knowledge import OfficeKnowledge
+    from smart_reporting.office.search import OfficeSearch
+    from smart_reporting.reporting import agent_events
+
+    service, actor, _, _ = providers
+    office = service.office
+    office.providers = service
+    if mode != "unconfigured":
+        data = config()
+        data["enabled"] = mode != "provider_disabled"
+        await service.save(actor, "chatModel", data)
+    space = (await office.spaces(actor))[0]["id"]
+    files = []
+    for name in ("one", "two"):
+        entry = await office.register_file(actor, space, None, name + ".docx", "docx", name, 1,
+            {"database": actor.database, "companyId": actor.company})
+        await office.favorite(actor, entry["id"], True)
+        await office.record_search_text(actor, space, entry["id"], 1, "quarter renewal")
+        files.append(entry)
+
+    class Documents:
+        async def contents(self, identity, file_id):
+            return await office.file(identity, file_id), b"quarter renewal"
+
+    used = []
+    async def run(agent, prompt, **kwargs):
+        used.append(agent.model)
+        assert agent.model.id == "vision-model"
+        agent.model.get_async_client()  # Exercise the same owned SDK lifecycle as a real run.
+        if feature == "search":
+            return SimpleNamespace(content={"order": [2, 1]})
+        reader = next(tool for tool in agent.tools if tool.__name__ == "read_knowledge_file")
+        evidence = await reader(files[0]["id"])
+        return SimpleNamespace(content={"answer": "quarter renewal", "citations": [evidence["citationId"]]})
+
+    monkeypatch.setattr(agent_events, "run_agent_with_events", run)
+    kwargs = {"enabled": False} if mode == "deployment_disabled" else {}
+    if feature == "knowledge":
+        knowledge = OfficeKnowledge(office, Documents(), parser=lambda content, fmt: {
+            "text": content.decode(), "limitations": []}, **kwargs)
+        if mode == "configured":
+            answer = await knowledge.ask(actor, space, "renewal?")
+            assert answer["answer"] == "quarter renewal"
+            assert answer["citations"][0]["fileId"] == files[0]["id"]
+        else:
+            with pytest.raises(OfficeError) as error:
+                await knowledge.ask(actor, space, "renewal?")
+            assert error.value.code == ("office_provider_disabled" if mode == "provider_disabled"
+                                        else "office_knowledge_unavailable")
+    else:
+        search = OfficeSearch(office, Documents(), **kwargs)
+        order = await search.rerank(actor, space, "renewal", {f["id"]: 1 for f in files})
+        assert order == ([f["id"] for f in reversed(files)] if mode == "configured" else [])
+    assert len(used) == (1 if mode == "configured" else 0)
+    if used:
+        assert used[0].http_client.is_closed
