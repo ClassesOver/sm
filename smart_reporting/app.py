@@ -144,6 +144,8 @@ native_downloads = ReportDownloadHttpService(
 )
 router = APIRouter()
 # 报告工作流与旧 Markdown/幻灯片/工作簿编辑器已退役，旧编辑链接统一返回 410。
+# 单独的 router 最后挂载：Office 路由（含 /reports/v1/editor/assets 静态资源）优先匹配。
+retired_router = APIRouter()
 _RETIRED_EDITOR_PREFIXES = ("/reports/v1/editor", "/reports/v1/slides", "/reports/v1/workbooks")
 
 
@@ -156,7 +158,7 @@ def _retired_editor_response() -> JSONResponse:
 
 
 for _prefix in _RETIRED_EDITOR_PREFIXES:
-    router.add_api_route(
+    retired_router.add_api_route(
         f"{_prefix}/{{retired_path:path}}",
         _retired_editor_response,
         methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
@@ -420,6 +422,7 @@ def create_base_app(context: ApplicationContext) -> FastAPI:
     ))
     application.include_router(create_native_import_router(native_import, enabled=settings.native_upload_enabled))
     application.include_router(create_quality_warning_router())
+    application.include_router(retired_router)
     application.router.add_event_handler("startup", _refresh_file_logging)
     application.router.add_event_handler("startup", business_ingestion_worker.start)
     application.router.add_event_handler("startup", _log_runtime_identity)

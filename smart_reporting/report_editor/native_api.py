@@ -303,6 +303,16 @@ def create_native_editor_router(
             },
         )
 
+    # 前端构建 base 为 /reports/v1/editor/assets/（native.html 引用的 JS/CSS/字体均在此）；
+    # 旧编辑器退役后由 Office 路由继续提供，路径保持不变以兼容已构建页面与冒烟脚本。
+    @router.get("/reports/v1/editor/assets/{asset_path:path}", include_in_schema=False)
+    async def read_office_static(asset_path: str) -> FileResponse:
+        static_root = root.resolve()
+        target = (static_root / asset_path).resolve()
+        if not target.is_relative_to(static_root) or not target.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(target)
+
     @router.get("/reports/v1/native/{document_id}/{revision}", include_in_schema=False)
     async def native_page(document_id: str, revision: int, request: Request):
         await session_context(request, document_id, revision)
