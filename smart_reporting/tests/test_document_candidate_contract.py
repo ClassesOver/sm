@@ -107,3 +107,24 @@ def test_malformed_candidate_request_types_fail_closed(kwargs, error):
     values.update(kwargs)
     with pytest.raises(ValueError, match=error):
         DocumentCandidateRequest(**values)
+
+
+@pytest.mark.parametrize("selection", [
+    ({"metadata": {1: "numeric key"}},),
+    ({"metadata": {"valid": 1, 2: "mixed keys"}},),
+    ({"metadata": {"nested": {False: "boolean key"}}},),
+    ({"metadata": "\ud800"},),
+])
+def test_selection_rejects_noncanonical_nested_json(selection):
+    with pytest.raises(ValueError, match="document_selection_invalid"):
+        DocumentCandidateRequest(scope(), "id", "Edit", selection)
+
+
+def test_selection_nested_json_is_fingerprint_safe():
+    import json
+
+    request = DocumentCandidateRequest(
+        scope(), "id", "Edit",
+        ({"metadata": {"z": 1, "a": {"b": "value"}}},),
+    )
+    assert json.dumps(request.selection, sort_keys=True, ensure_ascii=False)
