@@ -63,6 +63,10 @@ def create_office_codex_agent(
         raise OfficeCodexUnavailable("Office 编码任务工作目录不存在。")
     interpreter_bin = str(Path(sys.executable).parent)
     search_path = os.pathsep.join([interpreter_bin, os.environ.get("PATH", "")])
+    command_environment = {"MPLBACKEND": "Agg", "PATH": search_path}
+    # 部署镜像通过 MATPLOTLIBRC 提供中文字体与图表默认样式；core 继承不包含该变量，需显式传入。
+    if os.environ.get("MATPLOTLIBRC"):
+        command_environment["MATPLOTLIBRC"] = os.environ["MATPLOTLIBRC"]
     return CodexAgent(
         name=name,
         model=model,
@@ -87,7 +91,7 @@ def create_office_codex_agent(
             # 模型执行的命令只拿到基础变量，并使用服务端同一 Python 环境（含 Matplotlib）。
             "shell_environment_policy": {
                 "inherit": "core",
-                "set": {"MPLBACKEND": "Agg", "PATH": search_path},
+                "set": command_environment,
             },
         },
         env={"OPENAI_API_KEY": settings.openai_api_key},

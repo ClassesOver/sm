@@ -67,6 +67,16 @@ def test_office_codex_declares_sandbox_and_command_environment_in_native_config(
     assert agent.env == {"OPENAI_API_KEY": "test-key"}
 
 
+def test_office_codex_passes_deployment_matplotlib_style_to_commands(tmp_path, monkeypatch):
+    monkeypatch.setenv("MATPLOTLIBRC", "/etc/reporting/matplotlibrc")
+    agent = create_office_codex_agent(
+        _settings(AGENT_OFFICE_CODEX_ENABLED="true"), cwd=tmp_path, output_schema=_Result
+    )
+    environment = agent.config["shell_environment_policy"]["set"]
+    assert environment["MATPLOTLIBRC"] == "/etc/reporting/matplotlibrc"
+    assert environment["MPLBACKEND"] == "Agg"
+
+
 def test_office_codex_falls_back_to_general_model_settings(tmp_path):
     agent = create_office_codex_agent(
         _settings(AGENT_OFFICE_CODEX_ENABLED="true"), cwd=tmp_path, output_schema=_Result

@@ -20,7 +20,7 @@ it('部署连接与路径不挤占日常维护页面', () => {
 })
 
 it('执行协议与运维诊断不再混入日常表单或搜索结果', () => {
-  const items = ['AGENT_REPORT_CODING_EXECUTION_MODE', 'AGENT_DEBUG', 'AGENT_TRACING_ENABLED', 'AGENT_OS_ACCESS_LOG'].map(key => item(key))
+  const items = ['AGENT_MODEL_LITELLM_PROXY', 'AGENT_DEBUG', 'AGENT_TRACING_ENABLED', 'AGENT_OS_ACCESS_LOG'].map(key => item(key))
   expect(systemFields(items, '模型与服务', '')).toEqual([])
   for (const entry of items) expect(systemFields(items, '', entry.key)).toEqual([])
 })

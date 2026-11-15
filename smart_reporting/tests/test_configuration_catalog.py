@@ -86,14 +86,26 @@ def test_catalog_has_no_duplicate_keys_and_validates_managed_scalar_values():
     assert validate_system_values({"AGENT_MODEL_TIMEOUT_SECONDS": 300, "AGENT_DEBUG": False}) == {
         "AGENT_MODEL_TIMEOUT_SECONDS": 300, "AGENT_DEBUG": False}
     for values in ({"AGENT_MODEL_TIMEOUT_SECONDS": True}, {"AGENT_DEBUG": "false"},
-        {"AGENT_MODEL_TIMEOUT_SECONDS": 3601}, {"AGENT_REPORT_ANALYSIS_CONCURRENCY": 6},
+        {"AGENT_MODEL_TIMEOUT_SECONDS": 3601},
         {"AGENT_REPORT_CODING_TEMPERATURE": float("nan")},
         {"AGENT_REPORT_CODING_REASONING_EFFORT": "medium"},
-        {"AGENT_REPORT_CODING_EXECUTION_MODE": "unknown"},
         {"OPENAI_API_KEY": "plain-secret"}, {"AGENT_DB_URL": "should-not-change"},
         {"UNKNOWN": True}, {"AGENT_REPORT_ORGANIZATION_NAME": "second-owner"}):
         with pytest.raises(ValueError):
             validate_system_values(values)
+
+
+def test_retired_report_keys_in_saved_configuration_are_ignored_without_blocking():
+    from smart_reporting.management.configuration_catalog import (
+        CONFIGURATION_CATALOG,
+        RETIRED_SYSTEM_KEYS,
+        validate_system_values,
+    )
+
+    assert not RETIRED_SYSTEM_KEYS & {item.key for item in CONFIGURATION_CATALOG}
+    saved = {"AGENT_REPORT_EDITOR_CHART_AI_ENABLED": True, "AGENT_REPORT_ANALYSIS_CONCURRENCY": 3,
+        "AGENT_MODEL_TIMEOUT_SECONDS": 300}
+    assert validate_system_values(saved) == {"AGENT_MODEL_TIMEOUT_SECONDS": 300}
 
 
 def test_budget_reserve_is_checked_against_effective_context_not_only_patch():
