@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import JSZip from 'jszip'
-import { applyCellEdits, applySheetNotes, createBlankWorkbook, protectSheet, readWorkbook, sortRangeRows } from '../src'
+import { applyCellEdits, applySheetHyperlinks, applySheetNotes, createBlankWorkbook, protectSheet, readPackageSheetHyperlinks, readWorkbook, sortRangeRows } from '../src'
 
 it('requires both sort permission and unlocked cells throughout a protected sort range', async () => {
   const bytes = await applyCellEdits(await createBlankWorkbook(), [
@@ -83,6 +83,33 @@ it('keeps inherited cell styles attached to rows moved by a protected sort', asy
   expect(result.cells.A1).toMatchObject({ value: 1, styleIndex: italic })
   expect(result.cells.A2).toMatchObject({ value: 2, styleIndex: bold })
   expect(result.rows.map(row => row.styleIndex)).toEqual([bold, italic])
+})
+
+it('moves hyperlinks with sorted cells and leaves the remaining coverage in place', async () => {
+  const bytes = await applyCellEdits(await createBlankWorkbook(), ['Header', 3, 1, 2].map((value, row) => ({
+    sheetName: 'Sheet1', row, column: 0, writeValue: true, cell: { value }, style: { protectionLocked: false },
+  })))
+  const linked = await applySheetHyperlinks(bytes, 'Sheet1', [
+    { ref: 'A1', expectedTarget: null, target: '#Sheet1!D5' },
+    { ref: 'A2', expectedTarget: null, target: 'https://example.com/group' },
+    { ref: 'A4', expectedTarget: null, target: '#Sheet1!D6' },
+  ])
+  const input = await protectSheet(linked, 'Sheet1', true, { sort: true })
+  const path = (await readWorkbook(input)).sheets[0]!.path
+  const zip = await JSZip.loadAsync(input)
+  const xml = (await zip.file(path)!.async('string'))
+    .replace(/(<hyperlink\b[^>]*\bref=)"A2"([^>]*)\/>/, "$1'A2:B3'$2></hyperlink>")
+  zip.file(path, xml)
+  const before = await zip.generateAsync({ type: 'uint8array' })
+  const after = await sortRangeRows(before, 'Sheet1', { range: 'A1:A4', byColumn: 'A', ascending: true, hasHeader: true })
+  const refs = (await readPackageSheetHyperlinks(after, 'Sheet1')).sort((a, b) => a.ref.localeCompare(b.ref))
+  expect(refs.map(link => link.ref)).toEqual(['A1', 'A2', 'A3', 'A4', 'B2:B3'])
+  expect(refs.slice(0, 4).map(link => link.target)).toEqual([
+    '#Sheet1!D5', 'https://example.com/group', '#Sheet1!D6', 'https://example.com/group',
+  ])
+  const output = await JSZip.loadAsync(after)
+  const rels = path.replace(/\/([^/]+)$/, '/_rels/$1.rels')
+  expect(await output.file(rels)!.async('string')).toBe(await zip.file(rels)!.async('string'))
 })
 
 it('sortRangeRows fails closed on formulas and notes inside the range', async () => {

@@ -38,7 +38,7 @@ import { setWorksheetCellText } from './workbook-write'
 import { shiftConditionalFormattingXml,overlayConditionalFormattingXml } from './conditional-formatting-structure-xml'
 import {parseThemePalette} from './style-read'
 import { shiftSheetNotes } from './notes'
-import { parseRange, parseAddress, formatAddress, columnIndex, rangeCellCount } from './cell-address'
+import { parseRange, parseAddress, formatAddress, columnIndex, rangeCellCount, type RangeBounds } from './cell-address'
 import { computeSortedRowOrder, sortKeyOffsets, type SortSpec } from './sort-range'
 import { inheritedCellStyleIndex, isCellUnlocked, parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
 import { readSheetNotes } from './note-read'
@@ -482,6 +482,47 @@ export async function applyRowColumnOps(
 /// and notes make the call fail closed: formula text moved between rows
 /// would silently re-target relative references, and note relocation rides
 /// the grid path where the move payload preserves authors.
+/** Relocate hyperlink coverage with the sorted cells, retaining the original
+ * targets and relationship ids. A range crossing the sort boundary may split. */
+function remapSortedHyperlinks(xml: string, bounds: RangeBounds, order: readonly number[]): string {
+  if (!/<hyperlinks\b/.test(xml) || order.every((source, target) => source === target)) return xml
+  const targetRows = new Map(order.map((source, target) => [bounds.startRow + source, bounds.startRow + target]))
+  return xml.replace(/<hyperlinks\b[^>]*>[\s\S]*?<\/hyperlinks>/g, section => section.replace(/<hyperlink\b[^>]*?(?:\/>|>[\s\S]*?<\/hyperlink>)/g, link => {
+    const attribute = /(\sref\s*=\s*)(["'])(.*?)\2/
+    const ref = attribute.exec(link)?.[3]
+    if (!ref) return link
+    let area: RangeBounds
+    try { area = parseRange(ref) } catch { return link }
+    const firstColumn = Math.max(area.startColumn, bounds.startColumn), lastColumn = Math.min(area.endColumn, bounds.endColumn)
+    const firstRow = Math.max(area.startRow, bounds.startRow), lastRow = Math.min(area.endRow, bounds.endRow)
+    if (firstColumn > lastColumn || firstRow > lastRow) return link
+
+    const moved: [number, number][] = []
+    if (area.startRow < firstRow) moved.push([area.startRow, firstRow - 1])
+    if (lastRow < area.endRow) moved.push([lastRow + 1, area.endRow])
+    for (let row = firstRow; row <= lastRow; row++) {
+      const target = targetRows.get(row) ?? row
+      moved.push([target, target])
+    }
+    const spans: [number, number][] = []
+    for (const span of moved.sort((a, b) => a[0] - b[0])) {
+      const last = spans.at(-1)
+      if (last && span[0] <= last[1] + 1) last[1] = Math.max(last[1], span[1])
+      else spans.push(span)
+    }
+    if (spans.length === 1 && spans[0]![0] === area.startRow && spans[0]![1] === area.endRow) return link
+
+    const regions = spans.map(([startRow, endRow]) => ({ startRow, endRow, startColumn: firstColumn, endColumn: lastColumn }))
+    if (area.startColumn < firstColumn) regions.push({ ...area, endColumn: firstColumn - 1 })
+    if (lastColumn < area.endColumn) regions.push({ ...area, startColumn: lastColumn + 1 })
+    return regions.map(region => {
+      const first = formatAddress(region.startRow, region.startColumn), last = formatAddress(region.endRow, region.endColumn)
+      const next = first === last ? first : first + ':' + last
+      return link.replace(attribute, (_full, prefix: string, quote: string) => prefix + quote + next + quote)
+    }).join('')
+  }))
+}
+
 export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
   spec: SortSpec): Promise<Uint8Array> {
   const model = await readWorkbook(sourceBytes)
@@ -594,8 +635,9 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     return inserted + (rebuiltRows.get(rowIndex) ?? rowXml)
   })
   const nextBody = body + additions.map(([, xml]) => xml).join('')
+  const rewritten = remapSortedHyperlinks(`${sheetData[1]}${nextBody}${sheetData[3]}`, { ...bounds, startRow: firstDataRow }, order)
   const mutationPlan: MutationPlan = {
-    replaced: new Map([[target.path, `${sheetData[1]}${nextBody}${sheetData[3]}`]]),
+    replaced: new Map([[target.path, rewritten]]),
     added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [],
     touchedEntries: [target.path],
   }
