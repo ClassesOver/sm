@@ -270,3 +270,37 @@ async def test_restored_acp_conversation_is_cached_across_requests():
             assert response.status_code == 200
             assert response.json() == {"reply": "HELLO"}
     assert restores == [("report-a", identity)]
+
+
+@pytest.mark.anyio
+async def test_concurrent_acp_requests_share_one_restored_conversation():
+    import asyncio
+
+    identity = ConnectorIdentity("dsh", "synthetic", "session")
+    restores = 0
+
+    class Conversation:
+        async def prompt(self, caller, message, *, message_id):
+            return message.upper()
+
+    class Bridge:
+        async def restore(self, channel, caller):
+            nonlocal restores
+            restores += 1
+            await asyncio.sleep(0)
+            return Conversation()
+
+    async def authenticate(request):
+        return identity
+
+    app = FastAPI()
+    app.include_router(create_report_channel_router(object(), authenticate, acp=Bridge()))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        path = "/reports/v1/channels/report-a/acp/messages"
+        responses = await asyncio.gather(*(
+            http.post(path, json={"message_id": str(i), "text": "hello"})
+            for i in range(8)
+        ))
+    assert all(response.status_code == 200 for response in responses)
+    assert all(response.json() == {"reply": "HELLO"} for response in responses)
+    assert restores == 1
