@@ -6,8 +6,10 @@ ephemeral and process-local; no acceptance or saving API is provided.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -25,9 +27,26 @@ class XlsxLiteralPreviewEngine:
     ) -> None:
         self._load_source = load_source
         self._propose = propose
-        self._tasks: dict[str, tuple[DocumentScope, dict[str, Any]]] = {}
+        self._tasks: dict[str, tuple[DocumentScope, str, dict[str, Any]]] = {}
+        self._lock = asyncio.Lock()
 
     async def prepare(self, request: DocumentCandidateRequest) -> str:
+        async with self._lock:
+            return await self._prepare_locked(request)
+
+    async def _prepare_locked(self, request: DocumentCandidateRequest) -> str:
+        task_id = hashlib.sha256(json.dumps([
+            request.scope.channel, request.scope.grant, request.scope.document_id,
+            request.scope.revision, request.scope.source_sha256, request.request_id,
+        ]).encode()).hexdigest()
+        fingerprint = hashlib.sha256(json.dumps([
+            request.instruction, request.selection,
+        ], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        existing = self._tasks.get(task_id)
+        if existing is not None:
+            if existing[0] != request.scope or existing[1] != fingerprint:
+                raise ValueError("document_request_id_conflict")
+            return task_id
         source = await self._load_source(request.scope)
         if hashlib.sha256(source).hexdigest() != request.scope.source_sha256:
             raise PermissionError("document_source_changed")
@@ -52,15 +71,12 @@ class XlsxLiteralPreviewEngine:
                     "before": old, "after": operation["value"],
                 })
             # Never mutate or save the workbook: a diff is the only output.
-            task_id = hashlib.sha256(
-                (request.scope.grant + ":" + request.scope.source_sha256 + ":" + request.request_id).encode()
-            ).hexdigest()
             if task_id in self._tasks:
-                previous_scope, previous = self._tasks[task_id]
-                if previous_scope != request.scope or previous["changes"] != changes:
+                previous_scope, previous_fingerprint, previous = self._tasks[task_id]
+                if previous_scope != request.scope or previous_fingerprint != fingerprint or previous["changes"] != changes:
                     raise ValueError("document_request_id_conflict")
             else:
-                self._tasks[task_id] = (request.scope, {
+                self._tasks[task_id] = (request.scope, fingerprint, {
                     "taskId": task_id, "status": "preview_ready",
                     "accepted": False, "changes": changes,
                 })
@@ -72,4 +88,4 @@ class XlsxLiteralPreviewEngine:
         entry = self._tasks.get(task_id)
         if entry is None or entry[0] != scope:
             raise PermissionError("document_task_not_accessible")
-        return dict(entry[1], changes=[dict(item) for item in entry[1]["changes"]])
+        return dict(entry[2], changes=[dict(item) for item in entry[2]["changes"]])
