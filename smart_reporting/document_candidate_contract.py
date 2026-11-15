@@ -29,9 +29,18 @@ class DocumentScope:
     format: DocumentFormat
 
     def __post_init__(self) -> None:
-        if not all((self.channel, self.grant, self.document_id, self.revision)):
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (self.channel, self.grant, self.document_id, self.revision)
+        ):
             raise ValueError("document_scope_incomplete")
-        if len(self.source_sha256) != 64 or any(c not in "0123456789abcdef" for c in self.source_sha256):
+        try:
+            DocumentFormat(self.format)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("document_format_invalid") from exc
+        if not isinstance(self.source_sha256, str) or len(self.source_sha256) != 64 or any(
+            c not in "0123456789abcdef" for c in self.source_sha256
+        ):
             raise ValueError("document_source_digest_invalid")
 
 
@@ -43,13 +52,13 @@ class DocumentCandidateRequest:
     selection: tuple[dict[str, Any], ...]
 
     def __post_init__(self) -> None:
-        if not 1 <= len(self.request_id) <= 128 or not self.request_id.isascii() or not all(
+        if not isinstance(self.request_id, str) or not 1 <= len(self.request_id) <= 128 or not self.request_id.isascii() or not all(
             c.isalnum() or c in "-_" for c in self.request_id
         ):
             raise ValueError("document_request_id_invalid")
-        if not self.instruction.strip() or len(self.instruction) > 2000:
+        if not isinstance(self.instruction, str) or not self.instruction.strip() or len(self.instruction) > 2000:
             raise ValueError("document_instruction_invalid")
-        if not self.selection or len(self.selection) > 100 or any(
+        if not isinstance(self.selection, (tuple, list)) or not self.selection or len(self.selection) > 100 or any(
             not isinstance(item, dict) or not item for item in self.selection
         ):
             raise ValueError("document_selection_invalid")
