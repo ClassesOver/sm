@@ -228,9 +228,17 @@ function canSendKnowledge(draft: string) {
     knowledgeConversations.has(currentSpace) && !knowledgePending.has(currentSpace))
 }
 
+function knowledgeWordKey(turn: string) {
+  return 'genoffice:knowledge-word:' + JSON.stringify([currentUser?.user, currentSpace, conversationOf(currentSpace), turn])
+}
+
 function knowledgeWordAction(turn: KnowledgeTurn) {
   if (!turn.citations.length) return ''
-  const fileId = savedKnowledgeDocuments.get(turn.id)
+  const key = knowledgeWordKey(turn.id)
+  let fileId = savedKnowledgeDocuments.get(key)
+  if (!fileId) {
+    try { fileId = sessionStorage.getItem(key) ?? undefined } catch { /* Session storage is optional. */ }
+  }
   const file = fileId && library.entries.find(item => item.id === fileId)
   const disabled = busy ? 'disabled' : ''
   if (file) return `<div class="kb-citations"><button data-open-answer-docx="${escape(file.id)}" ${disabled}>打开已保存的 ${escape(file.name)}</button></div>`
@@ -1106,12 +1114,14 @@ root.addEventListener('click', event => {
   if (data.answerDocx) {
     const space = currentSpace, account = accountGeneration
     const turn = data.answerDocx
+    const key = knowledgeWordKey(turn)
     const conversation = encodeURIComponent(conversationOf(space))
     void withImport(async () => {
       const result = await officeRequest<{ fileId: string }>(
         `/workspaces/${space}/knowledge/${encodeURIComponent(turn)}/docx?conversation=${conversation}`, 'POST')
       if (account !== accountGeneration) return
-      savedKnowledgeDocuments.set(turn, result.fileId)
+      savedKnowledgeDocuments.set(key, result.fileId)
+      try { sessionStorage.setItem(key, result.fileId) } catch { /* Keep the current page's record. */ }
       await refreshLibrary()
     })
     return
