@@ -17,7 +17,7 @@ import { paintAxisTitles } from './chart-axis-titles'
 import { barValueScale, scatterAxisScale } from './chart-value-scale'
 import { paintValueAxis } from './chart-value-axis'
 import { paintScatterAxes, scatterValueText } from './chart-scatter-axis'
-import { chartCategoryLabels, chartCategorySlot, planCategoryAxis } from './chart-category-axis'
+import { chartCategoryLabels, chartCategorySlot, localChartRange, planCategoryAxis } from './chart-category-axis'
 import { paintBarDataLabels, paintLineDataLabels, type BarLabelDatum } from './chart-data-labels'
 import { paintPieDataLabels } from './chart-pie-data-labels'
 import { chartBounds } from '../../workbook-chart-geometry'
@@ -66,10 +66,14 @@ interface SkeletonLike {
 
 const numberSlotsOf = (
   worksheet: NonNullable<SkeletonLike['worksheet']>,
-  valuesRef: string,
+  valuesRef?: string,
+  cached?: readonly (number | null)[],
 ): Array<number | null> => {
+  const localRange = valuesRef && localChartRange(valuesRef, worksheet)
+  const cachedSlots = () => Array.from(cached ?? [], value => typeof value === 'number' && Number.isFinite(value) ? value : null)
+  if (!localRange) return cachedSlots()
   try {
-    const bounds = parseRange(valuesRef.replace(/^[^!]*!/, ''))
+    const bounds = parseRange(localRange)
     const values: Array<number | null> = []
     for (let row = bounds.startRow; row <= bounds.endRow; row += 1) {
       for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) {
@@ -80,7 +84,7 @@ const numberSlotsOf = (
     }
     return values
   } catch {
-    return []
+    return cachedSlots()
   }
 }
 
@@ -156,9 +160,7 @@ function drawChart(
     ctx.restore(); return
   }
 
-  const seriesValues = spec.series.map((entry) => entry.valuesRef
-    ? numberSlotsOf(worksheet, entry.valuesRef)
-    : [...entry.values ?? []].map(value => Number.isFinite(value) ? value : null))
+  const seriesValues = spec.series.map(entry => numberSlotsOf(worksheet, entry.valuesRef, entry.cachedValues ?? entry.values))
   // scatter: resolve literal X values or grid-backed X references (per series)
   const seriesXValues = spec.series.map((entry) => {
     if (entry.xValues !== undefined && entry.xValues.length > 0) return [...entry.xValues]
@@ -169,12 +171,12 @@ function drawChart(
   const basePlot = { top: y0 + (title ? 20 : 8), bottom: y1 - 8, left: x0 + 8, right: x1 - 8 }
   const hasSeriesLegend = ['bar','column','combo','line','area'].includes(spec.kind)
   const pieSeries = (spec.kind === 'pie' || spec.kind === 'doughnut') ? spec.series[0] : undefined
-  const pieEntries = pieSeries ? chartCategoryLabels(pieSeries, worksheet, (pieSeries.valuesRef ? numberSlotsOf(worksheet, pieSeries.valuesRef) : pieSeries.values ?? []).length)
+  const pieEntries = pieSeries ? chartCategoryLabels(pieSeries, worksheet, seriesValues[0]?.length ?? 0)
     .map((label, index) => ({ label: label ?? '', index, color: chartPointColor(spec, 0, index) })) : undefined
   const legendPlot = (hasSeriesLegend || pieSeries) && !spec.legend?.overlay ? paintChartLegend(ctx, spec, worksheet, basePlot, pieEntries) : basePlot
   if(spec.legend){const position=spec.legend.position;if(position==='left')hitRect({kind:'legend'},basePlot.left,basePlot.top,legendPlot.left,basePlot.bottom);else if(position==='right'||position==='top-right')hitRect({kind:'legend'},legendPlot.right,basePlot.top,basePlot.right,basePlot.bottom);else if(position==='top')hitRect({kind:'legend'},basePlot.left,basePlot.top,basePlot.right,legendPlot.top);else hitRect({kind:'legend'},basePlot.left,legendPlot.bottom,basePlot.right,basePlot.bottom)}
   const titledPlot = hasSeriesLegend ? paintAxisTitles(ctx, spec, worksheet, legendPlot) : legendPlot
-  const slots = hasSeriesLegend ? spec.series.map(entry => entry.valuesRef ? numberSlotsOf(worksheet, entry.valuesRef) : (entry.values ?? []).map(value => Number.isFinite(value) ? value : null)) : []
+  const slots = hasSeriesLegend ? seriesValues : []
   const stacked = (spec.kind === 'bar' || spec.kind === 'column') && slots.length > 1 &&
     (spec.design?.grouping === 'stacked' || spec.design?.grouping === 'percentStacked')
   const percentStacked = stacked && spec.design?.grouping === 'percentStacked'
@@ -257,7 +259,7 @@ function drawChart(
 
   if (spec.kind === 'pie' || spec.kind === 'doughnut') {
     // first series pie/doughnut
-    const first = spec.series[0]!, values = (first.valuesRef ? numberSlotsOf(worksheet, first.valuesRef) : first.values ?? []).map(value => Math.max(0, value ?? 0))
+    const first = spec.series[0]!, values = (seriesValues[0] ?? []).map(value => Math.max(0, value ?? 0))
     const total = values.reduce((sum, value) => sum + Math.max(0, value), 0)
     if (total <= 0) {
       ctx.restore()
@@ -344,7 +346,7 @@ function drawChart(
 
   if (spec.kind === 'radar') {
     // spokes per category from the center; each series is a closed polygon
-    const radarValues = spec.series.map((entry) => entry.valuesRef ? numberSlotsOf(worksheet, entry.valuesRef) : [...entry.values ?? []])
+    const radarValues = seriesValues
     const axisCount = Math.min(12, Math.max(3, radarValues[0]?.length ?? 0))
     const cx = (plotLeft + plotRight) / 2
     const cy = (plotTop + plotBottom) / 2

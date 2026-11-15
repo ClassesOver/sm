@@ -94,6 +94,7 @@ export interface ChartReadSeries {
   readonly valuesRef: string
   /// Select Data 行列切换写出的 numLit；不伪造网格引用。
   readonly values?: ReadonlyArray<number> | undefined
+  readonly cachedValues?: ReadonlyArray<number | null> | undefined
   /// scatter only: X values reference (c:xVal numRef), absent for ordinal X
   readonly xValuesRef?: string | undefined
   /// scatter only: literal X values when the writer emitted c:numLit ordinals
@@ -630,6 +631,11 @@ function seriesOf(chartXml: string, palette: readonly string[] | undefined, pie 
     const valuesRef = val !== undefined ? val.match(/<c:f>([\s\S]*?)<\/c:f>/)?.[1] : undefined
     const literalValues = valuesRef === undefined && val !== undefined && /<c:numLit\b/.test(val)
       ? categoryLabels(val).categories?.map(value => { const number = Number(value); return Number.isFinite(number) ? number : 0 }) : undefined
+    const cache = valuesRef === undefined ? undefined : val?.match(/<c:numCache\b[^>]*>[\s\S]*?<\/c:numCache>/)?.[0]
+    const cachedValues = cache && categoryLabels(cache).categories?.map(value => {
+      const number = value?.trim() ? Number(value) : NaN
+      return Number.isFinite(number) ? number : null
+    })
     if (valuesRef === undefined && literalValues === undefined) continue
     const dataLabels = dataLabelsOf(body, palette, pie)
     const numberFormat = val?.match(/<c:formatCode\b[^>]*>([\s\S]*?)<\/c:formatCode>/)?.[1]
@@ -665,6 +671,7 @@ function seriesOf(chartXml: string, palette: readonly string[] | undefined, pie 
       ...(cat !== undefined ? categoryLabels(cat) : {}),
       valuesRef: valuesRef === undefined ? '' : decodeXmlText(valuesRef),
       ...(literalValues === undefined ? {} : { values: literalValues }),
+      ...(cachedValues && cachedValues.length > 0 ? { cachedValues } : {}),
       ...(xValuesRef !== undefined ? { xValuesRef: decodeXmlText(xValuesRef) } : {}),
       ...(xValues !== undefined ? { xValues } : {}),
     })
