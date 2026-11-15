@@ -315,14 +315,28 @@ it('saves changed AutoFilter criteria on a protected sheet and reopens the origi
   } finally { current.view?.dispose() }
 })
 
-it('edits unlocked cells without unprotecting the worksheet', async () => {
-  const source = await applyWorkbookOperations(await fixture(), [
+it('edits unlocked cells including axis styles without unprotecting the worksheet', async () => {
+  const bytes = await applyWorkbookOperations(await fixture(), [
     { kind: 'protectSheet', sheetName: 'Sheet1', protect: false },
     { kind: 'applyCellEdits', edits: [
       { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, cell: { value: 'a1' }, style: { protectionLocked: false } },
     ] },
     { kind: 'protectSheet', sheetName: 'Sheet1', protect: true },
   ])
+  const before = await readWorkbook(bytes)
+  const worksheet = before.sheets[0]!
+  const unlockedStyle = worksheet.cells.A1!.styleIndex!
+  const path = worksheet.path
+  const zip = await createBufferEntrySource(bytes)
+  const xml = (await zip.readText(path))
+    .replace('<sheetData>', `<cols><col min="3" max="3" style="${unlockedStyle}"/></cols><sheetData>`)
+    .replace('<row r="1">', '<row r="1" s="0" customFormat="1">')
+    .replace('<row r="2">', `<row r="2" s="${unlockedStyle}" customFormat="true">`)
+    .replace('<c r="B2"', '<c r="B2" s="0"')
+  const source = (await assemblePackage(bytes, {
+    replaced: new Map([[path, xml]]), added: new Map(), addedBinary: new Map(),
+    removedEntries: [], addedEntries: [], touchedEntries: [path],
+  })).buffer
   const draft = new NativeDraft(identity, store())
   let downloaded: Uint8Array | undefined
   const current = await open(source, draft, async request => {
@@ -331,8 +345,13 @@ it('edits unlocked cells without unprotecting the worksheet', async () => {
   })
   try {
     expect(await write(0, 0, 'editable')).toBe(true)
+    expect(await write(1, 0, 'row-style')).toBe(true)
+    expect(await write(2, 2, 'column-style')).toBe(true)
     await write(0, 1, 'blocked').catch(() => false)
+    await write(1, 1, 'blocked').catch(() => false)
+    await write(0, 2, 'blocked').catch(() => false)
     expect(sheet().getRange('B1').getValue()).toBe('b1')
+    expect(sheet().getRange('B2').getValue()).toBe('b2')
     await vi.waitFor(() => expect(kinds(draft)).toEqual(['applyCellEdits']))
     current.shell.save.click()
     await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
@@ -341,7 +360,11 @@ it('edits unlocked cells without unprotecting the worksheet', async () => {
     expect(persisted.protection?.protected).toBe(true)
     expect(persisted.cells.A1?.value).toBe('editable')
     expect(saved.styles.cellXfs[persisted.cells.A1!.styleIndex!]?.protection?.locked).toBe(false)
+    expect(persisted.cells.A2).toMatchObject({ value: 'row-style', styleIndex: unlockedStyle })
+    expect(persisted.cells.C3).toMatchObject({ value: 'column-style', styleIndex: unlockedStyle })
     expect(persisted.cells.B1?.value).toBe('b1')
+    expect(persisted.cells.B2?.value).toBe('b2')
+    expect(persisted.cells.C1).toBeUndefined()
   } finally { current.view?.dispose() }
 })
 

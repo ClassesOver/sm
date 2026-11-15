@@ -684,7 +684,7 @@ export function importedStyleOf(
 ): LogicalStyle | undefined {
   const sheet = model.sheets.find((candidate) => candidate.name === sheetName)
   const cell = sheet?.cells[address] as ModelCell | undefined
-  if (!cell?.styleIndex) return undefined
+  if (cell?.styleIndex === undefined) return undefined
   return logicalStyleOf(model.styles, model.styles.cellXfs[cell.styleIndex], model.themePalette)
 }
 
