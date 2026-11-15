@@ -65,3 +65,15 @@ def test_selection_snapshot_is_independent_of_caller_mutations():
 def test_malformed_selection_rejected(selection):
     with pytest.raises(ValueError, match="document_selection_invalid"):
         DocumentCandidateRequest(scope(), "id", "Edit", selection)
+
+
+@pytest.mark.parametrize("selection", [
+    ({"value": float("nan")},),
+    ({"value": float("inf")},),
+    ({"value": object()},),
+    ({"value": {"nested": {1, 2}}},),
+    ({"value": "x" * 65537},),
+])
+def test_document_selection_rejects_non_json_and_oversized_payloads(selection):
+    with pytest.raises(ValueError, match="document_selection_invalid"):
+        DocumentCandidateRequest(scope(), "id", "Edit", selection)
