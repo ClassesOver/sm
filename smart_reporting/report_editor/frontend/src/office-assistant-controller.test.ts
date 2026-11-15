@@ -187,4 +187,19 @@ describe('shared Office task control',()=>{
   await pendingOld
  })
 
+ it('never cancels unrelated task ID in late status response after follow cancellation',async()=>{
+  const waiting=deferred<Job>(),cancel=vi.fn(async()=>{})
+  const controller=new OfficeAssistantController({
+    start:async()=>({id:'unused',status:'completed'}),status:()=>waiting.promise,
+    cancel,id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  const following=controller.follow('authorized-task')
+  await controller.cancel()
+  waiting.resolve({id:'unrelated-task',status:'running'})
+  expect(await following).toBeUndefined()
+  expect(cancel).toHaveBeenCalledTimes(1)
+  expect(cancel).toHaveBeenCalledWith('authorized-task')
+  expect(cancel).not.toHaveBeenCalledWith('unrelated-task')
+ })
+
 })
