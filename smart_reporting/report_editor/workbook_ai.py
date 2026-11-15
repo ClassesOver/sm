@@ -42,6 +42,7 @@ WorkbookAIOperationKind = Literal[
     "applyColumnWidths", "applyRowHeights", "applyPageSetups", "applySheetOutline",
     "applyTableAdditions", "applyTableEdits", "refreshPivotCaches", "applyPivotLayoutExpansions",
     "expandPivotOutputs", "applyDefinedNames", "sortRange", "applyChartEdits", "applyChartDeletions", "applyChartSource",
+    "appendSheetSparklines",
 ]
 
 

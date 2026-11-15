@@ -15,7 +15,7 @@ from typing import Any
 
 from agno.tools import Toolkit
 from openpyxl.formula import Tokenizer
-from openpyxl.utils.cell import get_column_letter, range_boundaries
+from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_boundaries
 
 from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import validate_chart_candidates
@@ -40,6 +40,38 @@ def _matches_expected_value(actual: Any, expected: Any) -> bool:
     if type(actual) is bool or type(expected) is bool:
         return type(actual) is type(expected) and actual == expected
     return actual == expected
+
+
+def _sparkline_addition(operation: dict[str, Any], sheet_name: str) -> dict[str, Any]:
+    allowed = {'op', 'sheetId', 'type', 'dataRange', 'targetCell', 'color'}
+    kind, color = operation.get('type'), operation.get('color')
+    if (set(operation) - allowed or kind not in ('line', 'column', 'stacked')
+            or ('color' in operation and (not isinstance(color, str) or not re.fullmatch(r'#[0-9a-fA-F]{6}', color)))):
+        raise ValueError('workbook_ai_sparkline_invalid')
+    first_row, last_row, first_col, last_col = _bounds(operation.get('dataRange'))
+    row_count = min(200, last_row - first_row + 1)
+    dest_row, dest_col = first_row, last_col + 1
+    if 'targetCell' in operation:
+        dest_row, end_row, dest_col, end_col = _bounds(operation['targetCell'])
+        if dest_row != end_row or dest_col != end_col:
+            raise ValueError('workbook_ai_sparkline_invalid')
+    if first_col == last_col or dest_col >= 16384 or dest_row + row_count > 1048576:
+        raise ValueError('workbook_ai_sparkline_invalid')
+    first_label = get_column_letter(first_col + 1)
+    last_label = get_column_letter(last_col + 1)
+    dest_label = get_column_letter(dest_col + 1)
+    sheet_ref = quote_sheetname(sheet_name)
+    cells = []
+    for offset in range(row_count):
+        row = first_row + offset + 1
+        cells.append({
+            'cell': f'{dest_label}{dest_row + offset + 1}',
+            'sourceRef': f'{sheet_ref}!${first_label}${row}:${last_label}${row}',
+        })
+    group = {'type': kind, 'cells': cells}
+    if color is not None:
+        group['color'] = color
+    return {'kind': 'appendSheetSparklines', 'sheetName': sheet_name, 'groups': [group]}
 
 
 class WorkbookAIToolkit(Toolkit):
@@ -270,6 +302,12 @@ class WorkbookAIToolkit(Toolkit):
         }
         if any(guide not in catalog for guide in guides):
             raise ValueError('workbook_ai_guide_invalid')
+        if 'charts' in guides:
+            catalog['charts'] += (
+                '迷你图新增使用源 DSL {op:add_sparkline,sheetId,type:line|column|stacked,dataRange,targetCell?,color?}。'
+                '每行至少两列，每行一个迷你图，最多取前200行。默认放在来源右侧，也可从同表的单格 targetCell 向下排列。'
+                'color 使用 #RRGGBB；stacked 表示盈亏图。'
+            )
         return {guide: catalog[guide] for guide in guides}
 
     def _translate(
@@ -290,6 +328,11 @@ class WorkbookAIToolkit(Toolkit):
             return {'kind': operation['kind'], **arguments}
         if op in {'add_chart', 'edit_chart'}:
             return {'kind': 'applyChartSource', 'operation': deepcopy(operation)}
+        if op == 'add_sparkline':
+            sheet_id = operation.get('sheetId')
+            if not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError('workbook_ai_sparkline_invalid')
+            return _sparkline_addition(operation, self._sheet(sheet_id)['name'])
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}
