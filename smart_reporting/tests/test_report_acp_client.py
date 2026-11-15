@@ -381,3 +381,52 @@ async def test_revocation_cancels_inflight_acp_prompt():
     with pytest.raises(ReportChannelAcpDenied):
         await asyncio.wait_for(turn, 3)
     assert cancelled.is_set()
+
+
+@pytest.mark.anyio
+async def test_cancelled_acp_turn_keeps_unknown_receipt_after_reauthorization():
+    import asyncio
+
+    identity = ConnectorIdentity("dsh", "synthetic", "session")
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    calls = []
+
+    class Repository:
+        grant = "grant-a"
+
+        async def member_grant(self, channel, caller):
+            return self.grant if caller == identity else None
+
+    repository = Repository()
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def open_session(self, resume=None):
+            return "session-id"
+
+        async def prompt(self, message):
+            calls.append(message)
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    conversation = await ReportChannelAcp(repository, Client).bind("report-a", identity)
+    pending = asyncio.create_task(conversation.prompt(identity, "hello", message_id="first"))
+    await asyncio.wait_for(started.wait(), 2)
+    repository.grant = None
+    with pytest.raises(ReportChannelAcpDenied):
+        await asyncio.wait_for(pending, 3)
+    assert cancelled.is_set()
+    repository.grant = "grant-a"
+    with pytest.raises(ReportChannelAcpConflict, match="outcome_unknown"):
+        await conversation.prompt(identity, "hello", message_id="first")
+    assert calls == ["hello"]
