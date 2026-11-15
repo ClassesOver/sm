@@ -158,6 +158,17 @@ ASGI application run with PostgreSQL and a scripted Agno model covered Office
 login, DOCX upload, authenticated MCP registration, completed task lookup,
 explicit acceptance, revision save and independent download readback.
 
+A follow-up ran the application in two independent processes with a shared
+disposable PostgreSQL database and workspace. The first process stopped after
+Agno read the authorized paragraph through MCP. Its lease was released and the
+task kept its open attempt. The second process reused the same editor session and
+retried the original HTTP start payload. PostgreSQL returned the same task and
+internal attempt IDs with a resume count of one. The second process completed the
+Agno/MCP run, explicitly accepted the candidate, saved revision 2 and downloaded a
+DOCX that retained the adjacent paragraph. The probe used a scripted model to
+control the interruption point. The browser still needs to retry the original
+start payload automatically after a worker loses its in-memory task state.
+
 The isolated run passed five selected cases on PostgreSQL with Node 24. It
 covered HTTP upload, start, explicit acceptance, save and independent DOCX
 readback, plus completed-receipt replay, stale-worker cancellation after
