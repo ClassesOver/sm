@@ -245,12 +245,36 @@ function knowledgeWordAction(turn: KnowledgeTurn) {
   return canWrite() ? `<div class="kb-citations"><button data-answer-docx="${escape(turn.id)}" ${disabled}>另存为 Word</button></div>` : ''
 }
 
+function knowledgeDraftStorageKey(space: string, conversation: string) {
+  return 'genoffice:knowledge-draft:' + JSON.stringify([currentUser?.user, space, conversation])
+}
+
+function knowledgeDraft(space: string): string {
+  const cached = knowledgeInputs.get(draftKey(space))
+  if (cached !== undefined) return cached
+  try { return sessionStorage.getItem(knowledgeDraftStorageKey(space, conversationOf(space))) ?? '' }
+  catch { return '' }
+}
+
+function setKnowledgeDraft(space: string, value: string, conversation = conversationOf(space)) {
+  const key = space + '/' + conversation
+  if (value) knowledgeInputs.set(key, value)
+  else knowledgeInputs.delete(key)
+  const storageKey = knowledgeDraftStorageKey(space, conversation)
+  try {
+    if (!value) sessionStorage.removeItem(storageKey)
+    else if (knowledgeConversations.get(space)?.some(item => item.id === conversation)) {
+      sessionStorage.setItem(storageKey, value)
+    }
+  } catch { /* The in-page draft is still available. */ }
+}
+
 function ask() {
   const turns = knowledgeTurns.get(currentSpace) ?? []
   const pending = knowledgePending.has(currentSpace)
   const conversation = conversationOf(currentSpace)
   const key = draftKey(currentSpace)
-  const draft = knowledgeInputs.get(key) ?? ''
+  const draft = knowledgeDraft(currentSpace)
   const canSend = canSendKnowledge(draft)
   const pendingQuestion = pending ? draft.trim() : ''
   const hasMessages = turns.length > 0 || Boolean(pendingQuestion)
@@ -347,7 +371,7 @@ async function sendKnowledge() {
   const space = currentSpace
   const account = accountGeneration
   const key = draftKey(space), conversation = conversationOf(space)
-  const question = (knowledgeInputs.get(key) ?? '').trim()
+  const question = knowledgeDraft(space).trim()
   if (!canSendKnowledge(question)) return
   knowledgeGeneration.set(space, (knowledgeGeneration.get(space) ?? 0) + 1)
   const controller = new AbortController()
@@ -355,7 +379,7 @@ async function sendKnowledge() {
   try {
     const turn = await officeRequest<KnowledgeTurn>(`/workspaces/${space}/knowledge`, 'POST', { question, conversation, attachmentIds: (knowledgeAttachments.get(key) ?? []).map(file => file.id) }, controller.signal)
     if (account !== accountGeneration || controller.signal.aborted) return
-    knowledgeInputs.delete(key)
+    setKnowledgeDraft(space, '', conversation)
     knowledgeAttachments.delete(key)
     if (conversationOf(space) === conversation) {
       const turns = knowledgeTurns.get(space) ?? []
@@ -1094,7 +1118,7 @@ root.addEventListener('click', event => {
     void withImport(async () => {
       await officeRequest(`/workspaces/${space}/knowledge/conversations?conversation=${encodeURIComponent(conversation)}`, 'DELETE')
       if (account !== accountGeneration) return
-      knowledgeInputs.delete(key)
+      setKnowledgeDraft(space, '', conversation)
       knowledgeAttachments.delete(key)
       activeKnowledgeConversation.set(space, crypto.randomUUID())
       await loadKnowledge(space)
@@ -1284,7 +1308,7 @@ root.addEventListener('input', event => {
   if ((event.target as HTMLInputElement).type === 'search') searchDocuments(event.target as HTMLInputElement)
   const input = event.target
   if (input instanceof HTMLTextAreaElement && input.matches('.composer textarea')) {
-    knowledgeInputs.set(draftKey(currentSpace), input.value)
+    setKnowledgeDraft(currentSpace, input.value)
     const send = root.querySelector<HTMLButtonElement>('[data-action=kb-send]')
     if (send) {
       const disabled = !canSendKnowledge(input.value)
