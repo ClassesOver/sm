@@ -70,11 +70,14 @@ it('重选已有覆盖不重排其他对象，防抖内恢复来源不创建空�
 })
 it('功能区任意来源线宽回填，锁定解锁后仍保留来源能力限制',()=>{
  (globalThis as any).IS_REACT_ACT_ENVIRONMENT=true
- const host=document.createElement('div');host.innerHTML='<input data-command="shapeFill" type="color"><input data-command="shapeOutline" type="color"><select data-command="shapeOutlineWidth"><option value="1">1</option></select>'
+ const host=document.createElement('div');host.innerHTML='<input data-command="shapeFill" type="color"><input data-command="shapeOutline" type="color"><fieldset data-command="shapeOutlineWidth"><button data-outline-width="1">1</button></fieldset>'
  const context=structuredClone(base);context.element.brushSource.shape.stroke.widthPt=3.75
  pane=createSlidesShapeFormatPane(()=>context,vi.fn(),host);act(()=>pane!.update())
- const width=host.querySelector<HTMLSelectElement>('select')!
- expect(width.value).toBe('3.75');expect(width.querySelectorAll('[data-shape-source-width]')).toHaveLength(1)
+ const width=host.querySelector<HTMLFieldSetElement>('fieldset')!
+ expect(width.getAttribute('aria-description')).toBe('3.75 pt')
+ expect(width.querySelector('[aria-pressed="true"]')).toBeNull()
+ context.element.brushSource.shape.stroke.widthPt=1;act(()=>pane!.update())
+ expect(width.querySelector('[aria-pressed="true"]')?.getAttribute('data-outline-width')).toBe('1')
  act(()=>pane!.setLocked(true));expect(width.disabled).toBe(true)
  act(()=>pane!.setLocked(false));expect(width.disabled).toBe(false)
  delete (context.element.brushSource.shape as any).stroke;act(()=>pane!.update())

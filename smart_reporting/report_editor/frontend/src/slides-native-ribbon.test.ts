@@ -834,16 +834,27 @@ it('enables the Shape Format fill and outline controls with their source actions
   const ribbon = createSlidesNativeRibbon(host, { onAction })
   ribbon.setContext('shape')
   const fill = host.querySelector<HTMLInputElement>('input[data-command="shapeFill"]')!
-  const width = host.querySelector<HTMLSelectElement>('select[data-command="shapeOutlineWidth"]')!
+  const width = host.querySelector<HTMLFieldSetElement>('fieldset[data-command="shapeOutlineWidth"]')!
+  const fillMenu = host.querySelector<HTMLButtonElement>('[data-command="shapeFillMenu"]')!
+  const outlineMenu = host.querySelector<HTMLButtonElement>('[data-command="shapeOutlineMenu"]')!
+  host.querySelector<HTMLButtonElement>('#slides-native-tab-shapeFormat')!.click()
+  fillMenu.click()
+  expect(fillMenu.getAttribute('aria-expanded')).toBe('true')
   expect(fill.disabled).toBe(false)
-  expect([...width.options].map(option => option.value)).toEqual(['0.75', '1', '1.5', '2.25', '3', '4.5', '6'])
+  expect([...width.querySelectorAll<HTMLButtonElement>('[data-outline-width]')].map(item => item.dataset.outlineWidth)).toEqual(['0.5', '1', '1.5', '2.25', '3', '4.5', '6'])
   fill.value = '#2e7d32'; fill.dispatchEvent(new Event('change'))
+  outlineMenu.click()
+  expect(fillMenu.getAttribute('aria-expanded')).toBe('false')
+  expect(outlineMenu.getAttribute('aria-expanded')).toBe('true')
+  width.querySelector<HTMLButtonElement>('[data-outline-width="0.5"]')!.click()
+  expect(onAction).toHaveBeenCalledWith('shapeOutlineWidth', '0.5')
+  expect(outlineMenu.getAttribute('aria-expanded')).toBe('false')
+  outlineMenu.click()
   host.querySelector<HTMLButtonElement>('[data-command="shapeNoOutline"]')!.click()
   expect(onAction).toHaveBeenCalledWith('shapeFill', '#2e7d32')
   expect(onAction).toHaveBeenCalledWith('shapeNoOutline')
   const change = host.querySelector<HTMLButtonElement>('button[data-command="changeShape"]')!
   expect(change.disabled).toBe(false)
-  host.querySelector<HTMLButtonElement>('#slides-native-tab-shapeFormat')!.click()
   change.click()
   expect(change.getAttribute('aria-expanded')).toBe('true')
   expect(host.querySelector('[data-prst="lineArrow"]')).toBeNull()

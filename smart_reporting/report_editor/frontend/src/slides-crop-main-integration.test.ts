@@ -131,16 +131,23 @@ it('changes, formats and deletes an unsaved drawn shape using its insertion iden
   expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon'}])
   expect(draft.operations[0]?.shapeKinds).toBeUndefined()
   const fill=app.shell.editor.querySelector<HTMLInputElement>('[data-command="shapeFill"]')!
+  app.command('shapeFillMenu').click()
+  expect(app.command('shapeFillMenu').getAttribute('aria-expanded')).toBe('true')
   expect(fill.disabled).toBe(false)
   fill.value='#12ab34'
   fill.dispatchEvent(new Event('change',{bubbles:true}))
   await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon',fill:'#12AB34'}]))
   const outline=app.shell.editor.querySelector<HTMLInputElement>('[data-command="shapeOutline"]')!
+  app.command('shapeOutlineMenu').click()
+  expect(app.command('shapeFillMenu').getAttribute('aria-expanded')).toBe('false')
   outline.value='#224466'
   outline.dispatchEvent(new Event('change',{bubbles:true}))
-  const styled={...inserted,kind:'hexagon',fill:'#12AB34',stroke:{color:'#224466',widthPt:1}}
+  await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toContainEqual(expect.objectContaining({stroke:{color:'#224466',widthPt:1}})))
+  app.shell.editor.querySelector<HTMLButtonElement>('[data-command="shapeOutlineWidth"] [data-outline-width="0.5"]')!.click()
+  const styled={...inserted,kind:'hexagon',fill:'#12AB34',stroke:{color:'#224466',widthPt:0.5}}
   await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([styled]))
   expect(draft.operations[0]?.shapeStyles).toBeUndefined()
+  app.command('shapeFillMenu').click()
   app.command('shapeNoFill').click()
   const transparent={...styled,fill:'none'}
   await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([transparent]))

@@ -1,6 +1,8 @@
 import { afterEach, expect, it } from 'vitest'
 import { Editor, Mark, Node } from '@tiptap/core'
 import { UndoRedo } from '@tiptap/extensions'
+import { flushSync } from 'react-dom'
+import { createDocxRibbon } from './docx-ribbon'
 import { applyParagraphShading, DOCX_SHADING_COLORS, paragraphShading, safeDocxShading } from './docx-shading'
 import { docxOperations, replayDocxOperations, type DocxAnchor } from './docx-operations'
 
@@ -51,6 +53,28 @@ it('applies direct shading to the anchored paragraph, diffs one op and replays i
   expect(node(editor, 0).attrs).toEqual(original.content![0]!.attrs)
   editor.commands.redo()
   expect(paragraphShading(node(editor, 0))).toBe('edf5fc')
+})
+
+it('opens the GenOffice Home shading palette and writes or removes the selected direct color', () => {
+  const editor = setup(), original = editor.getJSON()
+  const ribbon = createDocxRibbon(editor,true,undefined,undefined,undefined,anchors)
+  document.body.append(ribbon)
+  const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="shading"]')!
+  flushSync(()=>trigger.click())
+  expect(trigger.getAttribute('aria-expanded')).toBe('true')
+  const pick = (selector:string) => flushSync(()=>ribbon.querySelector<HTMLButtonElement>(selector)!.click())
+  pick('.gcp-standard-row [aria-label="绿色"]')
+  expect(docxOperations(original,editor.getJSON(),anchors)).toEqual([
+    {kind:'setParagraphShading',blockId:'body-0',expectedObjectSha256:'sha-0',fill:'00b050',clear:false},
+  ])
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  flushSync(()=>trigger.click())
+  expect(ribbon.querySelector('.gcp-standard-row [aria-label="绿色"]')?.getAttribute('aria-selected')).toBe('true')
+  pick('.gcp-auto')
+  expect(paragraphShading(node(editor,0))).toBe('none')
+  expect(docxOperations(original,editor.getJSON(),anchors)).toEqual([])
+  editor.commands.undo()
+  expect(paragraphShading(node(editor,0))).toBe('00b050')
 })
 
 it('writes explicit auto and removal for an existing direct fill, each as its own undo step', () => {

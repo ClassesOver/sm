@@ -1,10 +1,11 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { act as reactAct } from 'react'
 import { createEditorShell } from './shell'
 import { createSlidesEditorView } from './slides-main'
 import { NativeDraft } from './native-draft'
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
-afterEach(() => { document.body.innerHTML = ''; document.documentElement.lang = '' })
+beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }))
+afterEach(() => { document.body.innerHTML = ''; document.documentElement.lang = ''; vi.unstubAllGlobals() })
 const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [
   { slideIndex: 0, elements: [{ id: 'title', type: 'text', name: '标题', text: '收入 收入', editable: true, arrangeEditable:true, geometry:{x:96,y:72,width:192,height:96}, findReplaceEditable: true },
     { id:'chart',type:'chart',name:'来源图表',text:'',editable:false,chartEditSafe:true,chartKind:'bar',chartCategories:['甲','乙'],chartSeries:[{name:'收入',values:[1,2]}],chartPointColors:[['#FF0000',null]],chartSeriesColors:['#4472C4'],chartStyle:{title:'',catAxisTitle:'',valAxisTitle:'',legendPos:'r',dataLabels:false,gridlines:true} },
@@ -45,7 +46,9 @@ it('形状侧栏与功能区共享来源值，保留线宽颜色、历史、刷�
   act(()=>app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click());expect(draft.operations).toEqual(filled)
   act(()=>app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onRedo"]')!.click());expect(draft.operations).toEqual(colored)
   choose('dashed-shape');const before=draft.operations
-  const widthCommand=app.shell.editor.querySelector<HTMLSelectElement>('[data-command="shapeOutlineWidth"]')!;widthCommand.value='3';act(()=>widthCommand.dispatchEvent(new Event('change')))
+  const widthGroup=app.shell.editor.querySelector<HTMLFieldSetElement>('[data-command="shapeOutlineWidth"]')!
+  expect(widthGroup.disabled).toBe(true)
+  act(()=>widthGroup.querySelector<HTMLButtonElement>('[data-outline-width="3"]')!.click())
   expect(draft.operations).toEqual(before);expect(field().disabled).toBe(true)
   choose('format-shape');pick();choose('dashed-shape');act(()=>vi.advanceTimersByTime(250));expect(draft.operations).toEqual(before)
   vi.useRealTimers();app.view.dispose();app=await open(draft);choose('format-shape');expect(field().value).toBe('2.25')

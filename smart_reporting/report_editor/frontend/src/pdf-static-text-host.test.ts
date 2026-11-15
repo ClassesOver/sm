@@ -32,7 +32,7 @@ async function fixture(editingEnabled = true, capability = true, skipped = false
   const draft = new NativeDraft(identity, localStorage)
   const api = { file: async () => new Uint8Array([1, 2]).buffer, previewFile: async () => new Uint8Array([3, 4]).buffer,
     preview: async () => ({ sourceSha256, previewDigest: 'f'.repeat(64), appliedOperationIndices: skipped ? [] : [0], skippedOperations: skipped ? [{ operationIndex: 0, kind: 'insertText', pageId, reason: 'missing embedded glyph' }] : [], model: { sourceSha256, pages: [{ pageId, notesReadSafe: true,textObjects:[{objectId:'original',expectedTextSha256:'b'.repeat(64),text:'Original',rect:[60,300,130,315],fontSize:14,fontName:'Arial',fontSha256:null}] }], attachments: [], attachmentsEditable: true, capabilities: { moveText:capability,insertText: capability, insertTextReason: capability ? null : '来源含批注，暂不支持插入文字' } } }) } as unknown as ReturnType<typeof createNativeApi>
-  const context = { context: { documentId: identity.documentId, revision: 1, format: 'pdf', scope: identity.scope, sourceFile: { sha256: sourceSha256, path: 'source.pdf', size: 2 } }, editingEnabled, pdfTextEnabled } as NativeContextResponse
+  const context = { context: { documentId: identity.documentId, revision: 1, format: 'pdf', scope: identity.scope, sourceFile: { sha256: sourceSha256, path: 'source.pdf', size: 2 } }, editingEnabled, pdfTextEnabled, capabilities: {} } as NativeContextResponse
   const view = await createPdfEditorView({ editor: root, save: document.createElement('button') } as unknown as EditorShell, { api, context, draft }); views.push(view)
   const open = root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.edit.insertText"]')!
   return { root, draft, view, open, pageId, sourceSha256 }
@@ -55,6 +55,30 @@ async function place(f: Awaited<ReturnType<typeof fixture>>) {
   holder.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, clientX: 210, clientY: 420 }))
   holder.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, button: 0, clientX: 210, clientY: 420 }))
 }
+it('shares the existing-text toggle across Home and Edit while preserving unstaged input', async () => {
+  const f = await fixture()
+  const home = f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.edit.editText"]')!
+  const edit = f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.edit.content.editText"]')!
+  const panel = f.root.querySelector<HTMLElement>('.pdf-text-editor')!
+  const replacement = panel.querySelector<HTMLTextAreaElement>('textarea')!
+  expect(home.getAttribute('aria-pressed')).toBe('false')
+  home.click()
+  await vi.waitFor(() => expect(panel.hidden).toBe(false))
+  expect(edit.getAttribute('aria-pressed')).toBe('true')
+  f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="edit"]')!.click()
+  replacement.value = '未提交的文字'
+  edit.click()
+  await vi.waitFor(() => expect(f.root.textContent).toContain('请先点击“加入文字修改”，再退出原位改字'))
+  expect(panel.hidden).toBe(false)
+  expect(replacement.value).toBe('未提交的文字')
+  expect(f.draft.operations).toEqual([])
+  replacement.value = 'Original'
+  edit.click()
+  await vi.waitFor(() => expect(panel.hidden).toBe(true))
+  expect(home.getAttribute('aria-pressed')).toBe('false')
+  expect(edit.getAttribute('aria-pressed')).toBe('false')
+  expect(f.draft.operations).toEqual([])
+})
 it('public insert command stages a searchable text operation at the inverse baseline and supports Undo/Redo', async () => {
   const f = await fixture(); expect(f.open.disabled).toBe(false)
   await configure(f); expect(f.draft.operations).toEqual([])
@@ -193,7 +217,14 @@ it('the Edit-tab text entry is usable alongside the Home entry in an insertion d
  const f=await fixture();await configure(f,'Added');await place(f);await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(1))
  const editButtons=[...f.root.querySelectorAll<HTMLButtonElement>('button.pdf-tool')].filter(button=>button.querySelector('span')?.textContent==='原位改字')
  expect(editButtons).toHaveLength(2)
- for(const button of editButtons){expect(button.disabled).toBe(false);button.click();await Promise.resolve();expect(f.root.dataset.pdfMode).toBe('text')}
+ for (const button of editButtons) {
+  expect(button.disabled).toBe(false)
+  button.click()
+  await vi.waitFor(() => expect(f.root.dataset.pdfMode).toBe('text'))
+  button.click()
+  await vi.waitFor(() => expect(f.root.dataset.pdfMode).toBe('select'))
+ }
+ expect(f.draft.operations.map(operation => operation.kind)).toEqual(['insertText'])
 })
 
 it('public source move controls retain the original object identity and isolate rewrite and insert',async()=>{

@@ -13,7 +13,7 @@ import type { CaseMode } from './vendor/genoffice-docs/apps/docs/src/renderer/ed
 import type { DocxCellBorderMode } from '../../../reporting/doc_engine/bridge/docx-cell-borders-spec'
 import { DOCX_BORDER_COLORS, DOCX_BORDER_WIDTHS_PT, safeDocxBorders, type DocxBorderSpec } from './docx-borders'
 import { DOCX_HIGHLIGHTS } from './docx-highlight'
-import { DOCX_SHADING_COLORS } from './docx-shading'
+import { RibbonColorPalette } from './vendor/genoffice-docs/apps/docs/src/renderer/components/ribbon-color-palette'
 import { HIGHLIGHT_CSS } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/marks'
 import { useId, useRef, useState } from 'react'
 import { useDismissablePopover } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
@@ -121,10 +121,10 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
   const canHighlight = editable && !!highlightAvailable && !!onHighlight
   const highlightTip = '文字突出显示颜色；作用于选中文字，未选文字时作用于整段'
   const [shadingOpen, setShadingOpen] = useState(false)
-  const [penShading, setPenShading] = useState('EDF5FC')
   const shadingWrap = useRef<HTMLDivElement>(null)
-  useDismissablePopover(shadingOpen, () => setShadingOpen(false), { inside: () => [shadingWrap.current], escape: true })
   const canShading = editable && !!shadingAvailable && !!onShading
+  useDismissablePopover(shadingOpen && canShading, () => setShadingOpen(false), { inside: () => [shadingWrap.current], escape: true })
+  const shadingColor = typeof shading === 'string' && /^[0-9a-f]{6}$/i.test(shading) ? shading : null
   const shadingTip = '段落底纹；请选择有唯一来源锚点的非空正文段落'
   // GenOffice f8c17004 Ribbon.tsx table pen defaults (borderColor 000000, borderSz 4
   // eighth-points) with Word's Home border split default (bottom); the paragraph
@@ -331,15 +331,15 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
         </div>
       </div>
       <div className="rb-split-wrap docx-ribbon-shading" ref={shadingWrap} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault() }}>
-        <button type="button" className={`rb-icon rb-color-btn${shading && shading !== 'none' && shading !== 'auto' ? ' active' : ''}`} data-action="shading" data-editable-action="true" disabled={!canShading} title={shadingTip} aria-label={shadingTip} onClick={() => onShading?.(shading === penShading ? 'none' : penShading)}>
-          <span className="rb-color-glyph rb-color-glyph-svg"><IconShading size={17} /><span className="rb-color-bar" style={{ background: `#${penShading}` }} /></span>
+        <button type="button" className={`rb-icon${shadingColor ? ' active' : ''}`} data-action="shading" data-editable-action="true"
+          disabled={!canShading} title={shadingTip} aria-label={ribbonZh.ribbonParagraphShading}
+          aria-expanded={shadingOpen && canShading} onClick={() => setShadingOpen(open => !open)}>
+          <IconShading size={17} /><span className="rb-caret-inline"><IconCaret /></span>
         </button>
-        <button type="button" className={`rb-caret rb-color-caret${shadingOpen ? ' active' : ''}`} data-action="shading-palette" disabled={!canShading} title={shadingTip} aria-label="段落底纹颜色选择" aria-expanded={shadingOpen && canShading} onClick={() => setShadingOpen(open => !open)}><IconCaret size={10} /></button>
-        {shadingOpen && canShading && <div data-rb-panel="" className="color-palette docx-ribbon-shading-palette">
-          <div className="color-section-title">{ribbonZh.ribbonParagraphShading}</div>
-          <div className="color-highlight-grid">{DOCX_SHADING_COLORS.map(value => <button type="button" key={value} className={`color-swatch color-highlight-swatch${shading === value.toLowerCase() ? ' selected' : ''}`} data-action={`shading-${value}`} aria-label={value} aria-pressed={shading === value.toLowerCase()} title={`#${value}`} style={{ background: `#${value}` }} onClick={() => { setPenShading(value); onShading?.(value.toLowerCase()) }} />)}</div>
-          <button type="button" className={`color-none color-highlight-none${shading == null || shading === 'none' ? ' selected' : ''}`} data-action="shading-none" onClick={() => onShading?.('none')}>{ribbonZh.ribbonNoColor}</button>
-        </div>}
+        {shadingOpen && canShading && <RibbonColorPalette current={shadingColor} noneLabel={ribbonZh.ribbonNoColor} onPick={hex => {
+          setShadingOpen(false)
+          onShading?.(hex ?? 'none')
+        }} />}
       </div>
       <div className="rb-split-wrap docx-ribbon-borders" ref={bordersWrap} onMouseDown={event => { if ((event.target as HTMLElement).closest('button')) event.preventDefault() }}>
         <button type="button" className={`rb-icon${bordersActive ? ' active' : ''}`} data-action="para-borders" data-editable-action="true" disabled={!canBorders} title={bordersTip} aria-label={bordersTip} aria-expanded={tableBorders ? bordersOpen && canBorders : undefined} onClick={() => tableBorders ? setBordersOpen(open => !open) : applyPenBorders(penBorder)}>

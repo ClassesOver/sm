@@ -445,7 +445,16 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const redo = button('重做', async () => { draft.redo(); await refresh() }, true, 'redo')
   sourceCommand(undo, 'home.edit.undo')
   sourceCommand(redo, 'home.edit.redo')
-  const homeTextEdit = button('原位改字', () => { setMode('text'); renderTextPanel(true) }, true)
+  function toggleTextEdit() {
+    if (mode === 'text') {
+      if (hasUnstagedText()) throw new Error('请先点击“加入文字修改”，再退出原位改字')
+      setMode('select')
+      return
+    }
+    setMode('text')
+    renderTextPanel(true)
+  }
+  const homeTextEdit = button('原位改字', toggleTextEdit, true)
   sourceCommand(homeTextEdit, 'home.edit.editText')
   homeEditGroup.append(homeTextEdit)
   const insertStaticText = button('插入文字', () => staticText?.open(), true)
@@ -1386,7 +1395,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   button('页面前移', async () => { draft.setOperations(movePdfPage(model.pages, draft.operations, activeId, -1)); await refresh() })
   button('页面后移', async () => { draft.setOperations(movePdfPage(model.pages, draft.operations, activeId, 1)); await refresh() })
   commandGroup = ribbon.group('edit', 'Content')
-  const textEditButton = textEnabled ? button('原位改字', () => { setMode('text'); renderTextPanel(true) }) : undefined
+  const textEditButton = textEnabled ? button('原位改字', toggleTextEdit) : undefined
+  if (textEditButton) sourceCommand(textEditButton, 'edit.content.editText')
   const previewButton = button('校验当前修改', () => previewDraft(), false)
   const backToSource = button('返回原稿编辑', async () => {
     if (locked || previewing) return
@@ -1937,7 +1947,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); fillFormImage.setAttribute('aria-pressed', String(ordinaryImagePlacement())); syncDrawingCanvases(); syncLinkLayers() }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument;
+    const textEditing = String(mode === 'text')
+    homeTextEdit.setAttribute('aria-pressed', textEditing); textEditButton?.setAttribute('aria-pressed', textEditing)
+    for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); fillFormImage.setAttribute('aria-pressed', String(ordinaryImagePlacement())); syncDrawingCanvases(); syncLinkLayers() }
   function canChangePendingDrawings() {
     return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
   }

@@ -115,17 +115,24 @@ export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => C
   }
   function syncRibbon() {
     const current = values(context)
-    for (const [command,field,value] of [['shapeFill','fill',current.fill === 'none' ? '' : current.fill],['shapeNoFill','fill',''],['shapeOutline','stroke',current.stroke?.color],['shapeNoOutline','stroke',''],['shapeOutlineWidth','stroke',current.stroke?.widthPt === undefined ? '' : String(current.stroke.widthPt)]] as const) {
-      for (const control of ribbonHost?.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(`[data-command="${command}"]`) ?? []) {
+    for (const [command,field,value] of [
+      ['shapeFillMenu','fill',''], ['shapeFill','fill',current.fill === 'none' ? '' : current.fill], ['shapeNoFill','fill',''],
+      ['shapeOutlineMenu','stroke',''], ['shapeOutline','stroke',current.stroke?.color], ['shapeNoOutline','stroke',''],
+      ['shapeOutlineWidth','stroke',String(current.stroke?.widthPt ?? '')],
+    ] as const) {
+      for (const control of ribbonHost?.querySelectorAll<HTMLInputElement | HTMLFieldSetElement | HTMLButtonElement>(`[data-command="${command}"]`) ?? []) {
         const unavailable = locked || !!context.reason || context.element?.brushSource?.supported !== true || current[field] === undefined
         control.disabled = unavailable; control.title = unavailable ? `来源${field === 'fill' ? '填充' : '轮廓'}暂不支持安全修改` : ''
-        if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
-          if (control instanceof HTMLSelectElement) {
-            control.querySelector('[data-shape-source-width]')?.remove()
-            if(value && ![...control.options].some(option=>option.value === value)) {const option=new Option(`${value} 磅`,value);option.dataset.shapeSourceWidth='';control.append(option)}
+        if (control instanceof HTMLInputElement) control.value = value ?? ''
+        else if (control instanceof HTMLFieldSetElement) {
+          if (value) control.setAttribute('aria-description', `${value} pt`)
+          else control.removeAttribute('aria-description')
+          for (const width of control.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
+            width.setAttribute('aria-pressed', String(width.dataset.outlineWidth === value))
           }
-          control.value = value ?? ''
         }
+        if (command === 'shapeNoFill' || command === 'shapeNoOutline') control.setAttribute('aria-pressed',
+          String(command === 'shapeNoFill' ? current.fill === 'none' : current.stroke === null))
       }
     }
   }
