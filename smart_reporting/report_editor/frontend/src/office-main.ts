@@ -272,21 +272,25 @@ async function loadKnowledge(space = currentSpace, { preserveTurns = false } = {
   const account = accountGeneration
   const generation = preserveTurns ? advanceKnowledgeGeneration(space) : invalidateKnowledge(space)
   try {
-    const conversation = conversationOf(space)
+    const listing = officeRequest<{ items: {id: string; title: string}[] }>(`/workspaces/${space}/knowledge/conversations`)
+    let conversation = activeKnowledgeConversation.get(space)
+    if (!conversation) {
+      const { items } = await listing
+      if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
+      conversation = items.find(item => item.id === 'default')?.id ?? items[0]?.id ?? crypto.randomUUID()
+    }
     const [result, conversations] = await Promise.all([
       officeRequest<{ items: KnowledgeTurn[] }>(`/workspaces/${space}/knowledge?conversation=${encodeURIComponent(conversation)}`),
-      officeRequest<{ items: {id: string; title: string}[] }>(`/workspaces/${space}/knowledge/conversations`),
+      listing,
     ])
     if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
     if (result.items.length && !formatOfficeAnswer) {
       try { formatOfficeAnswer = (await import('./office-answer')).renderOfficeAnswer } catch { /* plain text remains available */ }
       if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
     }
+    activeKnowledgeConversation.set(space, conversation)
     knowledgeTurns.set(space, result.items)
     knowledgeConversations.set(space, conversations.items)
-    if (!activeKnowledgeConversation.has(space) && !conversations.items.some(item => item.id === 'default')) {
-      activeKnowledgeConversation.set(space, crypto.randomUUID())
-    }
   } catch (error) {
     if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
     if (error instanceof OfficeRequestError && error.status === 403) {
