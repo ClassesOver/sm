@@ -66,6 +66,8 @@ XLSX `find_replace` 在授权范围内按顺序重放，支持区分大小写和
 
 XLSX `set_sheet_hidden` 接到原生工作表结构写入器。隐藏当前工作表时，活动标签转到可见工作表。独立回读验证跨表公式和工作表部件保留，并覆盖拒绝隐藏最后一张可见表、显示 `veryHidden` 表、修改受保护结构和从选区授权修改整表。
 
+XLSX `set_rows_hidden` 和 `set_cols_hidden` 复用原生分组写入器，仅更新指定跨度内的可见性。独立回读覆盖按列拆分已有分组、保留行高和列宽、保留折叠状态及同批隐藏和显示操作。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

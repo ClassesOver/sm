@@ -3,8 +3,8 @@ import { readXmlAttribute } from './xml'
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 export interface OutlineLineEdit {
   index: number
-  level: number
-  collapsed: boolean
+  level?: number
+  collapsed?: boolean
   hidden?: boolean
 }
 export interface SheetOutlineEdit {
@@ -18,8 +18,8 @@ function attributes(tag: string, entry: OutlineLineEdit): string {
     tag = tag.replace(new RegExp(`\\s+${name}="[^"]*"`, 'g'), '')
     if (value !== null) tag = tag.replace(/\s*\/?>$/, (ending) => ` ${name}="${value}"${ending}`)
   }
-  set('outlineLevel', entry.level ? String(entry.level) : null)
-  set('collapsed', entry.collapsed ? '1' : null)
+  if (entry.level !== undefined) set('outlineLevel', entry.level ? String(entry.level) : null)
+  if (entry.collapsed !== undefined) set('collapsed', entry.collapsed ? '1' : null)
   if (entry.hidden !== undefined) set('hidden', entry.hidden ? '1' : null)
   return tag
 }
@@ -58,10 +58,9 @@ export function setSheetOutlineXml(xml: string, edits: SheetOutlineEdit): string
         !Number.isInteger(entry.index) ||
         entry.index < 0 ||
         entry.index >= limit ||
-        !Number.isInteger(entry.level) ||
-        entry.level < 0 ||
-        entry.level > 7 ||
-        typeof entry.collapsed !== 'boolean' ||
+        (entry.level === undefined
+          ? entry.collapsed !== undefined || entry.hidden === undefined
+          : !Number.isInteger(entry.level) || entry.level < 0 || entry.level > 7 || typeof entry.collapsed !== 'boolean') ||
         (entry.hidden !== undefined && typeof entry.hidden !== 'boolean')
       )
         throw new Error('分组层级或行列边界无效')
@@ -74,8 +73,9 @@ export function setSheetOutlineXml(xml: string, edits: SheetOutlineEdit): string
           const tag = original.replace(/>\s*<\/col>$/, '/>')
           const min = Number(readXmlAttribute(tag, 'min')),
             max = Number(readXmlAttribute(tag, 'max'))
-          if (index < min || index > max) return tag
+          if (index < min || index > max) return original
           found = true
+          if (entry.level === undefined && entry.hidden === /^(?:1|true)$/.test(readXmlAttribute(tag, 'hidden') ?? '')) return original
           const span = (a: number, b: number) =>
             tag.replace(/\bmin="[^"]*"/, `min="${a}"`).replace(/\bmax="[^"]*"/, `max="${b}"`)
           return (
@@ -84,7 +84,7 @@ export function setSheetOutlineXml(xml: string, edits: SheetOutlineEdit): string
             (index < max ? span(index + 1, max) : '')
           )
         })
-        if (!found) {
+        if (!found && (entry.level !== undefined || entry.hidden)) {
           const added = attributes(`<col min="${index}" max="${index}"/>`, entry)
           let inserted = false
           inner = inner.replace(/<col\b[^>]*>/g, (tag) => {
@@ -96,9 +96,10 @@ export function setSheetOutlineXml(xml: string, edits: SheetOutlineEdit): string
           })
           if (!inserted) inner += added
         }
-        const cols = inner
-        if (current) xml = xml.replace(current[0], `<cols>${cols}</cols>`)
-        else xml = xml.replace(/<sheetData\b/, `<cols>${cols}</cols><sheetData`)
+        if (current && current[1] !== inner) {
+          xml = xml.replace(current[0], () => current[0].slice(0, current[0].indexOf('>') + 1) + inner + '</cols>')
+        }
+        else if (!current && inner) xml = xml.replace(/<sheetData\b/, `<cols>${inner}</cols><sheetData`)
       }
     }
   }
@@ -108,7 +109,8 @@ export function setSheetOutlineXml(xml: string, edits: SheetOutlineEdit): string
     const section = xml.match(/<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/)
     if (!section) throw new Error('工作表缺少sheetData')
     const existing = new Set([...section[1]!.matchAll(/<row\b[^>]*\br="([0-9]+)"/g)].map((match) => Number(match[1])))
-    const missing = [...requested.keys()].filter((index) => !existing.has(index)).sort((a, b) => a - b)
+    const missing = [...requested].filter(([index, entry]) => !existing.has(index) && (entry.level !== undefined || entry.hidden))
+      .map(([index]) => index).sort((a, b) => a - b)
     let cursor = 0
     let inner = section[1]!.replace(/<row\b[^>]*\br="([0-9]+)"[^>]*>/g, (tag, row) => {
       let prefix = ''
@@ -123,8 +125,11 @@ export function setSheetOutlineXml(xml: string, edits: SheetOutlineEdit): string
       const index = missing[cursor++]!
       inner += attributes(`<row r="${index}"/>`, requested.get(index)!)
     }
-    xml = xml.replace(section[0], section[0].slice(0, section[0].indexOf('>') + 1) + inner + '</sheetData>')
+    xml = xml.replace(section[0], () => section[0].slice(0, section[0].indexOf('>') + 1) + inner + '</sheetData>')
   }
+  const lines = [...(edits.rows ?? []), ...(edits.columns ?? [])]
+  if (lines.length && lines.every((line) => line.level === undefined) &&
+      edits.summaryBelow === undefined && edits.summaryRight === undefined) return xml
   const max = (tag: 'row' | 'col') => {
     let level = 0
     for (const match of xml.matchAll(new RegExp(`<${tag}\\b[^>]*>`, 'g')))
@@ -151,8 +156,10 @@ export async function applySheetOutline(
     workbook = await source.readText('xl/workbook.xml')
   const sheet = parseSheetElements(workbook).find((item) => item.name === sheetName)
   if (!sheet?.relationshipId) throw new Error('找不到分组目标工作表')
-  const path = await resolveWorksheetPath(source, sheet.relationshipId),
-    xml = setSheetOutlineXml(await source.readText(path), edits)
+  const path = await resolveWorksheetPath(source, sheet.relationshipId)
+  const original = await source.readText(path)
+  const xml = setSheetOutlineXml(original, edits)
+  if (xml === original) return bytes
   return (
     await assemblePackage(bytes, {
       replaced: new Map([[path, xml]]),

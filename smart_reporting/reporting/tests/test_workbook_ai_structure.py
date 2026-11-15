@@ -46,6 +46,54 @@ async def real_tools(source, *, scope='workbook'):
 
 
 @pytest.mark.anyio
+async def test_source_axis_visibility_preserves_outline_and_dimensions():
+    book = load_workbook(BytesIO(source_book()))
+    sheet = book['Source']
+    sheet['A2'] = '$&'
+    sheet.row_dimensions[2].height = 31
+    sheet.row_dimensions[2].outlineLevel = 2
+    sheet.row_dimensions[2].collapsed = True
+    sheet.column_dimensions.group('B', 'D', outline_level=2, hidden=True)
+    sheet.column_dimensions['B'].width = 19
+    stream = BytesIO()
+    book.save(stream)
+    tools, previews = await real_tools(stream.getvalue())
+    await tools.propose_operations([
+        {'op': 'set_rows_hidden', 'sheetId': 'Source', 'row': 2, 'count': 2, 'hidden': True},
+        {'op': 'set_rows_hidden', 'sheetId': 'Source', 'row': 3, 'hidden': False},
+        {'op': 'set_cols_hidden', 'sheetId': 'Source', 'column': 'C', 'hidden': False},
+        {'op': 'set_cols_hidden', 'sheetId': 'Source', 'column': 'H', 'hidden': True},
+    ], '调整行列可见性')
+    sheet = load_workbook(BytesIO(previews[0]))['Source']
+    row = sheet.row_dimensions[2]
+    assert (row.hidden, row.height, row.outlineLevel, row.collapsed) == (True, 31, 2, True)
+    assert not sheet.row_dimensions[3].hidden and sheet['A2'].value == '$&'
+    columns = [sheet.column_dimensions[column] for column in 'BCD']
+    assert [column.hidden for column in columns] == [True, False, True]
+    assert all(column.width == 19 and column.outlineLevel == 2 for column in columns)
+    assert sheet.column_dimensions['H'].hidden and sheet['C1'].value == '=B3+1'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'fields', 'error'), [
+    ('workbook', {'row': 1048576, 'count': 2, 'hidden': True}, 'axis_visibility_invalid'),
+    ('workbook', {'column': 'XFD', 'count': 2, 'hidden': False}, 'axis_visibility_invalid'),
+    ('workbook', {'row': 2, 'hidden': 1}, 'axis_visibility_invalid'),
+    ('range', {'column': 'A', 'hidden': True}, 'selection_mismatch'),
+])
+async def test_source_axis_visibility_rejects_invalid_span_or_scope(scope, fields, error):
+    preview = AsyncMock()
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Source'}]}, scope=scope, preview=preview,
+                              selection={'sheetName': 'Source'})
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([{
+            'op': 'set_rows_hidden' if 'row' in fields else 'set_cols_hidden',
+            'sheetId': 'Source', **fields,
+        }], '调整行列可见性')
+    preview.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_source_sheet_visibility_replays_in_order_and_moves_active_tab():
     book = load_workbook(BytesIO(source_book()))
     book.create_sheet('Secret').sheet_state = 'veryHidden'

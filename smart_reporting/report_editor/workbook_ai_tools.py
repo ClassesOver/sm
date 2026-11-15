@@ -23,10 +23,12 @@ from .workbook_ai_charts import translate_chart_deletion, validate_chart_candida
 from .workbook_ai_page_setup import page_setup_patch
 from .workbook_ai_structure import (
     AXIS_SIZE_SOURCE_OPS,
+    AXIS_VISIBILITY_SOURCE_OPS,
     ROW_COLUMN_SOURCE_OPS,
     SHEET_LIFECYCLE_OPS,
     SHEET_SOURCE_OPS,
     translate_axis_size,
+    translate_axis_visibility,
     translate_row_column_operation,
     translate_sheet_operation,
 )
@@ -414,6 +416,7 @@ class WorkbookAIToolkit(Toolkit):
                 '用 {op:set_row_height,sheetId,row,count,heightPoints} 调整行高（磅），'
                 '用 {op:set_col_width,sheetId,column,count,widthPx} 调整列宽（像素，上限 1790）。'
                 '起始行号从 1 开始，列使用字母，count 缺省为 1，需要工作簿权限。'
+                '整簿授权可用 set_rows_hidden(sheetId,row,count?,hidden) 和 set_cols_hidden(sheetId,column,count?,hidden) 隐藏或显示连续行列。'
                 '用 {op:set_freeze,sheetId,rows,columns} 从工作表左上角冻结行列，'
                 '行数和列数均为 0–100 的整数；同时传 0 取消冻结。'
                 '用 set_page_setup(sheetId,orientation?,paperSize?,scale?,fitToWidth?,fitToHeight?,margins?,'
@@ -513,6 +516,11 @@ class WorkbookAIToolkit(Toolkit):
             if not isinstance(sheet_id, str) or not sheet_id:
                 raise ValueError('workbook_ai_axis_size_invalid')
             return translate_axis_size(operation, self._sheet(sheet_id)['name'])
+        if op in AXIS_VISIBILITY_SOURCE_OPS:
+            sheet_id = operation.get('sheetId')
+            if not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError('workbook_ai_axis_visibility_invalid')
+            return translate_axis_visibility(operation, self._sheet(sheet_id)['name'])
         if op == 'refresh_pivot':
             sheet_id = operation.get('sheetId')
             if set(operation) != {'op', 'sheetId'} or not isinstance(sheet_id, str) or not sheet_id:

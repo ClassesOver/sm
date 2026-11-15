@@ -19,6 +19,7 @@ ROW_COLUMN_SOURCE_OPS = {
 SHEET_LIFECYCLE_OPS = {'add_sheet', 'rename_sheet', 'delete_sheet'}
 SHEET_SOURCE_OPS = SHEET_LIFECYCLE_OPS | {'move_sheet', 'set_sheet_hidden'}
 AXIS_SIZE_SOURCE_OPS = {'set_row_height', 'set_col_width'}
+AXIS_VISIBILITY_SOURCE_OPS = {'set_rows_hidden', 'set_cols_hidden'}
 
 
 def translate_sheet_operation(operation: dict[str, Any], order: list[str]) -> dict[str, Any]:
@@ -127,3 +128,26 @@ def translate_axis_size(operation: dict[str, Any], sheet_name: str) -> dict[str,
             raise ValueError('workbook_ai_column_width_exceeds_xlsx_limit')
     return {'kind': kind, 'sheetName': sheet_name,
             'entries': [{'index': index, key: stored} for index in range(start - 1, start + count - 1)]}
+
+
+def translate_axis_visibility(operation: dict[str, Any], sheet_name: str) -> dict[str, Any]:
+    rows = operation['op'] == 'set_rows_hidden'
+    axis = 'row' if rows else 'column'
+    error = 'workbook_ai_axis_visibility_invalid'
+    if set(operation) - {'count'} != {'op', 'sheetId', axis, 'hidden'}:
+        raise ValueError(error)
+    start, hidden = operation[axis], operation['hidden']
+    count = operation.get('count', 1)
+    if type(hidden) is not bool or type(count) is not int or not 1 <= count <= (10000 if rows else 1000):
+        raise ValueError(error)
+    if rows:
+        if type(start) is not int:
+            raise ValueError(error)
+    elif isinstance(start, str) and re.fullmatch(r'[A-Z]{1,3}', start):
+        start = column_index_from_string(start)
+    else:
+        raise ValueError(error)
+    if not 1 <= start <= start + count - 1 <= (1048576 if rows else 16384):
+        raise ValueError(error)
+    return {'kind': 'applySheetOutline', 'sheetName': sheet_name,
+            axis + 's': [{'index': index, 'hidden': hidden} for index in range(start - 1, start + count - 1)]}

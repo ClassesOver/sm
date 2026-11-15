@@ -202,7 +202,10 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       case 'addPivot': bytes = await addPivotTable(bytes, op.addition); break
       case 'applyColumnWidths': bytes = await applyColumnWidths(bytes, op.sheetName, op.entries); break
       case 'applySheetOutline': {
-        const entry = (max: number) => z.object({ index: z.number().int().min(0).max(max), level: z.number().int().min(0).max(7), collapsed: z.boolean(), hidden: z.boolean().optional() }).strict()
+        const entry = (max: number) => z.union([
+          z.object({ index: z.number().int().min(0).max(max), level: z.number().int().min(0).max(7), collapsed: z.boolean(), hidden: z.boolean().optional() }).strict(),
+          z.object({ index: z.number().int().min(0).max(max), hidden: z.boolean() }).strict(),
+        ])
         const parsed = z.object({ kind: z.literal('applySheetOutline'), sheetName: z.string().min(1).max(31), summaryBelow: z.boolean().optional(), summaryRight: z.boolean().optional(), rows: z.array(entry(1048575)).max(1048576).optional(), columns: z.array(entry(16383)).max(16384).optional() }).strict().parse(op)
         const normalize = (entries: NonNullable<typeof parsed.rows>) => entries.map(({ hidden, ...entry }) => ({ ...entry, ...(hidden !== undefined ? { hidden } : {}) }))
         bytes = await applySheetOutline(bytes, parsed.sheetName, {
