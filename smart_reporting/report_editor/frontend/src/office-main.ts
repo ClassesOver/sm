@@ -11,10 +11,10 @@ import { showOfficeSources } from './office-sources'
 import { showOfficeFileActions, type OfficeFileAction } from './office-file-actions'
 
 const formats = {
-  docx: ['AI Docs', '文档', '未命名文档'],
-  xlsx: ['AI Sheets', '表格', '未命名表格'],
-  pptx: ['AI Slides', '演示', '未命名演示'],
-  pdf: ['AI PDF', 'PDF', '未命名 PDF'],
+  docx: ['文档', '文档', '未命名文档'],
+  xlsx: ['表格', '表格', '未命名表格'],
+  pptx: ['演示文稿', '演示', '未命名演示'],
+  pdf: ['版式文档', '版式文档', '未命名版式文档'],
 } as const
 type Format = keyof typeof formats
 type Folder = { id: string; parent: string; name: string }
@@ -204,7 +204,7 @@ async function start() {
 function showLogin() {
   const dialog = document.createElement('dialog')
   dialog.className = 'office-administration'
-  dialog.innerHTML = '<h2>登录 GenOffice</h2><form><label>组织域<input name="database" required></label><label>公司<input name="company" required></label><label>账号<input name="user" autocomplete="username" required></label><label>密码<input name="password" type="password" autocomplete="current-password" required></label><button>登录</button><button type="button" data-dismiss>取消</button></form><p role="status"></p>'
+  dialog.innerHTML = '<h2>登录 DyOffice</h2><form><label>组织域<input name="database" required></label><label>公司<input name="company" required></label><label>账号<input name="user" autocomplete="username" required></label><label>密码<input name="password" type="password" autocomplete="current-password" required></label><button>登录</button><button type="button" data-dismiss>取消</button></form><p role="status"></p>'
   dialog.addEventListener('click', event => event.stopPropagation())
   dialog.onclose = () => dialog.remove()
   dialog.querySelector<HTMLButtonElement>('[data-dismiss]')!.onclick = () => dialog.close()
@@ -236,11 +236,11 @@ function showLogin() {
 }
 
 function badge(format: Format, size = 30) {
-  return `<img src="${assets}file-${format}.svg" width="${size}" height="${size}" alt="">`
+  return `<span class="office-file-badge office-file-badge-${format}" style="width:${size}px;height:${size}px;font-size:${Math.round(size * .55)}px" aria-hidden="true">${({docx: '文', xlsx: '表', pptx: '演', pdf: '版'})[format]}</span>`
 }
 
 function folderTree(parent: string, depth: number): string {
-  const children = parent === '' ? [{ id: rootFolder, parent: '', name: 'GenOffice' }] :
+  const children = parent === '' ? [{ id: rootFolder, parent: '', name: 'DyOffice' }] :
     library.folders.filter(item => item.parent === parent)
   return children.map(item => `<div class="folder-row ${view === 'folder' && folder === item.id ? 'active' : ''}" style="--depth:${depth}" data-drop-folder="${escape(item.id)}">
     <button data-collapse="${escape(item.id)}" aria-label="${collapsed.has(item.id) ? '展开' : '折叠'} ${escape(item.name)}" aria-expanded="${!collapsed.has(item.id)}">${icon('chevron', 12)}</button>
@@ -255,8 +255,8 @@ function nav(item: View, label: string, glyph: keyof typeof paths, count?: numbe
 
 function quickStart() {
   return `<div class="quick-cards">${Object.entries(formats).map(([format, [title]]) =>
-    `<button class="quick-card" data-new="${format}" ${canWrite() ? '' : 'disabled'}>${badge(format as Format)}<span><strong>${title}</strong> <b>AI</b><small>.${format}</small></span></button>`).join('')}
-    <button class="quick-card" data-action="browse" ${canWrite() ? '' : 'disabled'}><span class="open-icon">${icon('folder', 19)}</span><span><strong>打开本地文件</strong><small>.docx / .xlsx / .pptx / .pdf</small></span></button></div>`
+    `<button class="quick-card" data-new="${format}" ${canWrite() ? '' : 'disabled'}>${badge(format as Format)}<span><strong>${title}</strong> <b>智能</b><small>${({docx: '文字编辑与排版', xlsx: '数据整理与分析', pptx: '演示设计与制作', pdf: '阅读与批注'})[format as Format]}</small></span></button>`).join('')}
+    <button class="quick-card" data-action="browse" ${canWrite() ? '' : 'disabled'}><span class="open-icon">${icon('folder', 19)}</span><span><strong>打开本地文件</strong><small>文档、表格、演示、版式文档</small></span></button></div>`
 }
 
 function canSendKnowledge(draft: string) {
@@ -437,7 +437,7 @@ function ask() {
       <div class="kb-citations">${turn.citations.map(citation => `<button data-citation="${escape(citation.fileId)}" data-revision="${citation.revision}">${icon('file', 14)} ${escape(citation.name)} · 修订 ${citation.revision}</button>`).join('')}</div>
     </article>`).join('') : `<div class="kb-hero">
       <span class="kb-icon">${icon('book', 22)}</span><h2>问知识库</h2>
-      <p>把常读的文件点上星，AI 就能跨文件检索、引用原文回答<br>——来源点一下就能打开。</p>
+      <p>把常读的文件点上星，助手就能跨文件检索、引用原文回答<br>——来源点一下就能打开。</p>
       <div class="kb-steps">${[['收藏文件', '在最近或文件夹里，点文件行上的星标'], ['回来提问', '像聊天一样问，不用先打开任何文档'], ['点击引用', '回答标注来源文件，点引用直接跳过去']].map(([title, body], i) => `<div><b>${i + 1}</b><span>${title}<small>${body}</small></span></div>`).join('')}</div>
       <button class="kb-cta" data-view="recent">${icon('star', 14)} 去最近文件收藏</button>
     </div>`}${pendingQuestion ? `<article class="kb-turn" aria-busy="true"><div class="kb-question">${escape(pendingQuestion)}</div></article>` : ''}</div>
@@ -559,7 +559,7 @@ function home() {
     `<button data-filter="${value}" class="${value === filter ? 'active' : ''}">${label}</button>`).join('')}</div>
       <label class="search">${icon('search', 14)}<input type="search" maxlength="160" placeholder="搜索文件、文件夹或正文…" aria-label="搜索文件、文件夹或正文" aria-keyshortcuts="Control+F Control+P Meta+F Meta+P"></label>
       <button class="sort" data-action="sort" aria-label="切换按名称排序" aria-pressed="${sortByName}">${icon('sort')}</button>
-      <button type="button" data-action="rerank-search" title="将查询和当前文件结果的短片段提交给已配置的 AI 模型" hidden>AI 重排</button>
+      <button type="button" data-action="rerank-search" title="将查询和当前文件结果的短片段提交给已配置的 智能模型" hidden>智能重排</button>
       <span class="file-count"></span>
     </div>
     <div class="filters" aria-label="收藏分组" data-favorite-groups hidden></div>
@@ -630,7 +630,7 @@ function showFavoriteGroups(entries: Entry[]) {
 }
 
 function workspaceFileLocation() {
-  const workspaceName = spaces.find(space => space.id === currentSpace)?.name ?? 'GenOffice'
+  const workspaceName = spaces.find(space => space.id === currentSpace)?.name ?? 'DyOffice'
   const foldersById = new Map(library.folders.map(item => [item.id, item]))
   return (id: string) => {
     const ancestors: string[] = []
@@ -698,10 +698,10 @@ function renderEntries() {
   const rerank = root.querySelector<HTMLButtonElement>('[data-action="rerank-search"]')!
   rerank.hidden = !query || Boolean(searching || failed || sortByName) || entries.length < 2
   rerank.disabled = Boolean(result?.rerankPending)
-  rerank.textContent = result?.rerankPending ? '正在重排…' : 'AI 重排'
+  rerank.textContent = result?.rerankPending ? '正在重排…' : '智能重排'
   root.querySelector('.file-count')!.textContent = searching ? `${count} 项，正在搜索正文…` : failed ? `${count} 项，正文搜索失败` :
     view === 'recent' && !query ? `最近使用　${entries.length} 个文件` :
-    `${count} 项${partial ? '（部分匹配）' : ''}${modelOrder.size && !sortByName ? ' · 已由 AI 重排' : result?.rerankUnavailable ? ' · AI 重排暂不可用' : ''}`
+    `${count} 项${partial ? '（部分匹配）' : ''}${modelOrder.size && !sortByName ? ' · 已智能重排' : result?.rerankUnavailable ? ' · 智能重排暂不可用' : ''}`
   const message = searching ? '正在搜索正文…' : failed ? '正文搜索失败，请重试。' : query || filter ? '找不到匹配的文件。' : view === 'folder' ? '这个文件夹还是空的。新建文件，或把文件拖到这里。' :
     view === 'starred' ? '暂无收藏文件。' : '暂无最近文件 — 新建或打开一个文件开始使用。'
   const location = workspaceFileLocation()
@@ -794,7 +794,7 @@ function canWrite(spaceId = currentSpace) {
 
 function render() {
   root.querySelector('.tabbar')!.innerHTML = `<button class="top-menu" data-action="sidebar" aria-label="切换侧栏">${icon('menu', 13)}</button>
-    <button class="tab ${selectedTab ? '' : 'active'}" data-tab="">${icon('home', 14)} GenOffice</button>
+    <button class="tab ${selectedTab ? '' : 'active'}" data-tab="">${icon('home', 14)} DyOffice</button>
     ${Array.from(tabs.keys(), path => {
     const entry = tabEntries.get(path)!
     return `<div class="file-tab ${selectedTab === path ? 'active' : ''}"><button data-tab="${escape(path)}">${badge(entry.format, 16)}${escape(entry.name)}</button><button data-close="${escape(path)}" aria-label="关闭 ${escape(entry.name)}">${icon('close', 12)}</button></div>`
@@ -805,14 +805,14 @@ function render() {
   const wasAtBottom = priorThread && priorThread.scrollHeight - priorThread.clientHeight - priorTop <= 2
   body.hidden = Boolean(selectedTab)
   body.innerHTML = `<aside ${sidebarHidden ? 'hidden' : ''}>
-    <img class="logo" src="${assets}genoffice-logo.svg" alt="GenOffice">
+    <div class="logo office-brand"><span class="office-brand-mark">${icon('file', 19)}</span><span>DyOffice</span></div>
     <select class="space-selector" aria-label="当前工作区" ${busy ? 'disabled' : ''}>${spaces.map(item =>
       `<option value="${escape(item.id)}" ${item.id === currentSpace ? 'selected' : ''}>${escape(item.name)}${item.archived ? '（已归档）' : ''}</option>`).join('')}</select>
-    <nav>${nav('recent', '最近', 'clock', library.entries.filter(item => !item.recentHidden).length)}${nav('starred', '收藏', 'star', library.entries.filter(item => item.starred).length)}${nav('ask', 'AI 问答', 'chat')}</nav>
+    <nav>${nav('recent', '最近', 'clock', library.entries.filter(item => !item.recentHidden).length)}${nav('starred', '收藏', 'star', library.entries.filter(item => item.starred).length)}${nav('ask', '智能问答', 'chat')}</nav>
     <div class="folders-head"><span>文件夹</span><div><button data-action="browse-directory" ${canWrite() ? '' : 'disabled'}>导入文件夹</button><button data-action="new-folder" aria-label="新建文件夹" ${canWrite() ? '' : 'disabled'}>${icon('plus', 14)}</button></div></div>
     ${folderTree('', 0)}
     <div class="space-controls">
-      ${currentUser ? '<button data-action="space-sources">工作区数据源</button>' : ''}
+      ${currentUser ? '<button data-action="space-sources">数据连接</button>' : ''}
 
       ${spaces.find(item => item.id === currentSpace)?.role === 'owner' && !spaces.find(item => item.id === currentSpace)?.personal_user ? '<button data-action="members">成员管理</button>' : ''}
       ${currentUser?.role === 'admin' ? '<a href="/office/admin" target="_blank" rel="noopener noreferrer">管理后台</a><button data-action="new-space">新建团队工作区</button>' : ''}

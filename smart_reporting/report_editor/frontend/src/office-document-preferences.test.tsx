@@ -10,7 +10,7 @@ beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} unobserv
 afterEach(async () => { await act(async () => root.unmount()); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 it('只提供通用及四种文档偏好，不提供 Markdown 和导出设置', async () => {
   await act(async () => root.render(<DocumentPreferencesPanel initial={initial} save={async x => x} close={() => {}} />))
-  expect([...document.querySelectorAll('[role="tab"]')].map(x => x.textContent)).toEqual(['通用', 'Word', 'Excel', 'PPT', 'PDF'])
+  expect([...document.querySelectorAll('[role="tab"]')].map(x => x.textContent)).toEqual(['通用', '文档', '表格', '演示', '版式文档'])
   expect(formatOptions.some(x => x.key === 'md')).toBe(false)
   expect(document.body.textContent).not.toMatch(/Markdown|导出设置|生成目录|压缩/)
 })
@@ -36,7 +36,7 @@ it('失败保留草稿和版本，关闭提示，重试成功后可以关闭', a
 it('保存期间落款样式所有输入禁用，避免回读覆盖输入', async () => {
   let finish!: (value: typeof initial) => void
   await act(async () => root.render(<DocumentPreferencesPanel initial={initial} save={() => new Promise(resolve => { finish = resolve })} close={() => {}} />))
-  await act(async () => button('Word').click())
+  await act(async () => button('文档').click())
   await act(async () => button('落款样式').click())
   const input = document.querySelector<HTMLInputElement>('[aria-label="署名"]')!
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'New signer'); input.dispatchEvent(new Event('input', {bubbles: true})) })

@@ -39,7 +39,7 @@ export async function startNativeEditor() {
     setItem: (key, value) => window.localStorage.setItem(key, value),
     removeItem: key => window.localStorage.removeItem(key),
   })
-  root.querySelector<HTMLElement>('.revision-label')!.textContent = `${context.format === 'docx' ? 'Word' : context.format.toUpperCase()} · 修订 ${revision}`
+  root.querySelector<HTMLElement>('.revision-label')!.textContent = `${context.format === 'docx' ? '文字文档' : '版式文档'} · 修订 ${revision}`
   root.querySelector<HTMLElement>('.structure-status')!.textContent = '编辑后内容待重新核验'
   root.querySelector<HTMLElement>('.current-section')!.textContent = '独立文件修订'
   root.querySelector<HTMLElement>('.doc-metrics')!.textContent = `${(context.sourceFile.size / 1024).toFixed(1)} KiB`

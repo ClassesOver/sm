@@ -44,9 +44,9 @@ export function createEditorShell(
   root.innerHTML = `
     <header class="app-bar">
       <div class="report-identity">
-        <span class="product-mark" aria-hidden="true">R</span>
+        <span class="product-mark" aria-hidden="true">D</span>
         <div>
-          <h1>智能报告</h1>
+          <h1>DyOffice</h1>
           <p class="revision-label"></p>
         </div>
       </div>
@@ -81,10 +81,10 @@ export function createEditorShell(
           <i data-lucide="save" aria-hidden="true"></i><span>保存</span>
         </button>
         <button type="button" data-action="pdf" aria-label="导出 PDF" title="导出 PDF"${isBinary && !isNative ? ' hidden' : ''}>
-          <i data-lucide="file-down" aria-hidden="true"></i><span>PDF</span>
+          <i data-lucide="file-down" aria-hidden="true"></i><span>版式文档</span>
         </button>
         <button type="button" data-action="word" aria-label="导出 Word" title="导出 Word"${isBinary && format !== 'docx' ? ' hidden' : ''}>
-          <i data-lucide="file-text" aria-hidden="true"></i><span>Word</span>
+          <i data-lucide="file-text" aria-hidden="true"></i><span>文字文档</span>
         </button>
         ${isBinary && !isNative ? `<a class="is-primary ${format}-download" data-action="${format}-download" aria-label="下载 ${format.toUpperCase()}" title="下载 ${format.toUpperCase()}" hidden>
           <i data-lucide="download" aria-hidden="true"></i><span>${format.toUpperCase()}</span>

@@ -41,7 +41,7 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
   const queryDrafts = new Map<string, string>()
   const panel = node('dialog')
   panel.className = 'office-administration office-sources'
-  const heading = node('h2', options.grantsOnly ? '工作区数据源授权' : options.admin ? '公司数据源管理' : '工作区数据源')
+  const heading = node('h2', options.grantsOnly ? '工作区数据源授权' : options.admin ? '公司数据源管理' : '数据连接')
   const content = node('div'), status = node('p'), close = node('button', '关闭')
   status.setAttribute('role', 'status')
   close.onclick = () => panel.close()

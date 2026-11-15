@@ -12,7 +12,7 @@ import { TablePreferenceFields } from './management/features/configuration/table
 import { getPreferenceValue, setPreferenceValue, validateSignatureDraft } from './management/features/configuration/preference-draft'
 import './office-document-preferences.css'
 type Value = { version: number; document: Record<string, unknown> }
-const formats = [{ value: 'common', label: '通用' }, { value: 'word', label: 'Word' }, { value: 'xlsx', label: 'Excel' }, { value: 'pptx', label: 'PPT' }, { value: 'pdf', label: 'PDF' }]
+const formats = [{ value: 'common', label: '通用' }, { value: 'word', label: '文档' }, { value: 'xlsx', label: '表格' }, { value: 'pptx', label: '演示' }, { value: 'pdf', label: '版式文档' }]
 export function DocumentPreferencesPanel({ initial, save, close }: { initial: Value; save(value: Value): Promise<Value>; close(): void }) {
   const [draft, setDraft] = useState(initial), [baseline, setBaseline] = useState(initial)
   const [format, setFormat] = useState('common'), [section, setSection] = useState('style')
