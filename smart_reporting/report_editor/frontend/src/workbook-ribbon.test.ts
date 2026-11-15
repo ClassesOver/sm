@@ -678,7 +678,7 @@ it('renders the GenOffice Review Comments and Notes commands with note-specific 
     expect(button?.title, id).toContain(reason)
     expect(button?.getAttribute('aria-description'), id).toContain(reason)
   }
-  expect(buttons.filter(button => button.dataset.ribbonCommand === 'note-open')).toHaveLength(2)
+  expect(buttons.filter(button => button.dataset.ribbonCommand === 'note-open')).toHaveLength(1)
 })
 
 it('matches the GenOffice Review source groups, command ids, and safe disabled states', () => {
@@ -694,7 +694,7 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   expect(idsByGroup).toEqual([
     ['workbook-statistics'], ['translate'],
     ['note-open', 'note-delete', 'note-prev', 'note-next', 'note-show-toggle'],
-    ['note-open', 'note-show-all'], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
+    [], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
   ])
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => [button.dataset.ribbonCommand!, button.textContent ?? '']))
@@ -703,7 +703,6 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   expect(labels.get('sheet-protect')).toBe('保护工作表')
   expect(labels.get('workbook-protect')).toBe('保护工作簿')
   expect(labels.get('allow-edit-ranges-open')).toBe('允许编辑区域')
-  expect(labels.get('note-show-all')).toBe('显示所有注释')
   for (const [id, reason] of [
     ['translate', '翻译操作'],
   ]) {
@@ -716,6 +715,28 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   expect(document.querySelector('[data-ribbon-command="spellcheck-toggle"]')).toBeNull()
   expect(document.querySelector('[data-ribbon-command="workbook-change-password"]')).toBeNull()
   expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="workbook-statistics"]')!.disabled).toBe(false)
+})
+
+it('offers GenOffice Notes commands in source order and dispatches only enabled choices', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    editable: () => false, rotation: () => undefined, hasSelection: () => true,
+    noteReason: id => id === 'note-insert-picture' ? '当前工作簿不可编辑' : undefined,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
+  const notes = document.querySelector<HTMLSelectElement>('select[aria-label="注释"]')!
+  expect(Array.from(notes.options).slice(1).map(item => [item.value, item.textContent])).toEqual([
+    ['note-open', '新建注释'], ['note-insert-picture', '插入图片'],
+    ['note-show-toggle', '显示/隐藏注释'], ['note-show-all', '显示所有注释'],
+    ['notes-convert', '转换为注释'], ['note-pictures-pane-toggle', '批注图片'],
+  ])
+  for (const command of ['note-insert-picture', 'notes-convert', 'note-show-all', 'note-pictures-pane-toggle']) {
+    notes.value = command
+    notes.dispatchEvent(new Event('change'))
+    expect(notes.value).toBe('')
+  }
+  expect(onCommand.mock.calls).toEqual([['note-show-all'], ['note-pictures-pane-toggle']])
 })
 
 it('renders GenOffice View controls with a live gridline toggle and explicit unavailable states', () => {

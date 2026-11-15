@@ -148,6 +148,8 @@ type RibbonCommand =
   | 'note-next'
   | 'note-show-toggle'
   | 'note-show-all'
+  | 'note-insert-picture'
+  | 'note-pictures-pane-toggle'
   | 'freeze-panes'
   | 'zoom-in'
   | 'zoom-out'
@@ -412,6 +414,16 @@ const commandLabels: Record<string, string> = {
 const action = (label: string, id: string, command?: RibbonCommand): RibbonAction =>
   command === undefined ? { label: commandLabels[id] ?? label, id } : { label: commandLabels[id] ?? label, id, command }
 
+// GenOffice ExcelShell Review ▸ Notes and the Chinese app language pack.
+const noteMenuChoices = [
+  ['note-open', '新建注释'],
+  ['note-insert-picture', '插入图片'],
+  ['note-show-toggle', '显示/隐藏注释'],
+  ['note-show-all', '显示所有注释'],
+  ['notes-convert', '转换为注释'],
+  ['note-pictures-pane-toggle', '批注图片'],
+] as const
+
 // Groups and command ids follow GenOffice ExcelShell.tsx at f8c17004.
 const groups: Record<RibbonTab, RibbonGroup[]> = {
   File: [
@@ -542,7 +554,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('上一条', 'note-prev', 'note-prev'), action('下一条', 'note-next', 'note-next'),
       action('显示批注', 'note-show-toggle', 'note-show-toggle'),
     ] },
-    { title: '注释', actions: [action('注释', 'note-open', 'note-open'), action('显示所有注释', 'note-show-all', 'note-show-all')] },
+    { title: '注释', actions: [] },
     { title: '保护', actions: [
       action('保护工作表', 'sheet-protect', 'sheet-protect'), action('保护工作簿', 'workbook-protect', 'workbook-protect'),
       action('允许编辑区域', 'allow-edit-ranges-open', 'allow-edit-ranges-open'),
@@ -888,7 +900,7 @@ export function mountWorkbookRibbon(
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')) {
       const id = button.dataset.ribbonCommand!
       if (button.dataset.unavailableReason) continue
-      const noteViewAction = ['note-prev', 'note-next', 'note-show-toggle', 'note-show-all'].includes(id)
+      const noteViewAction = ['note-prev', 'note-next', 'note-show-toggle'].includes(id)
       // 打印 is read-only (available like 查找 even while read-only/saved);
       // 撤销/恢复 replay history mutations and follow editability.
       // 复制只读选区（固定源 read-only-safe），只读/已保存时仍可用。
@@ -977,7 +989,6 @@ export function mountWorkbookRibbon(
       }
       if (id.startsWith('note-')) {
         const noteReason = view.noteReason?.(id) ?? (!view.noteReason ? '批注来源尚未完成身份读取' : undefined)
-        if (id === 'note-show-all' && !noteReason) { button.disabled = false; button.title = button.textContent ?? '' }
         if (noteReason) { button.disabled = true; button.title = noteReason }
       }
       if (format) {
@@ -1082,6 +1093,13 @@ export function mountWorkbookRibbon(
       zoomMenu.disabled = view.zoomSelectionAvailable?.() === false
       zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放比例'
     }
+    const notes = body.querySelector<HTMLSelectElement>('[data-ribbon-control="notes"]')
+    if (notes) for (const option of Array.from(notes.options).slice(1)) {
+      const reason = option.value === 'notes-convert' ? '当前不支持转换线程批注'
+        : view.noteReason?.(option.value) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
+      option.disabled = !!reason
+      option.title = reason ?? ''
+    }
     for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"]):not([data-ribbon-menu^="chart-"])')) {
       select.disabled = !editable || !pageState
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
@@ -1163,6 +1181,23 @@ export function mountWorkbookRibbon(
       const heading = document.createElement('h2')
       heading.textContent = group.title
       section.append(heading)
+      if (active === 'Review' && group.title === '注释') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('', '🗒') ?? ''
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'notes'
+        select.setAttribute('aria-label', '注释')
+        select.setAttribute('aria-description', '在所选位置添加或编辑')
+        select.append(new Option('注释', ''), ...noteMenuChoices.map(([id, label]) => new Option(label, id)))
+        select.addEventListener('change', () => {
+          const choice = select.selectedOptions[0]
+          select.value = ''
+          if (choice?.value && !choice.disabled && choice.value !== 'notes-convert') onCommand(choice.value as RibbonCommand)
+        })
+        wrapper.append(icon, select); section.append(wrapper)
+      }
       if (group.title === 'AI 助手') {
         section.classList.add('office-ai-group')
         section.append(createOfficeAIEntry(view?.onAssistant))

@@ -109,6 +109,18 @@ it('shows hidden notes on the current sheet, then hides them all without editing
     expect(save).not.toHaveBeenCalled()
   } finally { view.dispose() }
 })
+
+it('toggles the shared note pictures pane from the Review ribbon', async () => {
+  const draft = new NativeDraft(identity, store())
+  const { shell, view } = await open(await fixture(), draft, vi.fn())
+  try {
+    grid.ribbon('note-pictures-pane-toggle')
+    await vi.waitFor(() => expect(shell.editor.querySelector('.note-pictures-pane')).not.toBeNull())
+    grid.ribbon('note-pictures-pane-toggle')
+    expect(shell.editor.querySelector('.note-pictures-pane')).toBeNull()
+    expect(draft.operations).toEqual([])
+  } finally { view.dispose() }
+})
 afterEach(() => {
   for (const instance of grid.instances.splice(0)) instance.dispose()
   grid.apply.mockClear()

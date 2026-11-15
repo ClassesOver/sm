@@ -112,7 +112,7 @@ import { readWorkbookThemeSource, themeOperation, type ThemeCommandKind, type Wo
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
 import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
-import { assertProtectionRespected, planProtection, protectionBlockReason } from './workbook-protection'
+import { assertProtectionRespected, planProtection, protectionBlockReason, PROTECTED_SHEET_REASON } from './workbook-protection'
 import { readWorkbookEditableRanges, protectedValueCommandContext, type EditableRange } from './workbook-editable-ranges'
 import { installCalculation, type CalculationControl } from './workbook-calculation'
 import { installDataTable } from './workbook-data-table'
@@ -2044,7 +2044,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         }, (error: unknown) => { feedback.textContent = (error as Error).message })
         return
       }
-      const readingNote = ['note-open', 'note-prev', 'note-next', 'note-show-toggle', 'note-show-all'].includes(command)
+      const readingNote = ['note-open', 'note-prev', 'note-next', 'note-show-toggle', 'note-show-all', 'note-pictures-pane-toggle'].includes(command)
       // 定位只移动选区（固定源只读安全）：保存中/已保存/只读亦可用。
       if (command === 'goto-open') {
         if (loading || disposed) return
@@ -2228,6 +2228,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
             if (!editable()) return
             await runtime.univerAPI.executeCommand('data-validation.operation.open-validation-panel', {})
           })().catch(error => { feedback.textContent = (error as Error).message })
+          return
+        }
+        if (command === 'note-pictures-pane-toggle' || command === 'note-insert-picture') {
+          if (!notePictures) throw new Error('批注图片尚未就绪')
+          const result = command === 'note-pictures-pane-toggle' ? notePictures.toggle() : notePictures.insert()
+          void Promise.resolve(result).catch(error => { feedback.textContent = (error as Error).message })
           return
         }
         if (command === 'note-show-all') {
@@ -2633,6 +2639,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       },
       noteReason: command => {
         try {
+          if (command === 'note-pictures-pane-toggle') {
+            return notePictures && !loading && !saving && !disposed ? undefined : '批注图片尚未就绪'
+          }
           if (command === 'note-show-all') {
             if (loading || saving || disposed) return '当前工作簿正在加载、保存或已关闭'
             return noteWorkbook()?.getActiveSheet()?.getNotes().length ? undefined : '当前工作表没有注释'
@@ -2640,6 +2649,11 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           const target = captureNoteTarget(noteWorkbook())
           if (!target) return '请先选择单个单元格'
           const sheet = noteWorkbook()!.getActiveSheet()!
+          if (command === 'note-insert-picture') {
+            if (!notePictures || !editable()) return '当前工作簿不可编辑或批注图片尚未就绪'
+            if (sheetProtected(sheet.getSheetId())) return PROTECTED_SHEET_REASON
+            return
+          }
           noteSource(currentModel, sheet.getSheetName())
           if (command === 'note-delete' || command === 'note-show-toggle') return sheet.getRange(target.row, target.column).getNote() ? undefined : '当前单元格没有批注'
           if (command === 'note-prev' || command === 'note-next') return sheet.getNotes().length ? undefined : '当前工作表没有批注'
@@ -3665,7 +3679,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     insert: async () => {
       if (!editable()) throw new Error('当前工作簿不可编辑')
       const book = runtime.univerAPI.getActiveWorkbook(), sheet = book?.getActiveSheet(), range = sheet?.getSelection()?.getActiveRange()
-      if (!sheet || !range) throw new Error('请选择要插入图片的单元格')
+      if (!sheet || !range || range.getHeight() !== 1 || range.getWidth() !== 1) throw new Error('请选择一个要插入图片的单元格')
+      if (sheetProtected(sheet.getSheetId())) throw new Error(PROTECTED_SHEET_REASON)
       const selectionSheetName = sheet.getSheetName(), selectionRow = range.getRow(), selectionColumn = range.getColumn(), source = (noteSnapshot ?? await readNotePictures(await noteBytes())).sheets.find(item => item.sheetName === selectionSheetName)
       if (!source) throw new Error('图片批注来源身份不可用，请重新打开')
       const picker = createNotePictureFilePicker()
