@@ -6,6 +6,7 @@ must resolve it from the authenticated channel membership on every operation.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from typing import Any
 
 from .document_candidate_contract import (
@@ -79,4 +80,5 @@ class DocumentCandidateGateway:
             raise ValueError("document_task_status_invalid")
         if "taskId" in result and result["taskId"] != task_id:
             raise DocumentCandidateDenied("document_task_identity_mismatch")
-        return result
+        # Do not leak an adapter-owned mutable receipt across response boundaries.
+        return deepcopy(result)
