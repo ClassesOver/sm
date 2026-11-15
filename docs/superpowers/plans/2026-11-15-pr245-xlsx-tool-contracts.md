@@ -23,20 +23,20 @@ Fixed upstream f8c17004fb730df11f0f743164ffd8b4281bb38c. Frozen authorization, e
 
 Files: workbook_ai_tools.py, native_workbook_read_ai.py; tests/test_workbook_ai_tools.py, tests/test_native_workbook_read_ai.py under smart_reporting/reporting.
 Interface: _bounds(address) returns normalized zero-based rectangle; _sheet(None) selects frozen selection sheet when present. read_cells canonicalizes addresses before lookup.
-- [ ] Add tests for lower/absolute/reversed A1, outside-selection rejection, second-sheet default and canonical read_cells values.
-- [ ] Run these nodes and confirm failures from current strict parser/default.
-- [ ] Implement normalization, canonical cell lookup and selected-sheet default without changing source identities or selection scope.
-- [ ] Run affected reader/tool tests; expected all pass.
-- [ ] Commit source and tests.
+- [x] Add tests for lower/absolute/reversed A1, outside-selection rejection, second-sheet default and canonical read_cells values.
+- [x] Run these nodes and confirm failures from current strict parser/default.
+- [x] Implement normalization, canonical cell lookup and selected-sheet default without changing source identities or selection scope.
+- [x] Run affected reader/tool tests; expected all pass.
+- [x] Commit source and tests.
 
 ### Task 2: find_cells regex contract
 
 Files: workbook_ai_tools.py, native_workbook_read_ai.py, new workbook_search.py and workbook_search.mjs; new tests/test_workbook_search.py.
 Interface: find_cells retains existing positional parameters and appends regex: bool=False; matcher returns matching input indexes. Use node with JSON stdin, no shell, timeout. Invalid regex returns workbook_ai_search_invalid; timeout returns explicit failure, never zero matches.
-- [ ] Add tests for source literal matching, regex groups/anchors/case-insensitivity, JavaScript-only named group syntax, invalid regex, errors_only, selection isolation and registered Agno schema.
-- [ ] Run added tests and confirm missing parameter/behavior failures.
-- [ ] Implement matching with native JavaScript RegExp and shared reader forwarding. Preserve output fields and bounds.
-- [ ] Run affected search, reader and tool tests, Ruff and diff check; expected pass.
-- [ ] Update evidence and remaining gaps; commit.
+- [x] Add tests for source literal matching, regex groups/anchors/case-insensitivity, JavaScript-only named group syntax, invalid regex, errors_only, selection isolation and registered Agno schema.
+- [x] Run added tests and confirm missing parameter/behavior failures.
+- [x] Implement matching with native JavaScript RegExp and shared reader forwarding. Preserve output fields and bounds.
+- [x] Run affected search, reader and tool tests, Ruff and diff check; expected pass.
+- [x] Update evidence and remaining gaps; commit.
 
 Later subsystem plans cover XLSX navigation/document creation and DSL parity, then Word, PPTX and PDF tools. Their implementation details follow fresh source/host investigation, not guessed adapters.
