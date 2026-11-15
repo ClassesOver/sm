@@ -138,4 +138,29 @@ describe('shared Office task control',()=>{
   expect(cancel).toHaveBeenCalledTimes(1)
  })
 
+ it('refuses a different task identity when following an existing task',async()=>{
+  const cancel=vi.fn(async()=>{}),progress=vi.fn()
+  const controller=new OfficeAssistantController({
+    start:async()=>({id:'unused',status:'completed'}),
+    status:async()=>({id:'unrelated',status:'completed'}),cancel,
+    id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  await expect(controller.follow('authorized-task',progress)).rejects.toThrow('office_task_identity_mismatch')
+  expect(progress).not.toHaveBeenCalled()
+  expect(cancel).toHaveBeenCalledWith('authorized-task')
+  expect(cancel).not.toHaveBeenCalledWith('unrelated')
+ })
+ it('rejects task ID changing during polling without adopting the unrelated task',async()=>{
+  const cancel=vi.fn(async()=>{})
+  const status=vi.fn().mockResolvedValueOnce({id:'authorized-task',status:'running'})
+    .mockResolvedValueOnce({id:'unrelated',status:'completed'})
+  const controller=new OfficeAssistantController({
+    start:async()=>({id:'unused',status:'completed'}),status,cancel,
+    id:(job:Job)=>job.id,running:(job:Job)=>job.status==='running',
+  })
+  await expect(controller.follow('authorized-task')).rejects.toThrow('office_task_identity_mismatch')
+  expect(cancel).toHaveBeenCalledWith('authorized-task')
+  expect(cancel).not.toHaveBeenCalledWith('unrelated')
+ })
+
 })
