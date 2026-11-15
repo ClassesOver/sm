@@ -91,6 +91,14 @@ class NativeMailMergeSourcePayload(BaseModel):
     bytes_base64: str = Field(alias="bytesBase64", min_length=4, max_length=6 * 1024 * 1024)
 
 
+class NativeSlidesSaveAsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=256)
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
+    filename: str = Field(min_length=1, max_length=160)
+    operations: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+
+
 
 
 class NativeMailMergeAveryLayout(BaseModel):
@@ -308,6 +316,19 @@ def create_native_editor_router(
         except ReportingError as error:
             if error.code in {"native_word_filename_invalid", "native_word_file_action_invalid"}:
                 raise HTTPException(422, detail={"code":error.code,"message":error.message}) from None
+            raise _error(error) from None
+
+    @router.post("/reports/v1/native/{document_id}/{revision}/api/slides/save-as")
+    async def slides_save_as(document_id: str, revision: int, request: Request, payload: NativeSlidesSaveAsPayload):
+        from .native_slides_file_actions import save_slides_as
+
+        session, context = await session_context(request, document_id, revision, write=True)
+        try:
+            return await save_slides_as(editor, context, expected_sha256=payload.expected_sha256,
+                request_id=payload.request_id, filename=payload.filename, operations=payload.operations, session=session)
+        except ReportingError as error:
+            if error.code == "native_slides_filename_invalid":
+                raise HTTPException(422, detail={"code": error.code, "message": error.message}) from None
             raise _error(error) from None
 
     @router.get("/reports/v1/native/open/{raw_grant}", include_in_schema=False)

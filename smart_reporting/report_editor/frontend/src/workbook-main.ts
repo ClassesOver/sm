@@ -3,7 +3,7 @@ import {createWorkbookPictureSelectionController} from './workbook-picture-selec
 import {SheetSkeletonService} from '@univerjs/sheets'
 import {drawingPositionToTransform} from '@univerjs/sheets-drawing'
 import {IDrawingManagerService,getDrawingShapeKeyByDrawingSearch} from '@univerjs/drawing'
-import {createWorkbookPictures,controlledWorkbookPicture,installWorkbookPictures} from './workbook-pictures'
+import {createWorkbookPictures,controlledWorkbookPicture,installWorkbookPictures,type WorkbookPictureMode} from './workbook-pictures'
 import {readWorkbookPictures,pictureSourceIdentity} from '@sheets-web/xlsx-engine/pictures'
 import { mountWorkbookThreads, type ThreadRibbonCommand } from './workbook-threaded-comments-host'
 import type {ThreadActor} from './workbook-threaded-comments'
@@ -1802,7 +1802,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       }
       if (command === 'link-open') {
         void openLinkDialog().catch(error => { feedback.textContent = (error as Error).message })
-      } else if (command === 'insert-picture' || command === 'insert-equation' || command === 'insert-icons') {
+      } else if (command === 'insert-picture' || command === 'insert-equation' || command === 'insert-icons' || command === 'insert-screenshot') {
         openOrdinaryPicture(command)
         return
       }
@@ -3675,7 +3675,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   noteToggle.addEventListener('click', () => void notePictures?.toggle())
   noteHost.append(noteToggle)
   const picturesView = createWorkbookPictures()
-  const openOrdinaryPicture = (mode: 'insert-picture'|'insert-equation'|'insert-icons') => {
+  const openOrdinaryPicture = (mode: WorkbookPictureMode) => {
     if (!editable() || loading || saving || saved || disposed) return
     const book=runtime.univerAPI.getActiveWorkbook(),sheet=book?.getActiveSheet(),range=sheet?.getSelection()?.getActiveRange()
     if(!book||!sheet||!range){feedback.textContent='请先选中图片插入位置';return}
@@ -3690,7 +3690,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       const image=controlledWorkbookPicture(picture)
       const operation={kind:'insertPicture',sheetName:identity.sheetName,row:identity.row,column:identity.column,imageId:`picture-${crypto.randomUUID()}`,sourceIdentity,picture:image,widthPx:picture.width,heightPx:picture.height}
       await commitNotePicture(before,[...before,operation])
-      feedback.textContent='图片已插入，修改尚未保存。公式和图标保存为PNG图片，可选择图片移动、缩放或删除。'
+      feedback.textContent=mode==='insert-screenshot'?'屏幕截图已插入，修改尚未保存。':'图片已插入，修改尚未保存。公式和图标保存为PNG图片，可选择图片移动、缩放或删除。'
     },error=>{feedback.textContent=(error as Error).message})
   }
   let noteCaptureKey = ''

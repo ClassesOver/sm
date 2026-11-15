@@ -10,6 +10,7 @@ from typing import Any
 from zipfile import ZipFile
 
 from defusedxml import ElementTree
+from loguru import logger
 from pypdf import PdfReader
 
 from ..reporting.delivery.artifacts_v1 import ArtifactFile
@@ -120,7 +121,8 @@ class NativeImportService:
         self.workspace, self.repository, self.grants = workspace, repository, grants
 
     async def import_file(self, scope: NativeScope, content: bytes, *, request_id: str, filename: str = '',
-                          display_name: str | None = None, authorize_created: ImportAuthorization | None = None) -> dict[str, Any]:
+                          display_name: str | None = None, authorize_created: ImportAuthorization | None = None,
+                          generation_key: str | None = None) -> dict[str, Any]:
         """scope 必须由宿主可信会话构造，不接收上传表单中的身份字段。"""
         if not isinstance(scope, NativeScope) or not isinstance(request_id, str) or not request_id or len(request_id) > 256:
             raise ReportingError('native_import_request_invalid', '文件导入请求身份无效。')
@@ -137,7 +139,14 @@ class NativeImportService:
         await read_verified_file(self.workspace, {'threadId': key}, path, size=identity.size,
             sha256=identity.sha256, error_code='native_import_source_changed', format_name=format.upper())
         source = NativeSource(format=format, origin='upload', sourceFile=identity, displayName=display_name)
-        document = await self.repository.create_from_source(source, scope=scope, request_id=request_id)
+        # A generated ZIP can change bytes on retry despite the same authorized inputs.
+        generated = {'generation_key': generation_key} if generation_key is not None else {}
+        document = await self.repository.create_from_source(source, scope=scope, request_id=request_id, **generated)
+        if generation_key is not None and document.source.source_file.path != path:
+            try:
+                await self.workspace.adelete_registered_file(key, path, size=identity.size, sha256=identity.sha256)
+            except Exception:
+                logger.warning('native_generated_duplicate_cleanup_failed format={}', format)
         return await self.open_revision(scope, document.document_id, 1, authorize_created=authorize_created)
 
     async def open_revision(self, scope: NativeScope, document_id: str, number: int, *,

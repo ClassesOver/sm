@@ -210,6 +210,8 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     },
     newWord: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/new',payload)).json(),
     saveWordAs: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/save-as',payload)).json(),
+    saveSlidesAs: async (payload: NativeWordFileRequest & { operations: NativeOperation[] }): Promise<NativeWordFileResult> =>
+      (await request('slides/save-as', payload)).json(),
     context: async (signal?: AbortSignal): Promise<NativeContextResponse> => (await request('context', undefined, signal)).json(),
     imagePixels: async (target: {sourceSha256: string; pageId: string; imageId: string; expectedImageSha256: string}, signal?: AbortSignal): Promise<{sourceSha256:string;imageId:string;expectedImageSha256:string;pageId:string;image:string;width:number;height:number;sha256:string}> => (await request('image-pixels', target, signal)).json(),
     imageBackground: async (target: {sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};pxWidth:number}, signal?:AbortSignal): Promise<{sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};image:string;width:number;height:number;sha256:string}> => (await request('image-background',target,signal)).json(),

@@ -25,10 +25,27 @@ function fixture(multiple=false,onReviewAI?: (selection:{blockId:string;revision
  baseline=editor.getJSON();ready=true
  editor.on('transaction',({transaction})=>{if(transaction.docChanged)ignored.push(transaction.getMeta(TRACK_IGNORE)===true)})
  ;(editor.storage as any).trackChanges.enabled=true
- const controls=createDocxTextRevisionControls({editor,baseline,anchors,container:root,onReviewAI,revisionFilter:()=>filter,readOnlyReason:()=>locked?'正在保存':null,onError:error=>errors.push(error)})
+ const controls=createDocxTextRevisionControls({editor,baseline,anchors,container:root,paneHost:root,onReviewAI,revisionFilter:()=>filter,readOnlyReason:()=>locked?'正在保存':null,onError:error=>errors.push(error)})
  disposals.push(()=>{controls.dispose();editor.destroy()})
  return {editor,baseline,anchor,anchors,controls,errors,ignored,setFilter:(next:typeof filter)=>{filter=next},bypass:()=>{editor.unregisterPlugin(guardKey);(editor.storage as any).trackChanges.enabled=false},lock:()=>{locked=true;controls.refresh()}}
 }
+it('toggles the non-modal reviewing pane and applies the mark filter without changing revisions',()=>{
+ const f=fixture(),opener=document.body.appendChild(document.createElement('button'))
+ f.controls.togglePane(opener)
+ const pane=document.querySelector('aside[aria-label="审阅窗格"]')!
+ expect(pane).not.toBeNull()
+ expect(document.querySelector('[role="dialog"]')).toBeNull()
+ expect(pane.querySelectorAll('[data-revision-id]')).toHaveLength(2)
+ click('b','locate');expect(f.editor.state.selection.from).toBe(4)
+ expect(pane.isConnected).toBe(true)
+ f.setFilter({insDel:false,format:true,hiddenAuthors:[]});f.controls.refresh()
+ expect(pane.querySelectorAll('[data-revision-id]')).toHaveLength(0)
+ expect(pane.textContent).toContain('已隐藏 2 条')
+ expect(f.editor.getJSON()).toEqual(f.baseline)
+ pane.querySelector<HTMLButtonElement>('[aria-label="关闭审阅窗格"]')!.click()
+ expect(pane.isConnected).toBe(false)
+ expect(document.activeElement).toBe(opener)
+})
 const row=(id:string)=>document.querySelector<HTMLElement>(`[data-revision-id="${id}"]`)!
 const click=(id:string,action:string)=>row(id).querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!.click()
 it('accepts exact source target in one history step, keeps adjacent merged wrapper and undoes/redoes real decisions',()=>{

@@ -55,6 +55,14 @@
 .docx-revision-dialog [data-revision-list] li { min-width:0; padding:12px; border:1px solid var(--office-border-soft); border-radius:var(--office-radius); }
 .docx-revision-dialog [data-revision-list] p { margin:0 0 10px; }
 .docx-revision-dialog [data-revision-list] button { margin:0 6px 6px 0; }
+.docx-reviewing-pane-host { display:flex; flex:none; min-height:0; }
+.docx-reviewing-pane-host:empty { display:none; }
+.docx-revision-dialog.docx-reviewing-pane { box-sizing:border-box; width:300px; max-width:100vw; padding:12px; overflow:auto; border-inline-start:1px solid var(--office-border-soft); background:var(--office-chrome); color:var(--office-ink); }
+.docx-reviewing-pane > header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.docx-reviewing-pane > header h2 { margin:0; }
+@media (max-width:850px) {
+  .docx-reviewing-pane-host:not(:empty) { position:absolute; z-index:31; inset-block:0; inset-inline-end:0; }
+}
 .docx-word-count-dialog { width:min(380px,calc(100vw - 24px)); padding:20px; }
 .docx-word-count-dialog h2 { margin:0 32px 16px 0; font-size:var(--font-size-lg); }
 .docx-word-count-dialog [data-word-count-stats] { display:grid; gap:8px; margin:0; }

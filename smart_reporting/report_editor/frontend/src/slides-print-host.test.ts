@@ -2,7 +2,7 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {createEditorShell} from './shell'
 import {createSlidesEditorView} from './slides-main'
 import {NativeDraft} from './native-draft'
-import type { NativePreviewRequest } from './native-api'
+import type { createNativeApi, NativePreviewRequest } from './native-api'
 vi.mock('./slides-canvas',()=>({mountSlidesCanvas:()=>({update(){},destroy(){}})}))
 const render=vi.hoisted(()=>vi.fn(async()=>['data:image/png;base64,QQ==','data:image/png;base64,Qg==']))
 const downloadPdf = vi.hoisted(() => vi.fn())
@@ -13,12 +13,28 @@ vi.mock(import('./slides-export-download'), async original => ({
 const views:Array<ReturnType<typeof createSlidesEditorView>>=[]
 beforeEach(()=>{vi.stubGlobal('ResizeObserver',class{observe(){}disconnect(){}unobserve(){}});HTMLDialogElement.prototype.showModal=function(){this.open=true};HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new Event('close'))};render.mockClear()})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals()})
-async function fixture(previewPdf?: (payload: NativePreviewRequest, signal: AbortSignal) => Promise<ArrayBuffer>){
+async function fixture(previewPdf?: (payload: NativePreviewRequest, signal: AbortSignal) => Promise<ArrayBuffer>,
+                       saveAs?: ReturnType<typeof createNativeApi>['saveSlidesAs']){
  const shell=createEditorShell(document.body.appendChild(document.createElement('main')),'full','pptx'),sha='a'.repeat(64),draft=new NativeDraft({documentId:'print',revision:1,sourceSha256:sha,scope:{database:'f',companyId:'f',userId:'u',threadId:'t'}},{getItem:()=>null,setItem(){},removeItem(){}})
  const slides=[{slideIndex:0,elements:[],notesText:'visible notes'},{slideIndex:1,elements:[],hidden:true,notesText:'hidden notes'}],tree={slides:slides.map(slide=>({...slide,widthPx:960,heightPx:540,nodes:[],background:{type:'solid',color:'#ffffff'}}))}
  const request=vi.fn(async(path:string,_init?:RequestInit)=>path==='deck'?{revision:1,sha256:sha,size:{cx:9144000,cy:5143500},slides}:path==='render-tree'?tree:path==='preview'?{sourceSha256:sha,model:{slides}}:Promise.reject(Error('unexpected '+path)))
- const view=createSlidesEditorView(shell.editor,{native:true,draft,request:request as never,save:shell.save,download:shell.exportPptx,previewPdf,filename:'季度.pptx'});views.push(view);await view.ready;request.mockClear();return {shell,sha,draft,request,view}
+ const view=createSlidesEditorView(shell.editor,{native:true,draft,request:request as never,save:shell.save,download:shell.exportPptx,previewPdf,saveAs,filename:'季度.pptx'});views.push(view);await view.ready;request.mockClear();return {shell,sha,draft,request,view}
 }
+it('sends the current PPTX draft to Save As and opens a separate file without saving the source', async () => {
+ const saveAs = vi.fn(async () => ({ documentId:'new', revision:1, filename:'副本.pptx',
+   editor:{ openUrl:'/reports/v1/native/open/grant', url:'/reports/v1/native/open/grant', expiresAt:'' } }))
+ const f = await fixture(undefined, saveAs)
+ const operations = [{ kind:'editSlides', edits:[], order:[1, 0] }]
+ f.draft.setOperations(operations)
+ f.shell.editor.querySelector<HTMLButtonElement>('[data-command="saveAs"]')!.click()
+ const form = f.shell.editor.querySelector<HTMLFormElement>('form:has([name="filename"])')!
+ form.querySelector<HTMLInputElement>('input')!.value = '副本'
+ form.dispatchEvent(new Event('submit', { bubbles:true, cancelable:true }))
+ await vi.waitFor(() => expect(form.querySelector('a')?.getAttribute('href')).toContain('/reports/v1/native/open/grant'))
+ expect(saveAs).toHaveBeenCalledWith({ filename:'副本.pptx', requestId:expect.any(String), expectedSha256:f.sha, operations })
+ expect(f.request).not.toHaveBeenCalled()
+ expect(f.draft.operations).toEqual(operations)
+})
 it('exports current PPTX draft through the PDF host without creating a revision', async () => {
  const previewPdf = vi.fn(async () => new TextEncoder().encode('%PDF-1.7\n').buffer)
  const f = await fixture(previewPdf)

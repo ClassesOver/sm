@@ -3,6 +3,32 @@ import { applyWorkbookRibbonCommand, mountWorkbookRibbon, type WorkbookPageSetup
 
 afterEach(() => { document.body.replaceChildren() })
 
+it('routes Insert Screenshot only when display capture and editing are available', () => {
+  const onCommand = vi.fn()
+  const open = (editable: boolean) => {
+    const ribbon = mountWorkbookRibbon(document.body, onCommand, { editable: () => editable, rotation: () => 0 })
+    document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
+    const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-screenshot"]')!
+    return { ribbon, button }
+  }
+  vi.stubGlobal('navigator', {})
+  const unsupported = open(true)
+  expect(unsupported.button.disabled).toBe(true)
+  expect(unsupported.button.title).toContain('不支持屏幕截图')
+  unsupported.ribbon.dispose()
+  vi.stubGlobal('navigator', { mediaDevices: { getDisplayMedia: vi.fn() } })
+  try {
+    const readOnly = open(false)
+    expect(readOnly.button.disabled).toBe(true)
+    readOnly.ribbon.dispose()
+    const editable = open(true)
+    expect(editable.button.disabled).toBe(false)
+    editable.button.click()
+    expect(onCommand).toHaveBeenCalledExactlyOnceWith('insert-screenshot')
+    editable.ribbon.dispose()
+  } finally { vi.unstubAllGlobals() }
+})
+
 it.each([['Data', 'merge-workbooks'], ['Chart Design', 'chart-delete']] as const)('dispatches the existing %s %s command from its real Ribbon button', (tab, command) => {
   const onCommand = vi.fn(); let editable = true
   const ribbon = mountWorkbookRibbon(document.body, onCommand, { editable: () => editable, rotation: () => 0 })

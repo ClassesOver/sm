@@ -113,7 +113,9 @@ it.each([0, 1, 3])('keeps compact Review controls accessible with %i authors', c
   const host = document.body.appendChild(document.createElement('div'))
   const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
   const authors = ['Alice', 'Bob', 'Carol'].slice(0, count)
-  const commands = { open: vi.fn(), applyAll: vi.fn(), batchReason: () => null, toggleTracking: vi.fn(), view: {
+  let paneVisible = false
+  const togglePane = vi.fn(() => { paneVisible = !paneVisible })
+  const commands = { open: vi.fn(), applyAll: vi.fn(), batchReason: () => null, togglePane, paneVisible: () => paneVisible, toggleTracking: vi.fn(), view: {
     state: () => ({ mode: 'all' as const, insDel: true, format: true, hiddenAuthors: authors }), authors: () => authors, setMode: vi.fn(), setFilter: vi.fn(),
   } }
   const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], commands)
@@ -122,6 +124,12 @@ it.each([0, 1, 3])('keeps compact Review controls accessible with %i authors', c
     expect(Array.from(ribbon.querySelectorAll('.docx-review-revisions-items > button'), button => (button as HTMLButtonElement).dataset.action)).toEqual([
       'track-changes-toggle', 'text-revision-previous', 'text-revision-next', 'text-revision-list', 'text-revision-accept-supported', 'text-revision-reject-supported',
     ])
+    const pane = ribbon.querySelector<HTMLButtonElement>('[data-source-action="onToggleReviewPane"]')!
+    expect(pane.textContent).toContain('审阅窗格')
+    expect(pane.getAttribute('aria-pressed')).toBe('false')
+    pane.click()
+    expect(togglePane).toHaveBeenCalledWith(pane)
+    expect(pane.getAttribute('aria-pressed')).toBe('true')
     const people = ribbon.querySelector<HTMLSelectElement>('.docx-review-authors > [data-action="revision-filter-authors"]')!
     expect(people.multiple).toBe(true)
     expect(people.disabled).toBe(count === 0)

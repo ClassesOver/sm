@@ -42,7 +42,46 @@ it('does not navigate during a pointer gesture; releases on cancel and stops aft
   f.abort.abort(); f.key('Home'); expect(f.active()).toBe('c')
 })
 it('never intercepts keys on the surrounding document or unrelated controls', () => {
-  const f = fixture(); f.key('Home', {}, document.body); f.key('ArrowDown'); expect(f.navigate).not.toHaveBeenCalled()
+  const f = fixture(); expect(f.key('Home', {}, document.body).defaultPrevented).toBe(false); f.key('ArrowDown'); expect(f.navigate).not.toHaveBeenCalled()
+})
+it('scrolls the focused document with vertical arrows and space', () => {
+  const f = fixture()
+  Object.defineProperties(f.viewport, {clientHeight: {value: 400}, scrollHeight: {value: 1000}})
+  f.viewport.scrollTop = 100
+  expect(f.key('ArrowDown').defaultPrevented).toBe(true); expect(f.viewport.scrollTop).toBe(160)
+  expect(f.key(' ').defaultPrevented).toBe(true); expect(f.viewport.scrollTop).toBe(520)
+  expect(f.key('ArrowUp').defaultPrevented).toBe(true); expect(f.viewport.scrollTop).toBe(460)
+  expect(f.navigate).not.toHaveBeenCalled()
+})
+it('steps reading rows with horizontal arrows and carries focus when a thumbnail owns the key', () => {
+  const f = fixture(); f.abort.abort()
+  const abort = new AbortController(); controllers.push(abort)
+  const thumbs = document.body.appendChild(document.createElement('nav'))
+  const ids = ['right', 'left', 'next', 'last']
+  const buttons = ids.map(pageId => {
+    const control = thumbs.appendChild(document.createElement('button'))
+    control.className = 'pdf-thumbnail'
+    control.dataset.pageId = pageId
+    control.scrollIntoView = vi.fn()
+    return control
+  })
+  const navigate = vi.fn()
+  bindPdfPageNavigation(f.viewport, {
+    signal: abort.signal, available: () => true, thumbnails: thumbs, pages: () => ids.map(pageId => ({pageId})),
+    readingRows: () => [{pageId: 'right', pageIds: ['right', 'left']}, {pageId: 'next', pageIds: ['next', 'last']}],
+    readingPage: () => 'left', navigate,
+  })
+  f.viewport.focus()
+  expect(f.key('ArrowRight').defaultPrevented).toBe(true)
+  expect(navigate).toHaveBeenLastCalledWith('next')
+  expect(document.activeElement).toBe(f.viewport)
+  buttons[3]!.focus()
+  expect(f.key('ArrowUp', {}, buttons[3]!).defaultPrevented).toBe(true)
+  expect(navigate).toHaveBeenLastCalledWith('right')
+  expect(document.activeElement).toBe(buttons[0])
+  expect(buttons[0]!.scrollIntoView).toHaveBeenCalledWith({block: 'nearest'})
+  expect(f.key(' ', {}, buttons[0]!).defaultPrevented).toBe(false)
+  expect(f.key('ArrowDown', {}, thumbs.appendChild(document.createElement('button'))).defaultPrevented).toBe(false)
 })
 it('allows hidden custom modals and a clean replacement binding after abort', () => {
   const f = fixture(), modal = document.createElement('div'); modal.setAttribute('aria-modal', 'true'); modal.hidden = true; document.body.append(modal)
@@ -138,7 +177,7 @@ it.each(['wheel','pointerdown','touchstart','blur','focusout'])('invalidates nav
   viewport.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', cancelable: true }))
   expect(navigate).toHaveBeenLastCalledWith('2')
 })
-it.each([{key:'ArrowDown'}, {key:' '}, {key:' ',shiftKey:true}, {key:'End',ctrlKey:true}, {key:'Home',metaKey:true}])('lets native keyboard scrolling %j invalidate intent without consuming it', init => {
+it.each([{key:'ArrowDown',shiftKey:true}, {key:' ',shiftKey:true}, {key:'End',ctrlKey:true}, {key:'Home',metaKey:true}])('lets native keyboard scrolling %j invalidate intent without consuming it', init => {
   const viewport = document.createElement('div'); document.body.append(viewport)
   const abort = new AbortController(); controllers.push(abort); let reading = '1'; const navigate = vi.fn()
   bindPdfPageNavigation(viewport, { signal: abort.signal, available: () => true,

@@ -12,6 +12,7 @@ import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboa
 import { CELL_STYLE_PRESETS } from './workbook-cell-style-presets'
 import { THEME_MENU_OPTIONS } from './workbook-theme'
 import { chartPresetMenuOptions, type ChartPresetSource } from './workbook-chart-presets'
+import { supportsWorkbookScreenshot } from './workbook-screenshot'
 import { workbookTranslationLanguages, type WorkbookTranslationLanguage } from './workbook-ai-translation'
 
 type RibbonTab =
@@ -189,7 +190,7 @@ type RibbonCommand =
   | `page-fit:${'width' | 'height'}:${number}`
   | 'print-scale-open'
   | 'header-footer-open'
-  | 'insert-picture' | 'insert-equation' | 'insert-icons' | 'insert-symbol'
+  | 'insert-picture' | 'insert-screenshot' | 'insert-equation' | 'insert-icons' | 'insert-symbol'
   | 'link-open'
   | 'split-window'
   | 'refresh-all'
@@ -490,7 +491,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
   ],
   Insert: [
     { title: '表格', actions: ['pivot-open', 'pivot-edit', 'format-as-table'].map(id => action(id, id, id as RibbonCommand)) },
-    { title: '插图', actions: ['insert-picture', 'insert-shape', 'insert-icons', 'insert-screenshot'].map(id => action(id, id, id === 'insert-picture' || id === 'insert-icons' ? id : undefined)) },
+    { title: '插图', actions: ['insert-picture', 'insert-shape', 'insert-icons', 'insert-screenshot'].map(id => action(id, id, id === 'insert-shape' ? undefined : id as RibbonCommand)) },
     { title: '复选框', actions: [action('复选框', 'insert-checkbox', 'insert-checkbox')] },
     { title: '图表', actions: ['recommended-charts-open', 'insert-chart:column', 'insert-chart:bar', 'insert-chart:line', 'insert-chart:area', 'insert-chart:pie', 'insert-chart:scatter', 'insert-chart:radar', 'insert-chart:doughnut', 'insert-chart:combo'].map(id => action(id, id, id as RibbonCommand)) },
     { title: '迷你图', actions: (['sparkline:line', 'sparkline:column', 'sparkline:stacked', 'sparkline:edit', 'sparkline:delete'] as const).map(id => action(id, id, id)) },
@@ -1450,8 +1451,10 @@ export function mountWorkbookRibbon(
           const iconHost = document.createElement('span'); iconHost.className = 'workbook-ribbon-icon'; iconHost.setAttribute('aria-hidden', 'true'); iconHost.innerHTML = icon
           const label = document.createElement('span'); label.textContent = item.label; button.append(iconHost, label)
         } else button.textContent = item.label
-        if (item.command === undefined || disabledReasons[item.id] !== undefined) {
-          const reason = disabledReasons[item.id] ?? `“${item.label}”尚未接入完整的文件读取与回写`
+        const unavailable = item.id === 'insert-screenshot' && !supportsWorkbookScreenshot()
+          ? '当前浏览器不支持屏幕截图' : disabledReasons[item.id]
+        if (item.command === undefined || unavailable !== undefined) {
+          const reason = unavailable ?? `“${item.label}”尚未接入完整的文件读取与回写`
           button.disabled = true; button.dataset.unavailableReason = reason; button.title = reason; button.setAttribute('aria-description', reason)
         } else {
           let target: NumberFormatTarget | undefined

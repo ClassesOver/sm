@@ -72,7 +72,7 @@ const tabs: Tab[] = [
     ] },
     { label: 'Save', controls: [
       { id: 'saveRevision', label: 'Save Revision', sourceIcon: IconSave },
-      { id: 'saveAs', label: 'Save As', unavailable: noWrite('另存为') },
+      { id: 'saveAs', label: 'Save As', sourceIcon: IconSave, sourceActionId: 'onSaveAs' },
     ] },
   ] },
   { id: 'home', label: 'Home', groups: [
@@ -250,6 +250,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   onAction: NativeSlidesAction
   onAssistant?: () => void
   pdfExportAvailable?: boolean
+  saveAsAvailable?: boolean
   layouts?: NativeSlidesLayout[]
   locked?: boolean
 }): NativeSlidesRibbon {
@@ -367,7 +368,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         const localizedLabel = tab.id === 'home' && groupDefinition.label === 'Clipboard'
           ? clipboardLocale[(control.id === 'formatBrush' ? 'formatPainter' : control.id) as keyof typeof clipboardLocale] as string
           : localize(control.label)
-        const unavailable = control.id === 'exportPdf' && !options.pdfExportAvailable ? '当前会话未开放 PDF 导出。' : control.unavailable
+        const unavailable = control.id === 'exportPdf' && !options.pdfExportAvailable ? '当前会话未开放 PDF 导出。'
+          : control.id === 'saveAs' && !options.saveAsAvailable ? '当前会话未开放另存为。' : control.unavailable
         const controlId = `slides-native-command-${tab.id}-${control.id}`
         const sourceGlyph = control.sourceIcon ?? slidesRibbonSourceIcons[control.id]
         const glyph = control.icon ?? slidesRibbonIcons[control.id]

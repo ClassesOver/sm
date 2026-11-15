@@ -222,7 +222,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     return flags.length ? flags.at(-1)!.evenAndOddHeaders as boolean : sectionAnchor.evenAndOddHeaders
   }
   const host = document.createElement('div'); host.className = 'docx-native'
-  host.innerHTML = '<div class="docx-tools" role="toolbar" aria-label="Word 编辑"></div><p class="docx-notice" role="status">支持正文、基础样式、表格文字及符合条件表格的增删行列。每张表的结构修改需保存并重开后继续；不支持的编辑会提示原因。</p><div class="docx-navigation-layout"><div class="docx-navigation-host"></div><div class="editor-scroll"><div class="doc-zoom"><div class="docx-canvas"></div></div></div></div><div class="docx-preview-root"></div>'
+  host.innerHTML = '<div class="docx-tools" role="toolbar" aria-label="Word 编辑"></div><p class="docx-notice" role="status">支持正文、基础样式、表格文字及符合条件表格的增删行列。每张表的结构修改需保存并重开后继续；不支持的编辑会提示原因。</p><div class="docx-navigation-layout"><div class="docx-navigation-host"></div><div class="editor-scroll"><div class="doc-zoom"><div class="docx-canvas"></div></div></div><div class="docx-reviewing-pane-host"></div></div><div class="docx-preview-root"></div>'
   shell.editor.replaceChildren(host)
   const style = document.createElement('style'); style.dataset.docCss = ''; style.textContent = docStyleCss(parsed); host.append(style); if (style.sheet) scopeDocxStyleRules(style.sheet)
   const notice = host.querySelector<HTMLElement>('.docx-notice')!, toolbar = host.querySelector<HTMLElement>('.docx-tools')!
@@ -1151,6 +1151,8 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   }
   const noteFormattingAnchors = notesModel ? anchors.map(anchor => ({ ...anchor, editable: notesModel.referenceBlocks?.find(block => block.blockId === anchor.blockId && block.expectedObjectSha256 === anchor.expectedObjectSha256)?.editable ?? anchor.editable })) : []
   const textRevisions = createDocxTextRevisionControls({ editor, baseline, anchors, container: host,
+    paneHost: host.querySelector<HTMLElement>('.docx-reviewing-pane-host')!,
+    onPaneChange: visible => host.querySelector('[data-action="text-revision-list"]')?.setAttribute('aria-pressed', String(visible)),
     onReviewAI: context.aiEnabled ? options.onReviewAI : undefined,
     revisionFilter:()=>reviewView.state,
     readOnlyReason: () => !context.editingEnabled || saving || draft.saving || draft.closed || nestedInputActive ? '当前文档不可编辑、正在保存或有未完成的表格输入' : null,
@@ -1184,7 +1186,12 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     compareLoading=true
     try{const {createDocxCompareControls}=await import('./docx-compare');if(compareDisposed)return;compareControls??=createDocxCompareControls({editor,blocks:parsed.blocks,container:host,flush:flushPendingEdits,onError:reportError});compareControls.open()}catch(error){reportError(error)}finally{compareLoading=false}
   }
-  const reviewCommands = { ...textRevisions, compare, presets:reviewPresets, spellcheck: spellcheckControl, view:{state:()=>reviewView.state,authors:reviewAuthors,setMode:reviewView.setMode,setFilter:reviewView.setFilter},
+  const reviewCommands = { ...textRevisions, compare, presets:reviewPresets, spellcheck: spellcheckControl, view: {
+      state: () => reviewView.state,
+      authors: reviewAuthors,
+      setMode: (mode: Parameters<typeof reviewView.setMode>[0]) => { reviewView.setMode(mode); textRevisions.refresh() },
+      setFilter: (filter: Parameters<typeof reviewView.setFilter>[0]) => { reviewView.setFilter(filter); textRevisions.refresh() },
+    },
     trackingEnabled: () => docxTrackRevisionsEnabled(trackRevisionsModel, nativeOperations()),
     trackingReason: () => !context.editingEnabled || saving || draft.saving || draft.closed ? '当前文档不可编辑或正在保存' : trackRevisionsModel.readOnlyReason,
     toggleTracking: () => {

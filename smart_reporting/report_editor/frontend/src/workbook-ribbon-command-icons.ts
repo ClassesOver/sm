@@ -23,7 +23,7 @@ const glyphs: Record<string,string> = {
   paste:'📋', cut:'✂', copy:'⧉', 'format-painter':'🖌', 'rotate:vertical':'↕',
   'clear-all':'⌫', 'insert-cells':'⊞', 'delete-cells':'⊟', 'row-height-open':'↕', 'col-width-open':'↔',
   'cf-open':'🎨', 'goto-open':'⌖', 'sort-custom-open':'⇅', 'filter-toggle':'▽', 'filter-clear':'⊘', 'filter-reapply':'⟳', 'filter-advanced':'▽',
-  'sort:asc':'↑', 'sort:desc':'↓', 'insert-picture':'🖼', 'insert-shape':'◇', 'insert-icons':'✦', 'insert-screenshot':'🖼', 'insert-checkbox':'☑',
+  'sort:asc':'↑', 'sort:desc':'↓', 'insert-picture':'🖼', 'insert-shape':'◇', 'insert-icons':'✦', 'insert-screenshot':'⧉', 'insert-checkbox':'☑',
   'insert-chart:bar':'▮▬', 'insert-chart:line':'📈', 'insert-chart:area':'◪', 'insert-chart:pie':'◔', 'insert-chart:scatter':'∴', 'insert-chart:radar':'✳', 'insert-chart:doughnut':'◍', 'insert-chart:combo':'𝄜', 'recommended-charts-open':'📊',
   'sparkline:edit':'📈', 'sparkline:line':'📈', 'sparkline:column':'▮▬', 'sparkline:stacked':'▮▬', 'sparkline:delete':'🗑',
   'slicer-open':'▽', 'timeline-open':'🕘', 'link-open':'🔗', 'note-open':'🗨', 'note-delete':'🗑', 'note-prev':'←', 'note-next':'→', 'note-show-toggle':'🗨',

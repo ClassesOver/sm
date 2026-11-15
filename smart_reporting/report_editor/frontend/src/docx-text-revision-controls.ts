@@ -11,14 +11,18 @@ import {getDocxTextRevisionTargets,normalizeDocxTextRevisions,projectDocxTextRev
 import {failDocxTextRevision,validatedDocxTextRevisionOperations} from './docx-text-revisions-core'
 interface Options {
  editor:Editor; baseline:DocxPmNode; anchors:readonly DocxTextRevisionAnchor[]; container:HTMLElement
+ paneHost?:HTMLElement; onPaneChange?:(visible:boolean)=>void
  onReviewAI?:(selection:{blockId:string;revisionId:string},instruction?:string)=>void
  revisionFilter?:()=>RevisionFilter; readOnlyReason?:()=>string|null; onError:(error:unknown)=>void
 }
 interface Entry {anchor:DocxTextRevisionAnchor;source:DocxPmNode;target:DocxTextRevisionMappedTarget}
+const revisionListContent = '<p role="status" aria-live="polite"></p><div class="docx-revision-actions"><button type="button" data-action="next">下一条待处理</button><button type="button" data-action="accept-all">接受所有支持的正文修订</button><button type="button" data-action="reject-all">拒绝所有支持的正文修订</button></div><ol data-revision-list></ol>'
+const revisionScopeDescription = '<p>仅处理列表中受支持的简单正文插入和删除修订；复杂修订和页眉、页脚、脚注等其他故事中的修订均保留。批量操作只处理尚未决策的目标，可一次撤销整批操作。</p>'
 /** 只列出服务器明确授权的源目标，不把 PM 合并后的 mark 范围当成一个 XML wrapper。 */
 export function createDocxTextRevisionControls(options:Options){
  const {editor,anchors}=options,baseline=structuredClone(options.baseline)
  let modal:ReturnType<typeof createModal>|undefined,selectedId:string|undefined,disposed=false
+ let pane: HTMLElement | undefined, paneOpener: HTMLElement | undefined
  const locked=()=>options.readOnlyReason?.()??(!editor.isEditable?'当前文档只读':null)
  const sourceOf=(anchor:DocxTextRevisionAnchor)=>{
   const nodes=(baseline.content??[]).filter(node=>node.attrs?.docxIndex===anchor.docxIndex)
@@ -144,8 +148,9 @@ export function createDocxTextRevisionControls(options:Options){
  const applyAll=(action:'accept'|'reject')=>applyScope(action,'all')
  const authors=()=>[...new Set(navigableEntries().map(item=>item.entry.target.author))]
  const refresh=()=>{
-  if(!modal||disposed||editor.isDestroyed)return
-  const list=modal.card.querySelector<HTMLElement>('[data-revision-list]')!,status=modal.card.querySelector<HTMLElement>('[role="status"]')!
+  const card=modal?.card??pane
+  if(!card||disposed||editor.isDestroyed)return
+  const list=card.querySelector<HTMLElement>('[data-revision-list]')!,status=card.querySelector<HTMLElement>('[role="status"]')!
   list.replaceChildren()
   const entries:Entry[]=[],reasons:string[]=[]
   let validationReason:string|null=null
@@ -157,8 +162,11 @@ export function createDocxTextRevisionControls(options:Options){
     for(const target of targets)entries.push({source,anchor,target})
    }catch(error){reasons.push(error instanceof Error?error.message:String(error))}
   }
+  const filter=options.revisionFilter?.()??DEFAULT_REVISION_FILTER
+  const displayed=pane?entries.filter(({target})=>revisionShown(filter,{kind:target.type==='insertion'?'ins':'del',author:target.author})):entries
+  const hidden=entries.length-displayed.length
   let resolved=0
-  for(const entry of entries){
+  for(const entry of displayed){
    let pending:DocxTextRevisionOperation[]=[],reason=validationReason
    try{pending=verified(entry).pending}catch(error){reason=error instanceof Error?error.message:String(error)}
    const decision=pending.find(op=>op.revisionId===entry.target.revisionId)
@@ -178,7 +186,7 @@ export function createDocxTextRevisionControls(options:Options){
     const button=document.createElement('button');button.type='button';button.dataset.action='ai-review-revision';button.className=buttonClasses('secondary')
     button.append(createElement(Sparkles,{'aria-hidden':'true',width:18,height:18}),document.createTextNode('AI 审阅修订'))
     const unavailable=reason??(decision?'此来源修订已有决策，请先保存或撤销':locked());button.disabled=!!unavailable;button.title=unavailable??''
-    button.onclick=()=>{try{const blocked=locked();if(blocked)throw new Error(blocked);verified(entry);options.onReviewAI?.({blockId:entry.anchor.blockId,revisionId:entry.target.revisionId},'');modal?.close()}catch(error){options.onError(error)}}
+    button.onclick=()=>{try{const blocked=locked();if(blocked)throw new Error(blocked);verified(entry);options.onReviewAI?.({blockId:entry.anchor.blockId,revisionId:entry.target.revisionId},'');modal?.close();closePane(false)}catch(error){options.onError(error)}}
     row.append(button)
    }
    list.append(row)
@@ -186,22 +194,49 @@ export function createDocxTextRevisionControls(options:Options){
   }
   const unavailableBatch=batchReason()
   for(const action of ['accept','reject'] as const){
-   const button=modal.card.querySelector<HTMLButtonElement>(`[data-action="${action}-all"]`)!
+   const button=card.querySelector<HTMLButtonElement>(`[data-action="${action}-all"]`)!
    button.disabled=!!unavailableBatch;button.title=unavailableBatch??'';button.onclick=()=>applyAll(action)
   }
-  status.textContent=[`支持的正文修订：${entries.length} 条，已决策 ${resolved} 条。`,locked(),...new Set(reasons)].filter(Boolean).join(' ')
-  const next=modal.card.querySelector<HTMLButtonElement>('[data-action="next"]')!
-  const unresolved=entries.filter(entry=>{try{return !verified(entry).pending.some(op=>op.revisionId===entry.target.revisionId)}catch{return false}})
+  status.textContent=[`支持的正文修订：${displayed.length} 条，已决策 ${resolved} 条。`,hidden?`按标记筛选已隐藏 ${hidden} 条。`:null,locked(),...new Set(reasons)].filter(Boolean).join(' ')
+  const next=card.querySelector<HTMLButtonElement>('[data-action="next"]')!
+  const unresolved=displayed.filter(entry=>{try{return !verified(entry).pending.some(op=>op.revisionId===entry.target.revisionId)}catch{return false}})
   next.disabled=!unresolved.length||!!validationReason
   next.onclick=()=>{const index=unresolved.findIndex(entry=>entry.target.revisionId===selectedId);navigate(unresolved[(index+1)%unresolved.length])}
  }
  const close=()=>{modal?.remove();modal=undefined}
+ const closePane=(restoreFocus:boolean)=>{
+  if(!pane)return
+  pane.remove();pane=undefined
+  options.onPaneChange?.(false)
+  if(restoreFocus&&paneOpener?.isConnected)paneOpener.focus()
+  paneOpener=undefined
+ }
+ const styleActions=(card:HTMLElement)=>{
+  for(const button of card.querySelectorAll<HTMLButtonElement>('button[data-action]'))button.className=buttonClasses('secondary')
+ }
  const open=()=>{
   if(disposed||editor.isDestroyed)return
-  if(!modal)modal=createModal({root:options.container,label:'正文修订列表',cardClass:'docx-revision-dialog',closeLabel:'关闭正文修订列表',onRequestClose:close,content:'<h2>正文修订列表</h2><p>仅处理列表中受支持的简单正文插入和删除修订；复杂修订和页眉、页脚、脚注等其他故事中的修订均保留。批量操作只处理尚未决策的目标，可一次撤销整批操作。</p><p role="status" aria-live="polite"></p><div class="docx-revision-actions"><button type="button" data-action="next">下一条待处理</button><button type="button" data-action="accept-all">接受所有支持的正文修订</button><button type="button" data-action="reject-all">拒绝所有支持的正文修订</button></div><ol data-revision-list></ol>'})
-  for(const button of modal.card.querySelectorAll('button[data-action]'))button.className=buttonClasses('secondary')
+  closePane(false)
+  if(!modal)modal=createModal({root:options.container,label:'正文修订列表',cardClass:'docx-revision-dialog',closeLabel:'关闭正文修订列表',onRequestClose:close,content:'<h2>正文修订列表</h2>'+revisionScopeDescription+revisionListContent})
+  styleActions(modal.card)
   refresh();modal.open()
  }
+ const togglePane=(opener:HTMLElement)=>{
+  if(disposed||editor.isDestroyed)return
+  if(!options.paneHost){open();return}
+  if(pane){closePane(true);return}
+  close()
+  paneOpener=opener
+  pane=document.createElement('aside')
+  pane.className='docx-revision-dialog docx-reviewing-pane'
+  pane.setAttribute('aria-label','审阅窗格')
+  pane.innerHTML='<header><h2>修订</h2><button type="button" aria-label="关闭审阅窗格">×</button></header><p>仅处理受支持的简单正文插入和删除。</p>'+revisionListContent
+  const closeButton=pane.querySelector<HTMLButtonElement>('header button')!
+  closeButton.className=buttonClasses('quiet',true)
+  closeButton.onclick=()=>closePane(true)
+  pane.addEventListener('keydown',event=>{if(event.key==='Escape'&&!event.isComposing){event.preventDefault();event.stopPropagation();closePane(true)}})
+  styleActions(pane);options.paneHost.append(pane);refresh();options.onPaneChange?.(true);closeButton.focus()
+ }
  editor.on('transaction',refresh)
- return {open,refresh,applyAll,applyScope,scopeReason,authors,batchReason,navigateRevision,navigationReason,dispose(){disposed=true;editor.off('transaction',refresh);close()}}
+ return {open,togglePane,paneVisible:()=>!!pane,refresh,applyAll,applyScope,scopeReason,authors,batchReason,navigateRevision,navigationReason,dispose(){disposed=true;editor.off('transaction',refresh);close();closePane(false)}}
 }

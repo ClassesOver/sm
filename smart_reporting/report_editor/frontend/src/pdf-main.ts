@@ -1617,10 +1617,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  // Keep desktop reading shortcuts local to the explicitly focused canvas.
-  viewport.setAttribute('aria-keyshortcuts', 'PageUp PageDown Home End')
+  // Keep desktop reading shortcuts local to the focused canvas or thumbnail.
+  viewport.setAttribute('aria-keyshortcuts', 'PageUp PageDown Home End ArrowUp ArrowDown ArrowLeft ArrowRight Space')
   pageNavigation = bindPdfPageNavigation(viewport, {
     signal: abort.signal,
+    thumbnails: thumbs,
     available: () => !disposed && !!document && readingReady && !locked && mode === 'select'
       && !previewing && !printing && !previewDocument && !searchRendering && !draft.saving && !draft.closed
       && pendingMutations === 0 && !mutationBlocked?.() && !staticText?.incompleteReason() && !hasUnstagedText(),
