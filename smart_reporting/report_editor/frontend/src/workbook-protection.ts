@@ -8,14 +8,13 @@
  * use standard protectedRanges and permit value/formula edits only, through
  * workbook-editable-ranges; password/user-restricted ranges remain read-only.
  *
- * A protected sheet is read-only outside explicitly allowed ranges (unlocked
- * xf cell flags are not projected), a
- * locked structure blocks sheet add/remove/rename/reorder/hide. The save
+ * A protected sheet allows value edits in editable ranges or cells with an
+ * unlocked cell XF. A locked structure blocks sheet add/remove/rename/reorder/hide. The save
  * enforces the same rule, so a replayed draft cannot write past protection.
  */
-import type { WorkbookModel } from '@sheets-web/xlsx-engine'
+import { formatAddress, type RangeBounds, type WorkbookModel } from '@sheets-web/xlsx-engine'
 import type { WorkbookOperation } from './workbook-draft'
-import { editableRangeContains, type EditableRange, type ProtectedValueContext } from './workbook-editable-ranges'
+import { editableRangeContains, validRange, type EditableRange, type ProtectedValueContext } from './workbook-editable-ranges'
 import type { FilterRange, FilterSheet } from './workbook-filters'
 
 export interface ProtectionState { readonly protected: boolean; readonly hasPassword: boolean }
@@ -50,10 +49,27 @@ export function protectionBlockReason(commandId: string, sheetProtected: boolean
   if (STRUCTURE_COMMANDS.has(name)) return structureLocked ? LOCKED_STRUCTURE_REASON : undefined
   if (sheetProtected && !SHEET_VIEW_COMMANDS.has(name)) {
     if (filterAllowed && /^(set-filter-criteria|clear-filter-criteria|re-calc-filter)$/.test(name)) return undefined
-    if (name === 'set-range-values' && context && (context.writtenRanges ?? [context.range]).every(range => editableRangeContains(range, context.ranges))) return undefined
+    if (name === 'set-range-values' && context) return undefined
     return PROTECTED_SHEET_REASON
   }
   return undefined
+}
+
+export function protectedValuePermission(model: WorkbookModel, sheet: WorkbookModel['sheets'][number] | undefined,
+  ranges: readonly EditableRange[]): (range: RangeBounds) => boolean {
+  return range => {
+    if (!validRange(range)) return false
+    if (editableRangeContains(range, ranges)) return true
+    if (!sheet || (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1) > 1_000_000) return false
+    for (let row = range.startRow; row <= range.endRow; row++) {
+      for (let column = range.startColumn; column <= range.endColumn; column++) {
+        const styleIndex = sheet.cells?.[formatAddress(row, column)]?.styleIndex
+        if (styleIndex !== undefined && model.styles.cellXfs[styleIndex]?.protection?.locked === false) continue
+        if (!editableRangeContains({ startRow: row, endRow: row, startColumn: column, endColumn: column }, ranges)) return false
+      }
+    }
+    return true
+  }
 }
 
 function permittedFilterRange(sheet: WorkbookModel['sheets'][number] | undefined): FilterRange | undefined {
@@ -100,7 +116,7 @@ export interface ProtectionPlan {
   readonly trailing: WorkbookOperation[]
   /** final sheet names protected both before and after this session — no edit may target them */
   readonly frozen: ReadonlySet<string>
-  readonly editableRanges: ReadonlyMap<string, readonly EditableRange[]>
+  readonly valuePermissions: ReadonlyMap<string, (range: RangeBounds) => boolean>
   readonly filterRanges: ReadonlyMap<string, FilterRange>
 }
 
@@ -111,7 +127,7 @@ export interface ProtectionPlan {
 export function planProtection(model: WorkbookModel, desired: ReadonlyMap<string, boolean>, structure: boolean | undefined,
   names: (id: string) => string | undefined, ranges: ReadonlyMap<string, readonly EditableRange[]> = new Map()): ProtectionPlan {
   const leading: WorkbookOperation[] = [], trailing: WorkbookOperation[] = [], frozen = new Set<string>()
-  const editableRanges = new Map<string, readonly EditableRange[]>()
+  const valuePermissions = new Map<string, (range: RangeBounds) => boolean>()
   const filterRanges = new Map<string, FilterRange>()
   const originalLock = model.workbookProtection?.lockStructure ?? false
   if (structure === false && originalLock) leading.push({ kind: 'protectWorkbookStructure', lockStructure: false })
@@ -123,13 +139,13 @@ export function planProtection(model: WorkbookModel, desired: ReadonlyMap<string
     if (!original && wanted) trailing.push({ kind: 'protectSheet', sheetName: finalName, protect: true })
     if (original && wanted) {
       frozen.add(finalName)
-      editableRanges.set(finalName, ranges.get(sheet.name) ?? [])
+      valuePermissions.set(finalName, protectedValuePermission(model, sheet, ranges.get(sheet.name) ?? []))
       const filterRange = permittedFilterRange(sheet)
       if (filterRange) filterRanges.set(finalName, filterRange)
     }
   })
   if (structure === true && !originalLock) trailing.push({ kind: 'protectWorkbookStructure', lockStructure: true })
-  return { leading, trailing, frozen, editableRanges, filterRanges }
+  return { leading, trailing, frozen, valuePermissions, filterRanges }
 }
 
 /** 保存时同样限制到免密码允许区域内的值/公式，且禁止重排受锁定的工作簿结构。 */
@@ -148,7 +164,8 @@ export function assertProtectionRespected(operations: readonly WorkbookOperation
     const targets = op.kind === 'applyCellEdits'
       ? (op.edits as { sheetName: string; row?: number; column?: number; writeValue?: boolean; style?: unknown; styleReset?: unknown; rich?: unknown }[]).filter(edit => {
         if (!plan.frozen.has(edit.sheetName)) return false
-        return !(edit.writeValue === true && edit.style === undefined && (edit.styleReset === undefined || edit.styleReset === false) && edit.rich === undefined && edit.row !== undefined && edit.column !== undefined && editableRangeContains({ startRow: edit.row, endRow: edit.row, startColumn: edit.column, endColumn: edit.column }, plan.editableRanges?.get(edit.sheetName) ?? []))
+        return !(edit.writeValue === true && edit.style === undefined && (edit.styleReset === undefined || edit.styleReset === false) && edit.rich === undefined && Number.isInteger(edit.row) && Number.isInteger(edit.column)
+          && plan.valuePermissions.get(edit.sheetName)?.({ startRow: edit.row!, endRow: edit.row!, startColumn: edit.column!, endColumn: edit.column! }))
       }).map(edit => edit.sheetName)
       : op.kind === 'applyTableEdits' ? (op.edits as { worksheetSheetName: string }[]).map(edit => edit.worksheetSheetName)
       : typeof op.sheetName === 'string' ? [op.sheetName] : []

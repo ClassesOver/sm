@@ -18,7 +18,7 @@ export async function createEditableRangesPlan(bytes: Uint8Array, sheetName: str
   return { operation, operations: [operation] }
 }
 
-const validRange = (range: RangeBounds): boolean => Number.isSafeInteger(range.startRow) && Number.isSafeInteger(range.endRow) && Number.isSafeInteger(range.startColumn) && Number.isSafeInteger(range.endColumn) && range.startRow >= 0 && range.startColumn >= 0 && range.endRow >= range.startRow && range.endColumn >= range.startColumn && range.endRow < 1048576 && range.endColumn < 16384
+export const validRange = (range: RangeBounds): boolean => Number.isSafeInteger(range.startRow) && Number.isSafeInteger(range.endRow) && Number.isSafeInteger(range.startColumn) && Number.isSafeInteger(range.endColumn) && range.startRow >= 0 && range.startColumn >= 0 && range.endRow >= range.startRow && range.endColumn >= range.startColumn && range.endRow < 1048576 && range.endColumn < 16384
 
 /** 按行边界扫描矩形并集，无须展开大范围为百万个单元格。 */
 export function editableRangeContains(target: RangeBounds, ranges: readonly EditableRange[]): boolean {
@@ -51,12 +51,13 @@ const plainValue = (value: unknown): boolean => record(value) && Object.keys(val
 const withoutStyle = (cell: unknown) => Object.fromEntries(Object.entries(cell as Record<string, unknown>).filter(([key]) => key !== 's'))
 
 /** 对照 Univer set-range-values 的三种原生载荷，校验实际写入而非只相信 range。 */
-export function protectedValueCommandContext(params: unknown, fallbackRange: RangeBounds | undefined, ranges: readonly EditableRange[]): ProtectedValueContext | undefined {
+export function protectedValueCommandContext(params: unknown, fallbackRange: RangeBounds | undefined, ranges: readonly EditableRange[],
+  allowsRange = (range: RangeBounds) => editableRangeContains(range, ranges)): ProtectedValueContext | undefined {
   if (!record(params)) return undefined
   const value = params.value
   const requested = (record(params.range) ? params.range : fallbackRange) as RangeBounds | undefined
   if (Array.isArray(value) || plainValue(value)) {
-    if (!requested || !validRange(requested) || !editableRangeContains(requested, ranges)) return undefined
+    if (!requested || !validRange(requested) || !allowsRange(requested)) return undefined
     if (Array.isArray(value)) {
       if (value.length !== requested.endRow - requested.startRow + 1 || !value.every(row => Array.isArray(row) && row.length === requested.endColumn - requested.startColumn + 1 && row.every(plainValue))) return undefined
     }
@@ -71,7 +72,8 @@ export function protectedValueCommandContext(params: unknown, fallbackRange: Ran
     for (const [columnKey, cell] of Object.entries(columns)) {
       if (!/^(0|[1-9][0-9]*)$/.test(columnKey) || !plainValue(cell)) return undefined
       const row = Number(rowKey), column = Number(columnKey)
-      if (!editableRangeContains({ startRow: row, endRow: row, startColumn: column, endColumn: column }, ranges)) return undefined
+      const point = { startRow: row, endRow: row, startColumn: column, endColumn: column }
+      if (!validRange(point) || !allowsRange(point)) return undefined
       cells.push({ row, column })
       safeValue[rowKey]![columnKey] = withoutStyle(cell)
     }

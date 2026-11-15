@@ -116,7 +116,7 @@ import { readWorkbookThemeSource, themeOperation, type ThemeCommandKind, type Wo
 import { stepSelectionDecimals } from './workbook-vendor/grid/decimal-step'
 import { CLIPBOARD_COMMANDS, clipboardCommandParams } from './workbook-clipboard'
 import { CELL_SHIFT_COMMANDS, cellShiftRange, cellsCommandId, cellsCommandParams, createCellsDialog, decideCellsAction, type CellRange, type CellShiftEntry, type CellsChoice, type CellsMode } from './workbook-cell-shift'
-import { assertProtectionRespected, planProtection, protectedFilterAllowed, protectionBlockReason, PROTECTED_SHEET_REASON } from './workbook-protection'
+import { assertProtectionRespected, planProtection, protectedFilterAllowed, protectedValuePermission, protectionBlockReason, PROTECTED_SHEET_REASON } from './workbook-protection'
 import { readWorkbookEditableRanges, protectedValueCommandContext, type EditableRange } from './workbook-editable-ranges'
 import { installCalculation, type CalculationControl } from './workbook-calculation'
 import { installDataTable } from './workbook-data-table'
@@ -3077,8 +3077,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       const targetSheet = target ? activeWorkbook?.getSheetBySheetId(target) : undefined
       const selection = targetSheet?.getSelection()
       const fallback = selection?.getActiveRangeList?.().length === 1 ? selection.getActiveRange()?.getRange() : undefined
-      const ranges = editableRanges.get(originalSheet(target)?.name ?? '') ?? []
-      const context = command.id === 'sheet.command.set-range-values' ? protectedValueCommandContext(command.params, fallback, ranges) : undefined
+      const sourceSheet = originalSheet(target)
+      const ranges = editableRanges.get(sourceSheet?.name ?? '') ?? []
+      const context = command.id === 'sheet.command.set-range-values' && sheetProtected(target)
+        ? protectedValueCommandContext(command.params, fallback, ranges, protectedValuePermission(currentModel, sourceSheet, ranges)) : undefined
       if (context && sheetProtected(target)) {
         // 表头值同时改写表格列元数据；允许编辑区域仅放行值/公式，必须在原生写入前拒绝。
         const writes = context.writtenRanges ?? [context.range]

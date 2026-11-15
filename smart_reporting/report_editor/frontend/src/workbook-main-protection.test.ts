@@ -315,6 +315,36 @@ it('saves changed AutoFilter criteria on a protected sheet and reopens the origi
   } finally { current.view?.dispose() }
 })
 
+it('edits unlocked cells without unprotecting the worksheet', async () => {
+  const source = await applyWorkbookOperations(await fixture(), [
+    { kind: 'protectSheet', sheetName: 'Sheet1', protect: false },
+    { kind: 'applyCellEdits', edits: [
+      { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, cell: { value: 'a1' }, style: { protectionLocked: false } },
+    ] },
+    { kind: 'protectSheet', sheetName: 'Sheet1', protect: true },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/unlocked.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    expect(await write(0, 0, 'editable')).toBe(true)
+    await write(0, 1, 'blocked').catch(() => false)
+    expect(sheet().getRange('B1').getValue()).toBe('b1')
+    await vi.waitFor(() => expect(kinds(draft)).toEqual(['applyCellEdits']))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = await readWorkbook(downloaded!)
+    const persisted = saved.sheets[0]!
+    expect(persisted.protection?.protected).toBe(true)
+    expect(persisted.cells.A1?.value).toBe('editable')
+    expect(saved.styles.cellXfs[persisted.cells.A1!.styleIndex!]?.protection?.locked).toBe(false)
+    expect(persisted.cells.B1?.value).toBe('b1')
+  } finally { current.view?.dispose() }
+})
+
 it('edits values only inside allowed ranges while retaining sheet protection on save and reopen', async () => {
   const source = await applyWorkbookOperations(await fixture(), [
     { kind: 'protectSheet', sheetName: 'Sheet1', protect: false },
