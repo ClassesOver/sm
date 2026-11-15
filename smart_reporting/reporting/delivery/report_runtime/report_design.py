@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from copy import deepcopy
 from string import Formatter
 from typing import Any, Literal
 
@@ -244,38 +243,3 @@ def _merge_role_defaults(model: type[DesignModel], value: Any) -> Any:
     return result
 
 
-def resolve_design(state: dict[str, Any], *, format: Literal["pdf", "word"] = "pdf") -> ReportDesign:
-    document = deepcopy(state.get("_formatDesigns", {}).get(format, {}))
-
-    def merge(target, overrides):
-        for key, value in overrides.items():
-            if isinstance(value, dict) and isinstance(target.get(key), dict):
-                merge(target[key], value)
-            else:
-                target[key] = deepcopy(value)
-
-    merge(document, state.get("_reportDesign") or {})
-    design = ReportDesign.model_validate(document)
-    options = state.get("_editorExportSettings")
-    if isinstance(options, dict):
-        design.options = DesignOptions.model_validate({**design.options.model_dump(by_alias=True), **options})
-    return design
-
-
-def cover_text(design: ReportDesign, context: dict[str, Any]) -> dict[str, str]:
-    signature = "\n".join(str(context.get(key, "")) for key, enabled in (
-        ("organizationName", design.cover.show_organization),
-        ("generatedByLabel", design.cover.show_generated_by),
-        ("generatedDate", design.cover.show_date),
-    ) if enabled)
-    defaults = {"title": str(context.get("title", "")), "period": f"分析期间：{context.get('periodLabel', '')}", "signature": signature}
-    return {key: box.text if box.text is not None else defaults[key] for key, box in (
-        ("title", design.cover.title), ("period", design.cover.period), ("signature", design.cover.signature),
-    )}
-
-
-def template_design(design: ReportDesign) -> ReportDesign:
-    result = design.model_copy(deep=True)
-    for key in ("title", "period", "signature"):
-        getattr(result.cover, key).text = None
-    return result

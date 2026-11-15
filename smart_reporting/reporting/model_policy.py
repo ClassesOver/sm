@@ -10,10 +10,6 @@ from typing import Any, Literal
 
 from agno.models.openai import OpenAIChat, OpenAIResponses
 
-from ..context_management import (
-    TASK_EXECUTION_CONTEXT_TOKEN_LIMIT,
-    TASK_EXECUTION_OUTPUT_TOKEN_RESERVE,
-)
 from ..integrations.model_config import reasoning_transport_fields
 from ..model_routing import TaskComplexity, log_thinking_selection
 
@@ -107,28 +103,6 @@ _RECOVERY_THINKING_BUDGETS: dict[
 
 
 @dataclass(frozen=True, slots=True)
-class ThinkingPolicyConfig:
-    operation: ThinkingOperation
-    thinking_enabled: bool
-    configured_budget_cap: int
-    reasoning_effort: ReportingReasoningEffort = "high"
-
-    def __post_init__(self) -> None:
-        if self.operation not in _INITIAL_THINKING_BUDGETS:
-            raise ValueError("operation 无效")
-        if not isinstance(self.thinking_enabled, bool):
-            raise ValueError("thinking_enabled 必须是布尔值")
-        if self.reasoning_effort not in {"low", "high", "max"}:
-            raise ValueError("reasoning_effort 必须是 low、high 或 max")
-        if (
-            isinstance(self.configured_budget_cap, bool)
-            or not isinstance(self.configured_budget_cap, int)
-            or self.configured_budget_cap < 1
-        ):
-            raise ValueError("configured_budget_cap 必须是正整数")
-
-
-@dataclass(frozen=True, slots=True)
 class ThinkingRequest:
     operation: ThinkingOperation
     complexity: TaskComplexity = "standard"
@@ -205,10 +179,6 @@ def bind_reporting_thinking(decision: ThinkingDecision) -> Iterator[None]:
         _CURRENT_REPORTING_THINKING.reset(token)
 
 
-def current_reporting_thinking_decision() -> ThinkingDecision | None:
-    return _CURRENT_REPORTING_THINKING.get()
-
-
 def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
     """按单次模型操作选择 thinking，不从模型能力档位推导预算。"""
 
@@ -273,68 +243,8 @@ def select_reporting_thinking(request: ThinkingRequest) -> ThinkingDecision:
     )
 
 
-_VERIFIED_REPORTING_CONTEXT_TOKEN_LIMITS: tuple[tuple[tuple[str, ...], int], ...] = (
-    (("qwen3.6", "qwen3.8"), 256 * 1024),
-    (("deepseek-v4",), 256 * 1024),
-)
-
-
-def reporting_model_context_token_limit(model_id: str | None) -> int | None:
-    """返回已由当前部署端点验证的上下文窗口，未知模型不推测。"""
-
-    family = str(model_id or "").strip().lower().rsplit("/", 1)[-1]
-    for prefixes, token_limit in _VERIFIED_REPORTING_CONTEXT_TOKEN_LIMITS:
-        if family.startswith(prefixes):
-            return token_limit
-    return None
-
-
 def positive_token_count(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
-
-
-def reporting_request_input_hard_cap(
-    *,
-    configured_input_token_cap: Any,
-    model_id: str | None,
-    output_tokens: Any,
-) -> int:
-    """单次 Reporting 请求的输入硬顶：配置预算、32K 输出下限与绝对顶线统一在此收敛。"""
-
-    absolute_cap = TASK_EXECUTION_CONTEXT_TOKEN_LIMIT - TASK_EXECUTION_OUTPUT_TOKEN_RESERVE
-    return resolve_reporting_input_token_hard_cap(
-        configured_input_token_cap=positive_token_count(configured_input_token_cap) or absolute_cap,
-        model_id=model_id,
-        # 调用方传入请求实际发送的输出上限；超出模型能力的部分由下方统一收敛。
-        output_token_reserve=max(
-            TASK_EXECUTION_OUTPUT_TOKEN_RESERVE, positive_token_count(output_tokens) or 0
-        ),
-        absolute_input_token_cap=absolute_cap,
-    )
-
-
-def resolve_reporting_input_token_hard_cap(
-    *,
-    configured_input_token_cap: int,
-    model_id: str | None,
-    output_token_reserve: int,
-    absolute_input_token_cap: int,
-) -> int:
-    """按最终路由模型能力收敛单次请求输入上限。"""
-
-    candidates = [configured_input_token_cap, absolute_input_token_cap]
-    model_context_limit = reporting_model_context_token_limit(model_id)
-    if model_context_limit is not None:
-        # 部署输出预留面向整个 Reporting 阶段，可能大于模型单次输出能力；只扣减模型
-        # 实际能输出的部分，否则 256K 窗口模型会因“输出预留耗尽上下文”被误拒。
-        model_output_limit = reporting_model_output_token_limit(model_id)
-        if model_output_limit is not None:
-            output_token_reserve = min(output_token_reserve, model_output_limit)
-        model_input_limit = model_context_limit - output_token_reserve
-        if model_input_limit < 1:
-            raise ValueError("Reporting 模型输出预留不得耗尽已验证的上下文窗口")
-        candidates.append(model_input_limit)
-    return min(candidates)
 
 
 def reporting_model_output_token_limit(model_id: str | None) -> int | None:
@@ -363,22 +273,6 @@ def clamp_reporting_output_tokens(
         if value is not None
     ]
     return min(limits) if limits else None
-
-
-def reporting_coding_sampling(model_id: str | None) -> tuple[float, float] | None:
-    """返回 Coding Agent 按模型族采用的厂商推荐 (temperature, top_p)，未知模型不推测。
-
-    Coding 始终运行在思考模式：DeepSeek-V4-Flash 官方推荐智能体场景 temperature=1.0、
-    top_p=0.95（Code Agent 评测同配置）；Qwen 精确编码推荐 temperature=0.6、top_p=0.95，
-    百炼 qwen3.8-flash 思考模式也会把更低温度自动抬到 0.6。
-    """
-
-    family = str(model_id or "").strip().lower().rsplit("/", 1)[-1]
-    if family.startswith("deepseek-v4"):
-        return 1.0, 0.95
-    if family.startswith("qwen"):
-        return 0.6, 0.95
-    return None
 
 
 @dataclass(frozen=True, slots=True)

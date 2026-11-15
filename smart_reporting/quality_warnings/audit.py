@@ -67,15 +67,6 @@ class WarningAuditResult:
     requires_review: bool
     flush_status: str = "pending"
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "total": self.total,
-            "byDisposition": dict(self.by_disposition),
-            "bySourcePhase": dict(self.by_source_phase),
-            "requiresReview": self.requires_review,
-            "flushStatus": self.flush_status,
-        }
-
 
 class WarningEmitter:
     def __init__(self, *, source_phase: str):

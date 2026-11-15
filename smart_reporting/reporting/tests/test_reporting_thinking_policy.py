@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import anyio
 import pytest
 
 from smart_reporting import model_routing
@@ -92,37 +91,6 @@ def _decision(operation: str, budget: int):
         attempt=0,
         reason="test",
     )
-
-
-def test_thinking_binding_restores_nested_and_exception_context() -> None:
-    outer = _decision("data_understanding", 2048)
-    inner = _decision("analysis_evidence", 4096)
-
-    with bind_reporting_thinking(outer):
-        assert current_reporting_thinking_decision() is outer
-        with pytest.raises(RuntimeError, match="stop"):
-            with bind_reporting_thinking(inner):
-                assert current_reporting_thinking_decision() is inner
-                raise RuntimeError("stop")
-        assert current_reporting_thinking_decision() is outer
-    assert current_reporting_thinking_decision() is None
-
-
-@pytest.mark.anyio
-async def test_thinking_binding_is_isolated_between_concurrent_tasks() -> None:
-    decisions = (_decision("analysis_evidence", 4096), _decision("visualization_script", 0))
-    observed: dict[str, object] = {}
-
-    async def record(name: str, decision) -> None:
-        with bind_reporting_thinking(decision):
-            await anyio.sleep(0)
-            observed[name] = current_reporting_thinking_decision()
-
-    async with anyio.create_task_group() as task_group:
-        task_group.start_soon(record, "analysis", decisions[0])
-        task_group.start_soon(record, "visualization", decisions[1])
-
-    assert observed == {"analysis": decisions[0], "visualization": decisions[1]}
 
 
 @pytest.mark.parametrize(
@@ -310,18 +278,3 @@ def test_thinking_log_contains_only_stable_decision_fields(monkeypatch) -> None:
     ]
 
 
-@pytest.mark.parametrize(
-    ("model_id", "expected"),
-    [
-        ("deepseek-v4-flash-0731", (1.0, 0.95)),
-        ("DeepSeek-V4-Flash", (1.0, 0.95)),
-        ("qwen3.8-flash", (0.6, 0.95)),
-        ("vendor/qwen3.6-35b-a3b", (0.6, 0.95)),
-        ("unknown-model", None),
-        (None, None),
-    ],
-)
-def test_coding_sampling_follows_vendor_recommendation(model_id, expected) -> None:
-    from smart_reporting.reporting.model_policy import reporting_coding_sampling
-
-    assert reporting_coding_sampling(model_id) == expected

@@ -38,11 +38,6 @@ class PolicyVersionRef(SemanticModel):
     revision: Revision
 
 
-class ReportScenarioCandidate(SemanticModel):
-    scenario: Identity
-    name: str = Field(min_length=1, max_length=200)
-
-
 class MetricVersionRef(SemanticModel):
     metric_id: Identity
     revision: Revision

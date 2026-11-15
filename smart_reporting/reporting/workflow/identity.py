@@ -20,17 +20,6 @@ class VerifiedReportingIdentity:
     thread_id: str
     entrypoint: Literal["http-capability", "mcp", "cli"]
 
-    def require_scope(self, database: str, company_id: str, user_id: str, thread_id: str) -> None:
-        if (database, company_id, user_id, thread_id) != (
-            self.database,
-            self.company_id,
-            self.user_id,
-            self.thread_id,
-        ):
-            raise ReportingError(
-                "report_workflow_scope_mismatch", "报告作用域与已核验入口身份不一致。"
-            )
-
 
 _VERIFIED_IDENTITY: ContextVar[VerifiedReportingIdentity | None] = ContextVar(
     "reporting_verified_identity",

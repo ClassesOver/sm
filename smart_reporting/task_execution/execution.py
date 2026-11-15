@@ -269,8 +269,6 @@ def failed_result_resources(arguments: dict[str, Any], result: Any) -> list[str]
 _TASK_TOOL_SCHEDULER_MARKER = "_agentos_task_execution_tool_scheduler"
 
 
-
-
 class _AsyncRWLock:
     def __init__(self) -> None:
         self._condition = asyncio.Condition()
@@ -745,12 +743,6 @@ class TaskExecutionKernel:
                 task_dir,
                 type(error).__name__,
             )
-
-    async def cleanup_old_epoch(self, scope: TaskExecutionScope, current_epoch: int) -> None:
-        await self._cleanup_executions(scope, current_epoch, old_only=True)
-
-    async def cleanup_disconnect(self, scope: TaskExecutionScope, current_epoch: int) -> None:
-        await self._cleanup_executions(scope, current_epoch, old_only=False)
 
     async def _cleanup_executions(
         self, scope: TaskExecutionScope, current_epoch: int, *, old_only: bool

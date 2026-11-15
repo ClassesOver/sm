@@ -14,7 +14,6 @@ from agno.run import RunContext
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 200 * 1024 * 1024
-MAX_TOOL_OUTPUT_BYTES = 64 * 1024
 MAX_PATCH_FILES = 20
 MAX_PATH_BYTES = 1024
 MAX_PATH_COMPONENT_BYTES = 255
@@ -23,10 +22,6 @@ MAX_PATH_DEPTH = 32
 
 class WorkspaceError(ValueError):
     pass
-
-
-class WorkspaceHashResultError(WorkspaceError):
-    """哈希计算成功但返回的身份字段不符合协议。"""
 
 
 class WorkspacePathConflict(WorkspaceError):

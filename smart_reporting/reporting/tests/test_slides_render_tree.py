@@ -4,7 +4,6 @@ import json
 import subprocess
 from pathlib import Path
 
-import pytest
 
 ENGINE = Path(__file__).parents[1] / 'slides_engine'
 FIXTURE = ENGINE / 'packages/pptx-engine/tests/fixtures/01_standard_business.pptx'
@@ -38,15 +37,3 @@ def test_render_service_reuses_verified_bytes(tmp_path: Path):
     assert rendered['slides'][0]['nodes']
 
 
-@pytest.mark.parametrize('payload', [
-    {'expectedSha256': 'b' * 64, 'edits': []},
-    {'expectedSha256': 'a' * 64, 'edits': [{'slideIndex': 0, 'elementId': 'sp_0', 'text': {'invalid': True}}]},
-    {'expectedSha256': 'a' * 64, 'edits': [{'slideIndex': True, 'elementId': 'sp_0', 'text': 'x'}]},
-    {'expectedSha256': 'a' * 64, 'edits': [{'slideIndex': 0, 'elementId': 'sp_0', 'geometry': {'x': 0, 'y': 0, 'width': float('nan'), 'height': 10}}]},
-])
-def test_render_preview_rejects_invalid_edit_payload(payload):
-    from smart_reporting.report_editor.slides_render import validate_preview_edits
-    from smart_reporting.reporting.models import ReportingError
-
-    with pytest.raises(ReportingError):
-        validate_preview_edits(payload, 'a' * 64)

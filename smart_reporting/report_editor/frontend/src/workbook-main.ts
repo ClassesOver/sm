@@ -176,7 +176,6 @@ import { installPageBreakOverlay, planPageBreakPreview } from './workbook-page-b
 import { planFormulaTrace, installFormulaTraceOverlay } from './workbook-formula-trace'
 import { createFormulaTraceController } from './workbook-formula-trace-controller'
 import { installCrossHighlight, loadCrossHighlightPreference, storeCrossHighlightPreference } from './workbook-cross-highlight'
-import { binaryRefreshLock, mountOfficeReportRefresh } from './binary-refresh'
 import './workbook.css'
 import './office-theme.css'
 
@@ -233,9 +232,6 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let loading = true
   let reloadUnavailable = false
   let saving = false
-  let refresh: Awaited<ReturnType<typeof mountOfficeReportRefresh>>
-  let refreshFlush: (() => Promise<void>) | undefined
-  let refreshSave: (() => Promise<void>) | undefined
   let nativeAI: ReturnType<typeof mountWorkbookNativeAI> | undefined
   let threadsView: ReturnType<typeof mountWorkbookThreads> | undefined
   let notePictures: ReturnType<typeof createNotePictures> | undefined
@@ -243,14 +239,6 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   let nativeAIAccepting = false
   let disposed = false
   let gridChanged = false
-  if (!options.native) refresh = await mountOfficeReportRefresh(shell.editor.closest<HTMLElement>('.report-app') ?? shell.editor.parentElement!, 'xlsx',
-    (path, init) => requestJson(`${base}/api/${path}`, init, 'report_workbook_csrf'), {
-      saving: () => saving,
-      blocked: () => loading || saving || saved || disposed || shell.save.disabled || !refreshFlush || nativeAIAccepting || calculationBusy || subtotal?.isRunning() === true || advancedFilter?.isRunning() === true,
-      flush: async () => { await refreshFlush?.() }, dirty: () => dirty || gridChanged,
-      save: async () => { await refreshSave?.() },
-      setRefreshing: binaryRefreshLock(shell.editor, shell.save, () => saving || saved || disposed),
-    })
   let captureGeneration = 0
   let mergeGeneration = 0
   let persistence = Promise.resolve()
@@ -3785,9 +3773,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     feedback.textContent = '已撤销 AI 采纳，恢复采纳前草稿。'
   })
   const save = async () => {
-    if (refresh?.busy || pictureEditBusy || saved || saving || nativeAIAccepting || calculationBusy || subtotal?.isRunning() || advancedFilter?.isRunning()) return
+    if (pictureEditBusy || saved || saving || nativeAIAccepting || calculationBusy || subtotal?.isRunning() || advancedFilter?.isRunning()) return
     saving = true
-    refresh?.update()
     zoomLauncher.refresh()
     // 保存期间网格不可编辑：解除单次/锁定格式刷，避免保存中或保存后继续刷写。
     turnOffFormatPainter(runtime)
@@ -3819,7 +3806,6 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       saving = false
       feedback.hidden = false
       shell.save.disabled = saved
-      refresh?.update()
       shell.editor.inert = false
       form.inert = Boolean(options.native || saved)
       zoomLauncher.refresh()
@@ -3827,19 +3813,6 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       if (saved) shell.editor.querySelector<HTMLElement>('.workbook-grid')!.inert = true
     }
   }
-  refreshSave = save
-  refreshFlush = async () => {
-    const workbook = runtime.univerAPI.getActiveWorkbook()
-    if (workbook?.isCellEditing?.()) {
-      const accepted = await workbook.endEditingAsync(true)
-      if (accepted === false) throw new Error('当前单元格输入未提交，请先完成输入')
-    }
-    if (document.activeElement instanceof HTMLElement && shell.editor.contains(document.activeElement)) document.activeElement.blur()
-    await persistence
-    const operations = await currentOperations()
-    dirty = dirty || gridChanged || operations.length > 0
-  }
-  refresh?.update()
   shell.save.addEventListener('click', save)
   const beforeLeave = (event: BeforeUnloadEvent) => {
     if (dirty) { event.preventDefault(); event.returnValue = '' }
@@ -3857,6 +3830,6 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     chartDescriptions.dispose()
     chartSelection?.dispose()
     chartObjectInteraction?.dispose()
-    disposed = true; picturesView.dispose(); threadsView?.dispose(); notePickerCancel?.(); notePickerCancel = undefined; notePictures?.dispose(); noteHover.dispose(); externalFormulaCaches.dispose(); externalLinks.dispose(); pasteSpecialDialog.dispose(); refresh?.dispose(); pivotControlOverlay?.dispose(); queriesDialog.dispose(); symbolDialog.dispose(); linkDialog.dispose(); disposeCsvImport?.(); printPreviewDialog?.dispose(); shell.editor.removeEventListener('keydown',pivotHistoryShortcut,true); pivotDialog?.dispose(); pivotFilterDialog?.dispose(); editableRangesDialog?.dispose(); nativeAI?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); functionShortcuts.dispose(); zoomLauncher.dispose(); insertFunction.dispose(); zoomDialog.dispose(); printScaleDialog.dispose(); headerFooterDialog.dispose(); painterListener?.dispose(); selectionListener?.dispose(); dataTable?.dispose(); dataTableDialog.dispose(); subtotal?.dispose(); subtotalDialog.dispose(); advancedFilter?.dispose(); advancedFilterDialog.dispose(); goalSeek?.dispose(); goalSeekDialog.dispose(); consolidateDialog.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); tableResizeDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); dedupeDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); chartDesignDialog?.dispose(); chartFormatPane?.dispose(); chartDataDialog?.dispose(); recommendedChartsDialog?.dispose(); historyListener?.dispose(); outlineShortcuts.dispose(); outlineGutter?.dispose(); outline?.dispose(); validationStructure?.dispose(); validationNames?.dispose(); definedNameScopes?.dispose(); tableHeaders?.dispose(); tableDesign?.dispose(); tableStyleRendering?.dispose(); tableResize?.dispose(); tableTotals?.dispose(); tableHeaderRow?.dispose(); tableFilterButton?.dispose(); tableConvert?.dispose(); tableCreate?.dispose(); tableCreateDialog.dispose(); tableStyleEdit?.dispose(); tableFormulaReferences?.dispose(); sparklines?.dispose(); setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? "", undefined); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose()
+    disposed = true; picturesView.dispose(); threadsView?.dispose(); notePickerCancel?.(); notePickerCancel = undefined; notePictures?.dispose(); noteHover.dispose(); externalFormulaCaches.dispose(); externalLinks.dispose(); pasteSpecialDialog.dispose(); pivotControlOverlay?.dispose(); queriesDialog.dispose(); symbolDialog.dispose(); linkDialog.dispose(); disposeCsvImport?.(); printPreviewDialog?.dispose(); shell.editor.removeEventListener('keydown',pivotHistoryShortcut,true); pivotDialog?.dispose(); pivotFilterDialog?.dispose(); editableRangesDialog?.dispose(); nativeAI?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); functionShortcuts.dispose(); zoomLauncher.dispose(); insertFunction.dispose(); zoomDialog.dispose(); printScaleDialog.dispose(); headerFooterDialog.dispose(); painterListener?.dispose(); selectionListener?.dispose(); dataTable?.dispose(); dataTableDialog.dispose(); subtotal?.dispose(); subtotalDialog.dispose(); advancedFilter?.dispose(); advancedFilterDialog.dispose(); goalSeek?.dispose(); goalSeekDialog.dispose(); consolidateDialog.dispose(); numberFormatDialog.dispose(); axisDialog.dispose(); tableResizeDialog.dispose(); cellsDialog.dispose(); sortDialog.dispose(); dedupeDialog.dispose(); formatCellsDialog.dispose(); fillSeriesDialog.dispose(); goToDialog.dispose(); chartDesignDialog?.dispose(); chartFormatPane?.dispose(); chartDataDialog?.dispose(); recommendedChartsDialog?.dispose(); historyListener?.dispose(); outlineShortcuts.dispose(); outlineGutter?.dispose(); outline?.dispose(); validationStructure?.dispose(); validationNames?.dispose(); definedNameScopes?.dispose(); tableHeaders?.dispose(); tableDesign?.dispose(); tableStyleRendering?.dispose(); tableResize?.dispose(); tableTotals?.dispose(); tableHeaderRow?.dispose(); tableFilterButton?.dispose(); tableConvert?.dispose(); tableCreate?.dispose(); tableCreateDialog.dispose(); tableStyleEdit?.dispose(); tableFormulaReferences?.dispose(); sparklines?.dispose(); setSparklineWorkbookResolver(runtime.univerAPI.getActiveWorkbook()?.getId() ?? "", undefined); calculation?.dispose(); noteDialog.dispose(); nameManagerDialog.dispose(); ribbon.dispose(); shell.save.removeEventListener('click', save); window.removeEventListener('beforeunload', beforeLeave); runtime.univer.dispose()
   } }
 }

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
@@ -132,16 +132,6 @@ class NativeEditorContext(NativeModel):
                 "context": self.model_dump(mode="json", by_alias=True),
             }
         )
-
-
-class EditorGrantContext(Protocol):
-    @property
-    def report_id(self) -> str: ...
-    @property
-    def workflow_run_id(self) -> str: ...
-    @property
-    def revision(self) -> int: ...
-    def digest(self) -> str: ...
 
 
 class NativeIssue(NativeModel):
