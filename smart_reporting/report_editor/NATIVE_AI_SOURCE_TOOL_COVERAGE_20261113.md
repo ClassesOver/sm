@@ -40,6 +40,8 @@ XLSX 图表删除也接受源 DSL `delete_visual(visualId)`。目标使用冻结
 
 XLSX 编辑工具接入 `set_range` 和 `clear_range`。矩形写入可使用起始格或同尺寸范围，支持公式和空值。单元格级操作每批最多展开 2000 格。大范围清空每项最多覆盖 200000 格，写入器只修改实际有内容的单元格，保留样式和范围外的共享公式。选区授权检查整个目标矩形，浏览器候选显示工作表和待清空范围。纯单元格源操作中，后续条件写入按同批变更后的值和公式核对，包括大范围清空。
 
+XLSX `add_chart` 接入本地 GenOffice 参考源码 `19a389b3` 的 `columns` 参数。第一列作为分类，后续列按传入顺序作为系列。首行作为表头，列可不相邻，XLSX 引用及缓存由实际工作表生成。回读覆盖分类列 C 和系列 D、B，保持原数据范围决定的默认锚点。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

@@ -13,6 +13,7 @@ export interface ParsedChartData {
   readonly byRow: boolean
   readonly hasHeaderRow: boolean
   readonly hasCategoryColumn: boolean
+  readonly categoryColumnOffset?: number
   readonly categories: string[]
   /// Offset within the selection along the series axis (for range refs).
   readonly series: { name: string; values: number[]; column: number }[]
@@ -20,6 +21,31 @@ export interface ParsedChartData {
 
 const MAX_CHART_ROWS = 500
 const MAX_CHART_SERIES = 12
+const isBlank = (v: unknown): boolean => v === null || v === undefined || v === ''
+const isNumeric = (v: unknown): boolean =>
+  (typeof v === 'number' && Number.isFinite(v)) ||
+  (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)))
+const toNumber = (v: unknown): number => isNumeric(v) ? Number(v) : 0
+
+/** Explicit columns always use the first row as headers. */
+export function chartDataFromColumns(source: readonly (readonly ChartGridValue[])[], offsets: readonly number[]): ParsedChartData {
+  const header = source[0] ?? []
+  const [labels, ...selected] = offsets
+  const body = source.slice(1, 1 + MAX_CHART_ROWS)
+  if (labels === undefined || selected.length === 0 || selected.length > MAX_CHART_SERIES ||
+      new Set(offsets).size !== offsets.length || offsets.some(column => column < 0 || column >= header.length)) {
+    throw new Error('图表分类和系列必须使用范围内不同的列')
+  }
+  const series = selected.map((column, index) => {
+    if (!body.some(row => isNumeric(row[column]))) throw new Error('指定图表系列没有数值数据')
+    return {
+      name: isBlank(header[column]) ? `Series ${index + 1}` : String(header[column]),
+      values: body.map(row => toNumber(row[column])), column,
+    }
+  })
+  return {byRow: false, hasHeaderRow: true, hasCategoryColumn: true, categoryColumnOffset: labels,
+    categories: body.map(row => String(row[labels] ?? '')), series}
+}
 
 /// First row with non-numeric labels → header row; first column mostly
 /// non-numeric → category column; every other column becomes a series.
@@ -42,12 +68,6 @@ export function chartDataFromValues(
     : source
   const firstRow = grid[0]
   if (!firstRow || firstRow.length === 0) return null
-  const isBlank = (v: unknown): boolean => v === null || v === undefined || v === ''
-  const isNumeric = (v: unknown): boolean =>
-    (typeof v === 'number' && Number.isFinite(v)) ||
-    (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v)))
-  const toNumber = (v: unknown): number =>
-    isNumeric(v) ? Number(v) : 0
   const width = firstRow.length
   // A header row is signalled by non-numeric labels, or by the cross-tab
   // fingerprint Excel also uses: blank corner cell with filled cells across

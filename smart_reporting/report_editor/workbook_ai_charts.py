@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any, Literal, Required
 
-from openpyxl.utils.cell import range_boundaries
+from openpyxl.utils.cell import column_index_from_string, range_boundaries
 from pydantic import ConfigDict, Field, TypeAdapter, ValidationError, with_config
 from typing_extensions import TypedDict
 
@@ -59,6 +59,7 @@ class _ChartSourceAdd(TypedDict, total=False):
     sheetId: Required[str]
     chartType: Required[Literal['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'radar', 'combo']]
     dataRange: Required[_Range]
+    columns: Annotated[list[Annotated[str, Field(pattern=r'^[A-Za-z]{1,3}$')]], Field(min_length=2, max_length=13)]
     title: _Text
     anchorCell: _Range
 
@@ -102,6 +103,10 @@ def _validate_source(model: dict[str, Any], operation: dict[str, Any], owners: d
         if source['sheetId'] not in sheets:
             raise ValueError('workbook_ai_chart_source_invalid')
         c0, r0, c1, _ = _source_bounds(source['dataRange'])
+        if 'columns' in source:
+            columns = [column_index_from_string(column) for column in source['columns']]
+            if len(set(columns)) != len(columns) or any(not c0 <= column <= c1 for column in columns):
+                raise ValueError('workbook_ai_chart_source_invalid')
         anchor = source.get('anchorCell')
         if anchor:
             c0, r0, ac1, ar1 = _source_bounds(anchor)

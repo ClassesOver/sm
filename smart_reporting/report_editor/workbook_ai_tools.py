@@ -396,6 +396,8 @@ class WorkbookAIToolkit(Toolkit):
                 '每行至少两列，每行一个迷你图，最多取前200行。默认放在来源右侧，也可从同表的单格 targetCell 向下排列。'
                 'color 使用 #RRGGBB；stacked 表示盈亏图。'
                 '删除工作簿图表使用源 DSL {op:delete_visual,visualId}，visualId 填 read_sheet_features 返回的唯一 chartPath。'
+                '新增图表可传 columns，例如 ["C","E","B"]。按顺序指定分类列和各系列列，'
+                '列必须互不重复且位于 dataRange 内，第一行用作表头。'
             )
         return {guide: catalog[guide] for guide in guides}
 

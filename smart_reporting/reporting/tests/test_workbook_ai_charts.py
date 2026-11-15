@@ -41,6 +41,23 @@ def delete_visual(path=PATH):
     return {'op': 'delete_visual', 'visualId': path}
 
 
+@pytest.mark.parametrize(('columns', 'valid'), [
+    (['c', 'A'], True), (['A', 'a'], False), (['A', 'D'], False), (['A'], False),
+])
+def test_source_chart_column_contract(columns, valid):
+    from smart_reporting.report_editor.workbook_ai_charts import validate_chart_candidates
+
+    candidate = [{'kind': 'applyChartSource', 'operation': {
+        'op': 'add_chart', 'sheetId': 'Sheet', 'chartType': 'line', 'dataRange': 'A1:C4',
+        'columns': columns,
+    }}]
+    if valid:
+        validate_chart_candidates(chart_model(), candidate)
+    else:
+        with pytest.raises(ValueError, match='chart_source_invalid'):
+            validate_chart_candidates(chart_model(), candidate)
+
+
 def chart_model():
     return {'sheets': [{'name': 'Sheet', 'cells': {}, 'charts': [
         {'chartPath': PATH, 'title': 'Same', 'kind': 'column'},

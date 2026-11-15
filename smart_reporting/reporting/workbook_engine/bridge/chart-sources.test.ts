@@ -67,3 +67,22 @@ it('纯数值源使用序号分类，不写指向数值列的伪分类引用', a
   expect(chart.series[0]!.categoriesRef).toBeUndefined()
   expect(chart.series[0]!.categories).toEqual(['1', '2', '3'])
 })
+
+it('按明确顺序使用非相邻分类和系列列，并从当前工作表取缓存', async () => {
+  const before = await applyWorkbookOperations(await workbook(), [{
+    kind: 'applyCellEdits', edits: [['区域', '利润'], ['东', 7], ['西', 8], ['北', 9]].flatMap((values, row) =>
+      values.map((value, index) => ({sheetName: "O'Brien", row, column: index + 2, writeValue: true, cell: {value}}))),
+  }])
+  const after = await applyWorkbookOperations(before, [add({dataRange: 'A1:D4', columns: ['c', 'D', 'B']})])
+  const chart = (await readWorkbook(after)).sheets[0]!.charts![0]!
+  expect(chart.series.map(series => series.valuesRef)).toEqual(["'O''Brien'!$D$2:$D$4", "'O''Brien'!$B$2:$B$4"])
+  expect(chart.series[0]).toMatchObject({
+    name: '利润', categories: ['东', '西', '北'], cachedValues: [7, 8, 9],
+    categoriesRef: "'O''Brien'!$C$2:$C$4",
+  })
+  expect(chart.anchor.fromColumn).toBe(5)
+})
+
+it.each([['A', 'a'], ['A', 'C'], ['B', 'A']])('拒绝重复、出界及无数字的显式列 %j', async (...columns) => {
+  await expect(applyWorkbookOperations(await workbook(), [add({columns})])).rejects.toThrow()
+})

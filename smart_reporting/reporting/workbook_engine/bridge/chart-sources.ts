@@ -25,7 +25,9 @@ const format = {
   explosionPct: explosion.optional(), pointExplosions: z.record(z.string().regex(/^(0|[1-9][0-9]{0,3})$/), explosion).optional(),
 }
 const sourceSchema = z.discriminatedUnion('op', [
-  z.object({ op: z.literal('add_chart'), sheetId: z.string(), chartType: z.enum(['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'radar', 'combo']), dataRange: range, title: text.optional(), anchorCell: range.optional() }).strict(),
+  z.object({ op: z.literal('add_chart'), sheetId: z.string(), chartType: z.enum(['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter', 'radar', 'combo']),
+    dataRange: range, columns: z.array(z.string().regex(/^[a-z]{1,3}$/i)).min(2).max(13).optional(),
+    title: text.optional(), anchorCell: range.optional() }).strict(),
   z.object({ op: z.literal('edit_chart'), chartPath: z.string(), ...format,
     seriesData: z.array(z.object({ index: z.number().int().min(0).max(9999), name: text.optional(), valuesRange: range.optional(), categoriesRange: range.optional(), sheetId: z.string().optional() }).strict()).min(1).max(32).optional(),
   }).strict(),
@@ -63,7 +65,10 @@ export async function applyChartSource(bytes: Uint8Array, raw: unknown): Promise
   }
   if (operation.op === 'add_chart') {
     const target = sheet(operation.sheetId), area = bounds(operation.dataRange)
-    const addition = chartAdditionFromGrid({ sheetName: target.name, chartType: operation.chartType, ...(operation.title === undefined ? {} : { title: operation.title }), range: area, values: values(target, operation.dataRange) })
+    const columnOffsets = operation.columns?.map(letter => parseAddress(`${letter.toUpperCase()}1`).column - area.startColumn)
+    const addition = chartAdditionFromGrid({ sheetName: target.name, chartType: operation.chartType,
+      ...(operation.title === undefined ? {} : { title: operation.title }),
+      ...(columnOffsets ? { columnOffsets } : {}), range: area, values: values(target, operation.dataRange) })
     const anchor = operation.anchorCell ? bounds(operation.anchorCell) : null
     if (anchor && rangeCellCount(anchor) !== 1) throw new Error('workbook_ai_chart_source_invalid')
     const fromRow = anchor?.startRow ?? addition.anchor.fromRow, fromColumn = anchor?.startColumn ?? addition.anchor.fromColumn
