@@ -23,6 +23,7 @@ from .workbook_search import find_cell_indexes
 
 _CELL_SOURCE_OPS = {'set_cell', 'set_formula', 'clear_cell', 'set_range', 'clear_range'}
 _MAX_EXPANDED_CELL_EDITS = 2000
+_MAX_CLEAR_RANGE_CELLS = 200000
 
 
 def _bounds(address: str) -> tuple[int, int, int, int]:
@@ -86,6 +87,13 @@ def _source_range_values(operation: dict[str, Any]) -> tuple[tuple[int, int, int
         if r1 >= 1048576 or c1 >= 16384:
             raise ValueError('workbook_ai_range_invalid')
     return (r0, r1, c0, c1), values
+
+
+def clear_range_bounds(address: str) -> tuple[int, int, int, int]:
+    r0, r1, c0, c1 = _bounds(address)
+    if (r1 - r0 + 1) * (c1 - c0 + 1) > _MAX_CLEAR_RANGE_CELLS:
+        raise ValueError('workbook_ai_range_too_large')
+    return r0, r1, c0, c1
 
 
 def _matches_expected_value(actual: Any, expected: Any) -> bool:
@@ -369,7 +377,8 @@ class WorkbookAIToolkit(Toolkit):
             catalog['writing'] += (
                 '批量写入用 {op:set_range,sheetId,start?,range?,values}，提供左上起点或与矩阵等大的范围。'
                 'values 必须是矩形，等号开头为公式，null 清空内容。'
-                '用 {op:clear_range,sheetId,range} 清空值和公式，保留格式。每批最多展开 2000 个单元格。'
+                '用 {op:clear_range,sheetId,range} 清空值和公式，保留格式。'
+                '大范围清空每项最多 200000 格；其余单元格操作每批最多展开 2000 格。'
             )
         if 'charts' in guides:
             catalog['charts'] += (
@@ -408,6 +417,17 @@ class WorkbookAIToolkit(Toolkit):
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}
+        if op == 'clear_range':
+            r0, r1, c0, c1 = clear_range_bounds(operation.get('range'))
+            if (r1 - r0 + 1) * (c1 - c0 + 1) > _MAX_EXPANDED_CELL_EDITS:
+                sheet_id = operation.get('sheetId')
+                if set(operation) != {'op', 'sheetId', 'range'} or not isinstance(sheet_id, str) or not sheet_id:
+                    raise ValueError('workbook_ai_range_invalid')
+                sheet = self._sheet(sheet_id)
+                self._authorized(sheet, (r0, r1, c0, c1))
+                start = f'{get_column_letter(c0 + 1)}{r0 + 1}'
+                end = f'{get_column_letter(c1 + 1)}{r1 + 1}'
+                return {'kind': 'clearCellRange', 'sheetName': sheet['name'], 'range': f'{start}:{end}'}
         if op in {'set_range', 'clear_range'}:
             bounds, values = _source_range_values(operation)
             sheet = self._sheet(operation['sheetId'])
@@ -488,7 +508,7 @@ class WorkbookAIToolkit(Toolkit):
             raise ValueError('workbook_ai_proposal_already_submitted')
         if not 1 <= len(operations) <= 100:
             raise ValueError('workbook_ai_operations_invalid')
-        if self._scope == 'range' and any(operation.get('op') not in (_CELL_SOURCE_OPS | {None}) or operation.get('kind') not in {'applyCellEdits', None} for operation in operations):
+        if self._scope == 'range' and any(operation.get('op') not in (_CELL_SOURCE_OPS | {None}) or operation.get('kind') not in {'applyCellEdits', 'clearCellRange', None} for operation in operations):
             raise ValueError('workbook_ai_selection_mismatch')
         merges: dict[str, list[str]] = {}
         cell_state: dict[tuple[str, str], dict[str, Any]] | None = {}
@@ -496,14 +516,14 @@ class WorkbookAIToolkit(Toolkit):
         expanded_cell_edits = 0
         for operation in operations:
             translated = self._translate(operation, merges, cell_state)
-            if operation.get('op') in _CELL_SOURCE_OPS:
+            if operation.get('op') in _CELL_SOURCE_OPS and translated['kind'] == 'applyCellEdits':
                 expanded_cell_edits += len(translated['edits'])
                 if expanded_cell_edits > _MAX_EXPANDED_CELL_EDITS:
                     raise ValueError('workbook_ai_range_too_large')
             translated_operations.append({'kind': translated['kind'], 'arguments': {
                 key: value for key, value in translated.items() if key != 'kind'
             }})
-            if 'kind' in operation or operation.get('op') not in _CELL_SOURCE_OPS:
+            if 'kind' in operation or operation.get('op') not in _CELL_SOURCE_OPS or translated['kind'] == 'clearCellRange':
                 # Native and structural operations can move/replace cells. Never
                 # validate a later condition against an unchanged base model.
                 cell_state = None
@@ -512,6 +532,9 @@ class WorkbookAIToolkit(Toolkit):
         validate_chart_candidates(self._model, candidate)
         if self._scope == 'range':
             for operation in candidate:
+                if operation['kind'] == 'clearCellRange':
+                    self._authorized(self._sheet(operation.get('sheetName')), clear_range_bounds(operation.get('range')))
+                    continue
                 if operation['kind'] != 'applyCellEdits' or not operation.get('edits'):
                     raise ValueError('workbook_ai_selection_mismatch')
                 for edit in operation['edits']:

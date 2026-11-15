@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest'
 import JSZip from 'jszip'
 import { applyCellEdits, createBlankWorkbook, readWorkbook, type CellEdit } from '../src'
+import { clearCellRange } from '../src/workbook-write'
 
 async function workbook(rows: string) {
   const zip = await JSZip.loadAsync(await createBlankWorkbook())
@@ -68,6 +69,19 @@ it('replacing a master formula leaves followers with the original formula', asyn
   const cells = (await readWorkbook(bytes)).sheets[0]!.cells
   expect(cells.B1!.formula).toBe('=100')
   expect(cells.B2!.formula).toBe('=A2+$D$1')
+})
+
+it('clears a shared master and styled follower without removing the formula outside the range', async () => {
+  const source = await workbook(group)
+  const bytes = await clearCellRange(source, 'Sheet1', 'A1:B2')
+  const cells = (await readWorkbook(bytes)).sheets[0]!.cells
+  expect(cells.B1).toBeUndefined()
+  expect(cells.B2).toEqual({value: null, styleIndex: 0})
+  expect(cells.B3!.formula).toBe('=A3+$D$1')
+  const xml = await (await JSZip.loadAsync(bytes)).file('xl/worksheets/sheet1.xml')!.async('string')
+  expect(xml).not.toContain('t="shared"')
+  expect(xml).toContain('<c r="B2" s="0"/>')
+  expect(await clearCellRange(bytes, 'Sheet1', 'A1:B2')).toBe(bytes)
 })
 
 it.each([false, true])('unrelated or style-only edits retain shared formula XML: styleOnly=%s', async styleOnly => {

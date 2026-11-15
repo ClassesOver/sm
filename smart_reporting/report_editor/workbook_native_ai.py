@@ -22,6 +22,7 @@ from .native_candidate_runner import run_native_candidate
 from .native_models import native_digest
 from .workbook_ai import AgnoWorkbookProposalPlanner, WorkbookAIProposal
 from .workbook_ai_charts import validate_chart_candidates
+from .workbook_ai_tools import clear_range_bounds
 
 
 @dataclass
@@ -125,6 +126,13 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
     @staticmethod
     def _within_selection(candidate, selection):
         for operation in candidate:
+            if operation['kind'] == 'clearCellRange':
+                r0, r1, c0, c1 = clear_range_bounds(operation.get('range'))
+                if (operation.get('sheetName') != selection['sheetName']
+                        or not selection['startRow'] <= r0 <= r1 <= selection['endRow']
+                        or not selection['startColumn'] <= c0 <= c1 <= selection['endColumn']):
+                    raise _invalid("native_ai_selection_mismatch", "候选清空范围超出授权选区。")
+                continue
             if operation["kind"] != "applyCellEdits" or not operation.get("edits"):
                 raise _invalid("native_ai_selection_mismatch", "选区模式仅允许范围内单元格值、公式和格式候选。")
             for edit in operation["edits"]:
@@ -154,7 +162,7 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
                 '{"edits": [{"sheetName": "Sheet", "row": 0, "column": 0, "writeValue": true, "cell": {"value": 59}}]}。'
                 "公式使用 cell:{value:null,formula:\"SUM(A1:A3)\"}，公式无等号。"
                 "格式在 edits 项的 style，例如 {bold:true,fillColor:\"#EEF2FF\"}；不要把格式写到 cell 内。"
-                + ("仅可输出 applyCellEdits，且必须在冻结选区内。选区：" + json.dumps(selection, ensure_ascii=False) if scope == "range" else
+                + ("选区内可提交 applyCellEdits 或使用 clear_range 清空内容。选区：" + json.dumps(selection, ensure_ascii=False) if scope == "range" else
                     "已明确授权整份工作簿，可使用WorkbookAIProposal声明的操作。图表允许可信既有目标的格式/删除和来源范围驱动的新增/系列换绑，"
                     "先read_sheet_features核对唯一chartPath与所属表；多图时按用户明确目标匹配，禁止按顺序猜测，不明确时请求澄清而不提交。"
                     "使用load_guide(charts)读取协议；新增/换绑必须使用源add_chart/edit_chart DSL并先读取数据范围，由引擎读取当前草稿生成引用和缓存；禁止模型填series/seriesSet缓存、图片、保护、主题与外部请求。")

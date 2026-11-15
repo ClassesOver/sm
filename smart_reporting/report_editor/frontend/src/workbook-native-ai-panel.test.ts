@@ -40,6 +40,16 @@ it('rejects a translation candidate for a selected formula with a textual result
  expect(apply).not.toHaveBeenCalled()
  view.dispose()
 })
+it('identifies the target sheet and rectangle before accepting a large clear', async () => {
+ const {view,api,host,apply,submit}=setup()
+ const operations=[{kind:'clearCellRange',sheetName:'Sheet',range:'A1:B1200'}]
+ api.start.mockResolvedValueOnce({...await api.status(),proposal:{summary:'清空旧数据',operations}})
+ view.open()
+ await submit()
+ expect(host.querySelector('.native-ai-preview li')?.textContent).toBe('Sheet!A1:B1200 · 清空值和公式，保留格式')
+ expect(apply).not.toHaveBeenCalled()
+ view.dispose()
+})
 it('默认隐藏，打开聚焦，中文关闭按钮取消任务且面板可重新打开',async()=>{
  const {host,view,api,input,submit}=setup()
  expect(view.panel.hidden).toBe(true);view.open();expect(view.panel.hidden).toBe(false);expect(document.activeElement).toBe(input)

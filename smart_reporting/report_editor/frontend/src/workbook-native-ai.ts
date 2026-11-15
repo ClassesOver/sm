@@ -83,6 +83,10 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
         const item = document.createElement('li')
         item.textContent = edit.sheetName + '!' + address + (edit.writeValue === false ? ' · 值与公式保持不变' : '：' + (edit.sheetName === quoted?.selection.sheetName ? String(before?.formula ?? before?.value ?? '空白') : '其他工作表原值') + ' → ' + String(edit.cell?.formula ?? edit.cell?.value ?? '空白')) + (edit.style ? ' · 格式 ' + JSON.stringify(edit.style) : '')
         list.append(item)
+      } else if (operation.kind === 'clearCellRange') {
+        const item = document.createElement('li')
+        item.textContent = `${operation.sheetName}!${operation.range} · 清空值和公式，保留格式`
+        list.append(item)
       } else {
         const item = document.createElement('li'); item.textContent = '结构化候选：' + operation.kind + ' · ' + JSON.stringify(operation); list.append(item)
       }

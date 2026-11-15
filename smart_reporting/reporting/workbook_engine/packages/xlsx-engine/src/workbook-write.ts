@@ -3,7 +3,7 @@
 /// core (values + styles only — structural/chart/sheet-plan operations stay
 /// desktop features for now).
 
-import { parseRange, formatAddress } from './cell-address'
+import { parseAddress, parseRange, formatAddress, rangeCellCount } from './cell-address'
 import type { WorkbookRichRun, WorkbookStyleEdit } from './edit-schemas'
 import { sha256Hex } from './sha256'
 import { spillsDynamicArray, withFutureFunctionMarkers } from './future-functions'
@@ -417,6 +417,51 @@ export async function applyCellEdits(
   }
   const mutation = await assemblePackage(sourceBytes, plan)
   return mutation.buffer
+}
+
+/** Clear only existing content in a rectangle, keeping cell styles and the grid geometry. */
+export async function clearCellRange(sourceBytes: Uint8Array, sheetName: string, range: string): Promise<Uint8Array> {
+  const bounds = parseRange(range)
+  if (bounds.endRow >= 1048576 || bounds.endColumn >= 16384 || rangeCellCount(bounds) > 200000) {
+    throw new Error('workbook_clear_range_invalid')
+  }
+  const source = await createBufferEntrySource(sourceBytes)
+  const workbookPath = 'xl/workbook.xml'
+  const workbook = await source.readText(workbookPath)
+  const path = await findWorksheetPath(source, workbook, sheetName)
+  const xml = await source.readText(path)
+  const sheetDataPattern = /<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/
+  const data = sheetDataPattern.exec(xml)
+  if (!data) {
+    if (/<sheetData\b[^>]*\/>/.test(xml)) return sourceBytes
+    throw new Error('workbook_clear_range_sheet_data_unsupported')
+  }
+  const cellPattern = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g
+  const addresses = new Set<string>()
+  for (const [, attrs, body] of data[1]!.matchAll(cellPattern)) {
+    if (body === undefined || !/<(?:f|v|is)\b/.test(body)) continue
+    const address = readXmlAttribute(attrs ?? '', 'r')
+    if (!address) continue
+    const {row, column} = parseAddress(address)
+    if (row >= bounds.startRow && row <= bounds.endRow && column >= bounds.startColumn && column <= bounds.endColumn) {
+      addresses.add(address)
+    }
+  }
+  if (addresses.size === 0) return sourceBytes
+  const detached = materializeEditedSharedFormulas(xml, addresses)
+  const cleared = detached.replace(sheetDataPattern, sheetData =>
+    sheetData.replace(cellPattern, (cell, attrs: string) => {
+      const address = readXmlAttribute(attrs, 'r')
+      return address && addresses.has(address)
+        ? serializeStyledCell(address, {value: null}, readXmlAttribute(attrs, 's'))
+        : cell
+    }),
+  )
+  const replaced = new Map([[path, cleared]])
+  const recalc = ensureFullCalcOnLoad(workbook)
+  if (recalc !== workbook) replaced.set(workbookPath, recalc)
+  return (await assemblePackage(sourceBytes, {replaced, added: new Map(), addedBinary: new Map(),
+    removedEntries: [], addedEntries: [], touchedEntries: [...replaced.keys()]})).buffer
 }
 
 /// Whole-file SHA-256 (identity gate for in-place saves: the bytes opened

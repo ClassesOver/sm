@@ -88,6 +88,35 @@ async def test_source_range_expansion_limit_covers_the_batch():
         ], '清空旧数据并登记合计')
 
 
+@pytest.mark.anyio
+async def test_source_large_clear_replays_on_workbook_with_no_blank_cell_expansion():
+    book = Workbook()
+    book.active['A1'] = 'old'
+    book.active['B1200'] = '=1+2'
+    book.active['B1200'].font = Font(bold=True)
+    book.active['C1200'] = 'outside range'
+    original = BytesIO()
+    book.save(original)
+    source = original.getvalue()
+    content = None
+
+    async def preview(operations):
+        nonlocal content
+        assert operations == [{'kind': 'clearCellRange', 'sheetName': 'Sheet', 'range': 'A1:B1200'}]
+        content = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
+        return {'draftSha256': hashlib.sha256(content).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1199, 'startColumn': 0, 'endColumn': 1},
+        preview=preview)
+    await tools.propose_operations([
+        {'op': 'clear_range', 'sheetId': 'Sheet', 'range': 'A1:B1200'},
+    ], '清空旧数据')
+    sheet = load_workbook(BytesIO(content)).active
+    assert sheet['A1'].value is None and sheet['B1200'].value is None
+    assert (sheet['B1200'].font.bold, sheet['C1200'].value) == (True, 'outside range')
+
+
 def test_workbook_formula_trace_reports_precedents_and_rejects_unsupported_syntax():
     from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 

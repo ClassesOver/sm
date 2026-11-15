@@ -15,6 +15,7 @@ import { applyChartDeletions } from '../packages/xlsx-engine/src/chart-delete'
 import { applyChartEdits } from '@sheets-web/xlsx-engine'
 import { applyChartAnchors } from '../packages/xlsx-engine/src/chart-anchor'
 import { applyChartSource } from './chart-sources'
+import { clearCellRange } from '../packages/xlsx-engine/src/workbook-write'
 import { validateExternalSourceBinding } from '../packages/xlsx-engine/src/external-links-source'
 import { applyExternalLinkCaches } from '../packages/xlsx-engine/src/external-links-update'
 import { applyExternalLinkOperation } from '../packages/xlsx-engine/src/external-links'
@@ -105,6 +106,12 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       case 'applyChartEdits': bytes = await applyChartEdits(bytes, op.edits); break
       case 'applyChartAnchors': bytes = await applyChartAnchors(bytes, op.edits); break
       case 'applyCellEdits': bytes = await applyCellEdits(bytes, z.array(edit).max(1000000).parse(op.edits)); break
+      case 'clearCellRange': {
+        const parsed = z.object({kind: z.literal('clearCellRange'), sheetName: z.string().min(1).max(31),
+          range: z.string().max(32)}).strict().parse(op)
+        bytes = await clearCellRange(bytes, parsed.sheetName, parsed.range)
+        break
+      }
       case 'applySheetMerges': bytes = await applySheetMerges(bytes, op.sheetName, op.ranges); break
       case 'applySheetEdits':
         bytes = await renameSparklineSheetReferences(bytes, op.plan.renames)

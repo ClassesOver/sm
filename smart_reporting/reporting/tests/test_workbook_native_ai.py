@@ -76,6 +76,29 @@ async def test_native_xlsx_ai_rejects_outside_range_and_cancels_before_receipt()
     assert result["status"] == "cancelled" and len(calls) == 1
     await ai.aclose()
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('target', 'status'), [
+    ('A1:B1200', 'succeeded'), ('A1:C1200', 'failed'), ('A1:B1201', 'failed'),
+])
+async def test_large_clear_candidate_obeys_native_selection(target, status):
+    from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
+
+    async def planner(*_args, **_kwargs):
+        return WorkbookAIProposal.model_validate({'summary': '清空旧数据', 'operations': [{
+            'kind': 'clearCellRange', 'arguments': {'sheetName': 'Sheet', 'range': target},
+        }]})
+
+    editor = Editor()
+    ai = NativeWorkbookAIService(editor, planner=planner, enabled=True)
+    job = await ai.start_edit(None, client_request_id='clear', instruction='清空旧数据',
+        expected_sha256='a' * 64, operations=[], scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1199, 'startColumn': 0, 'endColumn': 1})
+    result = await ai.wait_edit_status(None, job['editId'])
+    assert result['status'] == status, result
+    assert len(editor.previews) == (2 if status == 'succeeded' else 1)
+    await ai.aclose()
+
 @pytest.mark.anyio
 async def test_native_xlsx_ai_real_engine_and_independent_formula_readback():
     import hashlib
