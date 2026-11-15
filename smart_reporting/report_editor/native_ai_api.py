@@ -70,6 +70,7 @@ class NativeSlidesReadSelection(BaseModel):
 
 
 class NativeOfficeReadPayload(_DraftPayload):
+    view_selection: NativeWorkbookReadSelection | None = Field(default=None, alias="viewSelection")
     client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     action: Literal["ask", "summarize", "keyPoints", "fileName"] = "ask"
     name_locale: Literal["en", "zh-CN", "zh-TW"] | None = Field(default=None, alias="nameLocale")

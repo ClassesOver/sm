@@ -61,13 +61,16 @@ export interface NativeAIJob {
 }
 export type SlidesNameLocale = 'en' | 'zh-CN' | 'zh-TW'
 export type NativeOfficeReadAction = 'ask' | 'summarize' | 'keyPoints'
-export type NativeOfficeReadSelection = null | {sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number} | {slideIndex: number; elementId: string}[]
-export interface NativeOfficeReadContext {operations: NativeOperation[]; selection: NativeOfficeReadSelection}
+export interface NativeWorkbookViewSelection {sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number}
+export interface NativeWorkbookNavigation extends NativeWorkbookViewSelection {range: string}
+export type NativeOfficeReadSelection = null | NativeWorkbookViewSelection | {slideIndex: number; elementId: string}[]
+export interface NativeOfficeReadContext {operations: NativeOperation[]; selection: NativeOfficeReadSelection; viewSelection?: NativeWorkbookViewSelection}
 export interface NativeOfficeReadTask {
   taskId: string
   clientRequestId: string
   status: 'running' | 'completed' | 'failed' | 'cancelled'
   result?: {
+    navigation?: NativeWorkbookNavigation
     answer: string
     coverage: {scope: 'document' | 'selection'; totalBlocks: number; fullyReadBlockIds: string[]; scopeReadComplete: boolean}
     citations: {label: string; [key: string]: unknown}[]
@@ -262,7 +265,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     pdfReviewEvents: nativeAIProgressListener(`${base}/ai/review`),
     pdfReviewAccept: async (id: string, payload: NativePreviewRequest & {snapshotSha256: string}, signal?: AbortSignal): Promise<{operations: NativeOperation[]; previewDigest: string; appliedOperationIndices: number[]; skippedOperations: NativeSkippedOperation[]}> => (await request('ai/review/' + encodeURIComponent(id) + '/accept', payload, signal)).json(),
     pdfReviewCancel: async (clientRequestId: string): Promise<NativePDFReviewJob> => (await request('ai/review/cancel', {clientRequestId})).json(),
-    officeAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativeOfficeReadAction | 'fileName'; nameLocale?: SlidesNameLocale; instruction: string; previousTaskId?: string; selection: NativeOfficeReadSelection}, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/start', payload, signal)).json(),
+    officeAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativeOfficeReadAction | 'fileName'; nameLocale?: SlidesNameLocale; instruction: string; previousTaskId?: string; selection: NativeOfficeReadSelection; viewSelection?: NativeWorkbookViewSelection}, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/start', payload, signal)).json(),
     officeAIStatus: async (id: string, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     officeAIEvents: nativeAIProgressListener(`${base}/ai/office-read`),
     officeAICancel: async (clientRequestId: string): Promise<NativeOfficeReadTask> => (await request('ai/office-read/cancel', {clientRequestId})).json(),

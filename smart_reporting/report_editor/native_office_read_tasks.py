@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from .native_xlsx_threads import xlsx_thread_actor
 from copy import deepcopy
 from functools import partial
 from time import monotonic
@@ -19,6 +18,7 @@ from .native_ai import _copy_operations
 from .native_models import native_digest
 from .native_office import inspect_office, patch_office
 from .native_pdf_ai_tasks import NativePDFReadService, _ReadJob
+from .native_xlsx_threads import xlsx_thread_actor
 
 _ACTIONS = {'ask', 'summarize', 'keyPoints', 'fileName'}
 _RANGE_KEYS = {'sheetName', 'startRow', 'endRow', 'startColumn', 'endColumn'}
@@ -92,7 +92,7 @@ class NativeOfficeReadService(NativePDFReadService):
         return context
 
     async def start(self, session, *, client_request_id, expected_sha256, operations,
-                    selection=None, action='ask', instruction='', previous_task_id=None, name_locale=None):
+                    selection=None, action='ask', instruction='', previous_task_id=None, name_locale=None, view_selection=None):
         context = await self._context(session)
         request_id = self._request_id(client_request_id)
         if expected_sha256 != context.source_file.sha256:
@@ -105,9 +105,13 @@ class NativeOfficeReadService(NativePDFReadService):
             raise ReportingError('native_ai_instruction_invalid', '幻灯片 AI 命名请求无效。')
         if action != 'fileName' and name_locale is not None:
             raise ReportingError('native_ai_instruction_invalid', '命名语言仅适用于幻灯片 AI 命名。')
+        if view_selection is not None and context.format != 'xlsx':
+            raise ReportingError('native_ai_selection_invalid', '视图定位仅适用于工作簿。')
+        view = _selection('xlsx', view_selection)
         selected = _selection(context.format, selection)
         base = _copy_operations(operations)
-        reading = native_digest({"context": context.digest(), "operations": base, "selection": selected})
+        reading = native_digest({"context": context.digest(), "operations": base, "selection": selected,
+            **({"viewSelection": view} if view is not None else {})})
         snapshot = native_digest({"reading": reading, "action": action, "instruction": instruction,
                                   "previousTaskId": previous_task_id,
                                   **({"nameLocale": name_locale or "zh-CN"} if action == "fileName" else {})})
@@ -124,10 +128,10 @@ class NativeOfficeReadService(NativePDFReadService):
                        reading_sha256=None if action == 'fileName' else reading, question=instruction)
         self._jobs[key] = job
         history = self._previous_reading(scope, previous_task_id, reading) if action == "ask" else ""
-        job.task = asyncio.create_task(self._run_office(job, session, context, base, selected, action, instruction, history, name_locale))
+        job.task = asyncio.create_task(self._run_office(job, session, context, base, selected, action, instruction, history, name_locale, view))
         return self._serialize(job)
 
-    async def _run_office(self, job, session, context, base, selection, action, instruction, history, name_locale):
+    async def _run_office(self, job, session, context, base, selection, action, instruction, history, name_locale, view=None):
         deadline = monotonic() + self.timeout_seconds
         try:
             async with asyncio.timeout(self.timeout_seconds):
@@ -158,7 +162,7 @@ class NativeOfficeReadService(NativePDFReadService):
                             session_id=f'native-slides-name:{job.task_id}',
                             user_id=context.scope.user_id)
                 else:
-                    result = await self._read_document(job, context, content, original, base, selection, action, instruction, history)
+                    result = await self._read_document(job, context, content, original, base, selection, action, instruction, history, view)
                 if job.status != 'running':
                     return
                 current = await self.editor.context_for_session(session)
@@ -193,7 +197,7 @@ class NativeOfficeReadService(NativePDFReadService):
         finally:
             await job.event_log.finish(job.status)
 
-    async def _read_document(self, job, context, content, original, base, selection, action, instruction, history):
+    async def _read_document(self, job, context, content, original, base, selection, action, instruction, history, view):
         model = await run_office_engine(partial(inspect_office, context.format), content)
         if job.status != 'running':
             return None
@@ -203,7 +207,7 @@ class NativeOfficeReadService(NativePDFReadService):
                 [{key: value for key, value in op.items() if value not in (None, [], {})} for op in base], mapped)
         if context.format == 'xlsx':
             from .native_workbook_read_ai import NativeWorkbookReadTools
-            reader = NativeWorkbookReadTools(model, selection=mapped)
+            reader = NativeWorkbookReadTools(model, selection=mapped, view_selection=view)
         else:
             from .native_slides_read_ai import NativeSlidesReadTools
             reader = NativeSlidesReadTools(model, selection=mapped)

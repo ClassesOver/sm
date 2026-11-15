@@ -27,7 +27,7 @@
 | --- | --- |
 | `get_workbook_context`、`read_range`、`aggregate_range`、`load_guide`、`read_formats`、`read_sheet_features`、`read_cells`、`find_cells`、`trace_precedents`、`trace_dependents` | 已注册冻结草稿的范围受控工具；各参数、错误与动态引用语义仍须逐源核对，不能仅按名称关闭。 |
 | `propose_operations` | 已注册真实引擎预览；支持单元格 DSL 与部分原生格式／表格／筛选／透视操作。**必须按 DSL 操作逐项对照**。 |
-| `select_range` | 尚无独立 AI 导航回执与前端采纳导航协议。 |
+| `select_range` | XLSX 阅读助手已支持可信 navigation_requested 回执及真实网格定位；候选编辑、静态只读视图与来源立即回执仍待对齐。见[导航专项验收](NATIVE_XLSX_AI_NAVIGATION_ACCEPTANCE_20261115.md)。 |
 | `create_document` | 未接源新文档任务；现有保存新修订不等同新文档创建。 |
 
 图表来源子链已交付：源 `add_chart(dataRange, anchorCell?)`、`edit_chart(seriesData)` 经 `applyChartSource` 按重放时实际工作表生成引用及缓存，拒绝模型自填缓存；限整簿授权、2000 格与可信目标，不与结构操作混批。此前纯数值分类引用及环形图多系列两项失败已修，25 项引擎／5 项手工入口／15 项 Python 专项通过；final8 ScriptedModel 浏览器拒绝／采纳、UndoRedo、草稿恢复与两次保存下载重开通过，172 份资产身份匹配。真实 provider 新增与换绑均通过标题／引用／缓存独立回读，与浏览器证据分别登记。原失败日志保留，完整图表视觉及生产真实模型浏览器同链仍开放，见[来源图表专项](NATIVE_XLSX_AI_CHART_SOURCES_ACCEPTANCE_20261113.md)。新增 shape、image 等语义仍未接全。现有推荐图表、限定对象几何属于手工交付，不重列全缺，也不外推为全部 AI 已交付。

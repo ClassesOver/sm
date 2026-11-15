@@ -2,11 +2,11 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { bindNativeOfficeAssistant } from './native-office-assistant'
 import { NativeDraft } from './native-draft'
 afterEach(() => { document.body.replaceChildren(); localStorage.clear() })
-function fixture(api: object, format: 'xlsx' | 'pptx' = 'xlsx') {
+function fixture(api: object, format: 'xlsx' | 'pptx' = 'xlsx', extra: object = {}) {
  const root=document.body.appendChild(document.createElement('div'))
  const draft=new NativeDraft({documentId:'word',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},localStorage)
  let selected: unknown={sheetName:'数据',startRow:0,endRow:1,startColumn:0,endColumn:1};const flush=vi.fn()
- const binding=bindNativeOfficeAssistant(root,{api:api as never,draft,format,context:async scope=>{flush();return {operations:structuredClone(draft.operations),selection:scope==='selection' ? selected : null} as never}})
+ const binding=bindNativeOfficeAssistant(root,{api:api as never,draft,format,context:async scope=>{flush();return {operations:structuredClone(draft.operations),selection:scope==='selection' ? selected : null} as never},...extra})
  return {root,draft,binding,flush,setSelection:(value:unknown)=>{selected=value}}
 }
 const result={answer:'<img src=x>文档总结',readingVersion:'draft',coverage:{scope:'document',totalBlocks:3,fullyReadBlockIds:['b1'],scopeReadComplete:false},sourceSha256:'a'.repeat(64),effectiveSha256:'b'.repeat(64),citations:[{label:'数据!A1:B2'}],issues:[{code:'incomplete',message:'尚未完整读取'}],toolEvents:[{tool:'read_cells'}],limitations:['仅为引擎已提取文字，不包含备注。']}
@@ -102,4 +102,27 @@ it.each(['xlsx','pptx'] as const)('%s 新对话取消任务并保留输入草稿
  expect(input.value).toBe('保留草稿')
  expect(reset.hidden).toBe(true)
  binding.dispose()
+})
+
+const navigation={sheetName:'数据',range:'C3:D4',startRow:2,endRow:3,startColumn:2,endColumn:3}
+it('claims navigation success only after host callback',async()=>{
+ let release!:()=>void;const navigate=vi.fn(()=>new Promise<void>(resolve=>{release=resolve}))
+ const api={officeAIStart:vi.fn().mockResolvedValue({taskId:'t',status:'completed',result:{...result,navigation}})}
+ const f=fixture(api,'xlsx',{navigate});f.binding.open('summarize')
+ await vi.waitFor(()=>expect(navigate).toHaveBeenCalled());expect(f.root.querySelector('[role=status]')!.textContent).not.toContain('已定位')
+ release();await vi.waitFor(()=>expect(f.root.querySelector('[role=status]')!.textContent).toContain('已定位到 数据!C3:D4'))
+ expect(f.draft.dirty).toBe(false);expect(f.draft.operations).toEqual([]);f.binding.dispose()
+})
+it('keeps answer and reports failed reveal',async()=>{
+ const api={officeAIStart:vi.fn().mockResolvedValue({taskId:'t',status:'completed',result:{...result,navigation}})}
+ const f=fixture(api,'xlsx',{navigate:vi.fn().mockRejectedValue(Error('视口不可用'))});f.binding.open('summarize')
+ await vi.waitFor(()=>expect(f.root.textContent).toContain('视口不可用'))
+ expect(f.root.textContent).toContain('文档总结');expect(f.root.querySelector('[role=status]')!.textContent).not.toContain('已定位到');f.binding.dispose()
+})
+it('never navigates stale selection response',async()=>{
+ let finish!:(value:object)=>void;const navigate=vi.fn(),api={officeAIStart:vi.fn(()=>new Promise(resolve=>{finish=resolve}))}
+ const f=fixture(api,'xlsx',{navigate});f.binding.open();f.root.querySelector<HTMLSelectElement>('select')!.value='selection'
+ f.root.querySelector<HTMLButtonElement>('[data-office-ai=summarize]')!.click();await vi.waitFor(()=>expect(api.officeAIStart).toHaveBeenCalled())
+ f.setSelection({...navigation,sheetName:'其他'});finish({taskId:'t',status:'completed',result:{...result,navigation}})
+ await vi.waitFor(()=>expect(f.root.textContent).toContain('草稿或选区已变化'));expect(navigate).not.toHaveBeenCalled();f.binding.dispose()
 })

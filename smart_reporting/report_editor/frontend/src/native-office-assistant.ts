@@ -3,7 +3,7 @@ import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel, createOfficeNewChatButton } from './office-assistant-panel'
 /** Office 阅读与编辑候选分开；回答不会写入草稿。 */
 import { createElement, MessageCircle, FileText, ListChecks, Sparkles, X, CircleStop } from 'lucide'
-import type { createNativeApi, NativeOfficeReadAction, NativeOfficeReadTask, NativeOfficeReadContext } from './native-api'
+import type { createNativeApi, NativeOfficeReadAction, NativeOfficeReadTask, NativeOfficeReadContext, NativeWorkbookNavigation } from './native-api'
 import type { NativeDraft } from './native-draft'
 import { mountNativeAIProgress, nativeAIToolLabel } from './native-ai-progress'
 
@@ -11,6 +11,7 @@ type Options = {
   api: ReturnType<typeof createNativeApi>
   draft: NativeDraft
   format: 'xlsx' | 'pptx'
+  navigate?: (target: NativeWorkbookNavigation, current: () => boolean) => Promise<void>
   context: (scope: 'document' | 'selection') => Promise<NativeOfficeReadContext>
 }
 const actions = {ask: ['文档问答', MessageCircle], summarize: ['总结文档 / 选区', FileText], keyPoints: ['提取关键要点', ListChecks]} as const
@@ -65,16 +66,28 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
       if(turn!==generation || disposed)return
       if(scope.value==='selection' && (!captured.selection || Array.isArray(captured.selection) && !captured.selection.length))throw new Error('选区无法可靠对应来源，请重新选择有效内容。')
     }catch(error){if(turn===generation && !disposed){busy=false;status.textContent=error instanceof Error ? error.message : '未保存编辑同步失败';update()}return}
-    const {operations,selection:selected}=structuredClone(captured)
-    const snapshot=JSON.stringify({operations,selection:selected}),requestId=crypto.randomUUID()
+    const {operations,selection:selected,viewSelection}=structuredClone(captured)
+    const snapshot=JSON.stringify({operations,selection:selected,viewSelection}),requestId=crypto.randomUUID()
     busy=true;progress.reset();status.textContent='正在读取 '+formatLabel+' 文档';update()
     try {
-      const task=await tasks.run({clientRequestId:requestId,action,instruction,previousTaskId:action==='ask' && previous?.snapshot===snapshot ? previous.taskId : undefined,expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected},requestId,(started,signal)=>progress.start(options.api.officeAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
+      const task=await tasks.run({clientRequestId:requestId,action,instruction,previousTaskId:action==='ask' && previous?.snapshot===snapshot ? previous.taskId : undefined,expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected,...(viewSelection && options.navigate && options.format==='xlsx' ? {viewSelection} : {})},requestId,(started,signal)=>progress.start(options.api.officeAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
       if(!task || turn!==generation || disposed)return
       const current=await options.context(scope.value==='selection' ? 'selection' : 'document')
       if(turn!==generation || disposed)return
       if(snapshot!==JSON.stringify(current)){progress.reset();status.textContent='草稿或选区已变化，请重新阅读。';return}
-      if(task.status==='completed' && task.result){previous={taskId:task.taskId,snapshot};display(task.result,question);status.textContent='阅读完成，文档与草稿未修改。'}
+      if(task.status==='completed' && task.result){
+        if(task.result.sourceSha256!==options.draft.identity.sourceSha256){status.textContent='文件来源已变化，请重新阅读。';return}
+        let navigationMessage=''
+        if(task.result.navigation){
+          try{
+            if(options.format!=='xlsx' || !options.navigate)throw new Error('当前视图不支持定位')
+            await options.navigate(task.result.navigation,()=>turn===generation && !disposed && !options.draft.closed && !options.draft.saving)
+            navigationMessage='已定位到 '+task.result.navigation.sheetName+'!'+task.result.navigation.range+'。'
+          }catch(error){navigationMessage='定位未完成：'+(error instanceof Error ? error.message : '目标无法显示')}
+          if(turn!==generation || disposed)return
+        }
+        previous={taskId:task.taskId,snapshot};display(task.result,question);status.textContent='阅读完成，文档与草稿未修改。'+navigationMessage
+      }
       else status.textContent=task.error?.message ?? (task.status==='cancelled' ? '任务已取消' : 'Office AI 未返回有效回答')
     }catch(error){if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : 'Office AI 阅读失败'}
     finally{if(turn===generation){busy=false;tasks.release();progress.stop();update()}}

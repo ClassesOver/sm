@@ -20,6 +20,7 @@ const nativeAIToolLabels = new Map([
   ['get_workbook_context', '读取工作簿上下文'], ['read_range', '读取单元格区域'],
   ['read_cells', '读取单元格'], ['read_formats', '读取单元格格式'],
   ['read_sheet_features', '读取工作表功能'], ['find_cells', '查找单元格'],
+  ['select_range', '定位单元格区域'], ['get_skill_instructions', '读取技能'], ['get_skill_reference', '读取技能资料'], ['get_skill_script', '读取技能脚本'],
   ['aggregate_range', '汇总单元格区域'], ['trace_precedents', '追踪引用单元格'],
   ['trace_dependents', '追踪从属单元格'], ['load_guide', '读取操作指南'],
   ['get_presentation_context', '读取演示文稿上下文'], ['read_slide', '读取幻灯片'],

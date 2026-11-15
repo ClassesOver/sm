@@ -29,3 +29,14 @@ it.each(['change','switchSheet','moveRange','edit'] as const)('异步采集期�
   await expect(result).rejects.toThrow('草稿或选区已变化')
   expect(f.setOperations).not.toHaveBeenCalled()
 })
+
+it('captures view separately while document authority remains unselected',async()=>{
+ const f=fixture(),context=await captureWorkbookReadContext('document',f.options)
+ expect(context.selection).toBeNull()
+ expect(context.viewSelection).toEqual({sheetName:'经营',startRow:2,endRow:3,startColumn:1,endColumn:3})
+})
+it.each(['switchSheet','moveRange'] as const)('document view changes during capture invalidate navigation snapshot: %s',async mutation=>{
+ const f=fixture();let release!:()=>void;f.options.persisted=()=>new Promise<void>(resolve=>{release=resolve})
+ const task=captureWorkbookReadContext('document',f.options);f[mutation]();release()
+ await expect(task).rejects.toThrow('草稿或选区已变化');expect(f.setOperations).not.toHaveBeenCalled()
+})

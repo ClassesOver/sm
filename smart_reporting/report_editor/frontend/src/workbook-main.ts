@@ -4084,7 +4084,17 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { officeEditAssistant: nativeAI, async officeReadContext(scope: 'document' | 'selection') {
+  return { officeEditAssistant: nativeAI,
+    async officeReadNavigate(target: import('./native-api').NativeWorkbookNavigation, current: () => boolean) {
+      const epoch=mergeGeneration
+      const viewIdentity=()=>JSON.stringify({book:runtime.univerAPI.getActiveWorkbook()?.getId(),sheet:runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId(),range:runtime.univerAPI.getActiveWorkbook()?.getActiveRange()?.getRange()})
+      const before=viewIdentity()
+      const {navigateWorkbookReadTarget}=await import('./workbook-ai-navigation')
+      if(before!==viewIdentity() || epoch!==mergeGeneration)throw new Error('草稿或当前视图已变化，定位未执行')
+      await navigateWorkbookReadTarget(runtime,target,{current,closed:()=>loading || disposed || epoch!==mergeGeneration || Boolean(nativeDraft?.closed || nativeDraft?.saving),
+        cancel:()=>{goToGeneration++;goToReveal.cancel()},reveal:(...args)=>goToReveal.reveal(...args)})
+      ribbon.refreshState?.()
+    }, async officeReadContext(scope: 'document' | 'selection') {
     const { captureWorkbookReadContext } = await import('./workbook-ai-read-context')
     return captureWorkbookReadContext(scope, { runtime, closed: () => disposed || Boolean(nativeDraft?.closed || nativeDraft?.saving),
       epoch: () => mergeGeneration, persisted: () => persistence, operations: async () => await currentOperations() as NativeOperation[],
