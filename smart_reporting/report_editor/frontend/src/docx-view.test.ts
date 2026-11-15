@@ -25,10 +25,10 @@ it('routes Split through the read-only secondary view and reflects its visibilit
   const split = { toggle: vi.fn(() => { open = !open }), get visible() { return open } }
   const { view } = setup({ split })
   expect(view.reason('拆分')).toBeNull()
-  expect(view.active('拆分')).toBe(false)
+  expect(view.active?.('拆分')).toBe(false)
   view.run('拆分')
   expect(split.toggle).toHaveBeenCalledOnce()
-  expect(view.active('拆分')).toBe(true)
+  expect(view.active?.('拆分')).toBe(true)
 })
 it('uses source zoom limits and keeps original document content and physical dimensions unchanged', () => {
   const f = setup(); const content = f.page.innerHTML
