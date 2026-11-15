@@ -153,7 +153,7 @@ class NativeSlidesAIService(NativeAIService):
         job.task = asyncio.create_task(self._prepare_slides_job(job, context, base, changes, selection, scope, instruction, expected_sha256))
         return self._serialize(job)
 
-    async def _prepare_slides_job(self, job, context, base, changes, selection, scope, instruction, expected_sha256):
+    async def _prepare_slides_job(self, job, context, base, changes, selection, scope, instruction, expected_sha256, *, persist=None):
         try:
             await job.event_log.emit("phase", label="正在准备演示文稿上下文")
             original = await self.editor.preview(context, expected_sha256=expected_sha256, operations=[])
@@ -271,7 +271,7 @@ class NativeSlidesAIService(NativeAIService):
                     "不得新增对象、改合并结构、修改图片或捏造数据。")
                 prompt += (f"\n当前草稿页序：{current_order}。授权范围：" + ("整份演示文稿，可按用户明确要求调整页序或商务主题。" if scope == "deck" else "仅所给对象，必须保留当前页序，不得设置 theme。")
                     + "选区文字和几何包含人工未保存修改；仅提出已授权文字、表格单元格或图表候选，不声称已经保存或采纳。")
-            await self._run_slides_job(job, context, base, deck, editable, current_order, scope, prompt)
+            await self._run_slides_job(job, context, base, deck, editable, current_order, scope, prompt, persist=persist)
         except asyncio.CancelledError:
             job.status = "cancelled"
             raise
@@ -303,7 +303,7 @@ class NativeSlidesAIService(NativeAIService):
             candidate["textFormatting"] = formats
         return [candidate]
 
-    async def _run_slides_job(self, job, context, base, deck, editable, current_order, scope, prompt):
+    async def _run_slides_job(self, job, context, base, deck, editable, current_order, scope, prompt, *, persist=None):
         try:
             async def preview_candidate(proposal):
                 candidate = self._candidate_operations(proposal)
@@ -338,7 +338,12 @@ class NativeSlidesAIService(NativeAIService):
             await check_office_access(context.document_id, write=True)
             if job.status != "running":
                 return
-            job.proposal = {"summary": proposal["summary"], "operations": candidate, "previewSha256": preview["draftSha256"]}
+            result = {"summary": proposal["summary"], "operations": candidate, "previewSha256": preview["draftSha256"]}
+            if persist is not None:
+                await persist(result)
+                if job.status != "running":
+                    return
+            job.proposal = result
             job.status = "succeeded"
         except asyncio.CancelledError:
             job.status = "cancelled"

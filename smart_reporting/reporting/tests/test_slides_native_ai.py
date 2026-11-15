@@ -83,6 +83,39 @@ class Editor:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_native_pptx_candidate_is_visible_only_after_persist(commit_fails):
+    from datetime import UTC, datetime
+
+    from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService, _SlidesAIJob
+
+    editor = Editor()
+
+    async def planner(_prompt, **_kwargs):
+        return SlidesAIProposal(summary="润色标题", edits=[
+            {"slideIndex": 0, "elementId": "title", "text": "候选标题"},
+        ], order=[0, 1])
+
+    ai = NativeSlidesAIService(editor, planner=planner, enabled=True)
+    job = _SlidesAIJob("test-edit", editor.context.digest(), "snapshot", "user", datetime.now(UTC))
+    persisted = []
+
+    async def persist(proposal):
+        assert job.status == "running"
+        assert job.proposal is None
+        assert len(editor.previews) == 2
+        persisted.append(proposal)
+        if commit_fails:
+            raise RuntimeError("receipt storage failed")
+
+    await ai._prepare_slides_job(job, editor.context, [], {},
+        [{"slideIndex": 0, "elementId": "title"}], "selection", "润色", "a" * 64, persist=persist)
+    assert persisted[0]["previewSha256"] == "b" * 64
+    assert job.status == ("failed" if commit_fails else "succeeded")
+    assert job.proposal == (None if commit_fails else persisted[0])
+
+
+@pytest.mark.anyio
 async def test_native_pptx_ai_keeps_the_submitted_selection_during_background_preview():
     from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
 
