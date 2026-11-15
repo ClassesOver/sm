@@ -1,11 +1,11 @@
 import {afterEach,expect,it,vi} from 'vitest'
 import {bindOfficeAssistantPanel} from './office-assistant-panel'
 afterEach(()=>document.body.replaceChildren())
-function fixture(headerAction?: HTMLButtonElement){
+function fixture(headerAction?: HTMLButtonElement,onQueue?:()=>void){
  const panel=document.body.appendChild(document.createElement('section'));panel.className='native-ai native-ai-panel'
  const title=document.createElement('h3'),help=document.createElement('p'),form=document.createElement('form'),input=document.createElement('textarea'),start=document.createElement('button'),cancel=document.createElement('button'),close=document.createElement('button'),answer=document.createElement('div'),controls=document.createElement('div'),scope=document.createElement('select')
  title.textContent='AI 助手';start.type='submit';cancel.disabled=true;cancel.type=close.type='button';form.append(input,start,cancel);panel.append(title,help,controls,scope,form,answer,close)
- const submit=vi.fn((e:Event)=>e.preventDefault());form.addEventListener('submit',submit);const onClose=vi.fn();const view=bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,onClose,headerAction})
+ const submit=vi.fn((e:Event)=>e.preventDefault());form.addEventListener('submit',submit);const onClose=vi.fn();const view=bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,onClose,headerAction,onQueue})
  return{panel,form,input,start,cancel,close,answer,controls,scope,view,submit,onClose}
 }
 it('固定源侧栏顺序：标题和范围在上，结果工具区可滚动，输入框与发送固定底部',async()=>{
@@ -149,4 +149,54 @@ it('stops a running task with Escape from the focused result region and keeps th
  escape()
  expect(f.onClose).toHaveBeenCalledOnce()
  f.view.dispose()
+})
+
+it('沿用源输入框按内容自动伸缩到七行上限，清空后恢复 CSS 高度',()=>{
+ const f=fixture()
+ let height=112
+ Object.defineProperty(f.input,'scrollHeight',{get:()=>height})
+ f.input.value='多行补充要求';f.input.dispatchEvent(new Event('input'))
+ expect(f.input.style.height).toBe('112px')
+ height=300;f.input.value+='\n更多内容';f.input.dispatchEvent(new Event('input'))
+ expect(f.input.style.height).toBe('168px')
+ height=88;f.input.value='缩短';f.input.dispatchEvent(new Event('input'))
+ expect(f.input.style.height).toBe('88px')
+ f.input.value='';f.input.dispatchEvent(new Event('input'))
+ expect(f.input.style.height).toBe('')
+ expect(f.submit).not.toHaveBeenCalled();f.view.dispose()
+})
+
+it('展开后按实际布局重新测量隐藏期间恢复的输入草稿',async()=>{
+ const f=fixture()
+ Object.defineProperty(f.input,'scrollHeight',{get:()=>f.panel.hidden?0:144})
+ f.panel.hidden=true;f.input.value='隐藏期间恢复的多行草稿'
+ f.input.dispatchEvent(new Event('input'))
+ f.view.beforeOpen();f.panel.hidden=false
+ await vi.waitFor(()=>expect(f.input.style.height).toBe('144px'))
+ f.view.dispose()
+})
+
+it('新对话在控制器清空输入后收回高度，卸载后不再响应输入',async()=>{
+ const reset=document.createElement('button'),f=fixture(reset)
+ Object.defineProperty(f.input,'scrollHeight',{value:300})
+ f.input.value='旧的长草稿';f.input.dispatchEvent(new Event('input'))
+ expect(f.input.style.height).toBe('168px')
+ reset.addEventListener('click',()=>{f.input.value=''})
+ reset.click();await Promise.resolve()
+ expect(f.input.style.height).toBe('')
+ f.view.dispose();f.input.value='卸载后的输入';f.input.dispatchEvent(new Event('input'))
+ expect(f.input.style.height).toBe('')
+})
+
+
+it('忙碌时将草稿排队后收回输入框高度，不绕过控制器发起请求',async()=>{
+ const f=fixture(undefined,()=>{f.input.value=''})
+ Object.defineProperty(f.input,'scrollHeight',{value:300})
+ f.input.value='排队的长草稿';f.input.dispatchEvent(new Event('input'))
+ expect(f.input.style.height).toBe('168px')
+ f.start.disabled=true;f.cancel.disabled=false
+ f.input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+ await Promise.resolve()
+ expect(f.input.value).toBe('');expect(f.input.style.height).toBe('')
+ expect(f.submit).not.toHaveBeenCalled();f.view.dispose()
 })

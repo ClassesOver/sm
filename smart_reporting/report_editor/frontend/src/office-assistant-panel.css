@@ -74,7 +74,7 @@
 .office-assistant-layout>.office-assistant-body>form {margin:0;}
 .office-assistant-layout>.office-assistant-composer {flex:none;margin:12px 14px 14px;padding:12px;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);transition:border-color .15s,box-shadow .15s;}
 .office-assistant-layout .office-assistant-composer>label {display:block;font-size:11px;color:var(--office-muted);}
-.office-assistant-layout .office-assistant-composer textarea {min-height:76px;max-height:160px;margin:0;padding:6px 0;border:0;border-radius:0;box-shadow:none;outline:none;background:transparent;resize:vertical;font-size:12px;line-height:1.7;}
+.office-assistant-layout .office-assistant-composer textarea {min-height:76px;max-height:168px;margin:0;padding:6px 0;border:0;border-radius:0;box-shadow:none;outline:none;background:transparent;resize:none;overflow-y:auto;font-size:12px;line-height:1.7;}
 .office-assistant-layout .office-assistant-composer textarea::placeholder {color:var(--office-muted);opacity:.8;}
 .office-assistant-layout .office-assistant-composer:focus-within {border-color:var(--office-accent);box-shadow:0 0 0 3px var(--office-accent-soft);}
 .office-assistant-layout .office-assistant-actions {justify-content:flex-end;min-height:34px;margin-top:6px;}

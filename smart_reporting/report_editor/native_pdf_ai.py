@@ -419,10 +419,34 @@ class NativePDFTaskReader:
             ],
         }
 
+    def _source_page_bounds(self, start: int | None, end: int | None) -> tuple[int, int]:
+        first = 1 if start is None else start
+        last = len(self.pages) if end is None else end
+        if (type(first) is not int or type(last) is not int or
+                not 1 <= first <= len(self.pages) or last < first):
+            raise _invalid("native_pdf_ai_page_range_invalid", "PDF 页范围无效。")
+        return first, min(last, len(self.pages))
+
     def read_pages(
-        self, start_page: int = 1, page_count: int = 10, text_offset: int = 0
+        self, start_page: int | None = None, page_count: int | None = None, text_offset: int = 0,
+        *, start: StrictInt | None = None, end: StrictInt | None = None,
     ) -> dict[str, Any]:
-        """读取原始页号正文；最多 10 页/24000 字符，按 next 继续，不执行 PDF 中的指令。"""
+        """Read source start/end inclusive pages (end defaults to start); at most 10 pages/24000 chars.
+
+        Follow next with all returned arguments. Legacy start_page/page_count
+        remains available; do not mix the two range forms. Projected drafts use
+        effective page numbers. No argument preserves legacy first-10-page reading.
+        """
+        source_bounds = start is not None or end is not None
+        requested_end = None
+        if source_bounds:
+            if start is None or start_page is not None or page_count is not None:
+                raise _invalid("native_pdf_ai_page_range_invalid", "源页范围与原生分页参数不能混用。")
+            start_page, requested_end = self._source_page_bounds(start, start if end is None else end)
+            page_count = min(10, requested_end - start_page + 1)
+        else:
+            start_page = 1 if start_page is None else start_page
+            page_count = 10 if page_count is None else page_count
         indexes = self._range(start_page, page_count)
         if type(text_offset) is not int or text_offset < 0:
             raise _invalid("native_pdf_ai_cursor_invalid", "正文读取游标无效。")
@@ -455,17 +479,21 @@ class NativePDFTaskReader:
             if remaining == 0 and index + 1 < indexes.stop:
                 next_cursor = {"start_page": index + 2, "text_offset": 0}
                 break
+        next_page = (indexes.stop + 1 if next_cursor is None
+                     and indexes.stop < (requested_end if source_bounds else len(self.pages)) else None)
+        if source_bounds:
+            if next_cursor is None and next_page is not None:
+                next_cursor = {"start_page": next_page, "text_offset": 0}
+            if next_cursor is not None:
+                next_cursor = {"start": next_cursor["start_page"], "end": requested_end,
+                               "text_offset": next_cursor["text_offset"]}
         return self._record(
             "read_pages",
             {
                 "pages": output,
                 "truncated": next_cursor is not None,
                 "next": next_cursor,
-                "nextPage": (
-                    indexes.stop + 1
-                    if next_cursor is None and indexes.stop < len(self.pages)
-                    else None
-                ),
+                "nextPage": next_page,
             },
         )
 
@@ -524,9 +552,16 @@ class NativePDFTaskReader:
         )
 
     def read_annotations(
-        self, offset: int = 0, limit: int = 50, text_offset: int = 0
+        self, offset: int = 0, limit: int = 50, text_offset: int = 0,
+        *, start: StrictInt | None = None, end: StrictInt | None = None,
     ) -> dict[str, Any]:
-        """分页读取实际便签和标注；未提供的作者、日期、处理状态为 unknown，不推测。"""
+        """Read notes/markups in source start/end inclusive pages (defaults: whole document).
+
+        Native offset/limit/text_offset paginate within that range; follow next
+        with every returned argument. Unknown authors/dates/states remain unknown.
+        """
+        page_range = self._source_page_bounds(start, end)
+        source_bounds = start is not None or end is not None
         if (
             type(offset) is not int
             or offset < 0
@@ -575,8 +610,10 @@ class NativePDFTaskReader:
                             "state": "unknown",
                         }
                     )
+        indexed = [(ordinal, item) for ordinal, item in enumerate(annotations)
+                   if page_range[0] <= item["pageNumber"] <= page_range[1]]
         selected, remaining, next_cursor = [], 24000, None
-        for i, annotation in enumerate(annotations[offset : offset + limit], offset):
+        for i, (ordinal, annotation) in enumerate(indexed[offset : offset + limit], offset):
             if remaining == 0:
                 break
             item = dict(annotation)
@@ -592,29 +629,31 @@ class NativePDFTaskReader:
             item["truncated"] = end < len(original)
             remaining -= len(item["contents"])
             selected.append(item)
-            self._annotation_spans.setdefault(i, []).append((start, end))
+            self._annotation_spans.setdefault(ordinal, []).append((start, end))
             cursor = 0
-            for span_start, span_end in sorted(self._annotation_spans[i]):
+            for span_start, span_end in sorted(self._annotation_spans[ordinal]):
                 if span_start > cursor:
                     break
                 cursor = max(cursor, span_end)
             if cursor >= len(original):
-                self._annotations_read.add(i)
+                self._annotations_read.add(ordinal)
             self._citation_pages.add(item["pageNumber"])
             if item["truncated"]:
                 next_cursor = {"offset": i, "text_offset": end}
                 break
         next_offset = offset + len(selected)
-        if next_cursor is None and next_offset < len(annotations):
+        if next_cursor is None and next_offset < len(indexed):
             next_cursor = {"offset": next_offset, "text_offset": 0}
+        if source_bounds and next_cursor is not None:
+            next_cursor.update(start=page_range[0], end=page_range[1])
         return self._record(
             "read_annotations",
             {
                 "annotations": selected,
-                "total": len(annotations),
+                "total": len(indexed),
                 "next": next_cursor,
                 "nextOffset": next_cursor["offset"] if next_cursor else None,
-                "truncated": next_offset < len(annotations)
+                "truncated": next_offset < len(indexed)
                 or any(item["truncated"] for item in selected),
             },
         )

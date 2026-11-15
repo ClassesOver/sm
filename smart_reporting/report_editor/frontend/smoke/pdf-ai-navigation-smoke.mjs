@@ -43,6 +43,10 @@ try {
  await page.locator('[data-source-command-id="genoffice.pdf.home.ai.openAssistant"]').click()
  const panel=page.locator('.native-pdf-assistant')
  assert.equal(await panel.locator('.office-assistant-composer select,.office-assistant-composer [role=combobox]').count(),0)
+ const input=panel.getByLabel('PDF AI 问题或补充要求')
+ await input.fill('多行输入尺寸核验\n'.repeat(30))
+ assert.equal(await input.evaluate(node=>node.style.height),'168px')
+ await input.fill('');assert.equal(await input.evaluate(node=>node.style.height),'')
  await panel.getByLabel('PDF AI 问题或补充要求').fill('请跳转到第2页，并说明费用金额。')
  await panel.locator('[data-pdf-ai="start"]').click()
  await page.waitForFunction(()=>document.querySelector('.native-pdf-assistant [role="status"]')?.textContent?.includes('已定位到第 2 页'),null,{timeout:60000})
@@ -50,6 +54,7 @@ try {
  const state=await(await fetch(origin+'/__smoke__/state')).json(),result=state.jobs.at(-1).result
  assert.deepEqual(result.navigation,{page:2,pageId:result.citations.find(c=>c.pageNumber===2).pageId})
  assert(result.toolEvents.some(e=>e.tool==='goto_page'))
+ assert.deepEqual(result.coverage.fullyReadPages,[1,2]);assert.equal(result.coverage.annotationsReadComplete,true)
  await page.waitForFunction(id=>{
   const node=[...document.querySelectorAll('.pdf-page')].find(n=>n.dataset.pageId===id),viewport=document.querySelector('.pdf-document-pages')
   if(!node?.classList.contains('is-active') || !viewport)return false
@@ -80,7 +85,7 @@ try {
  assert(!finalState.requests.some(r=>r.method==='POST'&&!r.path.includes('/ai/read/')))
  await Promise.all(checks);assert.deepEqual(errors,[]);assert.deepEqual(assetErrors,[])
  const requests=finalState.requests.map(r=>({...r,path:r.path.replace(/\/open\/.+$/,'/open/<fixture-grant>')}))
- await writeFile(join(directory,'evidence.json'),JSON.stringify({status:'passed',posted,result,reopenFollowVerified:true,sourceSha256:state.sourceSha256,requests,errors,assets:Object.fromEntries(assets)},null,2))
+ await writeFile(join(directory,'evidence.json'),JSON.stringify({status:'passed',posted,result,composerSizingVerified:true,reopenFollowVerified:true,sourceSha256:state.sourceSha256,requests,errors,assets:Object.fromEntries(assets)},null,2))
  console.log('PDF navigation browser passed: '+directory)
 } catch(error) {
  if(page){await page.screenshot({path:join(directory,'failed.png'),fullPage:true}).catch(()=>{});await writeFile(join(directory,'failed.json'),JSON.stringify({error:String(error),errors,text:await page.locator('body').innerText().catch(()=>''),log},null,2))}
