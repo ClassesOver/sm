@@ -77,3 +77,33 @@ def test_malformed_selection_rejected(selection):
 def test_document_selection_rejects_non_json_and_oversized_payloads(selection):
     with pytest.raises(ValueError, match="document_selection_invalid"):
         DocumentCandidateRequest(scope(), "id", "Edit", selection)
+
+
+@pytest.mark.parametrize("kwargs,error", [
+    ({"channel": None}, "document_scope_incomplete"),
+    ({"grant": "  "}, "document_scope_incomplete"),
+    ({"document_id": 42}, "document_scope_incomplete"),
+    ({"revision": None}, "document_scope_incomplete"),
+    ({"source_sha256": None}, "document_source_digest_invalid"),
+    ({"format": "unknown"}, "document_format_invalid"),
+])
+def test_malformed_document_scope_fails_with_explicit_validation(kwargs, error):
+    values = dict(channel="channel", grant="grant", document_id="document",
+                  revision="1", source_sha256="a" * 64, format=DocumentFormat.DOCX)
+    values.update(kwargs)
+    with pytest.raises(ValueError, match=error):
+        DocumentScope(**values)
+
+
+@pytest.mark.parametrize("kwargs,error", [
+    ({"request_id": None}, "document_request_id_invalid"),
+    ({"instruction": None}, "document_instruction_invalid"),
+    ({"selection": None}, "document_selection_invalid"),
+    ({"selection": "A1"}, "document_selection_invalid"),
+])
+def test_malformed_candidate_request_types_fail_closed(kwargs, error):
+    values = dict(scope=scope(), request_id="one", instruction="Edit",
+                  selection=({"objectId": "one"},))
+    values.update(kwargs)
+    with pytest.raises(ValueError, match=error):
+        DocumentCandidateRequest(**values)
