@@ -692,29 +692,44 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   const idsByGroup = groups.map(group => [...group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => button.dataset.ribbonCommand))
   expect(idsByGroup).toEqual([
-    ['spell-check', 'workbook-statistics', 'spellcheck-toggle'], ['translate'],
+    ['spell-check', 'workbook-statistics', 'spellcheck-toggle'], [],
     ['comment-new', 'comment-delete', 'comment-prev', 'comment-next', 'comments-pane-toggle'],
     [], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
   ])
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => [button.dataset.ribbonCommand!, button.textContent ?? '']))
   expect(labels.get('workbook-statistics')).toBe('工作簿统计信息')
-  expect(document.querySelector('[data-ribbon-command=translate] > span:not(.workbook-ribbon-icon)')?.textContent).toBe('翻译')
   expect(labels.get('sheet-protect')).toBe('保护工作表')
   expect(labels.get('workbook-protect')).toBe('保护工作簿')
   expect(labels.get('allow-edit-ranges-open')).toBe('允许编辑区域')
-  for (const [id, reason] of [
-    ['translate', '翻译操作'],
-  ]) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button?.disabled, id).toBe(true)
-    expect(button?.title, id).toContain(reason)
-    expect(button?.getAttribute('aria-description'), id).toContain(reason)
-  }
   expect(labels.get('spell-check')).toBe('拼写检查')
   expect(labels.get('spellcheck-toggle')).toBe('检查拼写')
   expect(document.querySelector('[data-ribbon-command="workbook-change-password"]')).toBeNull()
   expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="workbook-statistics"]')!.disabled).toBe(false)
+})
+
+it('dispatches the source translation language from an editable selected range', () => {
+  document.body.innerHTML = '<main></main>'
+  let reason: string | undefined = '当前工作表受保护'
+  const onTranslate = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => undefined, editable: () => true, onTranslate, translateReason: () => reason,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
+  const language = document.querySelector<HTMLSelectElement>('select[aria-label="翻译"]')!
+  expect(Array.from(language.options).slice(1).map(option => option.value)).toEqual([
+    'English', '简体中文', '繁體中文', '日本語', '한국어', 'Español', 'Français', 'Deutsch', 'Português', 'Русский', 'العربية',
+  ])
+  language.value = 'العربية'
+  language.dispatchEvent(new Event('change'))
+  expect(onTranslate).not.toHaveBeenCalled()
+  reason = undefined
+  ribbon.refreshState?.()
+  language.value = 'العربية'
+  language.dispatchEvent(new Event('change'))
+  expect(onTranslate).toHaveBeenCalledWith('العربية')
+  expect(language.value).toBe('')
+  ribbon.dispose()
 })
 
 it('offers GenOffice Notes commands in source order and dispatches only enabled choices', () => {

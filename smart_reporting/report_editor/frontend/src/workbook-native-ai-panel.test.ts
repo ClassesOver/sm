@@ -3,16 +3,43 @@ import {mountWorkbookNativeAI, type WorkbookNativeAIClient} from './workbook-nat
 import {NativeApiError} from './native-api'
 
 afterEach(()=>document.body.replaceChildren())
-function setup(){
+function setup(cells: Record<string, {value?: unknown; formula?: string}> = {}){
  const host=document.createElement('div');document.body.append(host)
  const candidate={editId:'edit',status:'succeeded',snapshotSha256:'b'.repeat(64),proposal:{summary:'候选',operations:[]}}
  const api={start:vi.fn<WorkbookNativeAIClient['start']>(async()=>candidate),status:vi.fn(async()=>candidate),accept:vi.fn(async()=>({operations:[]})),cancel:vi.fn(async()=>({})),cancelRequest:vi.fn(async()=>({}))}
  const apply=vi.fn(async()=>{})
- const view=mountWorkbookNativeAI(host,{api,apply,locked:()=>false,context:async scope=>({scope,expectedSha256:'a'.repeat(64),operations:[],selection:{sheetName:'Sheet',startRow:0,endRow:0,startColumn:0,endColumn:0},label:'Sheet!A1',cells:{}})})
+ const view=mountWorkbookNativeAI(host,{api,apply,locked:()=>false,context:async scope=>({scope,expectedSha256:'a'.repeat(64),operations:[],selection:{sheetName:'Sheet',startRow:0,endRow:0,startColumn:0,endColumn:0},label:'Sheet!A1',cells})})
  const input=host.querySelector('textarea')!,form=host.querySelector('form')!
  const submit=async()=>{input.value='填写';form.dispatchEvent(new Event('submit',{cancelable:true}));await vi.waitFor(()=>expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))}
  return{host,view,api,apply,input,submit}
 }
+it('runs a source translation prompt against the original range and requires acceptance', async () => {
+ const { view, api, host, apply } = setup({A1:{value:'hello'}})
+ const operations = [{kind:'applyCellEdits',edits:[{sheetName:'Sheet',row:0,column:0,writeValue:true,cell:{value:'こんにちは'}}]}]
+ api.start.mockResolvedValueOnce({...await api.status(),proposal:{summary:'日语译文',operations}})
+ host.querySelector('select')!.value = 'workbook'
+ view.translate('日本語')
+ await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
+ expect(api.start.mock.calls[0]?.[0]).toMatchObject({
+  scope:'range', selection:{sheetName:'Sheet',startRow:0,endRow:0,startColumn:0,endColumn:0},
+  instruction:expect.stringContaining('把当前选中区域的文本翻译成日本語'),
+ })
+ expect(apply).not.toHaveBeenCalled()
+ host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()
+ await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce())
+ view.dispose()
+})
+it('rejects a translation candidate for a selected formula with a textual result', async () => {
+ const { view, api, host, apply } = setup({A1:{value:'hello',formula:'"hello"'}})
+ const operations = [{kind:'applyCellEdits',edits:[{sheetName:'Sheet',row:0,column:0,writeValue:true,cell:{value:'こんにちは'}}]}]
+ api.start.mockResolvedValueOnce({...await api.status(),proposal:{summary:'日语译文',operations}})
+ view.translate('日本語')
+ await vi.waitFor(() => expect(host.querySelector('.native-ai-status')?.textContent).toContain('只能替换选区内原有的普通文本'))
+ expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(true)
+ expect(api.accept).not.toHaveBeenCalled()
+ expect(apply).not.toHaveBeenCalled()
+ view.dispose()
+})
 it('默认隐藏，打开聚焦，中文关闭按钮取消任务且面板可重新打开',async()=>{
  const {host,view,api,input,submit}=setup()
  expect(view.panel.hidden).toBe(true);view.open();expect(view.panel.hidden).toBe(false);expect(document.activeElement).toBe(input)

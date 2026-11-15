@@ -2560,6 +2560,15 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     },
     {
       onAssistant: options.onAssistant ?? (options.nativeAI ? () => nativeAI?.open() : !options.native ? () => { shell.editor.querySelector<HTMLTextAreaElement>('.workbook-ai textarea')?.focus() } : undefined),
+      translateReason: () => !nativeAI ? '当前会话未开放 AI 翻译'
+        : !editable() ? '当前工作簿不可编辑'
+        : sheetProtected(activeSheetId()) ? PROTECTED_SHEET_REASON
+        : !runtime.univerAPI.getActiveWorkbook()?.getActiveRange() ? '请先选择要翻译的单元格'
+        : undefined,
+      onTranslate: language => {
+        if (!editable() || sheetProtected(activeSheetId())) return
+        if (nativeAI && !nativeAI.translate(language)) feedback.textContent = 'AI 助手正在处理候选，请稍候。'
+      },
       rotation: () => selectedWorkbookRotation(runtime.univerAPI.getActiveWorkbook() as unknown as RibbonWorkbook | null),
       editable, unavailableReason: rotationUnavailable, indentReason: indentUnavailable, format: formatState,
       chart: () => {
@@ -3860,6 +3869,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         })
       },
     })
+    ribbon.refreshState?.()
   }
   form.addEventListener('submit', async event => {
     event.preventDefault()

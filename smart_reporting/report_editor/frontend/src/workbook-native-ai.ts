@@ -5,6 +5,7 @@ import { Sparkles, X, Check, Trash2, Undo2, Redo2, createElement } from 'lucide'
 import { bindOfficeAssistantPanel } from './office-assistant-panel'
 import { NativeApiError } from './native-api'
 import { missingNativeAITask, reconnectNativeAITask, temporaryConnectionFailure } from './native-ai-recovery'
+import { requireWorkbookTranslation, workbookTranslationPrompt, type WorkbookTranslationLanguage } from './workbook-ai-translation'
 
 type Scope = 'range' | 'workbook'
 export type WorkbookAISelection = { sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number }
@@ -88,8 +89,7 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
     }
     preview.hidden = false; accept.disabled = false
   }
-  form.addEventListener('submit', async event => {
-    event.preventDefault()
+  async function start(translation = false) {
     if (disposed || busy || accepting || options.locked() || !instruction.value.trim()) return
     if (activeRequestId) void tasks.cancel().catch(() => {})
     const turn = ++generation
@@ -116,11 +116,15 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
         }
       })
       if (!job || disposed || turn !== generation) return
-      if (job.status === 'succeeded' && job.proposal) { show(job); status.textContent = '候选已经引擎核验，请检查差异后明确采纳。' }
+      if (job.status === 'succeeded' && job.proposal) {
+        if (translation) requireWorkbookTranslation(job.proposal.operations, quoted.selection, quoted.cells)
+        show(job); status.textContent = '候选已经引擎核验，请检查差异后明确采纳。'
+      }
       else status.textContent = job.error?.message ?? 'AI 任务已取消，人工草稿已保留。'
     } catch (error) { if (!disposed && turn === generation) status.textContent = message(error) }
     finally { if (!disposed && turn === generation) { busy = false; scope.disabled = false; submit.disabled = false; cancel.hidden = true } }
-  })
+  }
+  form.addEventListener('submit', event => { event.preventDefault(); void start() })
   async function discard() {
     progress.stop()
     const turn = ++generation; busy = false; pending = undefined; activeRequestId = ''; preview.hidden = true; cancel.hidden = true; scope.disabled = false; submit.disabled = false
@@ -160,6 +164,15 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
   instruction.addEventListener('input', invalidate)
   scope.addEventListener('change', () => { invalidate(); void refresh() })
   function close() { if (!disposed) closeButton.click() }
+  function open() { if (disposed) return; panelView.beforeOpen(); panel.hidden = false; instruction.focus({preventScroll:true}) }
+  function translate(language: WorkbookTranslationLanguage) {
+    if (disposed || busy || accepting || options.locked()) return false
+    open()
+    scope.value = 'range'
+    instruction.value = workbookTranslationPrompt(language)
+    void start(true)
+    return true
+  }
   refresh()
-  return { panel, close, open() { if (disposed) return; panelView.beforeOpen(); panel.hidden = false; instruction.focus({preventScroll:true}) }, refresh, dispose() { disposed = true; ++generation; panelView.dispose(); progress.stop(); void tasks.cancel().catch(() => {}); panel.remove() } }
+  return { panel, close, open, translate, refresh, dispose() { disposed = true; ++generation; panelView.dispose(); progress.stop(); void tasks.cancel().catch(() => {}); panel.remove() } }
 }

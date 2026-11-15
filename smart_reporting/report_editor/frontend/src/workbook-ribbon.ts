@@ -12,6 +12,7 @@ import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboa
 import { CELL_STYLE_PRESETS } from './workbook-cell-style-presets'
 import { THEME_MENU_OPTIONS } from './workbook-theme'
 import { chartPresetMenuOptions, type ChartPresetSource } from './workbook-chart-presets'
+import { workbookTranslationLanguages, type WorkbookTranslationLanguage } from './workbook-ai-translation'
 
 type RibbonTab =
   | 'File'
@@ -560,7 +561,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('工作簿统计信息', 'workbook-statistics', 'workbook-statistics'),
       action('检查拼写', 'spellcheck-toggle', 'spellcheck-toggle'),
     ] },
-    { title: '语言', actions: [action('翻译', 'translate')] },
+    { title: '语言', actions: [] },
     { title: '批注', actions: [
       action('新建批注', 'comment-new', 'comment-new'), action('删除', 'comment-delete', 'comment-delete'),
       action('上一条', 'comment-prev', 'comment-prev'), action('下一条', 'comment-next', 'comment-next'),
@@ -620,7 +621,6 @@ const COMMAND_GLYPHS: Record<string, string> = {
 export const SPLIT_WINDOW_UNAVAILABLE = '固定源未提供拆分窗口，网格无拆分视口；当前工作表没有可取消的拆分窗格'
 
 const disabledReasons: Record<string, string> = {
-  'translate': '尚未接入基于选区的翻译操作',
   'background': '尚无工作表背景图片读取与回写',
   'new-window': '网页编辑器不管理桌面工作簿窗口',
   'arrange-all': '网页编辑器不管理桌面工作簿窗口',
@@ -782,6 +782,8 @@ export function mountWorkbookRibbon(
   onCommand: (command: RibbonCommand, target?: NumberFormatTarget) => void,
   view?: {
     onAssistant?: () => void
+    onTranslate?: (language: WorkbookTranslationLanguage) => void
+    translateReason?(): string | undefined
     rotation(): number | 'mixed' | undefined
     editable(): boolean
     unavailableReason?(): string | undefined
@@ -1124,6 +1126,13 @@ export function mountWorkbookRibbon(
       option.disabled = !!reason
       option.title = reason ?? ''
     }
+    const translation = body.querySelector<HTMLSelectElement>('[data-ribbon-control="translate"]')
+    if (translation) {
+      const reason = view.translateReason?.() ?? (view.onTranslate ? undefined : '当前会话未开放 AI 翻译')
+      translation.disabled = !!reason
+      translation.title = reason ?? '用 AI 翻译选区文本'
+      translation.setAttribute('aria-description', translation.title)
+    }
     for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"]):not([data-ribbon-menu^="chart-"])')) {
       select.disabled = !editable || !pageState
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
@@ -1205,6 +1214,23 @@ export function mountWorkbookRibbon(
       const heading = document.createElement('h2')
       heading.textContent = group.title
       section.append(heading)
+      if (active === 'Review' && group.title === '语言') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('translate') ?? ''
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'translate'
+        select.setAttribute('aria-label', '翻译')
+        select.disabled = !view?.onTranslate
+        select.append(new Option('翻译', ''), ...workbookTranslationLanguages.map(language => new Option(language, language)))
+        select.addEventListener('change', () => {
+          const language = workbookTranslationLanguages.find(item => item === select.value)
+          select.value = ''
+          if (language && !select.disabled) view?.onTranslate?.(language)
+        })
+        wrapper.append(icon, select); section.append(wrapper)
+      }
       if (active === 'Review' && group.title === '注释') {
         const wrapper = document.createElement('label')
         wrapper.className = 'workbook-ribbon-chart-menu'
