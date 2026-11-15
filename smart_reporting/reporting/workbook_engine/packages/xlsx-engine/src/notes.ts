@@ -461,6 +461,16 @@ const isMoveChange = (change: NotePatchChange): change is NoteMoveChange =>
 const inCellRange = (row: number, column: number) =>
   Number.isInteger(row) && row >= 0 && row <= 1048575 && Number.isInteger(column) && column >= 0 && column <= 16383
 
+/** Resolve the current note identity at replay time for the GenOffice set_note operation. */
+export async function applyNoteSource(bytes: Uint8Array, sheetName: string, change: {row: number; column: number; text: string | null}): Promise<Uint8Array> {
+  const source = await createBufferEntrySource(bytes)
+  const sheet = parseSheetElements(await source.readText('xl/workbook.xml')).find(item => item.name === sheetName)
+  if (!sheet?.relationshipId) throw new NoteEditError('批注来源工作表不存在')
+  const path = await resolveWorksheetPath(source, sheet.relationshipId)
+  const notes = await readSheetNotes(source, path)
+  return patchSheetNotes(bytes, sheetName, notes.sourceIdentity, [change])
+}
+
 /** Single-cell patches retain all untouched comment elements and original VML shapes. */
 export async function patchSheetNotes(sourceBytes: Uint8Array, sheetName: string, sourceIdentity: string,
   changes: readonly NotePatchChange[], options: { allowPictures?: boolean; allowThreads?: boolean; mirrorAuthors?: ReadonlyMap<string, string> } = {}): Promise<Uint8Array> {

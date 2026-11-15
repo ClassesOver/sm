@@ -1,4 +1,4 @@
-import { officeRequest, type OfficeSpace } from './office-client'
+import { officeRequest, OfficeRequestError, type OfficeSpace } from './office-client'
 
 type Draft = { source_id: string; name: string; database: string; version: number; metadata_version_id: string | null }
 type Source = Draft & { publishedRevision: number | null; enabled: boolean }
@@ -38,6 +38,7 @@ function choices(values: string[], selected: string[]) {
 }
 
 export async function showOfficeSources(host: HTMLElement, options: { admin: boolean; space?: OfficeSpace }) {
+  const queryDrafts = new Map<string, string>()
   const panel = node('dialog')
   panel.className = 'office-administration office-sources'
   const heading = node('h2', options.admin ? '公司数据源管理' : '工作区数据源')
@@ -52,7 +53,9 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
   async function run(action: () => Promise<void>) {
     if (panel.getAttribute('aria-busy') === 'true') return
     panel.setAttribute('aria-busy', 'true')
-    const controls = [...panel.querySelectorAll<HTMLButtonElement | HTMLSelectElement>('button:enabled, select:enabled')]
+    const controls = [...panel.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement | HTMLInputElement>(
+      'button:enabled, select:enabled, textarea:enabled, input[type=checkbox]:enabled',
+    )]
     controls.forEach(control => { control.disabled = true })
     status.textContent = '正在处理…'
     try { await action(); status.textContent = '' }
@@ -212,11 +215,19 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
         section.append(node('p', `可访问表：${source.tables!.join('、')}`))
         const sql = node('textarea'); sql.rows = 4; sql.setAttribute('aria-label', `${source.name}只读 SQL`)
         sql.placeholder = '输入只读 SELECT 查询'
+        sql.value = queryDrafts.get(source.id) ?? ''
+        sql.oninput = () => queryDrafts.set(source.id, sql.value)
         const output = node('div'); output.className = 'source-query-result'
         section.append(sql, button('执行查询', async () => {
           output.replaceChildren()
+          queryDrafts.set(source.id, sql.value)
           const result = await officeRequest<{ columns: string[]; rows: unknown[][]; source: { queryId: string } }>(
-            `${base}/${enc(source.id)}/query`, 'POST', { sql: sql.value })
+            `${base}/${enc(source.id)}/query`, 'POST', { sql: sql.value }).catch(async error => {
+              if (panel.open && error instanceof OfficeRequestError && [403, 409].includes(error.status)) {
+                await list().catch(() => { /* Keep the refresh button and report the original query error. */ })
+              }
+              throw error
+            })
           const table = node('table'), head = node('tr')
           result.columns.forEach(column => head.append(node('th', column))); table.append(head)
           for (const row of result.rows.slice(0, 200)) {
@@ -230,23 +241,42 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
     }
   }
 
-  async function memberLimits(source: string) {
+  async function memberLimits(source: string, edits = new Map<string, Map<string, boolean>>()) {
     const base = `/workspaces/${enc(options.space!.id)}`
     const [members, limits] = await Promise.all([
       officeRequest<{ items: { user: string; name: string }[] }>(`${base}/members`),
       officeRequest<{ tables: string[]; items: { user: string; tables: string[] }[] }>(`${base}/data-sources/${enc(source)}/members`),
     ])
     content.replaceChildren(button('返回数据源', list), node('h3', '成员数据表权限'))
+    const memberSelections = new Map<string, { saved: string[]; values: () => string[] }>()
+    async function updateMember(user: string, tables: string[] | null) {
+      const path = `${base}/data-sources/${enc(source)}/members/${enc(user)}`
+      await officeRequest(path, 'PUT', { tables })
+      const remaining = new Map<string, Map<string, boolean>>()
+      for (const [member, selection] of memberSelections) {
+        if (member === user) continue
+        const selected = new Set(selection.values())
+        const saved = new Set(selection.saved)
+        const changes = new Map<string, boolean>()
+        for (const table of limits.tables) {
+          if (selected.has(table) !== saved.has(table)) changes.set(table, selected.has(table))
+        }
+        if (changes.size) remaining.set(member, changes)
+      }
+      await memberLimits(source, remaining)
+    }
     for (const member of members.items) {
       const current = limits.items.find(item => item.user === member.user)
-      const selection = choices(limits.tables, current?.tables ?? limits.tables)
+      const allowedTables = current ? limits.tables.filter(table => current.tables.includes(table)) : limits.tables
+      const changes = edits.get(member.user)
+      const selection = choices(limits.tables, limits.tables.filter(table => changes?.get(table) ?? allowedTables.includes(table)))
+      memberSelections.set(member.user, { saved: allowedTables, values: selection.values })
+      const scope = current ? '自定义范围' : '继承工作区范围'
+      const count = allowedTables.length ? `${allowedTables.length} 张表` : '无可访问表'
       const section = node('section')
-      const path = `${base}/data-sources/${enc(source)}/members/${enc(member.user)}`
-      section.append(node('h4', member.name), selection.container, button('保存成员范围', async () => {
-        await officeRequest(path, 'PUT', { tables: selection.values() })
-      }), button('继承工作区范围', async () => {
-        await officeRequest(path, 'PUT', { tables: null }); await memberLimits(source)
-      }))
+      section.append(node('h4', member.name), node('p', `${scope} · ${count}`), selection.container,
+        button('保存成员范围', () => updateMember(member.user, selection.values())),
+        button('继承工作区范围', () => updateMember(member.user, null)))
       content.append(section)
     }
   }

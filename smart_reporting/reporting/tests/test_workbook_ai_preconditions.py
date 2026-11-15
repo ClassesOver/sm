@@ -89,6 +89,36 @@ async def test_clear_updates_later_null_precondition_and_absent_cell_matches_nul
 
 
 @pytest.mark.anyio
+async def test_bulk_clear_resets_frozen_and_staged_cells_only_inside_its_rectangle():
+    tools, preview, _ = toolkit()
+    await tools.propose_operations([
+        operation(address='A2', value=42),
+        {'op': 'clear_range', 'sheetId': 'Sheet', 'range': 'A1:A2001'},
+        operation(address='A2', value=99, expectedValue=None),
+        operation(address='A2', value=100, expectedValue=99),
+        operation(expectedValue=None),
+        operation(address='B1', expectedValue=7),
+    ], 'conditional writes after large clear')
+    assert tools.proposal.engine_operations()[1] == {
+        'kind': 'clearCellRange', 'sheetName': 'Sheet', 'range': 'A1:A2001',
+    }
+    assert tools.read_cells(['A1'])['cells']['A1']['value'] == 1
+    preview.assert_awaited_once()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('conditional', [operation(expectedValue=9),
+                                         operation(op='set_formula', formula='=10', expectedFormula='=9')])
+async def test_bulk_clear_rejects_conditions_using_stale_values_or_formulas(conditional):
+    tools, preview, _ = toolkit(9, '=9')
+    with pytest.raises(ValueError, match='precondition_mismatch'):
+        await tools.propose_operations([
+            {'op': 'clear_range', 'sheetId': 'Sheet', 'range': 'A1:A2001'}, conditional,
+        ], 'stale conditional write')
+    preview.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_uncertain_prefix_never_checks_conditional_write_against_stale_base():
     tools, preview, _ = toolkit()
     native = {'kind': 'applyCellEdits', 'arguments': {'edits': [

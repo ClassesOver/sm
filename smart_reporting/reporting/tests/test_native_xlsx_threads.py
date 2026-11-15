@@ -3,6 +3,7 @@ from zipfile import ZipFile
 import pytest
 from smart_reporting.report_editor.native_models import NativeScope
 from smart_reporting.report_editor.native_xlsx_threads import xlsx_thread_actor, validate_xlsx_thread_actors
+from smart_reporting.report_editor import native_office
 
 def _source():
     data = BytesIO()
@@ -27,3 +28,27 @@ def test_thread_actor_binds_database_company_user_and_preserves_historical_ident
         forged = {'kind': operation['kind'], 'changes': [{'thread': {**old, 'replies': [{**reply, key: '伪造'}]}}]}
         with pytest.raises(ValueError, match='actor_mismatch'):
             validate_xlsx_thread_actors(_source(), [forged], actor)
+
+
+def test_thread_conversion_preserves_native_operation_and_actor_checks(monkeypatch):
+    content = _source()
+    actor = xlsx_thread_actor(NativeScope(database='db', companyId='c', userId='u', threadId='t'))
+    operation = {
+        'kind': 'patchThreadedComments', 'sheetName': 'Report', 'sourceIdentity': 'a' * 64,
+        'convertToNotes': True,
+        'changes': [{'row': 0, 'column': 0, 'expectedThreadId': 'old', 'thread': None}],
+    }
+    calls = []
+
+    def patch_workbook(source, operations):
+        calls.append((source, operations))
+        return source
+
+    monkeypatch.setattr(native_office, 'patch_workbook', patch_workbook)
+    assert native_office.patch_office('xlsx', content, [operation], thread_actor=actor) == content
+    assert calls == [(content, [operation])]
+    with pytest.raises(ValueError, match='native_office_operations_invalid'):
+        native_office.patch_office('xlsx', content, [operation])
+    with pytest.raises(ValueError, match='native_office_operations_invalid'):
+        native_office.patch_office('xlsx', content, [{**operation, 'convertToNotes': 1}], thread_actor=actor)
+    assert len(calls) == 1

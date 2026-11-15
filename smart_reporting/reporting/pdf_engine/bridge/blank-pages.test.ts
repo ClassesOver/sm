@@ -36,6 +36,29 @@ test('blank pages land at the draft position with the requested size, rotation a
   assert.equal(reread.pageCount, 4)
 })
 
+test('writes the requested physical neighbor size without copying its custom UserUnit or rotation', async () => {
+  const sourceDoc = await PDFDocument.create()
+  const drawing = sourceDoc.addPage([400,320])
+  drawing.node.set(PDFName.of('UserUnit'), sourceDoc.context.obj(2.5))
+  drawing.node.set(PDFName.of('Rotate'), sourceDoc.context.obj(90))
+  drawing.drawText('source drawing')
+  const bytes = await sourceDoc.save()
+  const model = await inspectPdf(bytes)
+  const [page] = model.pages
+  assert.equal(page.userUnit,2.5)
+  const result = await patchPdfWithReceipt(bytes, [
+    {kind:'cropPage',pageId:page.pageId,rect:[20,10,100,210]},
+    {kind:'insertBlankPage',pageId:'blank:scaled',width:500,height:200},
+    {kind:'reorderPages',pageIds:[page.pageId,'blank:scaled']},
+  ], model.sourceSha256)
+  const modelAfter = await inspectPdf(result.bytes)
+  assert.deepEqual(modelAfter.pages.map(p=>[
+    p.cropBox.width,p.cropBox.height,p.userUnit,p.rotation
+  ]), [[80,200,2.5,90],[500,200,1,0]])
+  assert.equal((await PDFDocument.load(result.bytes)).getPage(1).node.Contents(),undefined)
+  assert.equal((await PDFDocument.load(bytes)).getPageCount(),1)
+})
+
 test('blank pages without a reorder are appended after the surviving source pages', async () => {
   const bytes = await source()
   const model = await inspectPdf(bytes)

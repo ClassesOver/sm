@@ -580,7 +580,7 @@ class OfficeRepository:
                 folders.c.space == space_id).order_by(folders.c.name))).mappings()
             folder_list = [dict(row) for row in folder_rows]
             file_rows = (await connection.execute(select(
-                files, file_preferences.c.starred, file_preferences.c.seen,
+                files, file_preferences.c.starred, file_preferences.c.seen, file_preferences.c.favorite_group,
             ).outerjoin(file_preferences,
                 (files.c.id == file_preferences.c.file) & (file_preferences.c.user == actor.user),
             ).where(files.c.space == space_id, files.c.deleted.is_(False)))).mappings()
@@ -589,6 +589,7 @@ class OfficeRepository:
                 value = dict(row)
                 value.pop("scope")
                 value["starred"] = bool(value["starred"])
+                value["favoriteGroup"] = value.pop("favorite_group")
                 value["recentHidden"] = value["seen"] == _RECENT_HIDDEN
                 value["seen"] = 0 if value["recentHidden"] else (value["seen"] or 0)
                 entries.append(value)
@@ -657,12 +658,19 @@ class OfficeRepository:
     async def favorite(self, actor: Identity, file_id: str, starred: bool):
         async with self.transaction(actor) as connection:
             await self._file(connection, actor, file_id)
-            await self._preference(connection, actor, file_id, starred=starred)
+            values = {"starred": starred}
+            if not starred:
+                values["favorite_group"] = None
+            await self._preference(connection, actor, file_id, **values)
 
     async def bulk_files(self, actor: Identity, space: str, versions: dict[str, int], action: str,
-                         *, destination: str | None = None, folder: str | None = None):
-        if action not in {'star', 'unstar', 'delete', 'move', 'hide_recent'} or (action == 'move' and not destination):
+                         *, destination: str | None = None, folder: str | None = None, group: str | None = None):
+        if action not in {'star', 'unstar', 'delete', 'move', 'hide_recent', 'group'} or (action == 'move' and not destination):
             raise OfficeError('office_input_invalid', '批量操作无效。', 422)
+        if group is not None:
+            group = group.strip()
+            if action != 'group' or not 1 <= len(group) <= 80:
+                raise OfficeError('office_input_invalid', '收藏分组名称无效。', 422)
         async with self.transaction(actor) as connection:
             await self._space(connection, actor, space, write=action in {'delete', 'move'})
             rows = await connection.execute(select(files.c.id, files.c.version).where(
@@ -682,8 +690,17 @@ class OfficeRepository:
                     space=destination, folder=folder, version=files.c.version + 1))
                 await self._audit(connection, actor, 'files_moved', files=list(versions), space=space,
                                   destination=destination, folder=folder)
+            elif action == 'group':
+                result = await connection.execute(update(file_preferences).where(
+                    file_preferences.c.file.in_(versions), file_preferences.c.user == actor.user,
+                    file_preferences.c.starred.is_(True),
+                ).values(favorite_group=group))
+                if result.rowcount != len(versions):
+                    raise OfficeError('office_favorites_changed', '所选收藏已变化，请刷新后重试。', 409)
             else:
                 preferences = {'seen': _RECENT_HIDDEN} if action == 'hide_recent' else {'starred': action == 'star'}
+                if action == 'unstar':
+                    preferences['favorite_group'] = None
                 for file_id in versions:
                     await self._preference(connection, actor, file_id, **preferences)
             return {'count': len(versions)}

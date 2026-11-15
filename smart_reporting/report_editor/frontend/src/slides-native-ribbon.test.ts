@@ -3,6 +3,23 @@ import { createSlidesNativeRibbon, stepNativeFontSize } from './slides-native-ri
 
 afterEach(() => document.body.replaceChildren())
 
+it('routes File Export PDF to the authorized preview host and respects its lock', () => {
+  const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
+  const unavailable = createSlidesNativeRibbon(host, { onAction })
+  expect(host.querySelector<HTMLButtonElement>('[data-command="exportPdf"]')!.disabled).toBe(true)
+  unavailable.dispose()
+  const ribbon = createSlidesNativeRibbon(host, { onAction, pdfExportAvailable: true })
+  const control = host.querySelector<HTMLButtonElement>('[data-command="exportPdf"]')!
+  expect(control.dataset.sourceAction).toBe('onExportPdf')
+  ribbon.setLocked(true)
+  control.click()
+  expect(onAction).not.toHaveBeenCalled()
+  ribbon.setLocked(false)
+  control.click()
+  expect(onAction).toHaveBeenCalledWith('exportPdf')
+  ribbon.dispose()
+})
+
 it('大纲和阅读视图接入源onViewMode并保持四个入口互斥', () => {
   const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
   const ribbon = createSlidesNativeRibbon(host, { onAction })
@@ -563,9 +580,29 @@ it('explains why unavailable upstream commands cannot run and prevents dispatch'
   const unavailable = host.querySelector<HTMLButtonElement>('[data-command="exportImages"]')!
 
   expect(unavailable.disabled).toBe(true)
-  expect(unavailable.title).toMatch(/写回操作/)
+  expect(unavailable.title).toBe('当前会话未开放图片导出。')
   unavailable.click()
   expect(onAction).not.toHaveBeenCalled()
+  ribbon.dispose()
+})
+
+it('dispatches the GenOffice PNG and JPG commands independently', () => {
+  const host = document.createElement('div')
+  const onAction = vi.fn()
+  document.documentElement.lang = 'zh-CN'
+  const ribbon = createSlidesNativeRibbon(host, { onAction, imageExportAvailable: true })
+  document.documentElement.lang = ''
+  for (const [id, source, label] of [
+    ['exportImages', 'onExportImages', '导出为 PNG…'],
+    ['exportImagesJpg', 'onExportImagesJpg', '导出为 JPG…'],
+  ]) {
+    const button = host.querySelector<HTMLButtonElement>('[data-command="' + id + '"]')!
+    expect(button.disabled).toBe(false)
+    expect(button.textContent).toBe(label)
+    expect(button.dataset.sourceAction).toBe(source)
+    button.click()
+    expect(onAction.mock.lastCall?.[0]).toBe(id)
+  }
   ribbon.dispose()
 })
 
@@ -671,7 +708,7 @@ it('uses source paragraph formatting actions, spacing presets and Enter-only poi
   ribbon.dispose()
 })
 
-it('exposes all pinned list options, disabled picture picking and honest conditional availability', () => {
+it('exposes all pinned list options, picture bullet picking and conditional availability', () => {
   const host = document.createElement('div'); document.body.append(host)
   const onAction = vi.fn()
   const ribbon = createSlidesNativeRibbon(host, { onAction })
@@ -684,8 +721,12 @@ it('exposes all pinned list options, disabled picture picking and honest conditi
   expect(options('bulletSizePct')).toEqual(['75', '90', '100', '125', '150'])
   expect(options('bulletColorPreset')).toHaveLength(10)
   const picture = host.querySelector<HTMLButtonElement>('[data-command="pictureBullet"]')!
-  expect(picture.disabled).toBe(true); expect(picture.title).toContain('上传')
+  expect(picture.disabled).toBe(true)
   ribbon.setTextFormatEnabled(true)
+  expect(picture.disabled).toBe(false)
+  picture.click()
+  expect(onAction.mock.lastCall?.[0]).toBe('pictureBullet')
+  onAction.mockClear()
   expect(select('bulletCharPreset').disabled).toBe(false)
   expect(select('bulletSizePct').disabled).toBe(true)
   expect(host.querySelector<HTMLInputElement>('[data-command="startAt"]')!.disabled).toBe(true)
@@ -711,6 +752,8 @@ it('exposes all pinned list options, disabled picture picking and honest conditi
   ribbon.setLocked(true)
   for (const control of host.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('[data-source-action="onParagraphFormat"], [data-source-action="onDirection"]')) expect(control.disabled).toBe(true)
   ribbon.setLocked(false)
+  expect(picture.disabled).toBe(false)
+  ribbon.setTextFormatEnabled(false)
   expect(picture.disabled).toBe(true)
   ribbon.dispose()
 })
@@ -789,12 +832,18 @@ it('enables the Shape Format fill and outline controls with their source actions
   host.querySelector<HTMLButtonElement>('[data-command="shapeNoOutline"]')!.click()
   expect(onAction).toHaveBeenCalledWith('shapeFill', '#2e7d32')
   expect(onAction).toHaveBeenCalledWith('shapeNoOutline')
-  const change = host.querySelector<HTMLSelectElement>('select[data-command="changeShape"]')!
+  const change = host.querySelector<HTMLButtonElement>('button[data-command="changeShape"]')!
   expect(change.disabled).toBe(false)
-  expect([...change.querySelectorAll('optgroup option')].map(option => (option as HTMLOptionElement).value)).not.toContain('lineArrow')
-  change.value = 'hexagon'; change.dispatchEvent(new Event('change'))
+  host.querySelector<HTMLButtonElement>('#slides-native-tab-shapeFormat')!.click()
+  change.click()
+  expect(change.getAttribute('aria-expanded')).toBe('true')
+  expect(host.querySelector('[data-prst="lineArrow"]')).toBeNull()
+  const hexagon = host.querySelector<HTMLButtonElement>('[data-prst="hexagon"]')!
+  expect(hexagon.querySelector('svg')).not.toBeNull()
+  expect(hexagon.getAttribute('aria-label')).toBe('六边形')
+  hexagon.click()
   expect(onAction).toHaveBeenCalledWith('changeShape', 'hexagon')
-  expect(change.value).toBe('')
+  expect(change.getAttribute('aria-expanded')).toBe('false')
   ribbon.dispose()
 })
 
@@ -840,4 +889,18 @@ it('dispatches browser printing and prevents it while the host is locked',()=>{
  const host=document.createElement('div'),onAction=vi.fn(),ribbon=createSlidesNativeRibbon(host,{onAction});document.body.append(host)
  const print=host.querySelector<HTMLButtonElement>('[data-command="print"]')!;expect(print.disabled).toBe(false);print.click();expect(onAction).toHaveBeenCalledWith('print')
  ribbon.setLocked(true);print.click();expect(onAction).toHaveBeenCalledTimes(1);ribbon.dispose()
+})
+
+it('keeps the supported File commands in the GenOffice source order', () => {
+  const host = document.createElement('div')
+  const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn(), openFileAvailable: true,
+    saveAsAvailable: true, nameWithAiAvailable: true, pdfExportAvailable: true, imageExportAvailable: true })
+  try {
+    const buttons = host.querySelectorAll<HTMLButtonElement>('[data-ribbon-panel="file"] [data-source-action]')
+    expect(Array.from(buttons, button => button.dataset.sourceAction)).toEqual([
+      'onOpen', 'onSave', 'onSaveAs', 'onNameWithAi', 'onExportPdf', 'onPrint', 'onExportImages', 'onExportImagesJpg',
+    ])
+  } finally {
+    ribbon.dispose()
+  }
 })

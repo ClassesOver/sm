@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..reporting.models import ReportingError
-from .native_ai_api import NativeAIAcceptPayload, _ai_error, _DraftPayload
+from .native_ai_api import NativeAIAcceptPayload, _ai_error, _DraftPayload, _revalidate_write_session
 from .native_api import NATIVE_SESSION_COOKIE, _csrf
 from .workbook_native_ai import NativeWorkbookAIService
 
@@ -22,6 +22,7 @@ class WorkbookAISelection(BaseModel):
 
 
 class WorkbookNativeAIStartPayload(_DraftPayload):
+    resume_edit_id: str | None = Field(default=None, alias="resumeEditId", pattern=r"^[0-9a-f]{64}$")
     client_request_id: str = Field(alias="clientRequestId", min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_-]+$")
     instruction: str = Field(min_length=1, max_length=2000)
     selection: WorkbookAISelection | None = None
@@ -53,7 +54,8 @@ def create_native_workbook_ai_router(grants: Any, *, editor: Any, ai: NativeWork
         try:
             session = await session_for(request, document_id, revision, write=True)
             return await ai.start_edit(session, client_request_id=payload.client_request_id, instruction=payload.instruction, expected_sha256=payload.expected_sha256,
-                operations=payload.operations, selection=payload.selection.model_dump(by_alias=True) if payload.selection else {}, scope=payload.scope)
+                operations=payload.operations, selection=payload.selection.model_dump(by_alias=True) if payload.selection else {},
+                scope=payload.scope, resume_edit_id=payload.resume_edit_id)
         except ReportingError as error:
             raise _ai_error(error) from None
 
@@ -86,7 +88,7 @@ def create_native_workbook_ai_router(grants: Any, *, editor: Any, ai: NativeWork
     async def accept(document_id: str, revision: int, edit_id: str, request: Request, payload: NativeAIAcceptPayload):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await ai.accept_edit(session, edit_id, expected_sha256=payload.expected_sha256, operations=payload.operations, snapshot_sha256=payload.snapshot_sha256)
+            return await ai.accept_edit(session, edit_id, expected_sha256=payload.expected_sha256, operations=payload.operations, snapshot_sha256=payload.snapshot_sha256, revalidate_session=lambda: _revalidate_write_session(grants, editor, request.cookies.get(NATIVE_SESSION_COOKIE, "")))
         except ReportingError as error:
             raise _ai_error(error) from None
 

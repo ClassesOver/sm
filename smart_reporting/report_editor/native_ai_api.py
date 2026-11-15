@@ -21,6 +21,7 @@ class _DraftPayload(BaseModel):
 
 
 class NativeAIStartPayload(_DraftPayload):
+    resume_edit_id: str | None = Field(default=None, alias="resumeEditId", pattern=r"^(?:word-)?[0-9a-f]{64}$")
     client_request_id: str | None = Field(default=None, alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     instruction: str = Field(min_length=1, max_length=2000)
     selection: list[dict[str, str]] = Field(min_length=1, max_length=100)
@@ -70,7 +71,8 @@ class NativeSlidesReadSelection(BaseModel):
 
 class NativeOfficeReadPayload(_DraftPayload):
     client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
-    action: Literal["ask", "summarize", "keyPoints"] = "ask"
+    action: Literal["ask", "summarize", "keyPoints", "fileName"] = "ask"
+    name_locale: Literal["en", "zh-CN", "zh-TW"] | None = Field(default=None, alias="nameLocale")
     instruction: str = Field(default="", max_length=2000)
     previous_task_id: str | None = Field(default=None, alias="previousTaskId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     selection: NativeWorkbookReadSelection | Annotated[list[NativeSlidesReadSelection], Field(min_length=1, max_length=100)] | None = None
@@ -94,11 +96,21 @@ def _ai_error(error: ReportingError) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": error.code, "message": error.message})
 
 
+async def _revalidate_write_session(grants, editor, cookie):
+    session = await grants.lookup_session(cookie)
+    if (session.capabilities or {}).get("office"):
+        await editor.office_authorize(session, write=True)
+        if await grants.lookup_session(cookie) != session:
+            raise ReportingError("native_permission_denied", "编辑会话身份已变化。")
+    return session
+
+
 def create_native_ai_router(
     grants: ReportEditorGrantService,
     *,
     editor: Any,
     ai: NativeAIService,
+    pdf_candidate: NativeAIService | None = None,
     pdf_read: Any = None,
     word_read: Any = None,
     office_read: Any = None,
@@ -115,7 +127,9 @@ def create_native_ai_router(
         session = await grants.lookup_session(request.cookies.get(NATIVE_SESSION_COOKIE, ""))
         if session.report_id != document_id or session.revision != revision:
             raise ReportingError("native_permission_denied", "原生会话与请求版本不一致。")
-        await editor.context_for_session(session)
+        context = await editor.context_for_session(session)
+        if pdf_candidate is not None and context.format == "pdf":
+            request.state.native_candidate = pdf_candidate
         read_task = any(part in request.url.path for part in ("/office-read/", "/word-read/", "/read/"))
         if write and not read_task and (session.capabilities or {}).get("office"):
             await editor.office_authorize(session, write=True)
@@ -250,15 +264,17 @@ def create_native_ai_router(
     ):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await ai.start_edit(
+            candidate = getattr(request.state, "native_candidate", ai)
+            return await candidate.start_edit(
                 session,
                 instruction=payload.instruction,
                 expected_sha256=payload.expected_sha256,
                 operations=payload.operations,
                 selection=payload.selection,
                 **({'server_session_reference': token_hash(request.cookies.get(NATIVE_SESSION_COOKIE, ''))}
-                   if getattr(ai, 'word_task_dispatcher', None) is not None and ai.word_task_dispatcher.enabled else {}),
+                   if getattr(candidate, 'word_task_dispatcher', None) is not None and candidate.word_task_dispatcher.enabled else {}),
                 **({"client_request_id": payload.client_request_id} if payload.client_request_id is not None else {}),
+                **({"resume_edit_id": payload.resume_edit_id} if payload.resume_edit_id is not None else {}),
             )
         except ReportingError as error:
             raise _ai_error(error) from None
@@ -268,7 +284,8 @@ def create_native_ai_router(
                              payload: NativePDFReadCancelPayload):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await ai.cancel_request(session, payload.client_request_id)
+            candidate = getattr(request.state, "native_candidate", ai)
+            return await candidate.cancel_request(session, payload.client_request_id)
         except ReportingError as error:
             raise _ai_error(error) from None
 
@@ -282,7 +299,8 @@ def create_native_ai_router(
     ):
         try:
             session = await session_for(request, document_id, revision)
-            return await ai.wait_edit_status(session, edit_id, wait_ms=wait_ms)
+            candidate = getattr(request.state, "native_candidate", ai)
+            return await candidate.wait_edit_status(session, edit_id, wait_ms=wait_ms)
         except ReportingError as error:
             raise _ai_error(error) from None
 
@@ -291,7 +309,8 @@ def create_native_ai_router(
                      after: int = Query(default=0, ge=0)):
         try:
             session = await session_for(request, document_id, revision)
-            return await ai.event_stream(session, edit_id, after)
+            candidate = getattr(request.state, "native_candidate", ai)
+            return await candidate.event_stream(session, edit_id, after)
         except ReportingError as error:
             raise _ai_error(error) from None
 
@@ -305,14 +324,16 @@ def create_native_ai_router(
     ):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await ai.accept_edit(
+            candidate = getattr(request.state, "native_candidate", ai)
+            return await candidate.accept_edit(
                 session,
                 edit_id,
                 expected_sha256=payload.expected_sha256,
                 operations=payload.operations,
                 snapshot_sha256=payload.snapshot_sha256,
+                revalidate_session=lambda: _revalidate_write_session(grants, editor, request.cookies.get(NATIVE_SESSION_COOKIE, "")),
                 **({'server_session_reference': token_hash(request.cookies.get(NATIVE_SESSION_COOKIE, ''))}
-                   if getattr(ai, 'word_task_dispatcher', None) is not None and ai.word_task_dispatcher.enabled else {}),
+                   if getattr(candidate, 'word_task_dispatcher', None) is not None and candidate.word_task_dispatcher.enabled else {}),
             )
         except ReportingError as error:
             raise _ai_error(error) from None
@@ -321,7 +342,8 @@ def create_native_ai_router(
     async def cancel(document_id: str, revision: int, edit_id: str, request: Request):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await ai.cancel_edit(session, edit_id)
+            candidate = getattr(request.state, "native_candidate", ai)
+            return await candidate.cancel_edit(session, edit_id)
         except ReportingError as error:
             raise _ai_error(error) from None
 

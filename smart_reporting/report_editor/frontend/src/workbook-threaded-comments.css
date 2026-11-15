@@ -1,6 +1,4 @@
 .workbook-threads-host{position:absolute;inset:0;pointer-events:none;z-index:76}
-.workbook-threads-host>div:first-child{position:absolute;top:8px;right:110px;display:flex;gap:4px;pointer-events:auto}
-.workbook-threads-toggle{min-height:30px;padding:4px 8px;border:1px solid var(--office-border-strong,#cbd5e1);border-radius:4px;background:var(--office-chrome,#fff);color:var(--office-ink,#26354a);font:inherit;cursor:pointer}
 .workbook-threads-host .threaded-comments-pane{pointer-events:auto}
 .workbook-threads-host {--surface:var(--office-bg,#fff);--border:#d4d4d4;--border-strong:#b8b8b8;--text:var(--office-text,#222);--text-muted:#666;--accent:#713cc1;--accent-soft:#ede5fa;--hover:#f2edf7;--danger:#b42318;--shadow-modal:0 8px 28px #0002;--radius-small:4px}
 /* Review ▸ Comments task pane (threaded comments) */

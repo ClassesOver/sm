@@ -1,5 +1,7 @@
+import { setOfficeAssistantIdentity } from './office-assistant-preferences'
+import {openInlineFolder, renameInlineItem} from './office-inline-folder'
 import type { renderOfficeAnswer } from './office-answer'
-import { showOfficeAssistantPreferences } from './office-assistant-preferences'
+import { applyOfficeTheme, loadOfficePreferences, refreshOfficeTheme } from './office-personal-theme'
 import { bm25Score, mergeSearchCorpus, type SearchCorpus } from './office-search-rank'
 import './office.css'
 import { officeRequest, officeSession, loginOffice, OfficeRequestError, type OfficeLibrary, type OfficeSpace, type OfficeUser } from './office-client'
@@ -15,7 +17,7 @@ const formats = {
 } as const
 type Format = keyof typeof formats
 type Folder = { id: string; parent: string; name: string }
-type Entry = { id: string; space: string; version: number; revision: number; name: string; format: Format; folder: string; path: string; seen: number; starred: boolean; recentHidden?: boolean }
+type Entry = { id: string; space: string; version: number; revision: number; name: string; format: Format; folder: string; path: string; seen: number; starred: boolean; recentHidden?: boolean; favoriteGroup?: string | null }
 type Workspace = { folders: Folder[]; entries: Entry[] }
 type View = 'recent' | 'starred' | 'ask' | 'folder'
 type KnowledgeTurn = { id: string; question: string; answer: string; citations: { fileId: string; name: string; revision: number }[] }
@@ -32,6 +34,7 @@ const closedTabs: Entry[] = []
 let view: View = 'recent'
 let folder = rootFolder
 let filter: Format | '' = ''
+let favoriteGroup = ''
 let sortByName = false
 let selectedTab = ''
 let sidebarHidden = false
@@ -40,16 +43,18 @@ let status = ''
 const collapsed = new Set<string>()
 const selectedFiles = new Set<string>()
 let folderTreeKey = ''
-const tabs = new Map<string, HTMLElement>()
+const tabs = new Map<string, HTMLIFrameElement>()
 const activeKnowledgeConversation = new Map<string, string>()
+const newKnowledgeConversations = new Map<string, string>()
 const knowledgeConversations = new Map<string, {id: string; title: string}[]>()
 const conversationOf = (space: string) => activeKnowledgeConversation.get(space) ?? 'default'
 const draftKey = (space: string) => space + '/' + conversationOf(space)
 let formatOfficeAnswer: typeof renderOfficeAnswer | undefined
 const knowledgeTurns = new Map<string, KnowledgeTurn[]>()
+const savedKnowledgeDocuments = new Map<string, string>()
 const knowledgeInputs = new Map<string, string>()
 const knowledgePending = new Map<string, AbortController>()
-const knowledgeAttachments = new Map<string, {id: string; name: string}[]>()
+const knowledgeAttachments = new Map<string, string[]>()
 let accountGeneration = 0
 const knowledgeGeneration = new Map<string, number>()
 
@@ -134,14 +139,17 @@ async function refreshSpaces() {
 
 function clearAccount() {
   accountGeneration += 1
+  applyOfficeTheme('system')
+  setOfficeAssistantIdentity(null)
   for (const frame of tabs.values()) frame.remove()
   tabs.clear(); tabEntries.clear()
   closedTabs.length = 0
-  knowledgeTurns.clear(); knowledgeInputs.clear(); knowledgeAttachments.clear()
+  knowledgeTurns.clear(); knowledgeInputs.clear(); knowledgeAttachments.clear(); savedKnowledgeDocuments.clear()
   for (const controller of knowledgePending.values()) controller.abort()
-  knowledgePending.clear(); knowledgeGeneration.clear(); activeKnowledgeConversation.clear(); knowledgeConversations.clear()
+  knowledgePending.clear(); knowledgeGeneration.clear(); activeKnowledgeConversation.clear(); newKnowledgeConversations.clear(); knowledgeConversations.clear()
   currentUser = undefined; spaces = []; currentSpace = ''; selectedTab = ''
   library = { folders: [], entries: [] }
+  favoriteGroup = ''
   folderTreeKey = ''
   collapsed.clear()
   selectedFiles.clear()
@@ -161,6 +169,8 @@ async function start() {
   accountGeneration += 1
   try {
     currentUser = await officeSession()
+    const preferenceAccount = accountGeneration
+    await loadOfficePreferences(() => preferenceAccount === accountGeneration)
     await refreshSpaces()
     status = ''
   } catch (error) { status = error instanceof Error ? error.message : 'Office 登录失败。' }
@@ -182,6 +192,8 @@ function showLogin() {
     try {
       currentUser = await loginOffice(Object.fromEntries(new FormData(form)) as Record<string, string>)
       accountGeneration += 1
+      const preferenceAccount = accountGeneration
+      await loadOfficePreferences(() => preferenceAccount === accountGeneration)
       await refreshSpaces()
       status = ''
       dialog.close()
@@ -218,12 +230,168 @@ function quickStart() {
     <button class="quick-card" data-action="browse" ${canWrite() ? '' : 'disabled'}><span class="open-icon">${icon('folder', 19)}</span><span><strong>打开本地文件</strong><small>.docx / .xlsx / .pptx / .pdf</small></span></button></div>`
 }
 
+function canSendKnowledge(draft: string) {
+  return Boolean(currentUser && currentSpace && draft.trim() && !busy &&
+    knowledgeConversations.has(currentSpace) && !knowledgePending.has(currentSpace))
+}
+
+function knowledgeWordKey(turn: string) {
+  return 'genoffice:knowledge-word:' + JSON.stringify([currentUser?.user, currentSpace, conversationOf(currentSpace), turn])
+}
+
+function knowledgeWordAction(turn: KnowledgeTurn) {
+  if (!turn.citations.length) return ''
+  const key = knowledgeWordKey(turn.id)
+  let fileId = savedKnowledgeDocuments.get(key)
+  if (!fileId) {
+    try { fileId = sessionStorage.getItem(key) ?? undefined } catch { /* Session storage is optional. */ }
+  }
+  const file = fileId && library.entries.find(item => item.id === fileId)
+  const disabled = busy ? 'disabled' : ''
+  if (file) return `<div class="kb-citations"><button data-open-answer-docx="${escape(file.id)}" ${disabled}>打开已保存的 ${escape(file.name)}</button></div>`
+  return canWrite() ? `<div class="kb-citations"><button data-answer-docx="${escape(turn.id)}" ${disabled}>另存为 Word</button></div>` : ''
+}
+
+function knowledgeDraftStorageKey(space: string, conversation: string) {
+  return 'genoffice:knowledge-draft:' + JSON.stringify([currentUser?.user, space, conversation])
+}
+
+function createKnowledgeConversation(space: string) {
+  const id = crypto.randomUUID()
+  newKnowledgeConversations.set(space, id)
+  return id
+}
+
+function canStoreKnowledgeDraft(space: string, conversation: string) {
+  return newKnowledgeConversations.get(space) === conversation ||
+    knowledgeConversations.get(space)?.some(item => item.id === conversation)
+}
+
+function rememberNewKnowledgeDraft(space: string, conversation: string) {
+  if (newKnowledgeConversations.get(space) === conversation && conversationOf(space) === conversation) {
+    sessionStorage.setItem(knowledgeConversationKey(space), 'new:' + conversation)
+  }
+}
+
+function knowledgeDraft(space: string): string {
+  const cached = knowledgeInputs.get(draftKey(space))
+  if (cached !== undefined) return cached
+  try { return sessionStorage.getItem(knowledgeDraftStorageKey(space, conversationOf(space))) ?? '' }
+  catch { return '' }
+}
+
+function setKnowledgeDraft(space: string, value: string, conversation = conversationOf(space)) {
+  const key = space + '/' + conversation
+  if (value) knowledgeInputs.set(key, value)
+  else knowledgeInputs.delete(key)
+  const storageKey = knowledgeDraftStorageKey(space, conversation)
+  try {
+    if (!value) sessionStorage.removeItem(storageKey)
+    else if (canStoreKnowledgeDraft(space, conversation)) {
+      sessionStorage.setItem(storageKey, value)
+      rememberNewKnowledgeDraft(space, conversation)
+    }
+  } catch { /* The in-page draft is still available. */ }
+}
+
+function knowledgeDraftAttachments(space: string): Entry[] {
+  if (space !== currentSpace) return []
+  let ids = knowledgeAttachments.get(draftKey(space))
+  if (!ids) {
+    try {
+      const stored: unknown = JSON.parse(sessionStorage.getItem(knowledgeDraftStorageKey(space, conversationOf(space)) + ':attachments') ?? 'null')
+      if (Array.isArray(stored)) ids = stored.filter((id): id is string => typeof id === 'string').slice(0, 10)
+    } catch { /* No recoverable attachment IDs. */ }
+  }
+  return [...new Set(ids)].flatMap(id => library.entries.find(item => item.id === id && item.space === space) ?? [])
+}
+
+function setKnowledgeDraftAttachments(space: string, ids: string[], conversation = conversationOf(space)) {
+  const key = space + '/' + conversation
+  if (ids.length) knowledgeAttachments.set(key, ids)
+  else knowledgeAttachments.delete(key)
+  const storageKey = knowledgeDraftStorageKey(space, conversation) + ':attachments'
+  try {
+    if (!ids.length) sessionStorage.removeItem(storageKey)
+    else if (canStoreKnowledgeDraft(space, conversation)) {
+      sessionStorage.setItem(storageKey, JSON.stringify(ids))
+      rememberNewKnowledgeDraft(space, conversation)
+    }
+  } catch { /* Keep the in-page attachments. */ }
+}
+
+function chooseWorkspaceAttachments() {
+  const space = currentSpace, conversation = conversationOf(space), account = accountGeneration
+  if (!space || busy || !knowledgeConversations.has(space) || knowledgePending.has(space)) return
+  const current = new Set(knowledgeDraftAttachments(space).map(file => file.id))
+  const candidates = library.entries.filter(file => file.space === space && !current.has(file.id))
+  const location = workspaceFileLocation()
+  const dialog = document.createElement('dialog')
+  dialog.className = 'office-administration office-attachment-picker'
+  dialog.setAttribute('aria-label', '从工作区选择附件')
+  dialog.innerHTML = `<h2>从工作区选择附件</h2><form>
+    <label>筛选文件<input type="text" maxlength="160" autofocus></label>
+    <fieldset><legend>工作区文件</legend>${candidates.map(file => `<label>
+      <input type="checkbox" aria-label="${escape(file.name)}" value="${escape(file.id)}">
+      <span>${escape(file.name)}</span><small>${escape(location(file.folder))}</small></label>`).join('')}
+      <p data-empty-files hidden>没有可添加的文件。</p>
+    </fieldset>
+    <button type="submit" disabled>添加所选文件</button><button type="button" data-close>取消</button>
+    <p role="status"></p></form>`
+  dialog.addEventListener('click', event => event.stopPropagation())
+  dialog.onclose = () => dialog.remove()
+  const form = dialog.querySelector('form')!
+  const filter = form.querySelector<HTMLInputElement>('[type=text]')!
+  const submit = form.querySelector<HTMLButtonElement>('[type=submit]')!
+  const choices = [...form.querySelectorAll<HTMLInputElement>('[type=checkbox]')]
+  const selected = () => choices.filter(choice => choice.checked).map(choice => choice.value)
+  const empty = form.querySelector<HTMLElement>('[data-empty-files]')!
+  empty.hidden = choices.length > 0
+  filter.oninput = () => {
+    const query = filter.value.trim().toLowerCase()
+    let visible = 0
+    for (const choice of choices) {
+      const row = choice.closest('label')!
+      row.hidden = !row.textContent!.toLowerCase().includes(query)
+      if (!row.hidden) visible++
+    }
+    empty.hidden = visible > 0
+  }
+  form.onchange = () => { submit.disabled = !selected().length }
+  form.onsubmit = event => {
+    event.preventDefault()
+    if (account !== accountGeneration || space !== currentSpace || conversation !== conversationOf(space) || knowledgePending.has(space)) {
+      dialog.close()
+      return
+    }
+    const choices = new Set(selected())
+    const next = [...knowledgeDraftAttachments(space).map(file => file.id),
+      ...library.entries.filter(file => file.space === space && choices.has(file.id)).map(file => file.id)]
+    if (new Set(next).size > 10) {
+      form.querySelector('[role=status]')!.textContent = '一次最多添加 10 个附件。'
+      return
+    }
+    setKnowledgeDraftAttachments(space, [...new Set(next)], conversation)
+    dialog.close()
+    render()
+    root.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()
+  }
+  form.querySelector<HTMLButtonElement>('[data-close]')!.onclick = () => dialog.close()
+  root.append(dialog)
+  dialog.showModal()
+}
+
 function ask() {
   const turns = knowledgeTurns.get(currentSpace) ?? []
   const pending = knowledgePending.has(currentSpace)
   const conversation = conversationOf(currentSpace)
-  const conversations = knowledgeConversations.get(currentSpace) ?? []
+  const key = draftKey(currentSpace)
   const ready = knowledgeConversations.has(currentSpace)
+  const draft = ready ? knowledgeDraft(currentSpace) : ''
+  const canSend = canSendKnowledge(draft)
+  const pendingQuestion = pending ? draft.trim() : ''
+  const hasMessages = turns.length > 0 || Boolean(pendingQuestion)
+  const conversations = knowledgeConversations.get(currentSpace) ?? []
   const listed = conversations.some(item => item.id === conversation)
   return `<section class="kb">
     <div class="kb-citations">
@@ -234,73 +402,115 @@ function ask() {
       </select>
       ${listed ? `<button data-action="kb-delete" ${pending || busy ? 'disabled' : ''}>删除会话</button>` : ''}
     </div>
-    <div class="kb-thread ${turns.length ? 'has-messages' : ''}">${turns.length ? turns.map(turn => `<article class="kb-turn">
+    <div class="kb-thread ${hasMessages ? 'has-messages' : ''}" data-thread="${escape(key)}" data-last-turn="${escape(pendingQuestion ? 'pending' : turns.at(-1)?.id ?? '')}">${hasMessages ? turns.map(turn => `<article class="kb-turn">
       <div class="kb-question">${escape(turn.question)}</div><div class="kb-answer">${formatOfficeAnswer?.(turn.answer) ?? escape(turn.answer)}</div>
-      ${turn.citations.length && canWrite() ? `<div class="kb-citations"><button data-answer-docx="${escape(turn.id)}" ${busy ? 'disabled' : ''}>另存为 Word</button></div>` : ''}
+      ${knowledgeWordAction(turn)}
       <div class="kb-citations">${turn.citations.map(citation => `<button data-citation="${escape(citation.fileId)}" data-revision="${citation.revision}">${icon('file', 14)} ${escape(citation.name)} · 修订 ${citation.revision}</button>`).join('')}</div>
     </article>`).join('') : `<div class="kb-hero">
       <span class="kb-icon">${icon('book', 22)}</span><h2>问知识库</h2>
       <p>把常读的文件点上星，AI 就能跨文件检索、引用原文回答<br>——来源点一下就能打开。</p>
       <div class="kb-steps">${[['收藏文件', '在最近或文件夹里，点文件行上的星标'], ['回来提问', '像聊天一样问，不用先打开任何文档'], ['点击引用', '回答标注来源文件，点引用直接跳过去']].map(([title, body], i) => `<div><b>${i + 1}</b><span>${title}<small>${body}</small></span></div>`).join('')}</div>
       <button class="kb-cta" data-view="recent">${icon('star', 14)} 去最近文件收藏</button>
-    </div>`}</div>
-    <div class="kb-bottom"><p>${pending ? '正在检索和阅读收藏文件…' : `当前工作区已收藏 ${library.entries.filter(item => item.starred).length} 个文件。回答会注明来源文件。`}</p><div class="composer">
-      <div class="kb-citations">${(knowledgeAttachments.get(draftKey(currentSpace)) ?? []).map(file =>
+    </div>`}${pendingQuestion ? `<article class="kb-turn" aria-busy="true"><div class="kb-question">${escape(pendingQuestion)}</div></article>` : ''}</div>
+    <div class="kb-bottom"><p aria-live="polite">${pending ? '正在检索和阅读工作区资料…' : `当前工作区已收藏 ${library.entries.filter(item => item.starred).length} 个文件。回答会注明来源文件。`}</p><div class="composer">
+      <div class="kb-citations">${(ready ? knowledgeDraftAttachments(currentSpace) : []).map(file =>
         `<button data-remove-attachment="${escape(file.id)}" ${pending ? 'disabled' : ''}
           aria-label="移除附件 ${escape(file.name)}">${escape(file.name)} ×</button>`).join('')}</div>
-      <textarea aria-label="向知识库提问" placeholder="问一个关于收藏文件的问题…" maxlength="8000" ${pending || !ready || !currentUser ? 'disabled' : ''}>${escape(knowledgeInputs.get(draftKey(currentSpace)) ?? '')}</textarea>
+      <textarea aria-label="向知识库提问" placeholder="问一个关于收藏文件的问题…" maxlength="8000" ${pending || !ready || !currentUser ? 'disabled' : ''}>${pending ? '' : escape(draft)}</textarea>
       <div><span class="kb-model">默认模型</span><button data-action="kb-attach" ${ready && canWrite() && !pending ? '' : 'disabled'} aria-label="添加附件">${icon('plus')}</button>
+      <button data-action="kb-choose-attachment" ${ready && !pending && !busy && library.entries.length ? '' : 'disabled'}>从工作区选择附件</button>
       ${pending ? '<button data-action="kb-stop" class="send">停止</button>' :
-        `<button data-action="kb-send" ${!ready || !currentUser ? 'disabled' : ''} class="send" aria-label="发送"><img alt="" src="${assets}send-enter-off.png"></button>`}</div>
+        `<button data-action="kb-send" ${canSend ? '' : 'disabled'} class="send" aria-label="发送"><img alt="" src="${assets}send-enter-${canSend ? 'on' : 'off'}.png"></button>`}</div>
     </div></div></section>`
 }
 
-function invalidateKnowledge(space: string) {
-  knowledgeTurns.delete(space)
+function advanceKnowledgeGeneration(space: string) {
   const generation = (knowledgeGeneration.get(space) ?? 0) + 1
   knowledgeGeneration.set(space, generation)
   return generation
 }
 
-async function loadKnowledge(space = currentSpace) {
+function invalidateKnowledge(space: string) {
+  knowledgeTurns.delete(space)
+  return advanceKnowledgeGeneration(space)
+}
+
+function knowledgeConversationKey(space: string) {
+  return 'genoffice:knowledge-conversation:' + JSON.stringify([currentUser?.user, space])
+}
+
+async function loadKnowledge(space = currentSpace, { preserveTurns = false } = {}) {
   if (!space) return
   const account = accountGeneration
-  const generation = invalidateKnowledge(space)
+  const generation = preserveTurns ? advanceKnowledgeGeneration(space) : invalidateKnowledge(space)
   try {
-    const conversation = conversationOf(space)
+    const listing = officeRequest<{ items: {id: string; title: string}[] }>(`/workspaces/${space}/knowledge/conversations`)
+    let conversation = activeKnowledgeConversation.get(space)
+    if (!conversation) {
+      const { items } = await listing
+      if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
+      let saved: string | null = null
+      try {
+        saved = sessionStorage.getItem(knowledgeConversationKey(space))
+        const unsent = saved?.match(/^new:([0-9a-f-]{36})$/)?.[1]
+        if (unsent && !items.some(item => item.id === unsent)) {
+          const draftKey = knowledgeDraftStorageKey(space, unsent)
+          if (sessionStorage.getItem(draftKey) || sessionStorage.getItem(draftKey + ':attachments')) {
+            newKnowledgeConversations.set(space, unsent)
+            conversation = unsent
+          }
+        }
+      } catch { /* Use the normal default. */ }
+      conversation ??= items.find(item => item.id === saved || 'new:' + item.id === saved)?.id ??
+        items.find(item => item.id === 'default')?.id ?? items[0]?.id ?? createKnowledgeConversation(space)
+    }
     const [result, conversations] = await Promise.all([
       officeRequest<{ items: KnowledgeTurn[] }>(`/workspaces/${space}/knowledge?conversation=${encodeURIComponent(conversation)}`),
-      officeRequest<{ items: {id: string; title: string}[] }>(`/workspaces/${space}/knowledge/conversations`),
+      listing,
     ])
     if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
     if (result.items.length && !formatOfficeAnswer) {
       try { formatOfficeAnswer = (await import('./office-answer')).renderOfficeAnswer } catch { /* plain text remains available */ }
       if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
     }
+    activeKnowledgeConversation.set(space, conversation)
     knowledgeTurns.set(space, result.items)
     knowledgeConversations.set(space, conversations.items)
-    if (!activeKnowledgeConversation.has(space) && !conversations.items.some(item => item.id === 'default')) {
-      activeKnowledgeConversation.set(space, crypto.randomUUID())
+    if (conversations.items.some(item => item.id === conversation)) {
+      if (newKnowledgeConversations.get(space) === conversation) newKnowledgeConversations.delete(space)
+      try { sessionStorage.setItem(knowledgeConversationKey(space), conversation) } catch { /* Page state remains available. */ }
     }
-  } catch (error) { if (account === accountGeneration && currentSpace === space) status = error instanceof Error ? error.message : '无法读取问答记录。' }
+  } catch (error) {
+    if (account !== accountGeneration || generation !== (knowledgeGeneration.get(space) ?? 0)) return
+    if (error instanceof OfficeRequestError && error.status === 403) {
+      knowledgeTurns.delete(space)
+      knowledgeConversations.delete(space)
+    }
+    if (currentSpace === space) status = error instanceof Error ? error.message : '无法读取问答记录。'
+  }
   if (currentSpace === space && view === 'ask') render()
 }
 
 async function sendKnowledge() {
   const space = currentSpace
   const account = accountGeneration
-  const key = draftKey(space), conversation = conversationOf(space)
-  const question = (knowledgeInputs.get(key) ?? '').trim()
-  if (!space || !question || busy || !knowledgeConversations.has(space) || knowledgePending.has(space)) return
+  const conversation = conversationOf(space)
+  const question = knowledgeDraft(space).trim()
+  if (!canSendKnowledge(question)) return
   knowledgeGeneration.set(space, (knowledgeGeneration.get(space) ?? 0) + 1)
   const controller = new AbortController()
   knowledgePending.set(space, controller); status = ''; render()
   try {
-    await officeRequest<KnowledgeTurn>(`/workspaces/${space}/knowledge`, 'POST', { question, conversation, attachmentIds: (knowledgeAttachments.get(key) ?? []).map(file => file.id) }, controller.signal)
+    const turn = await officeRequest<KnowledgeTurn>(`/workspaces/${space}/knowledge`, 'POST', { question, conversation, attachmentIds: knowledgeDraftAttachments(space).map(file => file.id) }, controller.signal)
     if (account !== accountGeneration || controller.signal.aborted) return
-    knowledgeInputs.delete(key)
-    knowledgeAttachments.delete(key)
-    await loadKnowledge(space)
+    setKnowledgeDraft(space, '', conversation)
+    setKnowledgeDraftAttachments(space, [], conversation)
+    if (conversationOf(space) === conversation) {
+      const turns = knowledgeTurns.get(space) ?? []
+      knowledgeTurns.set(space, [...turns.filter(item => item.id !== turn.id), turn].slice(-30))
+      if (currentSpace === space && view === 'ask') render()
+    }
+    await loadKnowledge(space, { preserveTurns: true })
   } catch (error) { if (account === accountGeneration && currentSpace === space) status = controller.signal.aborted ? '已停止问答。' : error instanceof Error ? error.message : '知识问答失败。' }
   finally { if (account === accountGeneration) { knowledgePending.delete(space); if (currentSpace === space) render() } }
 }
@@ -323,6 +533,7 @@ function home() {
       <button type="button" data-action="rerank-search" title="将查询和当前文件结果的短片段提交给已配置的 AI 模型" hidden>AI 重排</button>
       <span class="file-count"></span>
     </div>
+    <div class="filters" aria-label="收藏分组" data-favorite-groups hidden></div>
     <div class="office-file-selection" hidden></div><div class="file-list"></div></section>`
 }
 
@@ -338,9 +549,81 @@ type SearchResult = {
 }
 let searchResult: SearchResult | undefined
 
+function favoriteGroups(): string[] {
+  return [...new Set(library.entries.flatMap(item => item.starred && item.favoriteGroup ? [item.favoriteGroup] : []))]
+}
+
+function showFavoriteGroups(entries: Entry[]) {
+  const space = currentSpace, account = accountGeneration
+  const dialog = document.createElement('dialog')
+  dialog.className = 'office-administration'
+  dialog.setAttribute('aria-label', '收藏分组')
+  dialog.innerHTML = `<h2>收藏分组</h2><form><label>分组名称<input name="group" list="office-favorite-group-options" maxlength="80" required></label>
+    <datalist id="office-favorite-group-options">${favoriteGroups().map(name => `<option value="${escape(name)}"></option>`).join('')}</datalist>
+    <button type="submit">保存分组</button><button type="button" data-clear>移出分组</button><button type="button" data-close>取消</button></form><p role="status"></p>`
+  dialog.addEventListener('click', event => event.stopPropagation())
+  dialog.onclose = () => dialog.remove()
+  const form = dialog.querySelector('form')!
+  const input = form.querySelector('input')!
+  if (entries.every(item => item.favoriteGroup === entries[0].favoriteGroup)) input.value = entries[0].favoriteGroup ?? ''
+  let submitting = false
+  async function save(group: string | null) {
+    if (submitting || account !== accountGeneration || space !== currentSpace) return
+    submitting = true
+    for (const button of form.querySelectorAll('button')) button.disabled = true
+    try {
+      await officeRequest(`/workspaces/${encodeURIComponent(space)}/files/bulk`, 'POST', {
+        action: 'group', group, versions: Object.fromEntries(entries.map(item => [item.id, item.version])),
+      })
+      if (account !== accountGeneration || space !== currentSpace) return
+      for (const item of entries) selectedFiles.delete(item.id)
+      await refreshLibrary()
+      if (account !== accountGeneration || space !== currentSpace) return
+      dialog.close()
+      render()
+    } catch (error) {
+      dialog.querySelector('p')!.textContent = error instanceof Error ? error.message : '收藏分组保存失败。'
+    } finally {
+      submitting = false
+      for (const button of form.querySelectorAll('button')) button.disabled = false
+    }
+  }
+  form.onsubmit = event => {
+    event.preventDefault()
+    const name = input.value.trim()
+    if (name) void save(name)
+  }
+  form.querySelector<HTMLButtonElement>('[data-clear]')!.onclick = () => { void save(null) }
+  form.querySelector<HTMLButtonElement>('[data-close]')!.onclick = () => dialog.close()
+  root.append(dialog)
+  dialog.showModal()
+  input.select()
+}
+
+function workspaceFileLocation() {
+  const workspaceName = spaces.find(space => space.id === currentSpace)?.name ?? 'GenOffice'
+  const foldersById = new Map(library.folders.map(item => [item.id, item]))
+  return (id: string) => {
+    const ancestors: string[] = []
+    const visited = new Set<string>()
+    let item = foldersById.get(id)
+    while (item && !visited.has(item.id)) {
+      visited.add(item.id)
+      ancestors.push(item.name)
+      item = foldersById.get(item.parent)
+    }
+    return [workspaceName, ...ancestors.reverse()].join(' / ')
+  }
+}
+
 function renderEntries() {
   const list = root.querySelector('.file-list')
   if (!list) return
+  const groupBar = root.querySelector<HTMLElement>('[data-favorite-groups]')!
+  const groups = view === 'starred' ? favoriteGroups() : []
+  if (!groups.includes(favoriteGroup)) favoriteGroup = ''
+  groupBar.hidden = groups.length === 0
+  groupBar.innerHTML = groups.length ? ['', ...groups].map(group => `<button data-favorite-group="${escape(group)}" class="${group === favoriteGroup ? 'active' : ''}" aria-pressed="${group === favoriteGroup}">${escape(group || '全部')}</button>`).join('') : ''
   const input = root.querySelector<HTMLInputElement>('input[type=search]')
   const query = input?.value.trim().toLowerCase() ?? ''
   const result = searchResult?.input === input ? searchResult : undefined
@@ -350,10 +633,10 @@ function renderEntries() {
     const hit = byId.get(item.id)
     return hit?.revision === item.revision ? hit : undefined
   }
-  const folderResults = query && view !== 'starred' && !filter ? library.folders.filter(item =>
+  const folderResults = !filter && (view === 'folder' || (view === 'recent' && query)) ? library.folders.filter(item =>
     (view !== 'folder' || item.parent === folder) && item.name.toLowerCase().includes(query)) : []
   const eligible = library.entries.filter(item =>
-    (view !== 'folder' || item.folder === folder) && (view !== 'starred' || item.starred) &&
+    (view !== 'folder' || item.folder === folder) && (view !== 'starred' || (item.starred && (!favoriteGroup || item.favoriteGroup === favoriteGroup))) &&
     (view !== 'recent' || query || !item.recentHidden) &&
     (!filter || item.format === filter) && (!query || match(item)))
   const complete = query ? eligible.filter(item => match(item)?.complete) : eligible
@@ -378,6 +661,7 @@ function renderEntries() {
   controls.hidden = !entries.length
   controls.innerHTML = entries.length ? `<label><input type="checkbox" data-select-files aria-label="全选文件" ${selected.length === entries.length ? 'checked' : ''} ${entries.length > 500 ? 'disabled' : ''}>全选</label>
     ${selected.length ? `<span>已选 ${selected.length} 项</span><button data-bulk-files="${view === 'starred' ? 'unstar' : 'star'}">${view === 'starred' ? '取消收藏' : '收藏所选'}</button>
+      ${view === 'starred' ? '<button data-bulk-files="group">收藏分组</button>' : ''}
       ${view === 'recent' && !query ? '<button data-bulk-files="hide_recent">从最近使用移除</button>' : ''}
       ${canWrite() ? '<button data-bulk-files="move">移动所选</button><button data-bulk-files="delete">删除所选</button>' : ''}` : ''}` : ''
   const all = controls.querySelector<HTMLInputElement>('[data-select-files]')
@@ -391,12 +675,20 @@ function renderEntries() {
     `${count} 项${partial ? '（部分匹配）' : ''}${modelOrder.size && !sortByName ? ' · 已由 AI 重排' : result?.rerankUnavailable ? ' · AI 重排暂不可用' : ''}`
   const message = searching ? '正在搜索正文…' : failed ? '正文搜索失败，请重试。' : query || filter ? '找不到匹配的文件。' : view === 'folder' ? '这个文件夹还是空的。新建文件，或把文件拖到这里。' :
     view === 'starred' ? '暂无收藏文件。' : '暂无最近文件 — 新建或打开一个文件开始使用。'
-  list.innerHTML = count ? folderResults.map(item => `<div class="file-row"><button data-folder="${escape(item.id)}">${icon('folder')} ${escape(item.name)}</button></div>`).join('') + entries.map(item => `<div class="file-row" ${canWrite() ? `draggable="true" data-drag-file="${escape(item.id)}"` : ''}>
+  const location = workspaceFileLocation()
+  list.innerHTML = count ? folderResults.map(item => `<div class="file-row folder-list-row" data-drop-folder="${escape(item.id)}">
+    <button data-folder="${escape(item.id)}" ${canWrite() ? 'draggable="true"' : ''}>${icon('folder')} ${escape(item.name)}</button>
+    ${canWrite() ? `<button data-folder-actions="${escape(item.id)}" aria-label="管理文件夹 ${escape(item.name)}">${icon('more')}</button>` : ''}
+  </div>`).join('') + entries.map(item => {
+    const folderLabel = escape(location(item.folder))
+    return `<div class="file-row" ${canWrite() ? `draggable="true" data-drag-file="${escape(item.id)}"` : ''}>
     <input type="checkbox" data-select-file="${escape(item.id)}" aria-label="选择 ${escape(item.name)}" ${selectedFiles.has(item.id) ? 'checked' : ''}>
-    <button data-open="${escape(item.path)}">${badge(item.format, 24)} <span>${escape(item.name)}${match(item)?.snippet ? `<small class="file-search-snippet">${escape(match(item)!.snippet)}</small>` : ''}</span></button>
+    <button data-open="${escape(item.path)}">${badge(item.format, 24)} <span class="file-entry-text"><span class="file-name" title="${escape(item.name)}">${escape(item.name)}</span>${match(item)?.snippet ? `<small class="file-search-snippet">${escape(match(item)!.snippet)}</small>` : ''}</span></button>
+    <span class="file-location" title="${folderLabel}">${folderLabel}</span>
     <button data-star="${escape(item.path)}" aria-label="${item.starred ? '取消收藏' : '收藏'} ${escape(item.name)}" aria-pressed="${item.starred}">${icon('star')}</button>
     ${canWrite() ? `<button data-file-actions="${escape(item.id)}" aria-label="管理文件 ${escape(item.name)}">${icon('more')}</button>` : ''}
-  </div>`).join('') : `<div class="empty">${icon('file', 38)}<p>${message}</p></div>`
+  </div>`
+  }).join('') : `<div class="empty">${icon('file', 38)}<p>${message}</p></div>`
 }
 
 async function rerankSearch() {
@@ -479,6 +771,9 @@ function render() {
     return `<div class="file-tab ${selectedTab === path ? 'active' : ''}"><button data-tab="${escape(path)}">${badge(entry.format, 16)}${escape(entry.name)}</button><button data-close="${escape(path)}" aria-label="关闭 ${escape(entry.name)}">${icon('close', 12)}</button></div>`
   }).join('')}<button class="top-menu" data-action="home" aria-label="新建或打开文件">${icon('plus', 15)}</button>`
   const body = root.querySelector<HTMLElement>('.office-body')!
+  const priorThread = body.querySelector<HTMLElement>('.kb-thread')
+  const priorTop = priorThread?.scrollTop ?? 0
+  const wasAtBottom = priorThread && priorThread.scrollHeight - priorThread.clientHeight - priorTop <= 2
   body.hidden = Boolean(selectedTab)
   body.innerHTML = `<aside ${sidebarHidden ? 'hidden' : ''}>
     <img class="logo" src="${assets}genoffice-logo.svg" alt="GenOffice">
@@ -489,12 +784,18 @@ function render() {
     ${folderTree('', 0)}
     <div class="space-controls">
       ${currentUser ? '<button data-action="space-sources">工作区数据源</button>' : ''}
-      ${currentUser ? '<button data-action="assistant-settings">AI 助手设置</button>' : ''}
+
       ${spaces.find(item => item.id === currentSpace)?.role === 'owner' && !spaces.find(item => item.id === currentSpace)?.personal_user ? '<button data-action="members">成员管理</button>' : ''}
-      ${currentUser?.role === 'admin' ? '<button data-action="users">用户管理</button><button data-action="company-sources">公司数据源管理</button><button data-action="new-space">新建团队工作区</button>' : ''}
+      ${currentUser?.role === 'admin' ? '<a href="/office/admin" target="_blank" rel="noopener noreferrer">管理后台</a><button data-action="new-space">新建团队工作区</button>' : ''}
     </div>
-    <footer><span>?</span>${escape(currentUser?.name ?? '请登录 GenOffice')} ${currentUser ? '<button data-action="logout">退出</button>' : '<button data-action="login">登录</button>'}</footer></aside>
+    <footer><button class="office-account-entry" data-action="${currentUser ? 'personal-settings' : 'login'}" aria-haspopup="dialog" aria-label="${currentUser ? '账户设置' : '登录'}"><span class="office-account-avatar">${escape(currentUser?.name.slice(0, 1) || '○')}</span><span class="office-account-name">${escape(currentUser?.name || '登录')}</span><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 6.2 8 3.4l3 2.8M5 9.8l3 2.8 3-2.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg></button></footer></aside>
     <main>${view === 'ask' ? ask() : home()}</main>`
+  const thread = body.querySelector<HTMLElement>('.kb-thread.has-messages')
+  if (thread && !body.hidden) {
+    const sameTurn = priorThread?.dataset.thread === thread.dataset.thread &&
+      priorThread?.dataset.lastTurn === thread.dataset.lastTurn
+    thread.scrollTop = sameTurn && !wasAtBottom ? priorTop : thread.scrollHeight
+  }
   for (const [path, iframe] of tabs) iframe.hidden = selectedTab !== path
   root.querySelector('.notice')!.textContent = status
   renderEntries()
@@ -548,6 +849,18 @@ async function reopenClosedTab() {
     }
   }
   if (account === accountGeneration) throw new Error('最近关闭的文件均已不可用。')
+}
+
+function currentTabRevision(entry: Entry, frame?: HTMLIFrameElement): Entry {
+  let path: string | undefined
+  try { path = frame?.contentWindow?.location.pathname }
+  catch { return entry }
+  const documentPath = entry.path.slice(0, entry.path.lastIndexOf('/') + 1)
+  if (!path?.startsWith(documentPath)) return entry
+  const number = path.slice(documentPath.length)
+  const revision = Number(number)
+  if (!/^[1-9]\d*$/.test(number) || !Number.isSafeInteger(revision)) return entry
+  return { ...entry, path, revision }
 }
 
 async function importFile(file: File, destination = view === 'folder' ? folder : rootFolder, openAfter = true) {
@@ -640,6 +953,14 @@ async function duplicateOfficeEntry(entry: Entry) {
   }, grantPath(result.editor.url))
 }
 
+function expandOfficeFolderPath(id: string) {
+  let changed = false
+  for (let ancestor: string | undefined = id; ancestor; ancestor = library.folders.find(item => item.id === ancestor)?.parent) {
+    changed = setFolderCollapsed(ancestor, false) || changed
+  }
+  return changed
+}
+
 async function revealOfficeFile(entry: Entry) {
   const account = accountGeneration
   let targetPath: string | undefined
@@ -651,9 +972,7 @@ async function revealOfficeFile(entry: Entry) {
     currentSpace = entry.space
     installLibrary(result)
     folder = file.folder ?? rootFolder
-    for (let ancestor: string | undefined = folder; ancestor; ancestor = library.folders.find(item => item.id === ancestor)?.parent) {
-      setFolderCollapsed(ancestor, false)
-    }
+    expandOfficeFolderPath(folder)
     selectedFiles.clear()
     view = 'folder'
     filter = ''
@@ -664,6 +983,39 @@ async function revealOfficeFile(entry: Entry) {
   if (targetPath && account === accountGeneration) {
     root.querySelector<HTMLButtonElement>(`.file-list [data-open="${CSS.escape(targetPath)}"]`)?.focus()
   }
+}
+
+function updateRenamedOfficeTabs(renamed: Pick<Entry, 'id' | 'name' | 'version'>) {
+  for (const [path, tab] of tabEntries) {
+    if (tab.id !== renamed.id) continue
+    tabEntries.set(path, { ...tab, name: renamed.name, version: renamed.version })
+    const frame = tabs.get(path)
+    if (frame) frame.title = renamed.name
+  }
+}
+
+function renameOfficeFile(id: string) {
+  if (busy || !canWrite()) return
+  const entry = library.entries.find(item => item.id === id)
+  const action = root.querySelector<HTMLButtonElement>(`.file-list [data-file-actions="${CSS.escape(id)}"]`)
+  const button = action?.closest('.file-row')?.querySelector<HTMLButtonElement>('button[data-open]')
+  if (!entry || !button) return
+  const suffix = '.' + entry.format
+  const hasSuffix = entry.name.toLowerCase().endsWith(suffix)
+  const baseName = hasSuffix ? entry.name.slice(0, -suffix.length) : entry.name
+  const extension = hasSuffix ? entry.name.slice(-suffix.length) : suffix
+  renameInlineItem(button, baseName, '重命名文件', name => {
+    if (entry.space !== currentSpace || !canWrite()) return
+    void withImport(async () => {
+      await officeRequest(`/files/${encodeURIComponent(id)}`, 'PATCH', {
+        name: name + extension, expectedVersion: entry.version,
+      })
+      invalidateKnowledge(entry.space)
+      await refreshLibrary()
+      const renamed = library.entries.find(item => item.id === id)
+      if (renamed) updateRenamedOfficeTabs(renamed)
+    })
+  })
 }
 
 async function renameOfficeTab(entry: Entry) {
@@ -681,12 +1033,7 @@ async function renameOfficeTab(entry: Entry) {
       const { files: updated } = await officeRequest<OfficeLibrary>(libraryUrl)
       if (account !== accountGeneration) return
       const renamed = updated.find(item => item.id === entry.id)
-      if (renamed) for (const [path, tab] of tabEntries) {
-        if (tab.id !== renamed.id) continue
-        tabEntries.set(path, { ...tab, name: renamed.name, version: renamed.version })
-        const frame = tabs.get(path)
-        if (frame) frame.title = renamed.name
-      }
+      if (renamed) updateRenamedOfficeTabs(renamed)
       if (entry.space === currentSpace) await refreshLibrary()
       render()
     },
@@ -694,16 +1041,56 @@ async function renameOfficeTab(entry: Entry) {
 }
 
 function createOfficeFolder(parent: string) {
-    const name = window.prompt('新建文件夹', '新建文件夹')?.trim()
-    if (!name) return
+  if (!canWrite() || busy) return
+  const space = currentSpace
+  if (expandOfficeFolderPath(parent)) render()
+  const row = root.querySelector<HTMLElement>(`.folder-row[data-drop-folder="${CSS.escape(parent)}"]`)
+  if (!row) return
+  openInlineFolder(row, name => {
+    if (space !== currentSpace || !canWrite()) return
     void withImport(async () => {
-      const created = await officeRequest<Folder>(`/workspaces/${currentSpace}/folders`, 'POST',
-        { name, parent: parent === rootFolder ? null : parent })
+      await officeRequest<Folder>(`/workspaces/${space}/folders`, 'POST',
+        {name, parent: parent === rootFolder ? null : parent})
       setFolderCollapsed(parent, false)
-      folder = created.id
-      view = 'folder'; filter = ''
       await refreshLibrary()
     })
+  })
+}
+
+function renameOfficeFolder(id: string, inList: boolean) {
+  if (busy || !canWrite()) return
+  const item = library.folders.find(item => item.id === id)
+  const surface = inList ? ".folder-list-row" : ".folder-row"
+  const button = root.querySelector<HTMLButtonElement>(`${surface} button[data-folder="${CSS.escape(id)}"]`)
+  if (!item || !button) return
+  const space = currentSpace
+  renameInlineItem(button, item.name, '重命名文件夹', name => {
+    if (space !== currentSpace || !canWrite()) return
+    void withImport(async () => {
+      await officeRequest(`/workspaces/${space}/folders/${id}`, 'PATCH', {name})
+      invalidateKnowledge(space)
+      await refreshLibrary()
+    })
+  })
+}
+
+function applyOfficeFileAction(entries: Entry[], action: string) {
+  const space = currentSpace
+  if (action === 'delete' && !window.confirm(`删除所选的 ${entries.length} 个文件？`)) return
+  void withImport(async () => {
+    await officeRequest(`/workspaces/${encodeURIComponent(space)}/files/bulk`, 'POST', {
+      action, versions: Object.fromEntries(entries.map(item => [item.id, item.version])),
+    })
+    const ids = new Set(entries.map(item => item.id))
+    for (const id of ids) selectedFiles.delete(id)
+    if (action === 'delete') for (const [path, entry] of tabEntries) {
+      if (!ids.has(entry.id)) continue
+      tabs.get(path)?.remove(); tabs.delete(path); tabEntries.delete(path)
+      if (selectedTab === path) selectedTab = ''
+    }
+    if (action !== 'hide_recent') invalidateKnowledge(space)
+    await refreshLibrary()
+  })
 }
 
 root.addEventListener('contextmenu', event => {
@@ -711,12 +1098,14 @@ root.addEventListener('contextmenu', event => {
   const tabButton = event.target.closest('.file-tab')?.querySelector<HTMLButtonElement>('[data-tab]')
   const tabEntry = tabButton ? tabEntries.get(tabButton.dataset.tab!) : undefined
   const homeTab = event.target.closest<HTMLButtonElement>('button[data-tab=""]')
-  if (!tabEntry && !homeTab && !canWrite()) return
-  if (homeTab && !currentUser) return
-  const row = event.target.closest('.file-row, .folder-row')
-  const action = row?.querySelector<HTMLButtonElement>('[data-file-actions], [data-folder-actions]')
-  const parent = (row as HTMLElement | null)?.dataset.dropFolder
-  if (!action && !parent && !tabEntry && !homeTab) return
+  if (!currentUser) return
+  const row = event.target.closest<HTMLElement>('.file-row, .folder-row')
+  const fileButton = row?.querySelector<HTMLButtonElement>('[data-open]')
+  const entry = fileButton && library.entries.find(item => item.path === fileButton.dataset.open)
+  const writable = canWrite()
+  const action = writable ? row?.querySelector<HTMLButtonElement>('[data-file-actions], [data-folder-actions]') : undefined
+  const parent = writable ? row?.dataset.dropFolder : undefined
+  if (!action && !parent && !entry && !tabEntry && !homeTab) return
   event.preventDefault()
   root.querySelector('.office-context-menu')?.remove()
   const menu = document.createElement('div')
@@ -735,7 +1124,7 @@ root.addEventListener('contextmenu', event => {
     menu.append(item)
     if (enabled) items.push(item)
   }
-  if (parent) add('新建子文件夹', () => createOfficeFolder(parent))
+  if (parent) add('新建子文件夹', () => requestAnimationFrame(() => createOfficeFolder(parent)))
   if (tabEntry) {
     if (canWrite(tabEntry.space)) {
       add('重命名', () => void withImport(() => renameOfficeTab(tabEntry)))
@@ -763,11 +1152,27 @@ root.addEventListener('contextmenu', event => {
   if (tabEntry || homeTab) {
     add('重新打开关闭的标签页', () => void withImport(reopenClosedTab), closedTabs.length > 0)
   }
+  if (entry) {
+    add('打开', () => void withImport(() => reopen(entry)))
+    add('在文件夹中显示', () => void revealOfficeFile(entry))
+    if (entry.starred) add('收藏分组', () => showFavoriteGroups([entry]))
+    if (view === 'recent' && !entry.recentHidden) {
+      add('从最近使用移除', () => applyOfficeFileAction([entry], 'hide_recent'))
+    }
+    if (view === 'starred') add('取消收藏', () => applyOfficeFileAction([entry], 'unstar'))
+  }
   if (action) {
     for (const [mode, label] of [['rename','重命名'], ['move','移动到文件夹'], ['delete','删除']] as const) {
-      add(label, () => manageOfficeItem(action.dataset, mode))
+      const folderId = action.dataset.folderActions
+      const inList = row?.classList.contains('folder-list-row') === true
+      add(label, () => {
+        if (mode === 'rename' && folderId) requestAnimationFrame(() => renameOfficeFolder(folderId, inList))
+        else if (mode === 'rename' && action.dataset.fileActions) {
+          const fileId = action.dataset.fileActions
+          requestAnimationFrame(() => renameOfficeFile(fileId))
+        } else manageOfficeItem(action.dataset, mode)
+      })
     }
-    const entry = library.entries.find(item => item.id === action.dataset.fileActions)
     if (entry) add('复制文件', () => void withImport(() => duplicateOfficeEntry(entry)))
   }
   menu.addEventListener('toggle', () => { if (!menu.matches(':popover-open')) menu.remove() })
@@ -797,12 +1202,20 @@ root.addEventListener('click', event => {
   const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button')
   if (!button) return
   const data = button.dataset
+  if (data.favoriteGroup !== undefined) {
+    favoriteGroup = data.favoriteGroup
+    selectedFiles.clear()
+    renderEntries()
+    root.querySelector<HTMLButtonElement>(`[data-favorite-group="${CSS.escape(favoriteGroup)}"]`)?.focus()
+    return
+  }
   if (data.bulkFiles) {
     const action = data.bulkFiles
     const chosen = [...root.querySelectorAll<HTMLInputElement>('[data-select-file]:checked')]
       .flatMap(input => library.entries.find(item => item.id === input.dataset.selectFile) ?? [])
     if (!chosen.length || busy) return
     const space = currentSpace
+    if (action === 'group') { showFavoriteGroups(chosen); return }
     if (action === 'move') {
       void showOfficeFileActions(root, {space, spaces, files: chosen, mode: 'move', async onChanged() {
         invalidateKnowledge(space)
@@ -821,40 +1234,25 @@ root.addEventListener('click', event => {
       }})
       return
     }
-    if (action === 'delete' && !window.confirm(`删除所选的 ${chosen.length} 个文件？`)) return
-    void withImport(async () => {
-      await officeRequest(`/workspaces/${encodeURIComponent(space)}/files/bulk`, 'POST', {
-        action, versions: Object.fromEntries(chosen.map(item => [item.id, item.version])),
-      })
-      const ids = new Set(chosen.map(item => item.id))
-      for (const id of ids) selectedFiles.delete(id)
-      if (action === 'delete') for (const [path, entry] of tabEntries) {
-        if (!ids.has(entry.id)) continue
-        tabs.get(path)?.remove(); tabs.delete(path); tabEntries.delete(path)
-        if (selectedTab === path) selectedTab = ''
-      }
-      if (action !== 'hide_recent') invalidateKnowledge(space)
-      await refreshLibrary()
-    })
+    applyOfficeFileAction(chosen, action)
     return
   }
   if (data.action === 'rerank-search') { void rerankSearch(); return }
   if (data.action === 'kb-delete') {
     if (!confirm('删除当前会话及其问答记录？')) return
     const space = currentSpace, account = accountGeneration, conversation = conversationOf(space)
-    const key = draftKey(space)
     void withImport(async () => {
       await officeRequest(`/workspaces/${space}/knowledge/conversations?conversation=${encodeURIComponent(conversation)}`, 'DELETE')
       if (account !== accountGeneration) return
-      knowledgeInputs.delete(key)
-      knowledgeAttachments.delete(key)
-      activeKnowledgeConversation.set(space, crypto.randomUUID())
+      setKnowledgeDraft(space, '', conversation)
+      setKnowledgeDraftAttachments(space, [], conversation)
+      activeKnowledgeConversation.set(space, createKnowledgeConversation(space))
       await loadKnowledge(space)
     })
     return
   }
   if (data.action === 'kb-new') {
-    activeKnowledgeConversation.set(currentSpace, crypto.randomUUID())
+    activeKnowledgeConversation.set(currentSpace, createKnowledgeConversation(currentSpace))
     void loadKnowledge()
     render()
     root.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus()
@@ -863,21 +1261,29 @@ root.addEventListener('click', event => {
   if (data.action === 'kb-stop') { knowledgePending.get(currentSpace)?.abort(); return }
   if (data.action === 'kb-send') { void sendKnowledge(); return }
   if (data.removeAttachment && !knowledgePending.has(currentSpace)) {
-    knowledgeAttachments.set(draftKey(currentSpace), (knowledgeAttachments.get(draftKey(currentSpace)) ?? []).filter(file => file.id !== data.removeAttachment))
+    setKnowledgeDraftAttachments(currentSpace, knowledgeDraftAttachments(currentSpace).map(file => file.id).filter(id => id !== data.removeAttachment))
     render()
     return
   }
+  if (data.action === 'kb-choose-attachment') { chooseWorkspaceAttachments(); return }
   if (data.action === 'kb-attach') { picker.removeAttribute('webkitdirectory'); picker.click(); return }
+  if (data.openAnswerDocx) {
+    const entry = library.entries.find(item => item.id === data.openAnswerDocx)
+    if (entry) void withImport(() => reopen(entry))
+    return
+  }
   if (data.answerDocx) {
     const space = currentSpace, account = accountGeneration
+    const turn = data.answerDocx
+    const key = knowledgeWordKey(turn)
     const conversation = encodeURIComponent(conversationOf(space))
     void withImport(async () => {
-      const result = await officeRequest<{ fileId: string; editor: { url: string } }>(
-        `/workspaces/${space}/knowledge/${encodeURIComponent(data.answerDocx!)}/docx?conversation=${conversation}`, 'POST')
+      const result = await officeRequest<{ fileId: string }>(
+        `/workspaces/${space}/knowledge/${encodeURIComponent(turn)}/docx?conversation=${conversation}`, 'POST')
       if (account !== accountGeneration) return
+      savedKnowledgeDocuments.set(key, result.fileId)
+      try { sessionStorage.setItem(key, result.fileId) } catch { /* Keep the current page's record. */ }
       await refreshLibrary()
-      const entry = library.entries.find(item => item.id === result.fileId)
-      if (entry) open(entry, grantPath(result.editor.url))
     })
     return
   }
@@ -893,6 +1299,7 @@ root.addEventListener('click', event => {
   }
   if (data.filter !== undefined) {
     filter = data.filter as Format | ''
+    selectedFiles.clear()
     root.querySelectorAll<HTMLButtonElement>('[data-filter]').forEach(control => control.classList.toggle('active', control.dataset.filter === filter))
     renderEntries()
     return
@@ -905,10 +1312,15 @@ root.addEventListener('click', event => {
   }
   if (data.fileActions || data.folderActions) { manageOfficeItem(data); return }
   if (data.view) {
-    view = data.view as View; filter = ''; selectedTab = ''
+    view = data.view as View; filter = ''; favoriteGroup = ''; selectedTab = ''
+    selectedFiles.clear()
     if (view === 'ask') void loadKnowledge()
   }
-  if (data.folder) { view = 'folder'; folder = data.folder; filter = '' }
+  if (data.folder) {
+    view = 'folder'; folder = data.folder; filter = ''
+    selectedFiles.clear()
+    expandOfficeFolderPath(folder)
+  }
   if (data.collapse) {
     setFolderCollapsed(data.collapse, !collapsed.has(data.collapse))
   }
@@ -927,7 +1339,12 @@ root.addEventListener('click', event => {
     return
   }
   if (data.action === 'login') { showLogin(); return }
-  if (data.action === 'assistant-settings' && currentUser) { showOfficeAssistantPreferences(root); return }
+  if (data.action === 'personal-settings' && currentUser) {
+    const account = accountGeneration, user = currentUser
+    void import('./office-settings').then(({ showOfficeSettings }) => showOfficeSettings(root, { user, isCurrent: () => account === accountGeneration,
+      onLogout: () => { clearAccount(); render() } })).catch(error => { status = error.message; render() })
+    return
+  }
   if (data.action === 'company-sources' || data.action === 'space-sources') {
     if (currentUser) void showOfficeSources(root, {
       admin: data.action === 'company-sources', space: spaces.find(item => item.id === currentSpace),
@@ -991,11 +1408,15 @@ root.addEventListener('click', event => {
   if (data.tab !== undefined) selectedTab = data.tab
   if (data.close) {
     const entry = tabEntries.get(data.close)
+    const frame = tabs.get(data.close)
     if (entry) {
-      closedTabs.push(entry)
+      const closed = currentTabRevision(entry, frame)
+      const prior = closedTabs.findIndex(item => item.path === closed.path)
+      if (prior >= 0) closedTabs.splice(prior, 1)
+      closedTabs.push(closed)
       if (closedTabs.length > 20) closedTabs.shift()
     }
-    tabs.get(data.close)?.remove()
+    frame?.remove()
     tabs.delete(data.close)
     tabEntries.delete(data.close)
     if (selectedTab === data.close) selectedTab = ''
@@ -1005,7 +1426,18 @@ root.addEventListener('click', event => {
 
 root.addEventListener('input', event => {
   if ((event.target as HTMLInputElement).type === 'search') searchDocuments(event.target as HTMLInputElement)
-  if ((event.target as HTMLElement).matches('.composer textarea')) knowledgeInputs.set(draftKey(currentSpace), (event.target as HTMLTextAreaElement).value)
+  const input = event.target
+  if (input instanceof HTMLTextAreaElement && input.matches('.composer textarea')) {
+    setKnowledgeDraft(currentSpace, input.value)
+    const send = root.querySelector<HTMLButtonElement>('[data-action=kb-send]')
+    if (send) {
+      const disabled = !canSendKnowledge(input.value)
+      if (send.disabled !== disabled) {
+        send.disabled = disabled
+        send.querySelector('img')!.src = `${assets}send-enter-${disabled ? 'off' : 'on'}.png`
+      }
+    }
+  }
 })
 window.addEventListener('keydown', event => {
   if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.isComposing ||
@@ -1057,6 +1489,7 @@ root.addEventListener('change', event => {
   if (!select.matches('.space-selector')) return
   if (busy) { select.value = currentSpace; return }
   currentSpace = select.value
+  favoriteGroup = ''
   selectedFiles.clear()
   folder = rootFolder; view = 'recent'; filter = ''
   void withImport(refreshLibrary)
@@ -1141,14 +1574,14 @@ picker.addEventListener('change', () => {
   })
 })
 function attachKnowledgeFiles(files: File[]) {
-  const space = currentSpace, key = draftKey(currentSpace)
+  const space = currentSpace, conversation = conversationOf(currentSpace)
   if (!files.length || !canWrite() || !knowledgeConversations.has(space) || knowledgePending.has(space)) return
   void withImport(async () => {
-    const attachments = knowledgeAttachments.get(key) ?? []
+    const attachments = knowledgeDraftAttachments(space).map(file => file.id)
     if (attachments.length + files.length > 10) throw new Error('一次最多添加 10 个附件。')
-    await importBatch(files, rootFolder, (id, file) => {
-      attachments.push({id,name:file.name})
-      knowledgeAttachments.set(key, attachments)
+    await importBatch(files, rootFolder, id => {
+      attachments.push(id)
+      setKnowledgeDraftAttachments(space, [...new Set(attachments)], conversation)
     })
   })
 }
@@ -1176,7 +1609,7 @@ function highlightFolder(target: HTMLElement | null) {
   if (!target) return
   target.classList.add('drop-target')
   const id = target.dataset.dropFolder
-  if (!id || !collapsed.has(id)) return
+  if (!id || !target.classList.contains('folder-row') || !collapsed.has(id)) return
   folderExpandTimer = window.setTimeout(() => {
     if (highlightedFolder !== target || !target.isConnected || !setFolderCollapsed(id, false)) return
     const toggle = target.querySelector<HTMLButtonElement>('[data-collapse]')!
@@ -1288,3 +1721,5 @@ root.addEventListener('drop', event => {
 
 render()
 void start()
+
+root.addEventListener('load', event => { if (event.target instanceof HTMLIFrameElement) refreshOfficeTheme() }, true)

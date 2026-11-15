@@ -34,6 +34,15 @@ it('submits Save As with a fresh request identity and the expected saved source 
   expect(f.api.saveWordAs).toHaveBeenCalledWith({ requestId: expect.any(String), expectedSha256: 'a'.repeat(64), filename: 'Named copy.docx' }); expect(f.flush).toHaveBeenCalledOnce()
   expect(f.root.querySelector('a')!.getAttribute('href')).toBe(new URL(result().editor.openUrl, location.origin).href)
 })
+it('reuses the named-copy request when a response was lost and the user retries', async () => {
+  const f = setup()
+  f.api.saveWordAs.mockRejectedValueOnce(new Error('connection lost'))
+  f.control.open('save-as')
+  await f.submit()
+  await f.submit()
+  expect(f.api.saveWordAs.mock.calls).toHaveLength(2)
+  expect(f.api.saveWordAs.mock.calls[1]).toEqual(f.api.saveWordAs.mock.calls[0])
+})
 it.each(['https://foreign.example/reports/v1/native/open/token', '/reports/v1/native/other/api/file', 'javascript:alert(1)', '/reports/v1/native/open/token?redirect=evil', '/reports/v1/native/open/%2f..'])('rejects an untrusted creation response URL %s', async url => {
   const f = setup(); f.api.newWord.mockResolvedValue(result(url)); f.control.open('new'); await f.submit()
   expect(f.root.querySelector('a')).toBeNull(); expect(f.onError).toHaveBeenCalledOnce(); expect(f.root.querySelector('[role=alert]')!.textContent).toContain('地址')

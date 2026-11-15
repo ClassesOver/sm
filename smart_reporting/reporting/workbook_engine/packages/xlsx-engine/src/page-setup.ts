@@ -5,6 +5,7 @@
 /// workbook.xml. Untouched attributes and elements stay verbatim.
 
 import { SaxesParser } from 'saxes'
+import { columnIndex } from './cell-address'
 import { escapeCellText } from './xml'
 import { parseSheetElements, resolveWorksheetPath, type SheetMarginsModel } from './workbook-read'
 import { assemblePackage, createBufferEntrySource } from './zip'
@@ -502,7 +503,7 @@ export function applyPrintAreas(
         xml,
         '_xlnm.Print_Titles',
         sheetIndex,
-        printTitles === null ? null : `${quoted}!${toAbsoluteRowSpan(printTitles)}`,
+        printTitles === null ? null : printTitleReferences(quoted, printTitles),
       )
     }
   }
@@ -552,13 +553,23 @@ function setSheetScopedName(
   return `${xml.slice(0, at)}<definedNames>${element}</definedNames>${xml.slice(at)}`
 }
 
-/// "1:3" → "$1:$3" (title rows repeated at the top of each page).
-function toAbsoluteRowSpan(rows: string): string {
-  const match = rows.match(/^[$]?(\d{1,7}):[$]?(\d{1,7})$/)
-  if (!match || Number(match[1]) > Number(match[2])) {
-    throw new PageSetupError(`Invalid print titles "${rows}".`)
-  }
-  return `$${match[1]}:$${match[2]}`
+/// Repeat title rows, title columns, or an Excel union of the two.
+function printTitleReferences(sheet: string, titles: string): string {
+  const axes = new Set<string>()
+  return titles.split(',').map(part => {
+    const span = part.trim().match(/^\$?([A-Z]{1,3}|[1-9]\d{0,6}):\$?([A-Z]{1,3}|[1-9]\d{0,6})$/i)
+    const from = span?.[1]?.toUpperCase(), to = span?.[2]?.toUpperCase()
+    const rows = from !== undefined && to !== undefined && /^\d+$/.test(from) && /^\d+$/.test(to)
+    const columns = from !== undefined && to !== undefined && /^[A-Z]+$/.test(from) && /^[A-Z]+$/.test(to)
+    const axis = rows ? 'row' : 'column'
+    if (!from || !to || (!rows && !columns) || axes.has(axis) ||
+        (rows ? Number(from) > Number(to) || Number(to) > 1048576
+          : columnIndex(from) > columnIndex(to) || columnIndex(to) >= 16384)) {
+      throw new PageSetupError(`Invalid print titles "${titles}".`)
+    }
+    axes.add(axis)
+    return `${sheet}!$${from}:$${to}`
+  }).join(',')
 }
 
 /// "A1:C10" → "$A$1:$C$10" (already-absolute refs pass through).

@@ -34,7 +34,7 @@ def test_source_management_requires_current_company_admin():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['none', 'grant', 'membership', 'session', 'release'])
+@pytest.mark.parametrize('change', ['none', 'grant', 'member_limit', 'membership', 'session', 'release'])
 async def test_source_query_rechecks_authority_after_execution(change):
     from smart_reporting.office.source_runtime import OfficeSourceRuntime
 
@@ -71,6 +71,8 @@ async def test_source_query_rechecks_authority_after_execution(change):
             assert sql == 'SELECT value FROM db.a'
             if change == 'grant':
                 await office.grant_source(admin, space, 'source', [])
+            elif change == 'member_limit':
+                await office.limit_source_member(admin, space, 'source', '20', ['db.b'])
             elif change == 'membership':
                 await office.set_member(admin, space, '20', None)
             elif change == 'session':
@@ -93,6 +95,47 @@ async def test_source_query_rechecks_authority_after_execution(change):
             with pytest.raises(OfficeError):
                 await runtime.query(actor, space, 'source', 'SELECT value FROM db.a')
         assert closed
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_workspace_sources_keep_healthy_sources_when_one_credential_is_unavailable():
+    from smart_reporting.management.models import ManagementError
+    from smart_reporting.office.source_runtime import OfficeSourceRuntime
+
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        admin = Identity('db', '1', '10')
+        await office.bootstrap(admin, 'Admin')
+        space = (await office.create_space(admin, 'Team', admin.user))['id']
+        for source in ('legacy', 'invalid', 'healthy'):
+            await office.grant_source(admin, space, source, ['db.a'])
+
+        class Vault:
+            async def resolve(self, connection, scope, source, reference):
+                if source == 'legacy':
+                    raise ManagementError('management_credential_key_missing', '缺少解密历史凭据所需的密钥。', 503)
+                if source == 'invalid':
+                    return 'invalid-private-dsn'
+                return 'starrocks://test:local-test-password@localhost/db'
+
+        class Runtime(OfficeSourceRuntime):
+            async def published(self, connection, actor, source):
+                return 'scope', dict(revision=1, name=source, source_type='starrocks',
+                                     database='db', credential_ref='ref', execution_parameters={}), ('db.a',)
+
+        runtime = Runtime(office, Vault())
+        listing = {item['id']: item for item in await runtime.available(admin, space)}
+        assert listing['healthy']['available'] and listing['healthy']['tables'] == ('db.a',)
+        assert listing['legacy'] == {'id': 'legacy', 'available': False, 'reason': '缺少解密历史凭据所需的密钥。'}
+        assert not listing['invalid']['available']
+        assert 'local-test-password' not in repr(listing) and 'invalid-private-dsn' not in repr(listing)
+        with pytest.raises(OfficeError) as error:
+            await runtime.query(admin, space, 'legacy', 'SELECT value FROM db.a')
+        assert error.value.code == 'management_credential_key_missing'
     finally:
         await engine.dispose()
 
@@ -137,9 +180,7 @@ async def test_existing_source_service_uses_office_company_and_encrypted_vault()
         other = Identity('db', '2', '10')
         await office.bootstrap(other, 'Other admin')
         other_token = await office.create_session(other)
-        other_scope = await scopes.ensure_registered(other)
-        assert (await service.list(other_token, other_scope))['items'] == []
-        from smart_reporting.management.models import INSTANCE_SCOPE_ID
+        from smart_reporting.management.models import INSTANCE_SCOPE_ID, ManagementScope
         from smart_reporting.office.source_migration import adopt_instance_sources
         async with engine.begin() as connection:
             for table in (sources, source_drafts, source_credentials):
@@ -147,8 +188,10 @@ async def test_existing_source_service_uses_office_company_and_encrypted_vault()
                 await connection.execute(insert(table).values(dict(row, scope_id=INSTANCE_SCOPE_ID)))
         preview = await adopt_instance_sources(office, other, ['sales'], dry_run=True)
         assert preview['dryRun']
-        assert (await service.list(other_token, other_scope))['items'] == []
+        async with engine.connect() as connection:
+            assert await OfficeSourceScopes.scope_id(connection, other) is None
         await adopt_instance_sources(office, other, ['sales'])
+        other_scope = ManagementScope(other.database, other.company)
         assert (await service.list(other_token, other_scope))['items'][0]['source_id'] == 'sales'
         with pytest.raises(OfficeError, match='已有'):
             await adopt_instance_sources(office, other, ['sales'])
@@ -191,3 +234,61 @@ def test_report_execution_exposes_only_the_workspace_table_metadata():
     for missing in ({}, {source: {**grant, "revision": 11}}, {source: {**grant, "tables": []}}):
         with pytest.raises(ReportingError, match="授权"):
             restrict_report_execution(execution, missing)
+
+
+@pytest.mark.asyncio
+async def test_office_query_http_enforces_member_table_scope_before_database_execution(monkeypatch):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from smart_reporting.office.api import COOKIE, create_office_router, csrf_token
+    from smart_reporting.office.source_runtime import OfficeSourceRuntime
+    from smart_reporting.reporting.data_source.starrocks import StarRocksDataSourceAdapter
+
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        admin = Identity('db', '1', 'admin')
+        viewer = Identity('db', '1', 'viewer')
+        await office.bootstrap(admin, 'Admin')
+        await office.provision(admin, viewer.user, 'Viewer')
+        space = (await office.create_space(admin, 'Team', admin.user))['id']
+        await office.set_member(admin, space, viewer.user, 'viewer')
+        await office.grant_source(admin, space, 'sales', ['db.allowed', 'db.private'])
+        await office.limit_source_member(admin, space, 'sales', viewer.user, ['db.allowed'])
+
+        class Vault:
+            async def resolve(self, *_args):
+                return 'starrocks://test:test@localhost/db'
+
+        async def published(*_args):
+            return 'scope', dict(revision=1, name='Sales', source_type='starrocks',
+                                 database='db', credential_ref='ref', execution_parameters={}), ('db.allowed', 'db.private')
+
+        executed = []
+
+        def query(_adapter, sql):
+            executed.append(sql)
+            return SimpleNamespace(columns=['amount'], rows=[[42]])
+
+        monkeypatch.setattr(OfficeSourceRuntime, 'published', published)
+        monkeypatch.setattr(StarRocksDataSourceAdapter, '_query', query)
+        app = FastAPI()
+        app.include_router(create_office_router(office, public_origin='http://test', source_vault=Vault()))
+        token = await office.create_session(viewer)
+        headers = {'origin': 'http://test', 'x-csrf-token': csrf_token(token)}
+        endpoint = f'/office/api/workspaces/{space}/data-sources/sales/query'
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test', cookies={COOKIE: token}) as client:
+            restricted = await client.post(endpoint, headers=headers, json={'sql': 'SELECT amount FROM db.private'})
+            assert restricted.status_code == 422, restricted.text
+            assert restricted.json()['code'] == 'sql_table_denied', restricted.text
+            assert executed == []
+
+            authorized = await client.post(endpoint, headers=headers, json={'sql': 'SELECT amount FROM db.allowed'})
+            assert authorized.status_code == 200, authorized.text
+            assert authorized.json()['rows'] == [[42]]
+            assert authorized.json()['source']['tables'] == ['db.allowed']
+            assert executed == ['SELECT amount FROM db.allowed']
+    finally:
+        await engine.dispose()

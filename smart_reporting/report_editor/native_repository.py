@@ -196,7 +196,7 @@ class NativeDocumentRepository:
                     "latestSequence": latest}
 
     async def create_from_source(
-        self, source: NativeSource, *, scope: NativeScope, request_id: str
+        self, source: NativeSource, *, scope: NativeScope, request_id: str, generation_key: str | None = None,
     ) -> NativeDocument:
         # 来源与 scope 共同绑定重试身份，不能靠客户端 requestId 跨来源复用文档。
         if not request_id or len(request_id) > 256:
@@ -204,7 +204,9 @@ class NativeDocumentRepository:
         key = native_digest(
             {
                 "scope": scope.model_dump(mode="json"),
-                "source": source.model_dump(mode="json"),
+                "source": source.model_dump(mode="json") if generation_key is None else {
+                    "format": source.format, "generationKey": generation_key,
+                },
                 "requestId": request_id,
             }
         )

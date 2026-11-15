@@ -15,7 +15,7 @@ from ..office.artifacts import ArtifactFile
 from ..office.editor_grants import ReportEditorGrantService, ReportEditorSession
 from ..office.workspace_scope import WorkspaceScope
 from ..reporting.delivery.docx_native import inspect_docx, patch_docx
-from ..reporting.delivery.office_engine import engine_dir, run_office_engine
+from ..reporting.delivery.office_engine import OfficeConversionError, engine_dir, run_office_engine
 from ..reporting.delivery.pdf_native import inspect_pdf, patch_pdf, patch_pdf_with_receipt
 from ..reporting.models import ReportingError
 from ._file_identity import read_verified_file
@@ -270,7 +270,7 @@ class NativeEditorService:
             raise
         except ValueError:
             raise ReportingError("native_operations_invalid", "预览无法应用当前修改，草稿仍保留。") from None
-        except (OSError, subprocess.SubprocessError):
+        except (OfficeConversionError, OSError, subprocess.SubprocessError):
             raise ReportingError("native_engine_unavailable", "预览引擎暂不可用。") from None
 
     async def extract_pages(self, context: NativeEditorContext, *, pages: list[int], request_id: str) -> dict[str, Any]:

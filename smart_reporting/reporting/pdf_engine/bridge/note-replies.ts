@@ -36,6 +36,8 @@ export function inspectNoteThreads(doc: PDFDocument, sourceSha: string, protecte
     const refs = replyReferences(doc, false); if (!refs) return {roots:targets,replies}
     const nodes: {raw:PDFRef;dict:PDFDict;pageIndex:number;index:number}[] = [], occurrences = new Map<string,number>()
     for (const [pageIndex,page] of doc.getPages().entries()) {
+      const annotationArrayRef = page.node.get(PDFName.of('Annots'))
+      if (annotationArrayRef instanceof PDFRef && refs.get(annotationArrayRef.toString()) !== 1) continue
       const annots = page.node.lookupMaybe(PDFName.of('Annots'),PDFArray)
       if (!annots) continue
       for (let index=0;index<annots.size();index++) {

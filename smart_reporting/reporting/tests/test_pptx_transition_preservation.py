@@ -156,3 +156,20 @@ def test_unsupported_source_is_readonly_and_forced_request_is_rejected(case):
     with pytest.raises(ValueError, match='native_office_operations_invalid'):
         patch_office('pptx', source, [{'kind': 'editSlides', 'transitions': [{'slideIndex': 0, 'kind': 'wipe'}]}])
     assert patch_office('pptx', source, []) == source
+
+@pytest.mark.parametrize('alternate', [False, True])
+def test_rehearsal_updates_only_advance_time_in_transition_branches(alternate):
+    source = source_bytes(alternate=alternate, single_quote=not alternate)
+    result = patch_office('pptx', source, [{'kind': 'editSlides',
+        'advanceTimes': [{'slideIndex': 0, 'ms': 5000}]}])
+    assert inspect_office('pptx', result)['slides'][0]['advanceMs'] == 5000
+    old = Presentation(BytesIO(source))
+    new = Presentation(BytesIO(result))
+    before = list(old.slides[0]._element.iter(qn('p:transition')))
+    after = list(new.slides[0]._element.iter(qn('p:transition')))
+    assert len(before) == len(after)
+    for original, edited in zip(before, after, strict=True):
+        assert edited.attrib.pop('advTm') == '5000'
+        original.attrib.pop('advTm')
+        assert canonical(original) == canonical(edited)
+    assert bytes(old.slides[1]._element.xml, 'utf8') == bytes(new.slides[1]._element.xml, 'utf8')

@@ -77,7 +77,7 @@ const labels: Record<string, ComponentType<{size?: number}>> = {
 
   '页面视图':IconPrintLayout,'Web 版式':IconWebLayout,'大纲':IconOutlineView,'阅读视图':IconReadMode,'分页预览':IconPrintLayout,
   '缩放':IconZoom,'缩小':IconZoomOut,'放大':IconZoomIn,'100%':IconZoom100,'页宽':IconPageWidth,'整页':IconWholePage,
-  '标尺':IconRuler,'网格线':IconGridlines,'导航窗格':IconNavPane,'AI 面板':IconAiPanel,'深色模式':IconMoon,
+  '标尺':IconRuler,'网格线':IconGridlines,'导航窗格':IconNavPane,'审阅窗格':IconNavPane,'AI 面板':IconAiPanel,'深色模式':IconMoon,
   '新建标签':IconNewWindow,'拆分':IconSplit,'切换标签':IconSwitchWindows,'编辑器':IconSpellcheck,'拼写检查':IconSpellcheck,'翻译':IconTranslate,
   '修订':IconTrackChanges,'显示标记':IconTrackChanges,'接受':IconAccept,'拒绝':IconReject,'上一条':IconCommentPrev,'下一条':IconCommentNext,
   '修订列表':IconTrackChanges,'显示批注':IconComments,'比较':IconCompare,'保护文档':IconLock,'书签':IconBook,'题注':IconCaption,'交叉引用':IconLink,

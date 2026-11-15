@@ -1,7 +1,81 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import { selectedWorkbookFormat, type FormatValue } from './workbook-format'
 import { applyWorkbookRibbonCommand, mountWorkbookRibbon, type WorkbookPageSetupState } from './workbook-ribbon'
 
 afterEach(() => { document.body.replaceChildren() })
+
+it('offers all GenOffice number format categories and echoes the current selection state', () => {
+  const command = vi.fn()
+  let numberFormat: FormatValue<string> = { kind: 'value', value: 'dddd, mmmm dd, yyyy' }
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0,
+    format: () => ({ ...selectedWorkbookFormat(null), numberFormat }),
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="number-format"]')!
+  expect(select.tagName).toBe('SELECT')
+  expect(Array.from(select.options, option => option.text)).toEqual([
+    '长日期', '常规', '数值', '货币', '会计专用', '短日期', '长日期', '时间', '百分比', '分数', '科学记数', '文本',
+  ])
+  expect(select.title).toBe('dddd, mmmm dd, yyyy')
+  select.value = 'percentage'
+  select.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenLastCalledWith('number-format:percentage')
+  expect(select.value).toBe('')
+  numberFormat = { kind: 'mixed' }; ribbon.refreshState()
+  expect(select.options[0]?.text).toBe('混合')
+  expect(select.disabled).toBe(false)
+  protectedSheet = true; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  protectedSheet = false
+  numberFormat = { kind: 'unavailable', reason: '来源格式未投影' }; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  expect(select.title).toBe('来源格式未投影')
+  ribbon.dispose()
+})
+
+it('dispatches the three GenOffice Number shortcuts in their source order', () => {
+  const command = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => true, rotation: () => 0 })
+  const group = document.querySelector('[data-ribbon-control="number-format"]')!.closest('.workbook-ribbon-group')!
+  const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
+  expect(buttons.slice(0, 5).map(button => [button.dataset.ribbonCommand, button.getAttribute('aria-label')])).toEqual([
+    ['format:accounting', '货币'], ['format:0%', '百分比'], ['format:comma', '千位分隔'],
+    ['decimal-inc', '增加小数位'], ['decimal-dec', '减少小数位'],
+  ])
+  for (const button of buttons.slice(0, 3)) {
+    button.click()
+    expect(command).toHaveBeenLastCalledWith(button.dataset.ribbonCommand)
+  }
+  ribbon.dispose()
+})
+
+it('routes Insert Screenshot only when display capture and editing are available', () => {
+  const onCommand = vi.fn()
+  const open = (editable: boolean) => {
+    const ribbon = mountWorkbookRibbon(document.body, onCommand, { editable: () => editable, rotation: () => 0 })
+    document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
+    const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-screenshot"]')!
+    return { ribbon, button }
+  }
+  vi.stubGlobal('navigator', {})
+  const unsupported = open(true)
+  expect(unsupported.button.disabled).toBe(true)
+  expect(unsupported.button.title).toContain('不支持屏幕截图')
+  unsupported.ribbon.dispose()
+  vi.stubGlobal('navigator', { mediaDevices: { getDisplayMedia: vi.fn() } })
+  try {
+    const readOnly = open(false)
+    expect(readOnly.button.disabled).toBe(true)
+    readOnly.ribbon.dispose()
+    const editable = open(true)
+    expect(editable.button.disabled).toBe(false)
+    editable.button.click()
+    expect(onCommand).toHaveBeenCalledExactlyOnceWith('insert-screenshot')
+    editable.ribbon.dispose()
+  } finally { vi.unstubAllGlobals() }
+})
 
 it.each([['Data', 'merge-workbooks'], ['Chart Design', 'chart-delete']] as const)('dispatches the existing %s %s command from its real Ribbon button', (tab, command) => {
   const onCommand = vi.fn(); let editable = true
@@ -163,55 +237,75 @@ it('dispatches source cell style presets and prevents edits on a protected sheet
   ribbon.dispose()
 })
 
-it('opens the data table command from Data and respects read-only state', () => {
+it('dispatches What-If Analysis choices and respects workbook editing state', () => {
   const command = vi.fn()
-  let editable = true
-  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0 })
+  let editable = true, protectedSheet = false, selected = true
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => editable, protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+    hasSelection: () => selected, rotation: () => 0,
+  })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="data-table-open"]')!
-  expect(button).not.toBeNull()
-  button.click()
-  expect(command).toHaveBeenCalledWith('data-table-open')
-  editable = false; ribbon.refreshState()
-  expect(button.disabled).toBe(true)
-  ribbon.dispose()
-})
-
-it('dispatches outline grouping and detail commands and disables them in read-only mode', () => {
-  const command = vi.fn()
-  let editable = true
-  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0 })
-  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  const ids = ['outline-group:rows', 'outline-group:cols', 'outline-ungroup:rows', 'outline-ungroup:cols', 'outline-hide-detail', 'outline-show-detail']
-  for (const id of ids) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
-    expect(button.disabled).toBe(false)
-    button.click()
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="what-if-analysis"]')!
+  expect(select).not.toBeNull()
+  expect(Array.from(select.options, option => [option.value, option.text])).toEqual([
+    ['', '模拟分析'], ['goal-seek-open', '单变量求解'], ['data-table-open', '数据表'],
+  ])
+  for (const id of ['goal-seek-open', 'data-table-open']) {
+    select.value = id
+    select.dispatchEvent(new Event('change'))
     expect(command).toHaveBeenLastCalledWith(id)
+    expect(select.value).toBe('')
   }
   editable = false; ribbon.refreshState()
-  for (const id of ids) expect(document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!.disabled).toBe(true)
+  expect(select.disabled).toBe(true)
+  select.value = 'goal-seek-open'
+  select.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledTimes(2)
+  editable = true; protectedSheet = true; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  protectedSheet = false; selected = false; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  selected = true; ribbon.refreshState()
+  expect(select.disabled).toBe(false)
   ribbon.dispose()
 })
 
-it('dispatches explicit outline detail, clear and summary controls with current summary state', () => {
+it('dispatches GenOffice outline menu choices and shows current summary placement', () => {
   const command = vi.fn()
-  let below = true, right = false
-  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => true, rotation: () => 0,
+  let editable = true, below = true, right = false
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0,
     outlineSummary: () => ({ below, right }) })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  for (const id of ['outline-hide-detail:rows', 'outline-hide-detail:cols', 'outline-show-detail:rows', 'outline-show-detail:cols', 'outline-clear', 'outline-summary-below', 'outline-summary-right']) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button, id).not.toBeNull()
-    expect(button!.disabled).toBe(false); button!.click()
-    expect(command).toHaveBeenLastCalledWith(id)
+  const group = document.querySelector<HTMLSelectElement>('[data-ribbon-control="outline-group"]')!
+  const ungroup = document.querySelector<HTMLSelectElement>('[data-ribbon-control="outline-ungroup"]')!
+  expect(group).not.toBeNull()
+  expect(ungroup).not.toBeNull()
+  expect(Array.from(group.options, option => [option.value, option.text])).toEqual([
+    ['', '组合'], ['outline-group:rows', '组合行'], ['outline-group:cols', '组合列'],
+    ['outline-hide-detail:rows', '隐藏明细（行）'], ['outline-hide-detail:cols', '隐藏明细（列）'],
+    ['outline-summary-below', '✓ 汇总行在明细数据下方'], ['outline-summary-right', '汇总列在明细数据右侧'],
+  ])
+  expect(Array.from(ungroup.options, option => [option.value, option.text])).toEqual([
+    ['', '取消组合'], ['outline-ungroup:rows', '取消组合行'], ['outline-ungroup:cols', '取消组合列'],
+    ['outline-show-detail:rows', '显示明细（行）'], ['outline-show-detail:cols', '显示明细（列）'],
+    ['outline-clear', '清除分级显示'],
+  ])
+  expect(document.querySelector('[data-ribbon-command="subtotal-open"]')).not.toBeNull()
+  for (const select of [group, ungroup]) {
+    expect(select.disabled).toBe(false)
+    for (const option of Array.from(select.options).slice(1)) {
+      select.value = option.value
+      select.dispatchEvent(new Event('change'))
+      expect(command).toHaveBeenLastCalledWith(option.value)
+      expect(select.value).toBe('')
+    }
   }
-  const summary = (axis: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="outline-summary-${axis}"]`)!
-  expect(summary('below').getAttribute('aria-pressed')).toBe('true')
-  expect(summary('right').getAttribute('aria-pressed')).toBe('false')
   below = false; right = true; ribbon.refreshState()
-  expect(summary('below').getAttribute('aria-pressed')).toBe('false')
-  expect(summary('right').getAttribute('aria-pressed')).toBe('true')
+  expect(group.querySelector('[value="outline-summary-below"]')!.textContent).toBe('汇总行在明细数据下方')
+  expect(group.querySelector('[value="outline-summary-right"]')!.textContent).toBe('✓ 汇总列在明细数据右侧')
+  editable = false; ribbon.refreshState()
+  expect(group.disabled).toBe(true)
+  expect(ungroup.disabled).toBe(true)
   ribbon.dispose()
 })
 
@@ -261,10 +355,16 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
   const increaseDecimal = document.querySelector<HTMLButtonElement>('[data-ribbon-command="decimal-inc"]')!
   expect(increaseDecimal.disabled).toBe(false)
   increaseDecimal.click()
-  document.querySelector<HTMLButtonElement>('[data-ribbon-command="autofn:SUM"]')!.click()
-  expect([...document.querySelectorAll('[data-ribbon-command^="autofn:"]')].map(button => button.textContent)).toEqual([
-    '自动求和', '平均值', '计数值', '最大值', '最小值',
+  const autoSum = document.querySelector<HTMLSelectElement>('[data-ribbon-control="autosum"]')!
+  expect(autoSum).not.toBeNull()
+  expect(autoSum.disabled).toBe(false)
+  expect(Array.from(autoSum.options, option => [option.value, option.text])).toEqual([
+    ['', '自动求和'], ['autofn:SUM', '求和'], ['autofn:AVERAGE', '平均值'],
+    ['autofn:COUNT', '计数'], ['autofn:MAX', '最大值'], ['autofn:MIN', '最小值'],
   ])
+  autoSum.value = 'autofn:SUM'
+  autoSum.dispatchEvent(new Event('change'))
+  expect(autoSum.value).toBe('')
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
 
   expect(onCommand.mock.calls).toEqual([['bold'], ['font-family:Calibri'], ['decimal-inc'], ['autofn:SUM']])
@@ -278,9 +378,11 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
   const symbol = document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-symbol"]')!
   expect(symbol.dataset.unavailableReason).toBeUndefined()
   symbol.click(); expect(onCommand).toHaveBeenLastCalledWith('insert-symbol')
-  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-equation"]')!.dataset.unavailableReason).toContain('公式')
+  const equation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-equation"]')!
+  expect(equation.dataset.unavailableReason).toBeUndefined()
+  equation.click(); expect(onCommand).toHaveBeenLastCalledWith('insert-equation')
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
-  const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
+  const rotation = document.querySelector<HTMLSelectElement>('[data-ribbon-control="text-orientation"]')!
   expect(rotation.disabled).toBe(false)
   expect(rotation.title).not.toContain('does not capture text rotation')
   ribbon.dispose()
@@ -458,48 +560,131 @@ it('rejects AutoSum for a single-row selection', () => {
   expect(() => applyWorkbookRibbonCommand('autofn:SUM', workbook)).toThrow('请至少选择两行')
 })
 
-it('renders source-localized sort actions and dispatches their upstream command ids', () => {
-  document.body.innerHTML = '<main></main>'
-  const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
-  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  const ascending = document.querySelector<HTMLButtonElement>('[data-ribbon-command="sort:asc"]')!
-  const descending = document.querySelector<HTMLButtonElement>('[data-ribbon-command="sort:desc"]')!
-  expect(ascending.textContent).toBe('升序')
-  expect(descending.textContent).toBe('降序')
-  expect(ascending.disabled).toBe(false)
-  expect(descending.disabled).toBe(false)
-  ascending.click()
-  descending.click()
-  expect(onCommand.mock.calls).toEqual([['sort:asc'], ['sort:desc']])
-})
-
-it('dispatches the source sort and filter actions including advanced filter', () => {
+it('dispatches the GenOffice Home Sort and Filter menu beside AutoSum', () => {
   document.body.innerHTML = '<main></main>'
   const command = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, command)
-  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  for (const id of ['filter-toggle', 'filter-clear', 'filter-reapply', 'sort-custom-open', 'filter-advanced']) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button?.disabled, id).toBe(false)
-    button!.click()
-    expect(command).toHaveBeenLastCalledWith(id)
+  let selected = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    rotation: () => 0, editable: () => true, hasSelection: () => selected,
+  })
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="sort-filter"]')!
+  expect(select).not.toBeNull()
+  expect(select.title).toBe('排序和筛选')
+  expect(select.disabled).toBe(false)
+  const editing = select.closest('.workbook-ribbon-group')!
+  const controls = Array.from(editing.querySelectorAll<HTMLElement>('[data-ribbon-control], [data-ribbon-command]'))
+  expect(controls.slice(0, 3).map(control => control.dataset.ribbonControl ?? control.dataset.ribbonCommand))
+    .toEqual(['autosum', 'sort-filter', 'fill-menu'])
+  expect(Array.from(select.options, option => [option.value, option.text])).toEqual([
+    ['', '排序和筛选'], ['sort:asc', '升序'], ['sort:desc', '降序'], ['sort-custom-open', '自定义排序…'],
+    ['filter-toggle', '筛选'], ['filter-clear', '清除筛选条件'], ['filter-reapply', '重新应用当前筛选'],
+  ])
+  for (const option of Array.from(select.options).slice(1)) {
+    select.value = option.value
+    select.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(select.value).toBe('')
   }
+  selected = false; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  select.value = 'sort:asc'
+  select.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledTimes(6)
+  ribbon.dispose()
+})
+
+it('dispatches the GenOffice Home Fill menu with Flash Fill and protects the workbook', () => {
+  document.body.innerHTML = '<main></main>'
+  const command = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    rotation: () => 0, editable: () => true,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const fill = document.querySelector<HTMLSelectElement>('[data-ribbon-control="fill-menu"]')!
+  expect(fill).not.toBeNull()
+  expect(fill.closest('label')?.previousElementSibling?.querySelector('[data-ribbon-control="sort-filter"]')).not.toBeNull()
+  expect(fill.disabled).toBe(false)
+  expect(Array.from(fill.options, option => [option.value, option.text])).toEqual([
+    ['', '填充'], ['fill-down', '向下填充'], ['fill-right', '向右填充'], ['fill-up', '向上填充'],
+    ['fill-left', '向左填充'], ['fill-series-open', '序列…'], ['flash-fill', '快速填充'],
+  ])
+  for (const option of Array.from(fill.options).slice(1)) {
+    fill.value = option.value
+    fill.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(fill.value).toBe('')
+  }
+  protectedSheet = true; ribbon.refreshState()
+  expect(fill.disabled).toBe(true)
+  fill.value = 'flash-fill'
+  fill.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledTimes(6)
+  ribbon.dispose()
+})
+
+it('dispatches the GenOffice Sort menu and keeps the filter controls in source order', () => {
+  document.body.innerHTML = '<main></main>'
+  const command = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
+    editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="sort"]')
+  expect(select).not.toBeNull()
+  expect(select!.disabled).toBe(false)
+  expect(select!.title).toBe('对所选内容排序')
+  expect(Array.from(select!.options, option => [option.value, option.text])).toEqual([
+    ['', '排序'], ['sort:asc', '升序'], ['sort:desc', '降序'], ['sort-custom-open', '自定义排序…'],
+  ])
+  for (const option of Array.from(select!.options).slice(1)) {
+    select!.value = option.value
+    select!.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(select!.value).toBe('')
+  }
+  const group = select!.closest('.workbook-ribbon-group')!
+  const filters = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
+  expect(filters.map(button => button.dataset.ribbonCommand)).toEqual([
+    'filter-toggle', 'filter-clear', 'filter-reapply', 'filter-advanced',
+  ])
+  for (const button of filters) {
+    expect(button.disabled).toBe(false)
+    button.click()
+    expect(command).toHaveBeenLastCalledWith(button.dataset.ribbonCommand)
+  }
+  protectedSheet = true; ribbon.refreshState()
+  expect(select!.disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('dispatches clear formats/all through the official selection commands and refuses without the wiring', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
-  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
-  const clearAll = document.querySelector<HTMLButtonElement>('[data-ribbon-command="clear-all"]')!
-  const clearFormats = document.querySelector<HTMLButtonElement>('[data-ribbon-command="clear-formats"]')!
-  expect(clearAll.textContent).toBe('全部清除')
-  expect(clearFormats.textContent).toBe('清除格式')
-  expect(clearAll.disabled).toBe(false)
-  expect(clearFormats.disabled).toBe(false)
-  clearFormats.click(); clearAll.click()
-  expect(onCommand.mock.calls.map(([command]) => command)).toEqual(['clear-formats', 'clear-all'])
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => 0, editable: () => true,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const clear = document.querySelector<HTMLSelectElement>('[data-ribbon-control="clear-selection"]')!
+  expect(clear).not.toBeNull()
+  expect(clear.closest('label')?.previousElementSibling?.querySelector('[data-ribbon-control="fill-menu"]')).not.toBeNull()
+  expect(Array.from(clear.options, option => [option.text, option.disabled])).toEqual([
+    ['清除', false], ['全部清除', false], ['清除格式', false], ['清除内容', false],
+    ['清除批注和注释', false], ['清除超链接', false],
+  ])
+  for (const id of ['clear-all', 'clear-formats', 'clear-contents', 'clear-comments', 'clear-hyperlinks']) {
+    clear.value = id
+    clear.dispatchEvent(new Event('change'))
+    expect(onCommand).toHaveBeenLastCalledWith(id)
+    expect(clear.value).toBe('')
+  }
+  expect(clear.options[4]?.title).toBe('清除所选单元格的传统注释')
+  protectedSheet = true; ribbon.refreshState()
+  expect(clear.disabled).toBe(true)
+  ribbon.dispose()
 
   const range = { getRow: () => 0, getColumn: () => 0, getHeight: () => 2, getWidth: () => 1 }
   const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => range }) }) } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
@@ -515,19 +700,33 @@ it('dispatches clear formats/all through the official selection commands and ref
 
 it('renders GenOffice Data Tools in source order with explicit native writeback limits', () => {
   document.body.innerHTML = '<main></main>'
-  mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
+  const command = vi.fn()
+  let editable = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, { editable: () => editable, rotation: () => 0 })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
   const groups = [...document.querySelectorAll<HTMLElement>('.workbook-ribbon-group')]
   const groupFor = (title: string) => groups.find(group => group.querySelector('h2')?.textContent === title)
   const dataTools = groupFor('数据工具')!
-  const ids = [...dataTools.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
-    .map(button => button.dataset.ribbonCommand)
+  const ids = [...dataTools.querySelectorAll<HTMLElement>('[data-ribbon-control], [data-ribbon-command]')]
+    .map(control => control.dataset.ribbonControl ?? control.dataset.ribbonCommand)
   expect(ids).toEqual([
-    'text-to-columns:2', 'text-to-columns:4', 'text-to-columns:8', 'text-to-columns:1',
+    'text-to-columns',
     'flash-fill', 'remove-duplicates-open', 'dv-open', 'consolidate-open',
   ])
   const flash = dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="flash-fill"]')!
-  for (const id of [1, 2, 4, 8]) expect(dataTools.querySelector<HTMLButtonElement>(`[data-ribbon-command="text-to-columns:${id}"]`)!.disabled).toBe(false)
+  const split = dataTools.querySelector<HTMLSelectElement>('[data-ribbon-control="text-to-columns"]')!
+  expect(split.title).toBe('拆分单列文本（需完整加载的工作簿）')
+  expect(split.disabled).toBe(false)
+  expect(Array.from(split.options, option => [option.value, option.text])).toEqual([
+    ['', '分列'], ['text-to-columns:2', '按逗号拆分'], ['text-to-columns:4', '按分号拆分'],
+    ['text-to-columns:8', '按空格拆分'], ['text-to-columns:1', '按制表符拆分'],
+  ])
+  for (const option of Array.from(split.options).slice(1)) {
+    split.value = option.value
+    split.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(split.value).toBe('')
+  }
   expect(dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="remove-duplicates-open"]')!.disabled).toBe(false)
   expect(flash.disabled).toBe(false)
   const validation = dataTools.querySelector<HTMLButtonElement>('[data-ribbon-command="dv-open"]')!
@@ -545,6 +744,9 @@ it('renders GenOffice Data Tools in source order with explicit native writeback 
   expect(subtotal?.textContent).toBe('分类汇总')
   expect(subtotal?.disabled).toBe(false)
   expect(subtotal?.dataset.unavailableReason).toBeUndefined()
+  editable = false; ribbon.refreshState()
+  expect(split.disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('dispatches the official sort-range command with absolute bounds for asc and desc', () => {
@@ -581,8 +783,11 @@ it('surfaces official sort failures and keeps the single-row guard', () => {
 it('renders source-localized Home Alignment and Cells actions with their fixed command ids', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
-  const getLabel = (id: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)?.textContent
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => [button.dataset.ribbonCommand!, button.textContent ?? '']))
   expect(labels.get('valign:top')).toBe('顶端对齐')
@@ -591,25 +796,37 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
   expect(labels.get('align:left')).toBe('左对齐')
   expect(labels.get('align:center')).toBe('居中')
   expect(labels.get('align:right')).toBe('右对齐')
-  expect(labels.get('merge:center')).toBe('合并后居中')
-  expect(labels.get('merge:across')).toBe('跨越合并')
-  expect(labels.get('merge:cells')).toBe('合并单元格')
-  expect(labels.get('merge:unmerge')).toBe('取消单元格合并')
+  const merge = document.querySelector<HTMLSelectElement>('[data-ribbon-control="merge"]')!
+  expect(merge).not.toBeNull()
+  expect(merge.disabled).toBe(false)
+  expect(merge.title).toBe('合并单元格')
+  expect(merge.closest('label')?.previousElementSibling?.getAttribute('data-ribbon-command')).toBe('indent-step:decrease')
+  expect(Array.from(merge.options, option => [option.value, option.text])).toEqual([
+    ['', '合并'], ['merge:center', '合并后居中'], ['merge:across', '跨越合并'],
+    ['merge:cells', '合并单元格'], ['merge:unmerge', '取消单元格合并'],
+  ])
+  for (const option of Array.from(merge.options).slice(1)) {
+    merge.value = option.value
+    merge.dispatchEvent(new Event('change'))
+    expect(onCommand).toHaveBeenLastCalledWith(option.value)
+    expect(merge.value).toBe('')
+  }
   expect(labels.get('insert-row-here')).toBe('插入行')
   expect(labels.get('delete-row-here')).toBe('删除行')
   expect(labels.get('insert-col-here')).toBe('插入列')
   expect(labels.get('delete-col-here')).toBe('删除列')
-  expect(labels.get('clear-contents')).toBe('清除内容')
-  for (const id of ['valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells']) {
+  for (const id of ['valign:top', 'align:center', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'insert-cells', 'delete-cells', 'format-cells']) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
     expect(button.disabled, id).toBe(false)
     button.click()
   }
   expect(onCommand.mock.calls.map(([command]) => command)).toEqual([
-    'valign:top', 'align:center', 'merge:cells', 'merge:center', 'merge:across', 'merge:unmerge',
-    'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells',
+    'merge:center', 'merge:across', 'merge:cells', 'merge:unmerge', 'valign:top', 'align:center',
+    'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'insert-cells', 'delete-cells', 'format-cells',
   ])
-  expect(getLabel('clear-contents')).toBe('清除内容')
+  protectedSheet = true; ribbon.refreshState()
+  expect(merge.disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('wires Find and Replace to the registered Univer dialogs', () => {
@@ -628,22 +845,36 @@ it('wires Find and Replace to the registered Univer dialogs', () => {
 it('renders the GenOffice Formulas Function Library with localized categories and safe states', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
+  let editable = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    editable: () => editable, rotation: () => 0,
+  })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Formulas"]')!.click()
   const expected = new Map([
     ['insert-function-open', '插入函数'], ['insert-function-open:All', '最近使用的函数'],
     ['insert-function-open:Financial', '财务'], ['insert-function-open:Logical', '逻辑'],
     ['insert-function-open:Text', '文本'], ['insert-function-open:Date & Time', '日期和时间'],
     ['insert-function-open:Lookup', '查找与引用'], ['insert-function-open:Math', '数学和三角函数'],
-    ['autofn:SUM', '自动求和'], ['autofn:AVERAGE', '平均值'], ['autofn:COUNT', '计数'],
-    ['autofn:MAX', '最大值'], ['autofn:MIN', '最小值'],
   ])
   for (const [id, label] of expected) {
     const button = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
       .find(candidate => candidate.dataset.ribbonCommand === id)
     expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
   }
-  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="autofn:SUM"]')?.disabled).toBe(false)
+  const autoSum = document.querySelector<HTMLSelectElement>('[data-ribbon-control="autosum"]')!
+  expect(autoSum).not.toBeNull()
+  expect(autoSum.title).toBe('自动求和 — 插入到选区下方')
+  const library = autoSum.closest('.workbook-ribbon-group')!
+  const controls = Array.from(library.querySelectorAll<HTMLElement>('[data-ribbon-command], [data-ribbon-control]'))
+  expect(controls.slice(0, 3).map(control => control.dataset.ribbonCommand ?? control.dataset.ribbonControl))
+    .toEqual(['insert-function-open', 'autosum', 'insert-function-open:All'])
+  expect(autoSum.disabled).toBe(false)
+  for (const option of Array.from(autoSum.options).slice(1)) {
+    autoSum.value = option.value
+    autoSum.dispatchEvent(new Event('change'))
+    expect(onCommand).toHaveBeenLastCalledWith(option.value)
+    expect(autoSum.value).toBe('')
+  }
   for (const id of [...expected.keys()].filter(id => id.startsWith('insert-function-open'))) {
     const button = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
       .find(candidate => candidate.dataset.ribbonCommand === id)
@@ -651,13 +882,16 @@ it('renders the GenOffice Formulas Function Library with localized categories an
     button?.click()
     expect(onCommand).toHaveBeenLastCalledWith(id)
   }
+  editable = false; ribbon.refreshState()
+  expect(autoSum.disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('renders the GenOffice Review Comments and Notes commands with note-specific unavailable reasons', () => {
   document.body.innerHTML = '<main></main>'
   const reasons: Record<string, string> = {
-    'note-open': '批注状态不可用', 'note-delete': '批注状态不可用',
-    'note-prev': '批注集合不可用', 'note-next': '批注集合不可用', 'note-show-toggle': '批注可见状态不可用',
+    'comment-new': '批注状态不可用', 'comment-delete': '批注状态不可用',
+    'comment-prev': '批注集合不可用', 'comment-next': '批注集合不可用', 'comments-pane-toggle': '批注可见状态不可用',
   }
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
     rotation: () => undefined, editable: () => true, hasSelection: () => true,
@@ -666,9 +900,9 @@ it('renders the GenOffice Review Comments and Notes commands with note-specific 
   ribbon.refreshState?.()
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
   const expected = [
-    ['note-open', '新建/编辑批注', '批注状态不可用'], ['note-delete', '删除', '批注状态不可用'],
-    ['note-prev', '上一条', '批注集合不可用'], ['note-next', '下一条', '批注集合不可用'],
-    ['note-show-toggle', '显示批注', '批注可见状态不可用'],
+    ['comment-new', '新建批注', '批注状态不可用'], ['comment-delete', '删除', '批注状态不可用'],
+    ['comment-prev', '上一条', '批注集合不可用'], ['comment-next', '下一条', '批注集合不可用'],
+    ['comments-pane-toggle', '显示批注', '批注可见状态不可用'],
   ]
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
   for (const [id, label, reason] of expected) {
@@ -678,7 +912,7 @@ it('renders the GenOffice Review Comments and Notes commands with note-specific 
     expect(button?.title, id).toContain(reason)
     expect(button?.getAttribute('aria-description'), id).toContain(reason)
   }
-  expect(buttons.filter(button => button.dataset.ribbonCommand === 'note-open')).toHaveLength(2)
+  expect(buttons.filter(button => button.dataset.ribbonCommand === 'note-open')).toHaveLength(0)
 })
 
 it('matches the GenOffice Review source groups, command ids, and safe disabled states', () => {
@@ -692,29 +926,66 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   const idsByGroup = groups.map(group => [...group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => button.dataset.ribbonCommand))
   expect(idsByGroup).toEqual([
-    ['workbook-statistics'], ['translate'],
-    ['note-open', 'note-delete', 'note-prev', 'note-next', 'note-show-toggle'],
-    ['note-open'], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
+    ['spell-check', 'workbook-statistics', 'spellcheck-toggle'], [],
+    ['comment-new', 'comment-delete', 'comment-prev', 'comment-next', 'comments-pane-toggle'],
+    [], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
   ])
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => [button.dataset.ribbonCommand!, button.textContent ?? '']))
   expect(labels.get('workbook-statistics')).toBe('工作簿统计信息')
-  expect(document.querySelector('[data-ribbon-command=translate] > span:not(.workbook-ribbon-icon)')?.textContent).toBe('翻译')
   expect(labels.get('sheet-protect')).toBe('保护工作表')
   expect(labels.get('workbook-protect')).toBe('保护工作簿')
   expect(labels.get('allow-edit-ranges-open')).toBe('允许编辑区域')
-  for (const [id, reason] of [
-    ['translate', '翻译操作'],
-  ]) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button?.disabled, id).toBe(true)
-    expect(button?.title, id).toContain(reason)
-    expect(button?.getAttribute('aria-description'), id).toContain(reason)
-  }
-  expect(document.querySelector('[data-ribbon-command="spell-check"]')).toBeNull()
-  expect(document.querySelector('[data-ribbon-command="spellcheck-toggle"]')).toBeNull()
+  expect(labels.get('spell-check')).toBe('拼写检查')
+  expect(labels.get('spellcheck-toggle')).toBe('检查拼写')
   expect(document.querySelector('[data-ribbon-command="workbook-change-password"]')).toBeNull()
   expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="workbook-statistics"]')!.disabled).toBe(false)
+})
+
+it('dispatches the source translation language from an editable selected range', () => {
+  document.body.innerHTML = '<main></main>'
+  let reason: string | undefined = '当前工作表受保护'
+  const onTranslate = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
+    rotation: () => undefined, editable: () => true, onTranslate, translateReason: () => reason,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
+  const language = document.querySelector<HTMLSelectElement>('select[aria-label="翻译"]')!
+  expect(Array.from(language.options).slice(1).map(option => option.value)).toEqual([
+    'English', '简体中文', '繁體中文', '日本語', '한국어', 'Español', 'Français', 'Deutsch', 'Português', 'Русский', 'العربية',
+  ])
+  language.value = 'العربية'
+  language.dispatchEvent(new Event('change'))
+  expect(onTranslate).not.toHaveBeenCalled()
+  reason = undefined
+  ribbon.refreshState?.()
+  language.value = 'العربية'
+  language.dispatchEvent(new Event('change'))
+  expect(onTranslate).toHaveBeenCalledWith('العربية')
+  expect(language.value).toBe('')
+  ribbon.dispose()
+})
+
+it('offers GenOffice Notes commands in source order and dispatches only enabled choices', () => {
+  document.body.innerHTML = '<main></main>'
+  const onCommand = vi.fn()
+  mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    editable: () => false, rotation: () => undefined, hasSelection: () => true,
+    noteReason: id => ['note-insert-picture', 'notes-convert'].includes(id) ? '当前工作簿不可编辑' : undefined,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
+  const notes = document.querySelector<HTMLSelectElement>('select[aria-label="注释"]')!
+  expect(Array.from(notes.options).slice(1).map(item => [item.value, item.textContent])).toEqual([
+    ['note-open', '新建注释'], ['note-insert-picture', '插入图片'],
+    ['note-show-toggle', '显示/隐藏注释'], ['note-show-all', '显示所有注释'],
+    ['notes-convert', '转换为注释'], ['note-pictures-pane-toggle', '批注图片'],
+  ])
+  for (const command of ['note-insert-picture', 'notes-convert', 'note-show-all', 'note-pictures-pane-toggle']) {
+    notes.value = command
+    notes.dispatchEvent(new Event('change'))
+    expect(notes.value).toBe('')
+  }
+  expect(onCommand.mock.calls).toEqual([['note-show-all'], ['note-pictures-pane-toggle']])
 })
 
 it('renders GenOffice View controls with a live gridline toggle and explicit unavailable states', () => {
@@ -726,9 +997,9 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
     ['toggle-page-break-preview', '分页预览'], ['toggle-gridlines', '显示网格线'],
     ['toggle-formula-bar', '编辑栏'], ['toggle-headings', '显示标题'],
     ['toggle-right-to-left', '从右到左'], ['toggle-cross-highlight', '突出显示活动行和列'],
-    ['zoom-reset', '重置缩放'], ['zoom-to-selection', '缩放到选定区域'],
+    ['zoom-reset', '100%'], ['zoom-to-selection', '缩放到选定区域'],
     ['zoom-in', '放大'], ['zoom-out', '缩小'],
-    ['new-window', '新建窗口'], ['arrange-all', '全部重排'], ['freeze-panes', '冻结窗格'],
+    ['new-window', '新建窗口'], ['arrange-all', '全部重排'],
     ['split-window', '拆分窗口'], ['hide-window', '隐藏窗口'], ['switch-window', '切换窗口'],
   ])
   for (const [id, label] of expected) {
@@ -747,6 +1018,41 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   }
   const fit = buttons.find(button => button.dataset.ribbonCommand === 'zoom-to-selection')!
   expect(fit.disabled).toBe(false)
+  expect(document.querySelector('[data-ribbon-control="freeze-panes"]')?.getAttribute('aria-label')).toBe('冻结窗格')
+})
+
+it('dispatches the four GenOffice Freeze Panes choices and guards the selection-only action', () => {
+  const command = vi.fn()
+  let editable = true, selected = true
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => editable, rotation: () => 0, hasSelection: () => selected,
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const freeze = document.querySelector<HTMLSelectElement>('[data-ribbon-control="freeze-panes"]')!
+  expect([...freeze.options].slice(1).map(option => [option.value, option.textContent])).toEqual([
+    ['freeze-here', '在所选位置冻结窗格'], ['freeze-top-row', '冻结首行'],
+    ['freeze-first-col', '冻结首列'], ['unfreeze', '取消冻结窗格'],
+  ])
+  const select = (value: string) => {
+    freeze.value = value
+    freeze.dispatchEvent(new Event('change'))
+    expect(freeze.value).toBe('')
+  }
+  for (const option of [...freeze.options].slice(1)) {
+    select(option.value)
+    expect(command).toHaveBeenLastCalledWith(option.value)
+  }
+  selected = false; ribbon.refreshState()
+  expect(freeze.options[1]!.disabled).toBe(true)
+  select('freeze-here')
+  expect(command).toHaveBeenCalledTimes(4)
+  select('freeze-top-row')
+  expect(command).toHaveBeenCalledTimes(5)
+  editable = false; ribbon.refreshState()
+  expect(freeze.disabled).toBe(true)
+  select('unfreeze')
+  expect(command).toHaveBeenCalledTimes(5)
+  ribbon.dispose()
 })
 
 it('enables split window only to remove an existing file split pane on an editable, unprotected sheet', () => {
@@ -800,9 +1106,9 @@ it('keeps selection zoom available on protected and read-only sheets', () => {
 it('offers all source zoom presets and the full dialog while respecting view readiness', () => {
   document.body.innerHTML = '<main></main>'
   const command = vi.fn()
-  let ready = true
+  let ready = true, selected = true
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, command, {
-    editable: () => false, rotation: () => 0, zoomSelectionAvailable: () => ready,
+    editable: () => false, rotation: () => 0, hasSelection: () => selected, zoomSelectionAvailable: () => ready,
     protection: () => ({ sheet: { protected: true }, workbook: { locked: false } }),
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
@@ -812,6 +1118,16 @@ it('offers all source zoom presets and the full dialog while respecting view rea
   const presets = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')!
   expect([...presets.options].map(option => option.value)).toEqual(['', '50', '75', '100', '125', '150', '200'])
   expect(presets.disabled).toBe(false)
+  expect(presets.getAttribute('aria-label')).toBe('缩放')
+  expect(presets.title).toBe('缩放工作表')
+  const group = presets.closest('.workbook-ribbon-group')!
+  const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
+  expect(buttons.slice(0, 2).map(button => button.dataset.ribbonCommand)).toEqual(['zoom-reset', 'zoom-to-selection'])
+  const [reset, fit] = buttons
+  expect(reset!.querySelector('span:not(.workbook-ribbon-icon)')?.textContent).toBe('100%')
+  expect(reset!.title).toBe('重置缩放')
+  expect(reset!.disabled).toBe(false)
+  reset!.click(); expect(command).toHaveBeenLastCalledWith('zoom-reset')
   presets.value = '125'; presets.dispatchEvent(new Event('change'))
   expect(command).toHaveBeenLastCalledWith('zoom:125')
   expect(presets.value).toBe('')
@@ -976,7 +1292,7 @@ it('converts the selected table through its captured identity and disables conve
   ribbon.dispose()
 })
 
-it('opens native table creation from Home and Insert and respects protected selections', () => {
+it('offers the six GenOffice table styles in Home and keeps Insert table creation', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
   let protectedSheet = false
@@ -984,13 +1300,28 @@ it('opens native table creation from Home and Insert and respects protected sele
     rotation: () => 0, editable: () => true,
     protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
   })
-  const control = () => document.querySelector<HTMLButtonElement>('[data-ribbon-command="format-as-table"]')!
-  expect(control().disabled).toBe(false)
-  control().click(); expect(onCommand).toHaveBeenLastCalledWith('format-as-table')
+  const menu = document.querySelector<HTMLSelectElement>('[data-ribbon-control="table-style-presets"]')!
+  expect(menu).not.toBeNull()
+  expect(menu.disabled).toBe(false)
+  expect(Array.from(menu.options, option => [option.value, option.text])).toEqual([
+    ['', '套用表格格式'], ['format-as-table:TableStyleLight1', '浅色 1（灰）'],
+    ['format-as-table:TableStyleLight9', '浅色 9（蓝）'], ['format-as-table:TableStyleMedium2', '中等 2（蓝）'],
+    ['format-as-table:TableStyleMedium4', '中等 4（橙）'], ['format-as-table:TableStyleMedium7', '中等 7（绿）'],
+    ['format-as-table:TableStyleDark2', '深色 2（藏青）'],
+  ])
+  for (const option of Array.from(menu.options).slice(1)) {
+    menu.value = option.value
+    menu.dispatchEvent(new Event('change'))
+    expect(onCommand).toHaveBeenLastCalledWith(option.value)
+    expect(menu.value).toBe('')
+  }
+  protectedSheet = true; ribbon.refreshState(); expect(menu.disabled).toBe(true)
+  protectedSheet = false
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
-  expect(control().disabled).toBe(false); control().click()
-  expect(onCommand).toHaveBeenCalledTimes(2)
-  protectedSheet = true; ribbon.refreshState(); expect(control().disabled).toBe(true)
+  const control = document.querySelector<HTMLButtonElement>('[data-ribbon-command="format-as-table"]')!
+  expect(control.disabled).toBe(false); control.click()
+  expect(onCommand).toHaveBeenLastCalledWith('format-as-table')
+  protectedSheet = true; ribbon.refreshState(); expect(control.disabled).toBe(true)
   ribbon.dispose()
 })
 

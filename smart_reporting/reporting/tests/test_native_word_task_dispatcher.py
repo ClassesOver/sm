@@ -108,7 +108,7 @@ async def test_parallel_exact_start_retry_never_cancels_shared_durable_task():
                 prepared.set()
             await release.wait()
             return SimpleNamespace(scope=SimpleNamespace(external_run_id='shared-word-task'))
-        async def execute(self, ref):
+        async def execute(self, ref, *, shutdown_requested=None):
             await asyncio.Event().wait()
         async def cancel(self, ref):
             cancelled.append(ref.scope.external_run_id)
@@ -200,7 +200,7 @@ async def test_capacity_is_rechecked_after_prepare_and_only_new_task_is_cancelle
                 ai._jobs[str(index)] = _NativeAIJob(str(index), data.context.digest(), 'd' * 64,
                     'user', datetime.now(UTC))
             return SimpleNamespace(scope=SimpleNamespace(external_run_id='only-this-new-task'))
-        async def execute(self, ref):
+        async def execute(self, ref, *, shutdown_requested=None):
             import asyncio
             await asyncio.Event().wait()
         async def cancel(self, ref):

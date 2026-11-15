@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from loguru import logger
 
+from ..office.native_access import check as check_office_access
 from ..reporting.models import ReportingError
 from .agent_event_streams import bind_agent_event_log, event_stream_response
 from .native_ai import _copy_operations
@@ -110,6 +111,9 @@ class NativePDFReviewService(NativePDFReadService):
                 if job.status != "running":
                     return
                 await job.event_log.emit("phase", label="正在处理批注")
+                await check_office_access(context.document_id, write=True)
+                if job.status != "running":
+                    return
                 async with bind_agent_event_log(job.event_log):
                     result = await self.planner(
                         reader=reader,
@@ -262,6 +266,7 @@ class NativePDFReviewService(NativePDFReadService):
                 current = await self.editor.context_for_session(session)
                 if current.digest() != job.context_sha256:
                     raise ReportingError("native_ai_snapshot_changed", "PDF 会话来源已变化。")
+                await check_office_access(context.document_id, write=True)
                 if monotonic() >= deadline:
                     raise TimeoutError
                 applied = set(manifest["appliedOperationIndices"])
@@ -330,7 +335,8 @@ class NativePDFReviewService(NativePDFReadService):
         finally:
             await job.event_log.finish(job.status)
 
-    async def accept(self, session, edit_id, *, expected_sha256, operations, snapshot_sha256):
+    async def accept(self, session, edit_id, *, expected_sha256, operations, snapshot_sha256,
+                     revalidate_session=None):
         context = await self._context(session)
         self._prune()
         base = _copy_operations(operations)
@@ -361,6 +367,18 @@ class NativePDFReviewService(NativePDFReadService):
         )
         manifest = self._receipt(preview, expected_sha256, len(proposal["operations"]))
         current = await self.editor.context_for_session(session)
+        await self.editor.read_file(current)
+        # HTTP callers re-read the registered grant after the last external await.
+        # Direct service callers retain their existing trusted-session contract.
+        if revalidate_session is not None:
+            registered = await revalidate_session()
+            if (registered.report_id, registered.revision, registered.workflow_run_id,
+                    registered.context_sha256, registered.capabilities) != (
+                    session.report_id, session.revision, session.workflow_run_id,
+                    session.context_sha256, session.capabilities):
+                raise ReportingError("native_permission_denied", "编辑会话身份已变化。")
+        if snapshot_sha256 != job.snapshot_sha256 or base != getattr(job, "base", None):
+            raise ReportingError("native_ai_snapshot_changed", "完整草稿快照已变化。")
         if job.status != "succeeded" or job.result is not proposal or self._closed:
             raise ReportingError("native_ai_candidate_unavailable", "候选已取消，不能采纳。")
         if current.digest() != job.context_sha256 or manifest != {

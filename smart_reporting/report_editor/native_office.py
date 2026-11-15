@@ -27,9 +27,13 @@ from .pptx_master_elements import native_master_element_edits
 from .pptx_media import native_media_insertions
 from .pptx_model3d import native_model_edits
 
-_ALLOWED_KEYS = {'customShows', 'backgroundImageReuses', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'zoomInsertions', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
+_ALLOWED_KEYS = {'customShows', 'backgroundImageReuses', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'zoomInsertions', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'hiddenSlides', 'commentEdits', 'transitions', 'advanceTimes', 'animations', 'animationSequences', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions', 'textFormatting', 'paragraphFormatting'}
 # 对齐既有 workbook bridge/operations.ts 顶层协议；内部参数仍交共享引擎验证。
 _XLSX_FIELDS = {
+    'applyNoteSource': {'sheetName', 'row', 'column', 'text'},
+    'applyHyperlinkSource': {'sheetName', 'ref', 'target'},
+    'applyTableSource': {'sheetName', 'range', 'name', 'style', 'bandedRows'},
+    'clearCellRange': {'sheetName', 'range'},
     'insertPicture': {'sheetName', 'sourceIdentity', 'imageId', 'row', 'column', 'widthPx', 'heightPx', 'picture'},
     'editPicture': {'sheetName', 'sourceIdentity', 'drawingPart', 'pictureId', 'mediaSha256', 'before', 'geometry'},
     'retargetExternalLink': {'index', 'expectedTarget', 'target'},
@@ -51,7 +55,7 @@ _XLSX_FIELDS = {
     'addPivot': {'addition'}, 'applyColumnWidths': {'sheetName', 'entries'},
     'applySheetOutline': {'sheetName', 'rows', 'columns', 'summaryBelow', 'summaryRight'},
     'applyRowHeights': {'sheetName', 'entries'}, 'applyPageSetups': {'setups'},
-    'applyTableAdditions': {'additions'}, 'applyTableEdits': {'edits'}, 'refreshPivotCaches': set(),
+    'applyTableAdditions': {'additions'}, 'applyTableEdits': {'edits'}, 'refreshPivotCaches': {'sheetName'},
     'applyPivotLayoutExpansions': {'updates', 'controlRequest'}, 'expandPivotOutputs': {'expansions'},
     'upsertPivotControl': {'request'}, 'removePivotControl': {'request'},
     'applyDefinedNames': {'plan'}, 'protectSheet': {'sheetName', 'protect'},
@@ -702,6 +706,11 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             comment_deletes.add(identity)
         else:
             raise ValueError('native_office_operations_invalid')
+    advance_times = _records(operation, 'advanceTimes', {'slideIndex', 'ms'})
+    if (any(type(item['ms']) is not int or not 1 <= item['ms'] <= 4294967295
+            or item['slideIndex'] in deleted_slides for item in advance_times)
+        or len({item['slideIndex'] for item in advance_times}) != len(advance_times)):
+        raise ValueError('native_office_operations_invalid')
     transitions = _records(operation, 'transitions', {'slideIndex', 'kind'})
     if any(not isinstance(item['kind'], str) or item['kind'] not in _TRANSITIONS for item in transitions):
         raise ValueError('native_office_operations_invalid')
@@ -728,16 +737,33 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             raise ValueError('native_office_operations_invalid')
     paragraph_formatting = _records(operation, 'paragraphFormatting', {'slideIndex', 'elementId'}, {
         'align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt',
-        'bullet', 'bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu',
+        'bullet', 'bulletChar', 'bulletFont', 'bulletImage', 'numType', 'startAt', 'bulletHangEmu',
         'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta',
     })
     for item in paragraph_formatting:
+        if 'bulletImage' in item:
+            image = item['bulletImage']
+            if (item.get('bullet') != 'blip' or not isinstance(image, dict)
+                or set(image) != {'extension', 'bytesBase64'} or image['extension'] not in ('png', 'jpg')
+                or not isinstance(image['bytesBase64'], str) or len(image['bytesBase64']) > 349528):
+                raise ValueError('native_office_operations_invalid')
+            try:
+                raw_image = base64.b64decode(image['bytesBase64'], validate=True)
+                if not raw_image or len(raw_image) > 256 * 1024 or base64.b64encode(raw_image).decode() != image['bytesBase64']:
+                    raise ValueError('picture_bullet_size_invalid')
+                with Image.open(BytesIO(raw_image)) as picture:
+                    if picture.format != {'png': 'PNG', 'jpg': 'JPEG'}[image['extension']] or picture.width * picture.height > 16_777_216:
+                        raise ValueError('picture_bullet_format_invalid')
+                    picture.verify()
+            except (OSError, ValueError, Image.DecompressionBombError):
+                raise ValueError('native_office_operations_invalid') from None
         if (not isinstance(item['elementId'], str) or not item['elementId']
             or not set(item) - {'slideIndex', 'elementId'}
             or ('align' in item and (not isinstance(item['align'], str) or item['align'] not in {'left', 'center', 'right', 'justify'}))
             or ('lineSpacingPct' in item and (not _number(item['lineSpacingPct'], 100, 300) or item['lineSpacingPct'] not in {100, 115, 150, 200, 250, 300}))
             or any(key in item and not _number(item[key], 0, 500) for key in ('spaceBeforePt', 'spaceAfterPt'))
-            or ('bullet' in item and (not isinstance(item['bullet'], str) or item['bullet'] not in {'char', 'number', 'none'}))
+            or ('bullet' in item and (not isinstance(item['bullet'], str) or item['bullet'] not in {'char', 'number', 'none', 'blip'}))
+            or (item.get('bullet') == 'blip' and ('bulletImage' not in item or bool(set(item) & {'numType', 'startAt'})))
             or ('bulletChar' in item and (not isinstance(item['bulletChar'], str) or len(item['bulletChar']) != 1 or ord(item['bulletChar']) < 32 or 0x7f <= ord(item['bulletChar']) <= 0x9f or 0xd800 <= ord(item['bulletChar']) <= 0xdfff or ord(item['bulletChar']) in {0xfffe, 0xffff}))
             or ('bulletFont' in item and (not isinstance(item['bulletFont'], str) or not item['bulletFont'].strip() or len(item['bulletFont']) > 200 or any(ord(char) < 32 or 0x7f <= ord(char) <= 0x9f or 0xd800 <= ord(char) <= 0xdfff or ord(char) in {0xfffe, 0xffff} for char in item['bulletFont'])))
             or ('numType' in item and (not isinstance(item['numType'], str) or item['numType'] not in _NUMBERING_TYPES))
@@ -765,7 +791,7 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             or '\\' in path or '..' in PurePosixPath(path).parts or ':' in path):
             raise ValueError('native_office_operations_invalid')
     backgrounds, text_boxes, deletions = _validate_structure_edits(operation)
-    return {'master_element_edits': native_master_element_edits(operation.get('masterElementEdits', [])), 'master_text_edits': _native_master_text_edits(operation), 'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'table_structures': table_structures, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'hidden_slides': hidden_slides, 'comment_edits': comment_edits, 'transitions': transitions, 'animations': animations,
+    return {'master_element_edits': native_master_element_edits(operation.get('masterElementEdits', [])), 'master_text_edits': _native_master_text_edits(operation), 'edits': bridge_edits, 'order': order, 'new_slides': new_slides, 'deleted_slides': deleted_slides, 'reset_layouts': reset_layouts, 'shapes': shapes, 'tables': tables, 'shape_styles': shape_styles, 'shape_kinds': shape_kinds, 'sections': sections, 'header_footer': header_footer, 'table_cells': table_cells, 'table_styles': table_styles, 'table_structures': table_structures, 'charts': charts, 'smart_arts': smart_arts, 'animation_sequences': animation_sequences, 'theme': theme, 'slide_size': slide_size, 'hidden_slides': hidden_slides, 'comment_edits': comment_edits, 'transitions': transitions, 'advance_times': advance_times, 'animations': animations,
         'custom_shows': _native_custom_shows(operation), 'slide_layouts': layouts, 'backgrounds': backgrounds, 'background_images': _native_background_images(operation), 'background_image_reuses': _native_background_reuses(operation), **_native_background_ops(operation), 'text_boxes': text_boxes, 'deletions': deletions,
         'paragraph_formatting': paragraph_formatting, 'native_images': native_images, 'media_insertions': native_media_insertions(operation), **native_model_edits(operation),
         'picture_replacements': picture_replacements, 'picture_crops': picture_crops, 'picture_opacities': picture_opacities, 'chart_edits': chart_edits,
@@ -790,11 +816,20 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], 
                 if kind == 'applySheetOutline':
                     if not {'kind', 'sheetName'} <= set(operation) <= allowed:
                         raise ValueError('native_office_operations_invalid')
+                elif kind == 'applyTableSource':
+                    if not {'kind', 'sheetName', 'range'} <= set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
+                elif kind == 'refreshPivotCaches':
+                    if not set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
                 elif kind == 'applyPivotLayoutExpansions':
                     if not {'kind', 'updates'} <= set(operation) <= allowed:
                         raise ValueError('native_office_operations_invalid')
                 elif kind == 'applySheetFilter':
                     if not {'kind', 'sheetName', 'filter'} <= set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
+                elif kind == 'patchThreadedComments' and 'convertToNotes' in operation:
+                    if set(operation) != allowed | {'convertToNotes'} or operation['convertToNotes'] is not True:
                         raise ValueError('native_office_operations_invalid')
                 elif set(operation) != allowed:
                     raise ValueError('native_office_operations_invalid')

@@ -19,6 +19,10 @@ vi.mock('./workbook-ribbon', () => ({
 vi.mock('./workbook-vendor/grid/decimal-step', () => ({ stepSelectionDecimals() {} }))
 vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {}, setSparklineWorkbookResolver() {} }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts() {} }))
+vi.mock('./workbook-threaded-comments-host', () => ({ mountWorkbookThreads: () => ({ load() {}, dispose() {} }) }))
+vi.mock(import('./workbook-note-pictures-host'), async original => ({
+  ...await original(), installNotePictureHover: () => ({ dispose() {} }),
+}))
 vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { Univer, IUniverInstanceService, LocaleType, mergeLocales } = await import('@univerjs/core')
   const CoreZhCN = (await import('@univerjs/preset-sheets-core/locales/zh-CN')).default
@@ -27,14 +31,29 @@ vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { UniverSheetsPlugin } = await import('@univerjs/sheets')
   const { UniverSheetsNotePlugin } = await import('@univerjs/sheets-note')
   const { UniverSheetsSortPlugin } = await import('@univerjs/sheets-sort')
+  const { UniverFormulaEnginePlugin } = await import('@univerjs/engine-formula')
+  const { UniverSheetsFormulaPlugin } = await import('@univerjs/sheets-formula')
+  const { UniverSheetsDataValidationPlugin } = await import('@univerjs/sheets-data-validation')
+  const { UniverSheetsTablePlugin } = await import('@univerjs/sheets-table')
+  const { UniverSheetsFilterPlugin } = await import('@univerjs/sheets-filter')
+  const { UniverSheetsConditionalFormattingPlugin } = await import('@univerjs/sheets-conditional-formatting')
   await import('@univerjs/sheets/facade')
   await import('@univerjs/sheets-note/facade')
+  await import('@univerjs/sheets-table/facade')
+  await import('@univerjs/sheets-filter/facade')
+  await import('@univerjs/sheets-data-validation/facade')
   return { createUniver: () => {
     const univer = new Univer({ locale: LocaleType.ZH_CN, locales: { [LocaleType.ZH_CN]: mergeLocales(CoreZhCN, NoteZhCN) } })
     grid.instances.push(univer)
     univer.registerPlugin(UniverSheetsPlugin)
     univer.registerPlugin(UniverSheetsNotePlugin)
     univer.registerPlugin(UniverSheetsSortPlugin)
+    univer.registerPlugin(UniverFormulaEnginePlugin)
+    univer.registerPlugin(UniverSheetsFormulaPlugin)
+    univer.registerPlugin(UniverSheetsDataValidationPlugin)
+    univer.registerPlugin(UniverSheetsTablePlugin)
+    univer.registerPlugin(UniverSheetsFilterPlugin)
+    univer.registerPlugin(UniverSheetsConditionalFormattingPlugin)
     const api = FUniver.newAPI(univer)
     const create = api.createWorkbook.bind(api)
     api.createWorkbook = data => {
@@ -67,12 +86,96 @@ async function open(source: Uint8Array, draft: NativeDraft, save: (request: Nati
   const transport = createNativeOfficeTransport({ api: { save } as never, context: context as never, draft })
   const view = await createWorkbookEditorView(shell, { native: true, draft, request: transport.workbook,
     file: async () => ({ bytes: source.slice().buffer as ArrayBuffer, sha256: identity.sourceSha256 }) })
+  if (!view) throw new Error('XLSX editor fixture did not open')
   return { shell, view }
 }
 const sheet = () => grid.api.getActiveWorkbook().getActiveSheet()
 const params = () => ({ unitId: grid.api.getActiveWorkbook().getId(), subUnitId: sheet().getSheetId() })
 const update = (text: string) => grid.api.syncExecuteCommand('sheet.command.update-note', { ...params(), row: 0, col: 0, note: { note: text, width: 240, height: 140 } })
 const history = (direction: 'undo' | 'redo') => expect(grid.api.syncExecuteCommand(`univer.command.${direction}`)).toBe(true)
+
+it('clears legacy notes only within the selected cells and saves the remaining original notes', async () => {
+  const source = await fixture(), draft = new NativeDraft(identity, store())
+  let output: Uint8Array | undefined
+  const { shell, view } = await open(source, draft, async request => {
+    output = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/notes.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('A1:C3').activate()
+    grid.ribbon('clear-comments')
+    await vi.waitFor(() => expect(draft.operations).toMatchObject([{
+      kind: 'patchSheetNotes', sheetName: 'Sheet1',
+      changes: [{ row: 0, column: 0, text: null }, { row: 2, column: 2, text: null }],
+    }]))
+    shell.save.click()
+    await vi.waitFor(() => expect(shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = (await readWorkbook(output!)).sheets[0]!
+    expect(saved.cells.A1?.value).toBe('keep value')
+    expect(saved.notes!.notes).toEqual([
+      { row: 4, column: 4, author: 'Carol', text: 'delete with col' },
+      { row: 6, column: 6, author: 'Dan', text: 'untouched' },
+    ])
+  } finally { view.dispose() }
+})
+
+it('shows hidden notes on the current sheet, then hides them all without editing the draft', async () => {
+  const draft = new NativeDraft(identity, store()), save = vi.fn()
+  const { view } = await open(await fixture(), draft, save)
+  try {
+    const { unitId, subUnitId: sheetId } = params()
+    expect(grid.api.syncExecuteCommand('sheet.mutation.toggle-note-popup', { unitId, sheetId, row: 0, col: 0 })).toBe(true)
+    const visible = () => sheet().getNotes().filter((note: { show?: boolean }) => note.show).length
+    expect(visible()).toBe(1)
+    grid.ribbon('note-show-all')
+    expect(visible()).toBe(4)
+    grid.ribbon('note-show-all')
+    expect(visible()).toBe(0)
+    expect(draft.operations).toEqual([])
+    expect(save).not.toHaveBeenCalled()
+  } finally { view.dispose() }
+})
+
+it('toggles the shared note pictures pane from the Review ribbon', async () => {
+  const draft = new NativeDraft(identity, store())
+  const { shell, view } = await open(await fixture(), draft, vi.fn())
+  try {
+    grid.ribbon('note-pictures-pane-toggle')
+    await vi.waitFor(() => expect(shell.editor.querySelector('.note-pictures-pane')).not.toBeNull())
+    grid.ribbon('note-pictures-pane-toggle')
+    expect(shell.editor.querySelector('.note-pictures-pane')).toBeNull()
+    expect(draft.operations).toEqual([])
+  } finally { view.dispose() }
+})
+
+it('converts the active sheet threads through the Review command and saves a single draft patch', async () => {
+  const original = await fixture()
+  const state = (await readWorkbook(original)).sheets[0]!.threads!
+  const thread = { id: '{11111111-1111-4111-8111-111111111111}', personId: '{22222222-2222-4222-8222-222222222222}',
+    author: '原作者', row: 1, column: 1, dT: '2026-11-13T01:02:03.00', done: false, text: '原线程', replies: [] }
+  const source = await applyWorkbookOperations(original, [{
+    kind: 'patchThreadedComments', sheetName: 'Sheet1', sourceIdentity: state.sourceIdentity,
+    changes: [{ row: 1, column: 1, expectedThreadId: null, thread }],
+  }])
+  const draft = new NativeDraft(identity, store())
+  let rewritten: Uint8Array | undefined
+  const save = vi.fn(async (request: NativeSaveRequest) => {
+    rewritten = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/notes.xlsx' } }, validation: { issues: [] } }
+  })
+  const { shell, view } = await open(source, draft, save)
+  try {
+    grid.ribbon('notes-convert')
+    await vi.waitFor(() => expect(draft.operations).toMatchObject([{ kind: 'patchThreadedComments', convertToNotes: true }]))
+    expect(save).not.toHaveBeenCalled()
+    expect(sheet().getRange(1, 1).getNote()?.note).toBe('原线程')
+    shell.save.click()
+    await vi.waitFor(() => expect(shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const output = (await readWorkbook(rewritten!)).sheets[0]!
+    expect(output.threads!.threads).toEqual([])
+    expect(output.notes!.notes).toContainEqual({ row: 1, column: 1, author: '原作者', text: '原线程' })
+  } finally { view.dispose() }
+})
 afterEach(() => {
   for (const instance of grid.instances.splice(0)) instance.dispose()
   grid.apply.mockClear()
@@ -154,6 +257,7 @@ it('main does not dirty or replace failed retry identity for popup view mutation
   expect(update('retry me')).toBe(true)
   current.shell.save.click()
   await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('保存失败'))
+  expect(current.shell.editor.querySelector('.workbook-feedback')?.textContent).toBe('network failed')
   expect(grid.api.syncExecuteCommand('sheet.mutation.toggle-note-popup', view)).toBe(true)
   current.shell.save.click()
   await vi.waitFor(() => expect(requests).toHaveLength(2))

@@ -6,6 +6,12 @@ import {valueTickText} from './chart-value-axis'
 type Series = ChartReadSpec['series'][number]
 const MAX_LABELS = 10000
 
+export function localChartRange(reference: string, worksheet: Worksheet): string | undefined {
+  const match = /^(?:(?:'((?:[^']|'')+)'|([^'!\[\]]+))!)?(\$?[A-Z]+\$?[1-9]\d*(?::\$?[A-Z]+\$?[1-9]\d*)?)$/i.exec(reference)
+  const name = match?.[1]?.replaceAll("''", "'") ?? match?.[2]
+  if (!name || name.toLowerCase() === worksheet.getName?.().toLowerCase()) return match?.[3]
+}
+
 /** One-dimensional same-sheet references use live cells, including blanks.
  * Other/unreadable references use their original indexed cache, never cells
  * at the same address in the active worksheet. No category block uses ordinals.
@@ -20,11 +26,10 @@ export function chartCategoryLabels(series: Series | undefined, worksheet: Works
     return typeof value === 'boolean' ? String(value) : null
   }
   if (series.categoriesRef) {
-    const match = /^(?:(?:'((?:[^']|'')+)'|([^'!\[\]]+))!)?(\$?[A-Z]+\$?[1-9]\d*(?::\$?[A-Z]+\$?[1-9]\d*)?)$/i.exec(series.categoriesRef)
-    const name = match?.[1]?.replaceAll("''", "'") ?? match?.[2]
-    if (match && (!name || name.toLowerCase() === worksheet.getName?.().toLowerCase())) {
+    const localRange = localChartRange(series.categoriesRef, worksheet)
+    if (localRange) {
       try {
-        const range = parseRange(match[3]!.replaceAll('$','').toUpperCase())
+        const range = parseRange(localRange)
         const rows = range.endRow-range.startRow+1, columns = range.endColumn-range.startColumn+1
         if ((rows === 1 || columns === 1) && rows*columns <= MAX_LABELS) {
           return Array.from({length:count},(_,index)=>index >= rows*columns ? null : formatValue(worksheet.getCell(range.startRow+(rows===1?0:index),range.startColumn+(columns===1?0:index))?.v))

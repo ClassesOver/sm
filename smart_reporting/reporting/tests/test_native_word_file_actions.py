@@ -22,8 +22,9 @@ class Repository(BaseRepository, PublicationRepository):
     def __init__(self):
         BaseRepository.__init__(self)
         PublicationRepository.__init__(self)
-    async def create_from_source(self, source, *, scope, request_id):
-        document=await super().create_from_source(source,scope=scope,request_id=request_id)
+    async def create_from_source(self, source, *, scope, request_id, generation_key=None):
+        document=await super().create_from_source(source,scope=scope,request_id=request_id,generation_key=generation_key)
+        source=document.source
         row=self.revisions[(document.document_id,1)]
         self.revisions[(document.document_id,1)]=row.model_copy(update={'context':NativeEditorContext(
             documentId=document.document_id,format=source.format,revision=1,scope=scope,
@@ -99,6 +100,62 @@ async def test_file_actions_reject_csrf_foreign_route_stale_source_and_path_name
             assert (await client.post(url+'/'+action,json={**payload,'expectedSha256':'0'*64},headers=headers)).status_code==409
             assert (await client.post(url+'/'+action,json={**payload,'filename':'../escape.docx'},headers=headers)).status_code==422
         assert not editor.repository.documents
+
+
+@pytest.mark.anyio
+async def test_pptx_save_as_copies_the_current_draft_without_changing_the_original(tmp_path):
+    from pptx import Presentation
+    from pptx.util import Inches
+    from smart_reporting.report_editor.native import bind_native_workspace
+    from smart_reporting.office.artifacts import ArtifactFile
+
+    editor, parent, app, _, _ = await runtime(tmp_path)
+    editor.office_enabled = True
+    deck = Presentation()
+    for label in ('First', 'Second'):
+        slide = deck.slides.add_slide(deck.slide_layouts[6])
+        slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1)).text = label
+    stream = BytesIO()
+    deck.save(stream)
+    original = stream.getvalue()
+    source = ArtifactFile(path='native/source.pptx', size=len(original), sha256=hashlib.sha256(original).hexdigest(),
+                          mediaType='application/vnd.openxmlformats-officedocument.presentationml.presentation')
+    context = parent.model_copy(update={'format': 'pptx', 'source_file': source})
+    await editor.workspace.awrite_bytes(bind_native_workspace(editor.workspace, context.scope), source.path, original)
+    editor.context_for_session.return_value = context
+    raw, _ = await editor.grants.issue(context, capabilities=editor.capabilities(context))
+    token, _ = await editor.grants.exchange(raw)
+    url = f'/reports/v1/native/{context.document_id}/{context.revision}/api/slides/save-as'
+    payload = {'requestId': 'copy-slides', 'expectedSha256': source.sha256, 'filename': 'Draft copy.pptx',
+               'operations': [{'kind': 'editSlides', 'order': [1, 0], 'edits': []}]}
+    headers = {'Origin': 'http://test', 'X-CSRF-Token': editor.grants.csrf_token(token)}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test',
+                           cookies={NATIVE_SESSION_COOKIE: token}) as client:
+        assert (await client.post(url, json=payload)).status_code == 403
+        assert (await client.post(url, json={**payload, 'filename': '../bad.pptx'}, headers=headers)).status_code == 422
+        created = await client.post(url, json=payload, headers=headers)
+        assert created.status_code == 200, created.text
+        result = created.json()
+        assert result['documentId'] != context.document_id and result['revision'] == 1
+        repeated = await client.post(url, json=payload, headers=headers)
+        assert repeated.json()['documentId'] == result['documentId']
+        revision = await editor.repository.get_revision(result['documentId'], 1, scope=context.scope)
+        assert revision.context.display_name == 'Draft copy.pptx'
+        copy = Presentation(BytesIO(await editor.read_file(revision.context)))
+        assert [slide.shapes[0].text for slide in copy.slides] == ['Second', 'First']
+        assert await editor.read_file(context) == original
+        open_url = url.removesuffix('save-as') + 'open'
+        files = {'file': ('Opened.pptx', original, source.media_type)}
+        assert (await client.post(open_url, files=files, data={'requestId': 'open-slides'})).status_code == 403
+        opened = await client.post(open_url, files=files, data={'requestId': 'open-slides'}, headers=headers)
+        assert opened.status_code == 200, opened.text
+        opened_id = opened.json()['documentId']
+        assert opened_id not in {context.document_id, result['documentId']}
+        opened_revision = await editor.repository.get_revision(opened_id, 1, scope=context.scope)
+        assert opened_revision.context.display_name == 'Opened.pptx'
+        assert await editor.read_file(opened_revision.context) == original
+        assert (await client.post(open_url, files={'file': ('Wrong.pptx', b'bad bytes')},
+                                  data={'requestId': 'invalid-open'}, headers=headers)).status_code == 422
 
 
 @pytest.mark.anyio

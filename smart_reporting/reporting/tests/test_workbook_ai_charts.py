@@ -37,6 +37,27 @@ def deletion(sheet='Sheet'):
     return {'kind': 'applyChartDeletions', 'arguments': {'deletions': [{'sheetName': sheet, 'chartPath': PATH}]}}
 
 
+def delete_visual(path=PATH):
+    return {'op': 'delete_visual', 'visualId': path}
+
+
+@pytest.mark.parametrize(('columns', 'valid'), [
+    (['c', 'A'], True), (['A', 'a'], False), (['A', 'D'], False), (['A'], False),
+])
+def test_source_chart_column_contract(columns, valid):
+    from smart_reporting.report_editor.workbook_ai_charts import validate_chart_candidates
+
+    candidate = [{'kind': 'applyChartSource', 'operation': {
+        'op': 'add_chart', 'sheetId': 'Sheet', 'chartType': 'line', 'dataRange': 'A1:C4',
+        'columns': columns,
+    }}]
+    if valid:
+        validate_chart_candidates(chart_model(), candidate)
+    else:
+        with pytest.raises(ValueError, match='chart_source_invalid'):
+            validate_chart_candidates(chart_model(), candidate)
+
+
 def chart_model():
     return {'sheets': [{'name': 'Sheet', 'cells': {}, 'charts': [
         {'chartPath': PATH, 'title': 'Same', 'kind': 'column'},
@@ -71,6 +92,9 @@ async def test_chart_candidate_requires_explicit_acceptance(operation):
     (edit(title='New', ignoredField=True), chart_model()),
     ({'kind': 'applyChartEdits', 'arguments': {'edits': []}}, chart_model()),
     (edit(title='New'), {'sheets': chart_model()['sheets'] * 2}),
+    (delete_visual('xl/charts/missing.xml'), chart_model()),
+    (delete_visual(), {'sheets': chart_model()['sheets'] * 2}),
+    ({**delete_visual(), 'sheetName': 'Sheet'}, chart_model()),
 ])
 async def test_untrusted_or_unsupported_chart_candidate_never_reaches_preview(operation, model):
     from unittest.mock import AsyncMock
@@ -84,7 +108,9 @@ async def test_untrusted_or_unsupported_chart_candidate_never_reaches_preview(op
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('operation', [edit(title='New'), deletion()])
+@pytest.mark.parametrize('operation', [edit(title='New'), deletion(), delete_visual(), {
+    'op': 'add_sparkline', 'sheetId': 'Sheet', 'type': 'line', 'dataRange': 'A1:B2',
+}])
 async def test_cell_range_authorization_neither_reads_nor_modifies_charts(operation):
     from unittest.mock import AsyncMock
 
@@ -99,7 +125,35 @@ async def test_cell_range_authorization_neither_reads_nor_modifies_charts(operat
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('following', [deletion(), edit(title='Deleted target')])
+@pytest.mark.parametrize(('target', 'destinations'), [(None, ['D2', 'D3']), ('F9', ['F9', 'F10'])])
+async def test_source_sparklines_write_native_row_references(target, destinations):
+    source = source_with_two_charts()
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model=chart_model(), scope='workbook', selection={}, preview=preview)
+    operation = {'op': 'add_sparkline', 'sheetId': 'Sheet', 'type': 'stacked',
+                 'dataRange': 'B2:C3', 'color': '#214365'}
+    if target is not None:
+        operation['targetCell'] = target
+    await tools.propose_operations([operation], '每行销售变化')
+    with ZipFile(BytesIO(source)) as original, ZipFile(BytesIO(written)) as output:
+        sheet = etree.fromstring(output.read('xl/worksheets/sheet1.xml'))
+        assert sheet.xpath('//*[local-name()="sparklineGroup"]/@type') == ['stacked']
+        assert sheet.xpath('//*[local-name()="colorSeries"]/@rgb') == ['FF214365']
+        assert sheet.xpath('//*[local-name()="sqref"]/text()') == destinations
+        assert sheet.xpath('//*[local-name()="sparkline"]/*[local-name()="f"]/text()') == [
+            "'Sheet'!$B$2:$C$2", "'Sheet'!$B$3:$C$3",
+        ]
+        assert output.read(PATH) == original.read(PATH)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('following', [deletion(), delete_visual(), edit(title='Deleted target')])
 async def test_deleted_chart_cannot_be_targeted_again_in_one_candidate(following):
     from unittest.mock import AsyncMock
 
@@ -162,7 +216,7 @@ def source_with_two_charts():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('mode', ['edit', 'delete'])
+@pytest.mark.parametrize('mode', ['edit', 'delete', 'sparkline'])
 async def test_real_agno_chart_candidate_preserves_other_chart_and_manual_draft(mode):
     source = await asyncio.to_thread(source_with_two_charts)
     original_hash = hashlib.sha256(source).hexdigest()
@@ -180,7 +234,11 @@ async def test_real_agno_chart_candidate_preserves_other_chart_and_manual_draft(
             return {'draftSha256': hashlib.sha256(output).hexdigest(),
                     'model': await asyncio.to_thread(inspect_office, 'xlsx', output)}
 
-    operation = edit(title='Updated', legend='bottom', chartType='bar') if mode == 'edit' else deletion()
+    operation = {
+        'edit': edit(title='Updated', legend='bottom', chartType='bar'),
+        'delete': delete_visual(),
+        'sparkline': {'op': 'add_sparkline', 'sheetId': 'Sheet', 'type': 'line', 'dataRange': 'B2:C3'},
+    }[mode]
     model = ScriptedModel(id='scripted', responses=[
         call('read_sheet_features', {'sheetId': 'Sheet'}, 'features'),
         call('load_guide', {'guides': ['charts']}, 'guide'),
@@ -204,10 +262,14 @@ async def test_real_agno_chart_candidate_preserves_other_chart_and_manual_draft(
         operations=base, snapshot_sha256=result['snapshotSha256'])
     assert accepted['operations'][0] == base[0]
     output = await asyncio.to_thread(patch_office, 'xlsx', source, accepted['operations'])
-    reopened = load_workbook(BytesIO(output))
+    if mode == 'sparkline':
+        with pytest.warns(UserWarning, match='Sparkline Group'):
+            reopened = load_workbook(BytesIO(output))
+    else:
+        reopened = load_workbook(BytesIO(output))
     assert reopened.active['A5'].value == 'Manual unsaved'
     assert [reopened.active[f'B{row}'].value for row in (2, 3)] == [10, 20]
-    assert len(reopened.active._charts) == (2 if mode == 'edit' else 1)
+    assert len(reopened.active._charts) == (1 if mode == 'delete' else 2)
     with ZipFile(BytesIO(source)) as before, ZipFile(BytesIO(output)) as after:
         assert after.read('xl/charts/chart2.xml') == before.read('xl/charts/chart2.xml')
         if mode == 'edit':
@@ -218,8 +280,12 @@ async def test_real_agno_chart_candidate_preserves_other_chart_and_manual_draft(
             assert xml.xpath('//c:barDir/@val', namespaces=ns) == ['bar']
             assert xml.xpath('//c:legendPos/@val', namespaces=ns) == ['b']
             assert xml.xpath('//c:numCache/c:pt/c:v/text()', namespaces=ns) == ['10', '20']
-        else:
+        elif mode == 'delete':
             assert PATH not in after.namelist()
+        else:
+            assert after.read(PATH) == before.read(PATH)
+            xml = etree.fromstring(after.read('xl/worksheets/sheet1.xml'))
+            assert xml.xpath('//*[local-name()="sparkline"]/*[local-name()="sqref"]/text()') == ['D2', 'D3']
     assert hashlib.sha256(source).hexdigest() == original_hash
     await ai.aclose()
 

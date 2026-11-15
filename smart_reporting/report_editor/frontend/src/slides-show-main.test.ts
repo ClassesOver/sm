@@ -6,12 +6,20 @@ const show = vi.hoisted(() => ({ open: vi.fn(() => ({ dispose() {} })) }))
 vi.mock('./slides-show', () => ({ openSlidesShow: show.open }))
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
 const views: ReturnType<typeof createSlidesEditorView>[] = []
-beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }))
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true, value: function (this: HTMLDialogElement) { this.open = true },
+  })
+  Object.defineProperty(HTMLDialogElement.prototype, 'close', {
+    configurable: true, value: function (this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new Event('close')) },
+  })
+})
 afterEach(() => { views.splice(0).forEach(v => v.dispose()); document.body.replaceChildren(); vi.unstubAllGlobals(); show.open.mockClear() })
 
-it.each(['startShow', 'startShowCurrent'])('%s读取完整草稿动画/转场和隐藏页，起点按来源语义处理，不保存或改草稿', async command => {
+it.each(['startShow', 'startShowCurrent', 'rehearse', 'presenter'])('%s读取完整草稿动画/转场和隐藏页，起点按来源语义处理，不保存或改草稿', async command => {
   const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [0, 1, 2].map(index => ({ slideIndex: index, hidden: index === 0,
-    transition: 'none', transitionEditSafe: true, animations: index === 0 ? [{ spid: 2, elementId: 'a', effect: 'fade', trigger: 'onClick', durationMs: 400, delayMs: 0 }] : [],
+    notesText: 'notes ' + index, transition: 'none', transitionEditSafe: true, animations: index === 0 ? [{ spid: 2, elementId: 'a', effect: 'fade', trigger: 'onClick', durationMs: 400, delayMs: 0 }] : [],
     elements: [{ id: 'a', name: '矩形', type: 'shape', text: '', editable: true }] })) }
   const tree = { slides: source.slides.map(s => ({ slideIndex: s.slideIndex, hidden: s.hidden, widthPx: 960, heightPx: 540, background: { kind: 'solid', color: '#fff' }, nodes: [{ id: 'a', sourceId: 'a', type: 'shape', box: { x: 0, y: 0, w: 200, h: 50 } }] })) }
   const draft = new NativeDraft({ documentId: 'show-core', revision: 1, sourceSha256: source.sha256, scope: { database: 'fixture', companyId: 'c', userId: 'u', threadId: 't' } }, { getItem: () => null, setItem() {}, removeItem() {} })
@@ -25,11 +33,21 @@ it.each(['startShow', 'startShowCurrent'])('%s读取完整草稿动画/转场和
   await vi.waitFor(() => expect(show.open).toHaveBeenCalledOnce())
   const options = (show.open.mock.calls[0] as any[])[1]
   expect(options.slides).toHaveLength(3); expect(options.slides[0].hidden).toBe(true)
-  expect(options.startIndex).toBe(command === 'startShow' ? 1 : 0)
+  expect(options.startIndex).toBe(command === 'startShowCurrent' ? 0 : 1)
   expect(options.animations[0].map((item: any) => item.effect)).toEqual(['fade', 'pulse'])
   expect(options.transitions).toEqual(['none', 'none', 'push'])
   const sent = JSON.parse(String(request.mock.calls.filter(([path, init]) => path === 'render-tree' && init).at(-1)![1]!.body))
   expect(sent.operations).toEqual(JSON.parse(before)); expect(sent.expectedSha256).toBe(source.sha256)
   expect(request.mock.calls.some(([path]) => path === 'save')).toBe(false)
   expect(JSON.stringify(draft.operations)).toBe(before); expect(JSON.stringify(source)).toBe(original)
+  if (command === 'presenter') expect(options.presenterNotes).toEqual(['notes 0', 'notes 1', 'notes 2'])
+  if (command !== 'rehearse') return
+  expect(options.onRehearseDone).toEqual(expect.any(Function))
+  options.onClose(2)
+  options.onRehearseDone([0, 3, 5])
+  expect(JSON.stringify(draft.operations)).toBe(before)
+  shell.editor.querySelector<HTMLButtonElement>('[data-confirm-rehearsal]')!.click()
+  expect(draft.operations[0]).toMatchObject({ advanceTimes: [{ slideIndex: 1, ms: 3000 }, { slideIndex: 2, ms: 5000 }] })
+  draft.undo()
+  expect(JSON.stringify(draft.operations)).toBe(before)
 })

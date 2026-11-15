@@ -1,5 +1,5 @@
 /** Browser-safe icon subset adapted from GenOffice PDF icons.tsx at f8c17004fb730df11f0f743164ffd8b4281bb38c. */
-export type PdfRibbonIconName = 'sparkles' | 'download' | 'undo' | 'redo' | 'highlight' | 'note' | 'rotateLeft' | 'rotateRight' | 'deletePage' | 'fitWidth' | 'fitPage' | 'thumbnails' | 'print' | 'search'
+export type PdfRibbonIconName = 'sparkles' | 'download' | 'undo' | 'redo' | 'highlight' | 'note' | 'rotateLeft' | 'rotateRight' | 'deletePage' | 'fitWidth' | 'fitPage' | 'thumbnails' | 'print' | 'search' | 'formKeep' | 'previousField' | 'nextField'
 
 const paths: Record<PdfRibbonIconName, string[]> = {
   sparkles: ['m12 3 2.7 6.3L21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7z', 'M20 2v4', 'M18 4h4'],
@@ -15,6 +15,10 @@ const paths: Record<PdfRibbonIconName, string[]> = {
   fitPage: ['M7 4.5h10v15H7z', 'M12 8v8', 'm9.8 10.2 2.2-2.2 2.2 2.2', 'm9.8 13.8 2.2 2.2 2.2-2.2'],
   thumbnails: ['M4.5 5h6v6.5h-6z', 'M4.5 14h6v5h-6z', 'M14 6h5.5', 'M14 10h5.5', 'M14 15h5.5', 'M14 18h5.5'],
   print: ['M7.7 8.8V4.5h8.6v4.3', 'M5 8.8h14v7H5z', 'M7.7 13.1h8.6v6.4H7.7z'],
+  previousField: ['M7.5 4.5h9A1.5 1.5 0 0 1 18 6v12a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 18V6a1.5 1.5 0 0 1 1.5-1.5Z', 'M14.5 8 10.5 12 14.5 16'],
+  nextField: ['M7.5 4.5h9A1.5 1.5 0 0 1 18 6v12a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 18V6a1.5 1.5 0 0 1 1.5-1.5Z', 'M9.5 8 13.5 12 9.5 16'],
+  // GenOffice PDF IconFieldKeep.
+  formKeep: ['M5 4h8a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 13 11H5a1.5 1.5 0 0 1-1.5-1.5v-4A1.5 1.5 0 0 1 5 4Z', 'M11 13h8a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 19 20h-8a1.5 1.5 0 0 1-1.5-1.5v-4A1.5 1.5 0 0 1 11 13Z', 'M17 6.5h3.5M18.75 4.75v3.5'],
   search: ['M16.7 10.6a6.1 6.1 0 1 1-12.2 0 6.1 6.1 0 0 1 12.2 0z', 'm15.3 15.3 4.2 4.2'],
 }
 

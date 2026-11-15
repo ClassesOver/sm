@@ -20,11 +20,11 @@ from .native_models import native_digest
 from .native_office import inspect_office, patch_office
 from .native_pdf_ai_tasks import NativePDFReadService, _ReadJob
 
-_ACTIONS = {'ask', 'summarize', 'keyPoints'}
+_ACTIONS = {'ask', 'summarize', 'keyPoints', 'fileName'}
 _RANGE_KEYS = {'sheetName', 'startRow', 'endRow', 'startColumn', 'endColumn'}
 _SLIDES_IDENTITY_PRESERVING = {
     'kind', 'edits', 'textFormatting', 'paragraphFormatting', 'order', 'theme', 'slideSize',
-    'hiddenSlides', 'transitions', 'animations', 'animationSequences', 'backgrounds',
+    'hiddenSlides', 'transitions', 'advanceTimes', 'animations', 'animationSequences', 'backgrounds',
     'sections', 'commentEdits',
 }
 
@@ -92,7 +92,7 @@ class NativeOfficeReadService(NativePDFReadService):
         return context
 
     async def start(self, session, *, client_request_id, expected_sha256, operations,
-                    selection=None, action='ask', instruction='', previous_task_id=None):
+                    selection=None, action='ask', instruction='', previous_task_id=None, name_locale=None):
         context = await self._context(session)
         request_id = self._request_id(client_request_id)
         if expected_sha256 != context.source_file.sha256:
@@ -100,11 +100,17 @@ class NativeOfficeReadService(NativePDFReadService):
         if (action not in _ACTIONS or not isinstance(instruction, str) or len(instruction) > 2000
                 or action == 'ask' and not instruction.strip()):
             raise ReportingError('native_ai_instruction_invalid', '阅读任务无效，问答需要输入问题。')
+        if action == 'fileName' and (context.format != 'pptx' or selection is not None
+                or instruction or previous_task_id is not None or name_locale not in (None, 'en', 'zh-CN', 'zh-TW')):
+            raise ReportingError('native_ai_instruction_invalid', '幻灯片 AI 命名请求无效。')
+        if action != 'fileName' and name_locale is not None:
+            raise ReportingError('native_ai_instruction_invalid', '命名语言仅适用于幻灯片 AI 命名。')
         selected = _selection(context.format, selection)
         base = _copy_operations(operations)
         reading = native_digest({"context": context.digest(), "operations": base, "selection": selected})
         snapshot = native_digest({"reading": reading, "action": action, "instruction": instruction,
-                                  "previousTaskId": previous_task_id})
+                                  "previousTaskId": previous_task_id,
+                                  **({"nameLocale": name_locale or "zh-CN"} if action == "fileName" else {})})
         self._prune()
         scope = self._job_scope(session, context)
         key = (scope, request_id)
@@ -115,13 +121,13 @@ class NativeOfficeReadService(NativePDFReadService):
             return self._serialize(previous)
         self._reserve()
         job = _ReadJob(uuid4().hex, request_id, context.digest(), monotonic(), snapshot,
-                       reading_sha256=reading, question=instruction)
+                       reading_sha256=None if action == 'fileName' else reading, question=instruction)
         self._jobs[key] = job
         history = self._previous_reading(scope, previous_task_id, reading) if action == "ask" else ""
-        job.task = asyncio.create_task(self._run_office(job, session, context, base, selected, action, instruction, history))
+        job.task = asyncio.create_task(self._run_office(job, session, context, base, selected, action, instruction, history, name_locale))
         return self._serialize(job)
 
-    async def _run_office(self, job, session, context, base, selection, action, instruction, history):
+    async def _run_office(self, job, session, context, base, selection, action, instruction, history, name_locale):
         deadline = monotonic() + self.timeout_seconds
         try:
             async with asyncio.timeout(self.timeout_seconds):
@@ -139,23 +145,20 @@ class NativeOfficeReadService(NativePDFReadService):
                     content = await run_office_engine(partial(patch_office, context.format, thread_actor=xlsx_thread_actor(context.scope) if context.format == "xlsx" else None), content, base)
                 if job.status != 'running':
                     return
-                model = await run_office_engine(partial(inspect_office, context.format), content)
-                if job.status != 'running':
-                    return
-                mapped = deepcopy(selection)
-                if context.format == 'pptx' and mapped is not None:
-                    mapped = _slides_selection(original, model,
-                        [{key: value for key, value in op.items() if value not in (None, [], {})} for op in base], mapped)
-                if context.format == 'xlsx':
-                    from .native_workbook_read_ai import NativeWorkbookReadTools
-                    reader = NativeWorkbookReadTools(model, selection=mapped)
+                if action == 'fileName':
+                    from .slides_render import render_pptx_tree
+                    projection = await run_office_engine(render_pptx_tree, content, purpose='fileName')
+                    if job.status != 'running':
+                        return
+                    if (await self.editor.context_for_session(session)).digest() != job.context_sha256:
+                        raise ReportingError('native_ai_snapshot_changed', 'Office 会话来源已变化。')
+                    async with bind_agent_event_log(job.event_log):
+                        result = await self.planners['pptx'].suggest_filename(
+                            projection['content'], name_locale=name_locale or 'zh-CN',
+                            session_id=f'native-slides-name:{job.task_id}',
+                            user_id=context.scope.user_id)
                 else:
-                    from .native_slides_read_ai import NativeSlidesReadTools
-                    reader = NativeSlidesReadTools(model, selection=mapped)
-                async with bind_agent_event_log(job.event_log):
-                    result = await self.planners[context.format](reader=reader, action=action,
-                        instruction=history + "\n用户要求：" + instruction if history else instruction, session_id=f'native-office-read:{job.task_id}',
-                        user_id=context.scope.user_id)
+                    result = await self._read_document(job, context, content, original, base, selection, action, instruction, history)
                 if job.status != 'running':
                     return
                 current = await self.editor.context_for_session(session)
@@ -163,6 +166,8 @@ class NativeOfficeReadService(NativePDFReadService):
                     raise ReportingError('native_ai_snapshot_changed', 'Office 会话来源已变化。')
                 if monotonic() >= deadline:
                     raise TimeoutError
+                if action == 'fileName' and isinstance(result, dict) and result.get('answer') == '':
+                    raise ReportingError('native_slides_name_empty', 'AI 暂未提供文件名建议。')
                 if (not isinstance(result, dict) or not isinstance(result.get('answer'), str)
                         or not result['answer'].strip() or 'operations' in result or 'proposal' in result):
                     raise ReportingError('native_ai_schema_invalid', '只读任务必须返回回答，不能返回可采纳修改。')
@@ -187,3 +192,22 @@ class NativeOfficeReadService(NativePDFReadService):
             job.status, job.error = 'failed', {'code': code, 'message': message}
         finally:
             await job.event_log.finish(job.status)
+
+    async def _read_document(self, job, context, content, original, base, selection, action, instruction, history):
+        model = await run_office_engine(partial(inspect_office, context.format), content)
+        if job.status != 'running':
+            return None
+        mapped = deepcopy(selection)
+        if context.format == 'pptx' and mapped is not None:
+            mapped = _slides_selection(original, model,
+                [{key: value for key, value in op.items() if value not in (None, [], {})} for op in base], mapped)
+        if context.format == 'xlsx':
+            from .native_workbook_read_ai import NativeWorkbookReadTools
+            reader = NativeWorkbookReadTools(model, selection=mapped)
+        else:
+            from .native_slides_read_ai import NativeSlidesReadTools
+            reader = NativeSlidesReadTools(model, selection=mapped)
+        async with bind_agent_event_log(job.event_log):
+            return await self.planners[context.format](reader=reader, action=action,
+                instruction=history + "\n用户要求：" + instruction if history else instruction,
+                session_id=f'native-office-read:{job.task_id}', user_id=context.scope.user_id)

@@ -4,8 +4,10 @@ import {IconsDialog} from './workbook-picture-icons'
 import {noteImageInfo} from '@sheets-web/xlsx-engine/note-pictures'
 import {sha256Hex} from '@sheets-web/xlsx-engine/sha256'
 import type {WorkbookPicture} from '@sheets-web/xlsx-engine/pictures'
+import { captureWorkbookScreenshot } from './workbook-screenshot'
 import './workbook-pictures.css'
 export interface PictureInput {dataUrl:string;width:number;height:number;name:string}
+export type WorkbookPictureMode = 'insert-equation' | 'insert-icons' | 'insert-picture' | 'insert-screenshot'
 export function controlledWorkbookPicture(input:PictureInput){
  const match=/^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/=]+)$/.exec(input.dataUrl)
  if(!match)throw new Error('仅支持受控 PNG/JPEG 图片')
@@ -14,11 +16,20 @@ export function controlledWorkbookPicture(input:PictureInput){
  return {mediaType:info.mediaType,bytesBase64:match[2]!,size:bytes.length,sha256:sha256Hex(bytes),widthPx:info.width,heightPx:info.height,name:input.name.slice(0,255)}
 }
 export function createWorkbookPictures(){
- let root:Root|undefined,host:HTMLDivElement|undefined,disposed=false,input:HTMLInputElement|undefined
- const close=()=>{root?.unmount();root=undefined;host?.remove();host=undefined;input?.remove();input=undefined}
+ let root:Root|undefined,host:HTMLDivElement|undefined,disposed=false,input:HTMLInputElement|undefined,screenshot:AbortController|undefined
+ const close=()=>{screenshot?.abort();screenshot=undefined;root?.unmount();root=undefined;host?.remove();host=undefined;input?.remove();input=undefined}
  return {
-  open(mode:'insert-equation'|'insert-icons'|'insert-picture',commit:(picture:PictureInput)=>Promise<void>,error:(error:unknown)=>void){
+  open(mode:WorkbookPictureMode,commit:(picture:PictureInput)=>Promise<void>,error:(error:unknown)=>void){
    if(disposed)return;close()
+   if(mode==='insert-screenshot'){
+    const controller = new AbortController()
+    screenshot = controller
+    void captureWorkbookScreenshot(controller.signal)
+      .then(picture => { if (!controller.signal.aborted) return commit(picture) })
+      .catch(cause => { if (!controller.signal.aborted) error(cause) })
+      .finally(() => { if (screenshot === controller) screenshot = undefined })
+    return
+   }
    if(mode==='insert-picture'){
     input=document.createElement('input');input.type='file';input.dataset.workbookPicture='true';input.accept='image/png,image/jpeg';input.hidden=true;document.body.append(input)
     const picker=input;picker.addEventListener('cancel',close)

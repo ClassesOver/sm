@@ -17,6 +17,7 @@ export default defineConfig({
       await mkdir(join(directory, 'licenses'), { recursive: true })
       await cp(new URL('./node_modules/pdfjs-dist/LICENSE', import.meta.url), join(directory, 'licenses/pdfjs-LICENSE'))
       for (const family of ['genoffice-docs', 'genoffice-sheets-format']) for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/vendor/${family}/${file}`, import.meta.url), join(directory, `licenses/${family}-${file}`))
+      for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/account-settings/${file}`, import.meta.url), join(directory, `licenses/genoffice-settings-${file}`))
       for (const folder of ['cmaps', 'standard_fonts', 'wasm']) {
         await cp(new URL(`./node_modules/pdfjs-dist/${folder}`, import.meta.url),
           join(directory, `pdfjs/${folder}`), { recursive: true })
@@ -79,7 +80,7 @@ export default defineConfig({
     outDir: '../static',
     rollupOptions: {
       preserveEntrySignatures: 'exports-only',
-      input: { index: 'index.html', native: 'native.html', office: 'office.html', upload: 'src/native-upload.ts' },
+      input: { index: 'index.html', native: 'native.html', office: 'office.html', officeAdmin: 'office-admin.html', upload: 'src/native-upload.ts' },
       output: {
         entryFileNames: chunk => chunk.name === 'upload' ? 'native-upload.js' : 'assets/[name]-[hash].js',
         onlyExplicitManualChunks: true,
@@ -88,6 +89,7 @@ export default defineConfig({
           // 主宿主与复用的渲染组件分别打包，避免自动合并后超过既定预算。
           if (id.endsWith('/src/slides-main.ts')) return 'slides-main'
           if (id.endsWith('/src/workbook-main.ts')) return 'workbook-main'
+          if (id.endsWith('/xlsx-engine/src/cell-address.ts')) return 'workbook-cell-address'
           // 新增属性/签名/图片批注控件保留独立边界，避免挤占主编辑器预算。
           if (id.includes('/node_modules/utif2/')) return 'native-office-tiff-decoder'
           if (/\/node_modules\/(?:fast-xml-parser|fast-xml-builder|strnum|path-expression-matcher|xml-naming|is-unsafe|@nodable\/entities)\//.test(id)) return 'native-office-xml-parser'
@@ -162,7 +164,9 @@ export default defineConfig({
           if (id.endsWith('/vendor/genoffice-docs/apps/docs/src/renderer/components/icons.tsx')) return 'native-docx-ribbon-icons'
           if (id.endsWith('/src/workbook-ribbon.ts')) return 'workbook-ribbon'
           if (/\/src\/workbook-(?:chart-format-pane|chart-design-dialog|recommended-charts-dialog)\.(?:ts|tsx)$/.test(id)) return 'workbook-chart-controls'
-          if (/\/workbook_engine\/packages\/xlsx-engine\/src\/pivot-(?:add|refresh|standard-grouping|layout|formula|grouping|filters)\.ts$/.test(id)) return 'workbook-pivot-calculation'
+          // Keep the pivot schema with its enums and source adapters so
+          // initialization does not read enums from the workbook chunk.
+          if (/\/workbook_engine\/packages\/xlsx-engine\/src\/pivot-(?:add|refresh|standard-grouping|layout|formula|grouping|filters|value-modes|show-as|source(?:-format)?)\.ts$/.test(id)) return 'workbook-pivot-calculation'
           if (id.endsWith('/workbook_engine/packages/xlsx-engine/src/chart-edit.ts')) return 'workbook-chart-edit'
           if (/\/src\/workbook-queries(?:-reader)?\.ts$/.test(id) || /\/src\/workbook-vendor\/grid\/(?:workbook-queries|query-parts)\.ts$/.test(id)) return 'workbook-queries'
           if (/\/src\/workbook-(?:print-header-footer|header-footer-editor)\.ts$/.test(id)) return 'workbook-print-settings'
@@ -199,6 +203,7 @@ export default defineConfig({
           if (/\/src\/workbook-(?:insert-function|function-[^/]+)\.(?:ts|tsx)$/.test(id)) return 'workbook-insert-function'
           if (/\/workbook_engine\/packages\/xlsx-engine\/src\/outline(?:-read)?\.ts$/.test(id) || /\/src\/workbook-outline(?:-(?:gutter(?:-model)?|shortcuts))?\.ts$/.test(id)) return 'workbook-outline'
           if (id.endsWith('/workbook_engine/packages/xlsx-engine/src/table-style-read.ts')) return 'workbook-table-style-read'
+          if (/\/workbook_engine\/(?:packages\/xlsx-engine\/src\/table-(?:add|edit)|bridge\/table-source)\.ts$/.test(id)) return 'workbook-table-write'
           if (/\/src\/workbook-defined-name(?:s|-scope)\.ts$/.test(id) || /\/workbook_engine\/packages\/xlsx-engine\/src\/defined-names\.ts$/.test(id)) return 'workbook-defined-names'
           if (/\/src\/workbook-table-(?:totals|style-edit|convert|create|header-row|filter-button)\.ts$/.test(id)) return 'workbook-table-design'
           if (/\/src\/workbook-(?:data-table|goal-seek)(?:-dialog)?\.ts$/.test(id)) return 'workbook-what-if'

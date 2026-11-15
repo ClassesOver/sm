@@ -79,6 +79,9 @@ ignore_imports =
     smart_reporting.office.source_runtime -> smart_reporting.reporting.contract
     smart_reporting.office.source_runtime -> smart_reporting.reporting.data_source.**
     smart_reporting.office.knowledge -> smart_reporting.reporting.business_knowledge.**
+    # 管理员初始化与数据源迁移命令是部署入口，读取部署数据库配置。
+    smart_reporting.office.bootstrap -> smart_reporting.runtime.settings
+    smart_reporting.office.source_migration -> smart_reporting.runtime.settings
 
 [importlinter:contract:genoffice-integrations-independent-of-report-workflow]
 name = GenOffice 数据源与知识库集成（含间接依赖）不得依赖报告工作流

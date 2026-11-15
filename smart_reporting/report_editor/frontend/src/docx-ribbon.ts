@@ -1,14 +1,19 @@
 import {stepFontSize as sourceStepFontSize} from './vendor/genoffice-docs/apps/docs/src/renderer/font-sizes'
 import {getLang} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/locale'
+import { zh as ribbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/zh'
 import {createDocxRevisionScopeMenu} from './docx-revision-scope-menu'
 import {showDocxPasteDialog} from './docx-paste-ui'
 import type { createDocxPictureControls } from './docx-picture-controls'
+import { DocxPictureSizeSource } from './docx-picture-size-source'
+import { DocxPictureWrapSource } from './docx-picture-wrap-source'
 import { openDocxPageBorderDialog as openDocxPageBorderSourceDialog } from './docx-page-border-dialog-source'
 import { openDocxFontDialog, docxFontDialogUnavailable } from './docx-font-dialog'
 import { docxDefaultPageBox } from '../../../reporting/doc_engine/bridge/docx-section-settings'
 import { openDocxParagraphDialog, docxParagraphDialogUnavailable } from './docx-paragraph-dialog'
 import { fillDocxCommandIcons } from './docx-command-icons'
 import { isDocxTableStyleAction } from './docx-table-style'
+import { createDocxTableLayoutMenu } from './docx-table-layout-menu'
+import { DocxTableSizeSource } from './docx-table-size-source'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { createDocxCellBorderUiState, createDocxCellBordersControls } from './docx-cell-borders-controls'
 import type { DocxTocControls } from './docx-toc'
@@ -32,7 +37,8 @@ import { TABLE_ACTIONS, TABLE_SELECTION_ACTIONS, type DocxTableCommands } from '
 import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
-import { IconComments, IconComment, IconTrash, IconToc, IconRefresh } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconStoryView, IconReadMode, IconWholePage, IconCellAlign } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { closeHistory } from '@tiptap/pm/history'
@@ -70,6 +76,7 @@ const tabs = [
 ]
 const migrating = '迁移中：当前 DOCX 保存协议不支持此命令'
 const tableUnavailable = 'DOCX 表格操作尚未接入严格写回协议'
+const viewModeIcons = { '页面视图': IconPrintLayout, 'Web 版式': IconWebLayout, '大纲': IconOutlineView, '故事': IconStoryView, '阅读视图': IconReadMode, '分页预览': IconWholePage } as const
 const pendingGroups: Record<string, [string, string[]][]> = {
   file: [['文件', ['新建', '打开', '保存', '另存为']]],
   draw: [['绘图工具', ['选择', '笔', '荧光笔', '橡皮擦']], ['清除', ['全部清除']]],
@@ -78,15 +85,21 @@ const pendingGroups: Record<string, [string, string[]][]> = {
   references: [['Zotero', ['Zotero']], ['目录', ['目录', '更新目录']], ['脚注', ['插入脚注', '插入尾注']], ['书签', ['书签', '交叉引用']], ['引文与索引', ['插入引文', '书目', '题注', '索引']]],
   mailings: [['创建', ['信封', '标签']], ['开始邮件合并', ['开始邮件合并', '选择收件人', '编辑收件人列表']], ['编写和插入域', ['突出显示合并域', '地址块', '问候语', '插入合并域']], ['预览结果', ['预览结果', '查找收件人', '检查错误']], ['完成', ['完成并合并']]],
   review: [['校对', ['编辑器', '拼写检查']], ['语言', ['翻译']], ['批注', ['新建批注', '删除当前批注', '删除已解决批注', '删除全部批注', '上一条批注', '下一条批注', '显示批注']], ['修订', ['修订', '显示标记', '接受', '拒绝', '上一条', '下一条']], ['保护', ['比较', '保护文档']]],
-  view: [['视图', ['页面视图', 'Web 版式', '大纲', '阅读视图', '分页预览']], ['缩放', ['缩放', '缩小', '放大', '100%', '页宽', '整页']], ['显示', ['标尺', '网格线', '导航窗格']], ['外观', ['AI 面板', '深色模式']], ['窗口', ['新建标签', '拆分', '切换标签']]],
+  view: [['视图', ['页面视图', 'Web 版式', '大纲', '故事', '阅读视图', '分页预览']], ['缩放', ['缩放', '缩小', '放大', '100%', '页宽', '整页']], ['显示', ['标尺', '网格线', '导航窗格']], ['外观', ['AI 面板', '深色模式']], ['窗口', ['新建标签', '拆分', '切换标签']]],
   tableDesign: [['表格样式', ['无样式', '表格样式']], ['底纹', ['单元格底纹']], ['边框', ['所有框线', '外侧框线', '内侧框线', '边框颜色', '边框粗细']]],
   tableLayout: [['删除', ['删除表格']], ['行和列', ['上方插入', '下方插入', '左侧插入', '右侧插入']], ['合并', ['合并单元格', '拆分单元格']], ['行列操作', ['删除行', '删除列']], ['对齐方式', ['顶端对齐', '垂直居中', '底端对齐']], ['单元格大小', ['行高', '列宽']], ['表格数据', ['表格属性']]],
-  pictureFormat: [['调整', ['替换图片', '删除背景']], ['排列', ['位置', '环绕文字', '对齐', '上移一层', '下移一层', '旋转', '向左旋转', '水平翻转', '垂直翻转', '裁剪']], ['大小', ['高度', '宽度', '重置大小']]],
+  pictureFormat: [['调整', ['删除背景', '裁剪', '替换图片']], ['排列', ['位置', '环绕文字', '对齐', '上移一层', '下移一层']], ['大小', ['高度', '宽度', '重置大小']]],
   shapeFormat: [['形状样式', ['形状样式', '形状填充', '形状轮廓', '形状效果']], ['文本', ['编辑文字']], ['排列', ['位置', '环绕文字', '上移一层', '下移一层', '旋转']], ['大小', ['高度', '宽度']]],
   headerFooter: [['页眉和页脚', ['页眉', '页脚', '页码', '日期和时间', '文档信息']], ['导航', ['转到页眉', '转到页脚', '上一节', '下一节']], ['选项', ['首页不同', '奇偶页不同', '显示文档文字']], ['位置', ['页眉距顶端', '页脚距底端']], ['关闭', ['关闭页眉和页脚']]],
 }
 type TableRibbonCommand = { id: string; label: string }
 const command = (id: string, label: string): TableRibbonCommand => ({ id, label })
+// GenOffice Ribbon.tsx CELL_ALIGN_GRID in row-major order.
+const cellAlignments = ([
+  ['top', 'left', 'ribbonAlignTopLeft'], ['top', 'center', 'ribbonAlignTopCenter'], ['top', 'right', 'ribbonAlignTopRight'],
+  ['center', 'left', 'ribbonAlignMiddleLeft'], ['center', 'center', 'ribbonAlignMiddleCenter'], ['center', 'right', 'ribbonAlignMiddleRight'],
+  ['bottom', 'left', 'ribbonAlignBottomLeft'], ['bottom', 'center', 'ribbonAlignBottomCenter'], ['bottom', 'right', 'ribbonAlignBottomRight'],
+] as const).map(([v, h, label]) => ({ id: `table-align-${v === 'center' ? 'middle' : v}-${h}`, label: ribbonZh[label], v, h }))
 const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
   tableDesign: [
     ['表格样式', [
@@ -114,15 +127,11 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
   ],
   tableLayout: [
     ['选择与属性', [
-      command('table-select-menu', '选择'), command('table-select-cell', '选择单元格'),
-      command('table-select-column', '选择列'), command('table-select-row', '选择行'),
-      command('table-select-all', '选择表格'), command('table-view-gridlines', '查看网格线'),
+      command('table-select-menu', '选择'), command('table-view-gridlines', '查看网格线'),
       command('table-properties', '表格属性'),
     ]],
     ['删除', [
-      command('table-delete-menu', '删除菜单'), command('table-delete-cells', '删除单元格'),
-      command('table-delete-column', '删除列'), command('table-delete-row', '删除行'),
-      command('table-delete', '删除表格'),
+      command('table-delete-menu', '删除'),
     ]],
     ['行和列', [
       command('table-insert-row-before', '在上方插入行'), command('table-insert-row-after', '在下方插入行'),
@@ -135,17 +144,11 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
     ]],
     ['单元格大小', [
       command('table-row-height', '行高'), command('table-column-width', '列宽'),
-      command('table-autofit-contents', '根据内容自动调整'), command('table-autofit-window', '根据窗口自动调整'),
-      command('table-autofit-fixed', '固定列宽'), command('table-distribute-rows', '平均分布各行'),
+      command('table-autofit-menu', '自动调整'), command('table-distribute-rows', '平均分布各行'),
       command('table-distribute-columns', '平均分布各列'),
     ]],
     ['对齐方式', [
-      command('table-align-top-left', '顶端左对齐'), command('table-align-top-center', '顶端居中'),
-      command('table-align-top-right', '顶端右对齐'), command('table-align-middle-left', '垂直居中左对齐'),
-      command('table-align-middle-center', '垂直居中'), command('table-align-middle-right', '垂直居中右对齐'),
-      command('table-align-bottom-left', '底端左对齐'), command('table-align-bottom-center', '底端居中'),
-      command('table-align-bottom-right', '底端右对齐'), command('table-text-direction-horizontal', '横排文字'),
-      command('table-text-direction-rotate-90', '文字旋转 90 度'), command('table-text-direction-rotate-270', '文字旋转 270 度'),
+      ...cellAlignments, command('table-text-direction-menu', '文字方向'),
       command('table-cell-margins', '单元格边距'),
     ]],
     ['表格数据', [command('table-repeat-header-rows', '重复标题行')]],
@@ -162,7 +165,7 @@ export interface DocxWatermarkControls { current(): DocxWatermarkValue | null; s
 
 export function createDocxRibbon(editor: Editor, editable: boolean, onPaginationPreview?: () => void,
   onParagraphCommand?: (command: 'add' | 'delete') => void,
-  section?: { mirrorMargins?:boolean;mirrorMarginsReason?:string;onMirrorMargins?:(on:boolean,values?:SectionValues)=>SectionChangeResult;onPaperSizeAll?:(w:number,h:number,o:'portrait'|'landscape')=>SectionChangeResult;pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; settings: SectionSettings; onChange: (values: SectionValues) => SectionChangeResult; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; label?: string; pageBorders?: () => { settings: SectionSettings; apply: (props: SectionSettings['pageBorderProps'] | null, scope: 'whole' | 'section') => SectionChangeResult }; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController, notes?: DocxNotesController, noteAnchors: DocxAnchor[] = [], reviewCommands?: { open: () => void; applyAll: (action: 'accept' | 'reject') => void; batchReason: () => string | null; presets?: {element:HTMLElement}; compare?:()=>void; applyScope?:(action:'accept'|'reject',scope:import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/revision-filters').RevisionScope)=>void;scopeReason?:(scope:import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/revision-filters').RevisionScope)=>string|null;authors?:()=>string[]; navigateRevision?: (direction: 1 | -1) => boolean; navigationReason?: () => string | null; trackingEnabled?:()=>boolean;trackingReason?:()=>string|null;toggleTracking?:()=>void; spellcheck?: {element:HTMLButtonElement;refresh:()=>void}; view?: DocxReviewViewCommands }, commentCommands?: { open: (event?: {currentTarget:EventTarget|null}) => void; toggle?: (event?: {currentTarget:EventTarget|null}) => void; openNew?: () => void; navigate?: (direction: 1 | -1, event?: {currentTarget:EventTarget|null}) => boolean; navigationReason?: () => string | null; deleteCurrent?: () => boolean; deleteReason?: () => string | null; deleteAll?: (resolvedOnly:boolean) => boolean; deleteAllReason?: (resolvedOnly:boolean) => string|null }, toc?: DocxTocControls, bookmarks?: {open:()=>void}, references?:{crossReferences:{open:()=>void};caption:{open:()=>void}}, onAssistant?: () => void, pageColor?: DocxPageColorControls, watermark?: DocxWatermarkControls, pictures?: ReturnType<typeof createDocxPictureControls>, tableGridlines?: DocxTableGridlinesControls, formattingMarks?: { readonly visible: boolean; toggle(): void }, pageBorders?: DocxPageBorderControls, tools?: {files?:{open:(kind:'new'|'save-as')=>void;reason:(kind:'new'|'save-as')=>string|null;save:()=>void;saveReason:()=>string|null};tableStyles?:{element:HTMLElement;refresh:()=>void};preferences?:(kind:'general'|'autocorrect')=>void;editField?:()=>void;toggleFieldCode?:()=>void;toggleAllFieldCodes?:()=>void;theme?:HTMLElement;draw?:HTMLElement;protect?:()=>void;stories?:()=>void;chart?:()=>void;field?:(instruction:string)=>void;updateFields?:()=>void;summary?:()=>void;pictureFormat?:ReturnType<typeof import('./docx-picture-format-controls').createDocxPictureFormatControls>;object?:(type:'textbox'|'shape'|'wordArt')=>void;export?:(format:'html'|'markdown'|'pdf')=>void}): HTMLElement {
+  section?: { mirrorMargins?:boolean;mirrorMarginsReason?:string;onMirrorMargins?:(on:boolean,values?:SectionValues)=>SectionChangeResult;onPaperSizeAll?:(w:number,h:number,o:'portrait'|'landscape')=>SectionChangeResult;pageNumberFmt?: string | null; pageNumberStart?: number | null; pageNumberReason?: string; settings: SectionSettings; onChange: (values: SectionValues) => SectionChangeResult; titlePg?: boolean | null; titlePgReason?: string; evenAndOddHeaders?: boolean | null; evenAndOddHeadersReason?: string; label?: string; pageBorders?: () => { settings: SectionSettings; apply: (props: SectionSettings['pageBorderProps'] | null, scope: 'whole' | 'section') => SectionChangeResult }; onSectionBreak?: (type: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage') => void }, anchors: DocxAnchor[] = [], tableCommands?: DocxTableCommands, viewCommands?: DocxViewCommands, onFindReplace?: (mode: 'find' | 'replace') => void, reportError?: (error: unknown) => void, headerFooter?: DocxHeaderFooterController, notes?: DocxNotesController, noteAnchors: DocxAnchor[] = [], reviewCommands?: { open: () => void; togglePane?: (opener: HTMLElement) => void; paneVisible?: () => boolean; applyAll: (action: 'accept' | 'reject') => void; batchReason: () => string | null; presets?: {element:HTMLElement;reason?:()=>string|null;polish?:()=>void}; compare?:()=>void; applyScope?:(action:'accept'|'reject',scope:import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/revision-filters').RevisionScope)=>void;scopeReason?:(scope:import('./vendor/genoffice-docs/apps/docs/src/renderer/editor/revision-filters').RevisionScope)=>string|null;authors?:()=>string[]; navigateRevision?: (direction: 1 | -1) => boolean; navigationReason?: () => string | null; trackingEnabled?:()=>boolean;trackingReason?:()=>string|null;toggleTracking?:()=>void; spellcheck?: {element:HTMLButtonElement;refresh:()=>void}; view?: DocxReviewViewCommands }, commentCommands?: { open: (event?: {currentTarget:EventTarget|null}) => void; toggle?: (event?: {currentTarget:EventTarget|null}) => void; openNew?: () => void; navigate?: (direction: 1 | -1, event?: {currentTarget:EventTarget|null}) => boolean; navigationReason?: () => string | null; deleteCurrent?: () => boolean; deleteReason?: () => string | null; deleteAll?: (resolvedOnly:boolean) => boolean; deleteAllReason?: (resolvedOnly:boolean) => string|null }, toc?: DocxTocControls, bookmarks?: {open:()=>void}, references?:{crossReferences:{open:()=>void};caption:{open:()=>void}}, onAssistant?: () => void, pageColor?: DocxPageColorControls, watermark?: DocxWatermarkControls, pictures?: ReturnType<typeof createDocxPictureControls>, tableGridlines?: DocxTableGridlinesControls, formattingMarks?: { readonly visible: boolean; toggle(): void }, pageBorders?: DocxPageBorderControls, tools?: {files?:{open:(kind:'new'|'save-as')=>void;reason:(kind:'new'|'save-as')=>string|null;save:()=>void;saveReason:()=>string|null};tableStyles?:{element:HTMLElement;refresh:()=>void};preferences?:(kind:'general'|'autocorrect')=>void;editField?:()=>void;toggleFieldCode?:()=>void;toggleAllFieldCodes?:()=>void;theme?:HTMLElement;draw?:HTMLElement;protect?:()=>void;stories?:()=>void;chart?:()=>void;field?:(instruction:string)=>void;updateFields?:()=>void;summary?:()=>void;documentSummary?:(instruction:string)=>void;pictureFormat?:ReturnType<typeof import('./docx-picture-format-controls').createDocxPictureFormatControls>;object?:(type:'textbox'|'shape'|'wordArt')=>void;export?:(format:'html'|'markdown'|'pdf')=>void}): HTMLElement {
   const formattingAnchors = noteAnchors.length ? noteAnchors : anchors
   const withNotes = noteAnchors.length > 0
   const ribbon = document.createElement('div')
@@ -183,9 +186,51 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeSpecialIndent: (() => void) | undefined
   const contextTabs = new Map<string, HTMLButtonElement>()
   const body = document.createElement('div')
+  const tableSize = document.createElement('div')
+  tableSize.className = 'table-size-inputs'
+  let tableSizeRoot: ReturnType<typeof createRoot> | undefined
+  const refreshTableSize = () => {
+    if (!tableCommands?.dimension || !body.contains(tableSize)) return
+    tableSizeRoot ??= createRoot(tableSize)
+    flushSync(() => tableSizeRoot!.render(createElement(DocxTableSizeSource, { commands:tableCommands, editable:editable && editor.isEditable })))
+  }
+  const tableLayoutMenus: ReturnType<typeof createDocxTableLayoutMenu>[] = []
+  const closeTableLayoutMenus = () => {
+    for (const menu of tableLayoutMenus.splice(0)) menu.close()
+  }
+  const pictureSize = document.createElement('section')
+  const pictureWrap = document.createElement('div')
+  pictureWrap.className = 'table-tool-row'
+  let pictureWrapRoot: ReturnType<typeof createRoot> | undefined
+  const refreshPictureWrap = () => {
+    const controls = tools?.pictureFormat
+    if (!controls || !body.contains(pictureWrap)) return
+    pictureWrapRoot ??= createRoot(pictureWrap)
+    flushSync(() => pictureWrapRoot!.render(createElement(DocxPictureWrapSource, { controls })))
+  }
+  pictureSize.className = 'table-tool-group'
+  pictureSize.setAttribute('aria-label', '大小')
+  let pictureSizeRoot: ReturnType<typeof createRoot> | undefined
+  const refreshPictureSize = () => {
+    const controls = tools?.pictureFormat
+    if (!controls || !body.contains(pictureSize)) return
+    pictureSizeRoot ??= createRoot(pictureSize)
+    flushSync(() => pictureSizeRoot!.render(createElement(DocxPictureSizeSource, { controls })))
+  }
   const refreshView = () => {
+    if (!viewCommands) return
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-view-command]')) {
-      button.setAttribute('aria-pressed', String(viewCommands?.active?.(button.dataset.viewCommand!) ?? false))
+      const label = button.dataset.viewCommand!, reason = viewCommands.reason(label)
+      button.disabled = reason !== null
+      button.title = reason ?? label
+      button.setAttribute('aria-label',label)
+      if (reason) button.setAttribute('aria-description',reason)
+      else button.removeAttribute('aria-description')
+      if (label !== '分页预览') {
+        const active = viewCommands.active?.(label) ?? false
+        button.classList.toggle('active',active)
+        button.setAttribute('aria-pressed',String(active))
+      }
     }
   }
   const layout = document.createElement('div')
@@ -437,6 +482,49 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     label.append(caption, input, unit)
     return label
   }
+  const pictureFormatButton = (label: string, action: import('./docx-picture-format-controls').DocxPictureFormatAction, button = document.createElement('button')) => {
+    const controls = tools?.pictureFormat
+    if (!controls) return button
+    button.type = 'button'
+    button.className = 'rb-icon docx-ribbon-command'
+    button.textContent = label
+    button.dataset.pictureFormatAction = action
+    button.dataset.action = 'picture-format-' + action
+    const reason = controls.reason()
+    button.disabled = reason !== null
+    button.title = reason ?? label
+    button.onmousedown = event => event.preventDefault()
+    if (action === 'position' || action === 'wrap') {
+      const wrapper = document.createElement('div')
+      wrapper.className = 'rb-split-wrap'
+      button.setAttribute('aria-expanded','false')
+      button.onclick = () => controls.open(action, button)
+      wrapper.append(button)
+      return wrapper
+    }
+    button.onclick = () => controls.open(action)
+    return button
+  }
+  const syncPictureFormatButtons = (root: HTMLElement) => {
+    const controls = tools?.pictureFormat
+    if (!controls) return
+    const reason = controls.reason(), alignment = controls.alignment()
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-picture-format-action]')) {
+      button.disabled = reason !== null
+      button.title = reason ?? button.getAttribute('aria-label') ?? button.textContent ?? ''
+      if (button.dataset.pictureAlign) {
+        const pressed = button.dataset.pictureAlign === alignment
+        button.classList.toggle('active', pressed)
+        button.setAttribute('aria-pressed', String(pressed))
+      }
+      const action = button.dataset.pictureFormatAction
+      if (action === 'flipH' || action === 'flipV') {
+        const pressed = controls.flipped(action)
+        button.classList.toggle('active', pressed)
+        button.setAttribute('aria-pressed', String(pressed))
+      }
+    }
+  }
   const renderPending = (id: string) => {
     body.replaceChildren()
     cellBorderControls = undefined
@@ -446,13 +534,50 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     const groups = tableRibbonGroups[id] ?? (pendingGroups[id] ?? []).map(([label, commands]) =>
       [label, commands.map(commandLabel => command('', commandLabel))] as [string, TableRibbonCommand[]])
     for (const [groupLabel, commands] of groups) {
+      if (id === 'pictureFormat' && groupLabel === '大小' && tools?.pictureFormat) {
+        content.append(pictureSize)
+        continue
+      }
       const group = document.createElement('section')
       group.className = 'ribbon-group docx-ribbon-group'
+      const cellAlignGroup = id === 'tableLayout' && groupLabel === '对齐方式'
+      if (cellAlignGroup || (id === 'tableLayout' && groupLabel === '单元格大小')) group.classList.add('table-tool-group')
       group.setAttribute('aria-label', groupLabel)
       const items = document.createElement('div')
       items.className = 'ribbon-group-items'
+      let alignmentGrid: HTMLElement | undefined, alignmentTools: HTMLElement | undefined
+      if (cellAlignGroup) {
+        alignmentGrid = document.createElement('div')
+        alignmentGrid.className = 'cell-align-grid'
+        alignmentGrid.setAttribute('role', 'group')
+        alignmentGrid.setAttribute('aria-label', ribbonZh.ribbonCellAlignment)
+        alignmentTools = document.createElement('div')
+        alignmentTools.className = 'table-tool-col'
+        items.classList.add('table-tool-row')
+        items.append(alignmentGrid, alignmentTools)
+      }
       for (const item of commands) {
         const { id: actionId, label } = item
+        if (id === 'tableLayout' && tableCommands?.dimension && (actionId === 'table-row-height' || actionId === 'table-column-width')) {
+          if (actionId === 'table-row-height') items.append(tableSize)
+          continue
+        }
+        if (id === 'tableLayout' && (actionId === 'table-select-menu' || actionId === 'table-delete-menu' || actionId === 'table-autofit-menu' || actionId === 'table-text-direction-menu')) {
+          const selecting = actionId === 'table-select-menu'
+          const kind = selecting ? 'select' : actionId === 'table-delete-menu' ? 'delete' : actionId === 'table-autofit-menu' ? 'autofit' : 'text-direction'
+          const menu = createDocxTableLayoutMenu(kind, tableCommands ? action => {
+            if (selecting) editor.view.focus()
+            tableCommands.run(action)
+          } : undefined, action => {
+            if (!tableCommands) return tableUnavailable
+            if (!selecting && (!editable || !editor.isEditable)) return '当前文档不可编辑或正在保存'
+            return tableCommands.reason(action)
+          }, tableCommands?.active)
+          tableLayoutMenus.push(menu)
+          const destination = alignmentTools ?? items
+          destination.append(menu.root)
+          continue
+        }
         if(id==='file'&&tools?.files&&['新建','保存','另存为'].includes(label)){
           const files=tools.files,kind=label==='新建'?'new':label==='另存为'?'save-as':'save',button=document.createElement('button');button.type='button';button.className='rb-btn';button.textContent=label;button.dataset.fileAction=kind;button.dataset.action='file-'+kind
           const reason=kind==='save'?files.saveReason():files.reason(kind);button.disabled=reason!==null;button.title=reason??(kind==='save-as'?'将当前已保存修订另存为独立文档':label);button.onclick=()=>kind==='save'?files.save():files.open(kind);items.append(button);continue
@@ -702,7 +827,43 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         }
         if(id==='review'&&label==='保护文档'&&tools?.protect){command.textContent=label;command.dataset.action='review-protect';command.addEventListener('click',tools.protect);items.append(command);continue}
         if(id==='review' && label==='比较' && reviewCommands?.compare){command.textContent=label;command.dataset.action='review-compare';command.addEventListener('click',reviewCommands.compare);items.append(command);continue}
-        if(id==='pictureFormat'&&tools?.pictureFormat){const mapping={'位置':'position','环绕文字':'wrap','对齐':'align','旋转':'rotateRight','向左旋转':'rotateLeft','水平翻转':'flipH','垂直翻转':'flipV','高度':'size','宽度':'size','重置大小':'resetSize'} as const;const action=mapping[label as keyof typeof mapping];if(action){command.textContent=label;command.dataset.pictureFormatAction=action;command.dataset.action='picture-format-'+action;const reason=tools.pictureFormat.reason();command.disabled=reason!==null;command.title=reason??label;command.onmousedown=event=>event.preventDefault();command.onclick=()=>tools.pictureFormat?.open(action);items.append(command);continue}}
+        const pictureFormat = tools?.pictureFormat
+        if (id === 'pictureFormat' && label === '环绕文字' && pictureFormat) {
+          items.append(pictureWrap)
+          continue
+        }
+        if (id === 'pictureFormat' && label === '对齐' && pictureFormat) {
+          // GenOffice Ribbon.tsx Picture Format Arrange puts these options directly in the ribbon.
+          const row = document.createElement('div')
+          row.className = 'table-tool-row'
+          row.setAttribute('role', 'group')
+          row.setAttribute('aria-label', label)
+          for (const [value, action, name, icon] of [
+            ['left', 'alignLeft', '左对齐', IconAlignLeft],
+            ['center', 'alignCenter', '居中', IconAlignCenter],
+            ['right', 'alignRight', '右对齐', IconAlignRight],
+          ] as const) {
+            const button = document.createElement('button')
+            button.type = 'button'
+            button.className = 'table-tool-button'
+            button.dataset.pictureAlign = value
+            button.dataset.pictureFormatAction = action
+            button.dataset.action = 'picture-format-align-' + value
+            button.setAttribute('aria-label', name)
+            button.innerHTML = renderToStaticMarkup(createElement(icon))
+            button.onmousedown = event => event.preventDefault()
+            button.onclick = () => pictureFormat.open(action)
+            row.append(button)
+          }
+          items.append(row)
+          continue
+        }
+        const arrangeAction = label === '位置' ? 'position' : label === '环绕文字' ? 'wrap' : undefined
+        const pictureAction = id === 'pictureFormat' || (id === 'layout' && groupLabel === '排列') ? arrangeAction : undefined
+        if (pictureFormat && pictureAction) {
+          items.append(pictureFormatButton(label, pictureAction, command))
+          continue
+        }
         if (id === 'pictureFormat' && pictures && ['替换图片', '删除背景', '裁剪'].includes(label)) {
           const action = label === '替换图片' ? 'replace' : label === '裁剪' ? 'crop' : 'cutout'
           const unavailable = pictures.reason()
@@ -721,21 +882,63 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if (!available) command.setAttribute('aria-description', reason ?? migrating)
         if (actionId) command.dataset.action = actionId
         else if (available) command.dataset.action = view && label !== '分页预览' ? `view-${label}` : 'pagination-preview'
-        if (view && available && ['标尺', '导航窗格', '大纲', '页面视图', '网格线'].includes(label)) {
-          command.dataset.action = label === '标尺' ? 'ruler-toggle' : label === '网格线' ? 'gridlines-toggle' : label === '导航窗格' ? 'navigation-toggle' : label === '大纲' ? 'view-outline' : 'view-page'
+        const modeIcon = view ? viewModeIcons[label as keyof typeof viewModeIcons] : undefined
+        if (modeIcon) {
+          command.className = 'rb-big'
+          const graphic = document.createElement('span'), caption = document.createElement('span')
+          graphic.className = 'rb-big-icon'
+          graphic.innerHTML = renderToStaticMarkup(createElement(modeIcon,{size:28}))
+          caption.textContent = label
+          command.replaceChildren(graphic, caption)
+        }
+        if (view && (modeIcon || ['标尺', '导航窗格', '网格线', '拆分'].includes(label))) {
+          command.dataset.action = label === '标尺' ? 'ruler-toggle' : label === '网格线' ? 'gridlines-toggle' : label === '导航窗格' ? 'navigation-toggle' : label === '大纲' ? 'view-outline' : label === '拆分' ? 'split-view-toggle' : 'view-page'
+          if (label === 'Web 版式' || label === '故事' || label === '阅读视图') command.dataset.action = 'view-' + label
+          if (label === '分页预览') command.dataset.action = 'pagination-preview'
           command.dataset.viewCommand = label
-          command.setAttribute('aria-pressed', String(view.active?.(label) ?? false))
         }
         if (structure && tableCommands) {
           command.dataset.sourceAction = actionId
           command.addEventListener('mousedown', event => event.preventDefault())
           command.addEventListener('click', () => tableCommands.run(actionId))
-        } else if (view && available) {
-          command.dataset.sourceAction = label === '标尺' ? 'onShowRuler' : label === '网格线' ? 'onShowGrid' : label === '导航窗格' ? 'onShowNav' : label === '大纲' || label === '页面视图' ? 'onViewMode' : label === '页宽' || label === '整页' ? 'onZoomFit' : label === '缩放' ? 'onZoomDialog' : label === '分页预览' ? 'onPagePreview' : 'onZoom'
+        } else if (view && (available || command.dataset.viewCommand)) {
+          command.dataset.sourceAction = label === '标尺' ? 'onShowRuler' : label === '网格线' ? 'onShowGrid' : label === '导航窗格' ? 'onShowNav' : label === '拆分' ? 'onSplitView' : label === '大纲' || label === '页面视图' ? 'onViewMode' : label === '页宽' || label === '整页' ? 'onZoomFit' : label === '缩放' ? 'onZoomDialog' : label === '分页预览' ? 'onPagePreview' : 'onZoom'
+          if (label === 'Web 版式' || label === '故事') command.dataset.sourceAction = 'onViewMode'
+          if (label === '阅读视图') command.dataset.sourceAction = 'onReadMode'
           command.addEventListener('mousedown', event => event.preventDefault())
-          command.addEventListener('click', () => { if (label === '导航窗格') command.focus({ preventScroll: true }); view.run(label); refreshView() })
+          command.addEventListener('click', () => { if (label === '导航窗格' || label === '拆分') command.focus({ preventScroll: true }); view.run(label); refreshView() })
         } else if (available) command.addEventListener('click', onPaginationPreview!)
-        items.append(command)
+        const alignment = alignmentGrid ? cellAlignments.find(cell => cell.id === actionId) : undefined
+        if (alignment && alignmentGrid) {
+          command.className = 'table-tool-button'
+          command.classList.toggle('active', command.getAttribute('aria-pressed') === 'true')
+          command.innerHTML = renderToStaticMarkup(createElement(IconCellAlign, { v:alignment.v, h:alignment.h, size:16 }))
+          alignmentGrid.append(command)
+        } else {
+          const destination = alignmentTools ?? items
+          destination.append(command)
+        }
+      }
+      if (id === 'pictureFormat' && groupLabel === '调整' && tools?.pictureFormat) {
+        // GenOffice Picture Format Adjust lays out rotation and flips in two columns.
+        for (const commands of [
+          [[ribbonZh.ribbonRotateRight, 'rotateRight', IconRotateRight], [ribbonZh.ribbonRotateLeft, 'rotateLeft', IconRotateLeft]],
+          [[ribbonZh.ribbonFlipH, 'flipH', IconFlipH], [ribbonZh.ribbonFlipV, 'flipV', IconFlipV]],
+        ] as const) {
+          const column = document.createElement('div')
+          column.className = 'rb-col'
+          for (const [label, action, icon] of commands) {
+            const button = document.createElement('button')
+            pictureFormatButton(label, action, button)
+            button.className = 'rb-small'
+            const caption = document.createElement('span')
+            caption.textContent = label
+            button.innerHTML = renderToStaticMarkup(createElement(icon, { size: 18 }))
+            button.append(caption)
+            column.append(button)
+          }
+          items.append(column)
+        }
       }
       group.append(items)
       const caption = document.createElement('div')
@@ -782,8 +985,14 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         revisionItems.append(command)
       }
       button.type = 'button'; button.className = 'rb-icon docx-ribbon-command'
-      button.textContent = '修订列表'; button.dataset.action = 'text-revision-list'
-      button.addEventListener('click', reviewCommands.open)
+      button.textContent = '审阅窗格'; button.dataset.action = 'text-revision-list'; button.dataset.sourceAction = 'onToggleReviewPane'
+      button.title = '在列表中查看修订'
+      if (reviewCommands.togglePane) button.setAttribute('aria-pressed', String(reviewCommands.paneVisible?.() ?? false))
+      button.addEventListener('click', () => {
+        if (!reviewCommands.togglePane) { reviewCommands.open(); return }
+        reviewCommands.togglePane(button)
+        button.setAttribute('aria-pressed', String(reviewCommands.paneVisible?.() ?? false))
+      })
       revisionItems.append(button)
       for (const [action, label, operation] of [
         ['accept', '接受支持的正文修订', 'accept'], ['reject', '拒绝支持的正文修订', 'reject'],
@@ -820,10 +1029,21 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       }
     }
     fillDocxCommandIcons(content)
+    syncPictureFormatButtons(content)
     body.append(content)
+    refreshTableSize()
+    if (id === 'view') refreshView()
+    refreshPictureWrap()
+    refreshPictureSize()
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
+    closeTableLayoutMenus()
+    tools?.pictureFormat?.closeArrangeMenu()
+    if (id !== 'pictureFormat' && pictureWrapRoot) {
+      pictureWrapRoot.unmount()
+      pictureWrapRoot = undefined
+    }
     if (active === 'headerFooter' && id !== active) {
       headerFooter?.flushPendingEdits?.()
       headerFooterTarget = undefined
@@ -851,6 +1071,20 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       if (layoutParagraph) layoutParagraph.replaceWith(paragraph)
       else layout.querySelector('.docx-source-layout')!.append(paragraph)
       layoutParagraph = paragraph
+      if (tools?.pictureFormat) {
+        const arrange = document.createElement('section'), actions = document.createElement('div'), label = document.createElement('div')
+        arrange.className = 'ribbon-group docx-ribbon-group'
+        arrange.setAttribute('aria-label', '排列')
+        actions.className = 'ribbon-group-items'
+        actions.append(pictureFormatButton('位置', 'position'), pictureFormatButton('环绕文字', 'wrap'))
+        label.className = 'ribbon-group-label'
+        label.textContent = '排列'
+        arrange.append(actions, label)
+        fillDocxCommandIcons(arrange)
+        const existing = layout.querySelector('section[aria-label="排列"]')
+        if (existing) existing.replaceWith(arrange)
+        else paragraph.after(arrange)
+      }
       body.replaceChildren(layout); body.setAttribute('aria-label', '布局')
     }
     else if (id === 'headerFooter' && headerFooter) {
@@ -1040,6 +1274,21 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   const numberListControl = createDocxListGallery({ ...listOptions, kind: 'numbers' })
   let refreshHome: () => void = () => {}
   const painter = createDocxPainter(editor, { report: reportClipboardError, onChange: () => refreshHome() })
+  let summaryDoc: Editor['state']['doc'] | undefined, summaryEmpty = true
+  const emptyDocumentReason = () => {
+    const doc = editor.state.doc
+    if (doc !== summaryDoc) {
+      summaryDoc = doc
+      summaryEmpty = true
+      // GenOffice ribbon-format-state.ts docEmptyOf counts non-text leaves as document content.
+      doc.descendants(node => {
+        if (!summaryEmpty) return false
+        if (node.isText ? node.text?.trim() : node.isLeaf) summaryEmpty = false
+        return summaryEmpty
+      })
+    }
+    return summaryEmpty ? '文档暂无内容' : null
+  }
   const renderHome = () => {
     multilevelListControl.refresh(); bulletListControl.refresh(); numberListControl.refresh()
     let alignment: string | undefined
@@ -1062,6 +1311,12 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     flushSync(() => homeRoot.render(createElement(DocxHomeSource, {
       editable: editable && editor.isEditable,
       onAssistant,
+      onDocumentSummary: tools?.documentSummary,
+      documentSummaryUnavailable: tools?.documentSummary ? emptyDocumentReason() : 'Word AI 阅读助手尚未开放',
+      onPolish: reviewCommands?.presets?.polish,
+      polishUnavailable: !reviewCommands?.presets?.polish ? 'Word AI 编辑助手尚未开放'
+        : !editable || !editor.isEditable ? '当前文档不可编辑'
+        : reviewCommands.presets.reason?.() ?? emptyDocumentReason(),
       paragraphStyleControl,
       multilevelListControl: multilevelListControl.element,
       onSetNumberingValue: () => { void numberingValueControl.open() }, numberingValueUnavailable: numberingValueControl.reason(),
@@ -1193,7 +1448,9 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   const refreshSelection = () => {
     if(tools?.files)for(const button of body.querySelectorAll<HTMLButtonElement>('[data-file-action]')){const kind=button.dataset.fileAction as 'new'|'save-as'|'save',reason=kind==='save'?tools.files.saveReason():tools.files.reason(kind);button.disabled=reason!==null;button.title=reason??(kind==='save-as'?'将当前已保存修订另存为独立文档':button.textContent??'')}
 
-    if(tools?.pictureFormat){const reason=tools.pictureFormat.reason();for(const button of body.querySelectorAll<HTMLButtonElement>('[data-picture-format-action]')){button.disabled=reason!==null;button.title=reason??button.textContent??''}}
+    syncPictureFormatButtons(body)
+    refreshPictureWrap()
+    refreshPictureSize()
     refreshView()
     if (active === 'review') refreshReviewCommands()
     if (active === 'review') refreshCommentNavigation()
@@ -1224,14 +1481,23 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if (reason === null) button.removeAttribute('aria-description'); else button.setAttribute('aria-description', reason)
       }
     }
+    if (active === 'tableLayout') {
+      for (const menu of tableLayoutMenus) menu.refresh()
+      refreshTableSize()
+    }
     if (active === 'tableLayout' && tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action]')) {
+      if (button.closest('[data-docx-table-layout-menu]')) continue
       const action = button.dataset.action!
       if (!TABLE_SELECTION_ACTIONS[action] && !TABLE_ACTIONS[action] && !['table-insert-cells', 'table-delete-cells', 'table-delete', 'table-split-table', 'table-repeat-header-rows', 'table-merge-cells', 'table-split-cells', 'table-column-width', 'table-distribute-columns', 'table-row-height', 'table-distribute-rows', 'table-autofit-contents', 'table-autofit-window', 'table-autofit-fixed', 'table-text-direction-horizontal', 'table-text-direction-rotate-90', 'table-text-direction-rotate-270', 'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left', 'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center', 'table-align-bottom-right', 'table-cell-margins', 'table-properties'].includes(action)) continue
       const selectionOnly = !!TABLE_SELECTION_ACTIONS[action]
       const reason = selectionOnly ? tableCommands.reason(action) : !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : tableCommands.reason(action)
       button.disabled = reason !== null
-      if(action==='table-repeat-header-rows'||action.startsWith('table-autofit-')||action.startsWith('table-text-direction-')||action.startsWith('table-align-'))button.setAttribute('aria-pressed',String(tableCommands.active?.(action)??false))
-      const label = button.textContent ?? action
+      if(action==='table-repeat-header-rows'||action.startsWith('table-autofit-')||action.startsWith('table-text-direction-')||action.startsWith('table-align-')) {
+        const pressed=tableCommands.active?.(action)??false
+        button.setAttribute('aria-pressed',String(pressed))
+        if (action.startsWith('table-align-')) button.classList.toggle('active',pressed)
+      }
+      const label = cellAlignments.find(cell=>cell.id===action)?.label ?? button.textContent ?? action
       button.title = reason === null ? label : `${label}：${reason}`
       button.setAttribute('aria-label', reason === null ? label : `${label}，${reason}`)
       if (reason === null) button.removeAttribute('aria-description')
@@ -1252,7 +1518,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
-    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); numberingValueControl.destroy()
+    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)
@@ -1266,7 +1532,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     closeSpecialIndent?.()
     closeFontDialog?.()
     closeParagraphDialog?.()
-    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount()
+    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount(); pictureWrapRoot?.unmount(); tableSizeRoot?.unmount()
     editor.off('destroy', dispose)
   }
   editor.on('destroy', dispose)

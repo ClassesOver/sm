@@ -78,7 +78,7 @@ export function projectPageComments(raw: CommentAnnotation[], page: PdfPageIdent
     const parent=parentOf.get(node)
     const safeLeaf=!!parent && !!node.savedReplyId && node.savedReplyParentId===parent.cardId && !parentOf.has(parent) && !node.replies.length && !node.issue && !parent.issue
     if (!safeLeaf) node.savedReplyId=undefined
-    if ((parent && !safeLeaf) || node.replies.length) node.readonly=true
+    if ((parent && !safeLeaf) || (node.replies.length && !node.replyAnnotationId)) node.readonly=true
   }
   if (!preview) for (const [index, op] of operations.entries()) if (op.kind === 'addTextAnnotation' && op.pageId === page.pageId) roots.push({ key: `${page.pageId}:pending:${index}`, pageId: page.pageId, pageNo, contents: String(op.text), localRootId: typeof op.localId==='string'?op.localId:undefined, author: '', timeMs: typeof op.createdMs === 'number' ? op.createdMs : null, cardId: null, pendingIndex: index, readonly: false, replies: [] })
   if (!preview) for (const [index, op] of operations.entries()) if (['replyNote','replyPendingNote'].includes(op.kind) && op.pageId === page.pageId) {

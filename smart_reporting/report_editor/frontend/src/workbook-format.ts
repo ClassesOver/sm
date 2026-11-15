@@ -1,11 +1,53 @@
 import { TextDecoration } from '@univerjs/core'
 import { isValidFormat } from 'numfmt'
-import type { WorkbookModel } from '@sheets-web/xlsx-engine'
+import { getSystemShortDate, type WorkbookModel } from '@sheets-web/xlsx-engine'
+import { DEFAULT_NUMFMT_OPTIONS, numfmtPattern } from './workbook-numfmt-dialog'
+import { numberFormatLabel } from './vendor/genoffice-sheets-format/selection-format'
 import { createModal } from './modal'
 import { logicalStyleOf, toUniverStyle, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { readBackSnapshot } from './workbook-vendor/grid/sync'
 import { diffToEdits } from './workbook-vendor/core/session-core'
 import type { WorkbookOperation } from './workbook-draft'
+
+// Representative formats from the fixed GenOffice excel-format-shortcuts.ts.
+export const RIBBON_NUMBER_FORMAT_SHORTCUTS = [
+  { command: 'format:accounting', label: '货币', pattern: "_(\"$\"* #,##0.00_);_(\"$\"* \\(#,##0.00\\);_(\"$\"* \"-\"??_);_(@_)" },
+  { command: 'format:0%', label: '百分比', pattern: '0%' },
+  { command: 'format:comma', label: '千位分隔', pattern: "_(* #,##0.00_);_(* \\(#,##0.00\\);_(* \"-\"??_);_(@_)" },
+] as const
+
+export type RibbonNumberFormatShortcut = typeof RIBBON_NUMBER_FORMAT_SHORTCUTS[number]['command']
+
+// GenOffice NumberFormatSelect category order and representative formats.
+export const NUMBER_FORMAT_PRESETS = [
+  { id: 'general', sourceLabel: 'General', label: '常规' },
+  { id: 'number', sourceLabel: 'Number', label: '数值' },
+  { id: 'currency', sourceLabel: 'Currency', label: '货币' },
+  { id: 'accounting', sourceLabel: 'Accounting', label: '会计专用' },
+  { id: 'short-date', sourceLabel: 'Short Date', label: '短日期' },
+  { id: 'long-date', sourceLabel: 'Long Date', label: '长日期' },
+  { id: 'time', sourceLabel: 'Time', label: '时间' },
+  { id: 'percentage', sourceLabel: 'Percentage', label: '百分比' },
+  { id: 'fraction', sourceLabel: 'Fraction', label: '分数' },
+  { id: 'scientific', sourceLabel: 'Scientific', label: '科学记数' },
+  { id: 'text', sourceLabel: 'Text', label: '文本' },
+] as const
+
+export type NumberFormatPreset = typeof NUMBER_FORMAT_PRESETS[number]['id']
+
+export function numberFormatPresetPattern(id: NumberFormatPreset): string {
+  if (id === 'short-date' || id === 'long-date') {
+    const datePattern = id === 'short-date' ? getSystemShortDate() : 'dddd, mmmm dd, yyyy'
+    return numfmtPattern({ ...DEFAULT_NUMFMT_OPTIONS, category: 'date', datePattern })
+  }
+  return numfmtPattern({ ...DEFAULT_NUMFMT_OPTIONS, category: id, timePattern: 'h:mm:ss AM/PM' })
+}
+
+export function numberFormatPresetLabel(pattern: string): string {
+  const category = numberFormatLabel(pattern)
+  const label = category === 'Date' ? /dddd|mmmm/i.test(pattern) ? 'Long Date' : 'Short Date' : category
+  return NUMBER_FORMAT_PRESETS.find(preset => preset.sourceLabel === label)?.label ?? pattern
+}
 
 export type FormatValue<T> = { kind: 'value'; value: T } | { kind: 'mixed' } | { kind: 'unavailable'; reason: string }
 export interface WorkbookFormatState {

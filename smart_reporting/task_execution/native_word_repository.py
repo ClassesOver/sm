@@ -50,8 +50,17 @@ class NativeWordTaskRepositoryMixin:
         return await self.create_task_with_initial_attempt(
             scope, initial_instruction, _native_word_input=payload)
 
+    async def has_native_word_task_input(self, scope: TaskExecutionScope, input_sha256: str) -> bool:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:
+            result = await connection.execute(select(self.tasks.c.external_run_id).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.native_word_input_sha256 == input_sha256,
+            ))
+            return result.scalar_one_or_none() is not None
+
     @staticmethod
-    def _word_scope_conditions(tasks, scope: TaskExecutionScope):
+    def _task_scope_conditions(tasks, scope: TaskExecutionScope):
         return (
             tasks.c.external_run_id == scope.external_run_id,
             tasks.c.owner_user_id == scope.owner_user_id,
@@ -89,7 +98,7 @@ class NativeWordTaskRepositoryMixin:
         if not finishing_recovery:
             run_conditions.append(self.runs.c.lease_epoch == lease.epoch)
         return [
-            *self._word_scope_conditions(self.tasks, scope),
+            *self._task_scope_conditions(self.tasks, scope),
             self.tasks.c.current_internal_run_id == internal_run_id,
             self.tasks.c.continuation_count == attempt_no,
             self.tasks.c.state_version == state_version,
@@ -106,7 +115,7 @@ class NativeWordTaskRepositoryMixin:
     async def _word_current(self, connection, *, scope, lease, internal_run_id, attempt_no,
                             expected_input_sha256, native_scope, recovery=False):
         row = (await connection.execute(select(self.tasks).where(
-            *self._word_scope_conditions(self.tasks, scope)).with_for_update())).first()
+            *self._task_scope_conditions(self.tasks, scope)).with_for_update())).first()
         if row is None:
             raise _error('native_word_task_not_found')
         value = row._mapping
@@ -244,7 +253,7 @@ class NativeWordTaskRepositoryMixin:
         await self.initialize()
         async with self.db.db_engine.connect() as connection:
             row = (await connection.execute(select(self.tasks).where(
-                *self._word_scope_conditions(self.tasks, scope),
+                *self._task_scope_conditions(self.tasks, scope),
                 self.tasks.c.status == TaskState.COMPLETED))).first()
             if row is None:
                 raise _error('native_word_not_completed')

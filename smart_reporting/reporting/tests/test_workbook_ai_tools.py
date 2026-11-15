@@ -10,14 +10,376 @@ import pytest
 from agno.agent import Agent
 from agno.models.response import ModelResponse
 from openpyxl import Workbook, load_workbook
+from openpyxl.comments import Comment
+from openpyxl.styles import Font
 from openpyxl.worksheet.table import Table
 
 from smart_reporting.report_editor.native_models import NativeEditorContext
 from smart_reporting.report_editor.native_office import inspect_office, patch_office
 from smart_reporting.report_editor.workbook_ai import AgnoWorkbookProposalPlanner
+from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
+
+
+@pytest.mark.anyio
+async def test_source_refresh_pivot_uses_current_data_for_the_named_host():
+    book = Workbook()
+    book.active.title = 'Data'
+    book.active.append(['Region', 'Sales'])
+    book.active.append(['East', 10])
+    book.active.append(['West', 20])
+    book.create_sheet('Pivot')
+    source = BytesIO()
+    book.save(source)
+    content = patch_office('xlsx', source.getvalue(), [{'kind': 'addPivot', 'addition': {
+        'worksheetSheetName': 'Pivot', 'sourceSheetName': 'Data',
+        'sourceArea': {'startRow': 0, 'startColumn': 0, 'endRow': 2, 'endColumn': 1},
+        'location': {'startRow': 0, 'startColumn': 0, 'endRow': 3, 'endColumn': 1}, 'name': 'Sales',
+        'fieldNames': ['Region', 'Sales'], 'rowFieldIndices': [0],
+        'rowLevelItems': [['East', 'West']], 'rowLines': [{'t': 'data', 'members': [0]}, {'t': 'data', 'members': [1]}],
+        'values': [{'fieldIndex': 1, 'agg': 'sum'}],
+    }}])
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', content, operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Data'}, {'name': 'Pivot'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_cell', 'sheetId': 'Data', 'address': 'B2', 'value': 123},
+        {'op': 'refresh_pivot', 'sheetId': 'Pivot'},
+    ], '刷新销售透视表')
+    assert tools.proposal.engine_operations()[-1] == {'kind': 'refreshPivotCaches', 'sheetName': 'Pivot'}
+    sheet = load_workbook(BytesIO(written))['Pivot']
+    assert sheet['A2'].value == 'East' and sheet['B2'].value == 123
+
+
+@pytest.mark.anyio
+async def test_source_set_note_replays_added_replaced_and_removed_notes():
+    book = Workbook()
+    book.active['A1'] = '=2+3'
+    book.active['A1'].comment = Comment('旧备注', '原作者')
+    book.active['A2'].comment = Comment('待移除', '原作者')
+    book.active['A3'].comment = Comment('保留', '同事')
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_note', 'sheetId': 'Sheet', 'address': address, 'text': text}
+        for address, text in [('A1', '更新备注'), ('A2', None), ('B1', '新增备注')]
+    ], '整理备注')
+    sheet = load_workbook(BytesIO(written)).active
+    assert sheet['A1'].value == '=2+3'
+    assert (sheet['A1'].comment.text, sheet['A1'].comment.author) == ('更新备注', '原作者')
+    assert sheet['A2'].comment is None
+    assert (sheet['A3'].comment.text, sheet['A3'].comment.author) == ('保留', '同事')
+    assert sheet['B1'].comment.text == '新增备注'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'fields', 'error'), [
+    ('workbook', {'text': ''}, 'note_invalid'),
+    ('workbook', {'text': '内容', 'author': '管理员'}, 'note_invalid'),
+    ('range', {'text': None}, 'selection_mismatch'),
+])
+async def test_source_set_note_rejects_invalid_arguments_or_scope(scope, fields, error):
+    async def preview(_):
+        pytest.fail('Invalid note proposal reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope=scope,
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0},
+        preview=preview)
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([
+            {'op': 'set_note', 'sheetId': 'Sheet', 'address': 'A1', **fields},
+        ], '更新备注')
+
+
+@pytest.mark.anyio
+async def test_source_print_setup_writes_repeated_rows_columns_and_manual_breaks():
+    book = Workbook()
+    book.active['A1'] = 'Printed'
+    book.active.freeze_panes = 'A2'
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_page_setup', 'sheetId': 'Sheet', 'orientation': 'landscape',
+         'paperSize': 9, 'fitToWidth': 2, 'fitToHeight': 3, 'margins': 'narrow',
+         'printGridlines': True, 'printTitles': '1:2,A:B', 'printArea': 'A1:D10',
+         'footer': {'center': 'Page &P/&N'}, 'rowBreaks': [5], 'colBreaks': [2]},
+        {'op': 'set_page_setup', 'sheetId': 'Sheet', 'fitToWidth': 4},
+    ], '调整打印设置')
+    sheet = load_workbook(BytesIO(written)).active
+    assert sheet.page_setup.orientation == 'landscape' and sheet.page_setup.paperSize == 9
+    assert (sheet.page_setup.fitToWidth, sheet.page_setup.fitToHeight) == (4, 3)
+    assert sheet.sheet_properties.pageSetUpPr.fitToPage is True
+    assert (sheet.print_title_rows, sheet.print_title_cols) == ('$1:$2', '$A:$B')
+    assert '$A$1:$D$10' in sheet.print_area
+    assert sheet.oddFooter.center.text == 'Page &P/&N'
+    assert [item.id for item in sheet.row_breaks.brk] == [5]
+    assert [item.id for item in sheet.col_breaks.brk] == [2]
+    assert sheet.page_margins.left == 0.25 and sheet.print_options.gridLines is True
+    assert sheet.freeze_panes == 'A2' and sheet['A1'].value == 'Printed'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('invalid', [
+    {}, {'scale': 100, 'fitToWidth': 1}, {'printTitles': 'A:C,B:D'},
+    {'printArea': 'XFE1:XFE4'}, {'rowBreaks': [0]}, {'printHeadings': 1},
+])
+async def test_source_print_setup_rejects_invalid_settings_before_preview(invalid):
+    async def preview(_):
+        pytest.fail('Invalid page settings reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    with pytest.raises(ValueError, match='range_invalid|page_setup_invalid'):
+        await tools.propose_operations([
+            {'op': 'set_page_setup', 'sheetId': 'Sheet', **invalid},
+        ], '调整打印设置')
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('rows', 'columns', 'expected'), [(2, 1, 'B3'), (1, 0, 'A2'), (0, 2, 'C1'), (0, 0, None)])
+async def test_source_set_freeze_updates_native_sheet_view(rows, columns, expected):
+    book = Workbook()
+    book.active['A1'] = '保留内容'
+    book.active.freeze_panes = 'D4'
+    book.active.sheet_view.showGridLines = False
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_freeze', 'sheetId': 'Sheet', 'rows': rows, 'columns': columns},
+    ], '调整冻结窗格')
+    sheet = load_workbook(BytesIO(written)).active
+    assert sheet.freeze_panes == expected
+    assert sheet['A1'].value == '保留内容' and sheet.sheet_view.showGridLines is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'rows', 'error'), [
+    ('workbook', True, 'freeze_invalid'), ('workbook', 101, 'freeze_invalid'),
+    ('range', 1, 'selection_mismatch'),
+])
+async def test_source_set_freeze_rejects_invalid_counts_and_selection_scope(scope, rows, error):
+    async def preview(_):
+        pytest.fail('Invalid freeze operation reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope=scope,
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0},
+        preview=preview)
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([
+            {'op': 'set_freeze', 'sheetId': 'Sheet', 'rows': rows, 'columns': 0},
+        ], '调整冻结窗格')
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('target', ['example.com/sales', 'Sheet!B2', None])
+async def test_source_hyperlink_replays_without_overwriting_cell_content(target):
+    book = Workbook()
+    book.active['A1'] = '=B2'
+    book.active['A1'].hyperlink = 'https://example.org/original'
+    book.active['A1'].font = Font(bold=True, color='FF112233', underline='single')
+    original = BytesIO()
+    book.save(original)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', original.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_hyperlink', 'sheetId': 'Sheet', 'address': '$a$1', 'target': target},
+    ], '更新链接')
+    cell = load_workbook(BytesIO(written)).active['A1']
+    assert cell.value == '=B2' and cell.font.bold
+    if target is None:
+        assert cell.hyperlink is None and cell.font.underline is None and cell.font.color is None
+    else:
+        assert cell.font.underline == 'single' and cell.font.color.rgb[-6:] == '0563C1'
+        if target.startswith('Sheet!'):
+            assert cell.hyperlink.location == target and cell.hyperlink.target is None
+        else:
+            assert cell.hyperlink.target == 'https://' + target
+
+
+@pytest.mark.anyio
+async def test_source_hyperlink_requires_workbook_scope():
+    async def preview(_):
+        pytest.fail('Hyperlink proposal in range scope reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0},
+        preview=preview)
+    with pytest.raises(ValueError, match='selection_mismatch'):
+        await tools.propose_operations([
+            {'op': 'set_hyperlink', 'sheetId': 'Sheet', 'address': 'A1', 'target': 'https://example.com'},
+        ], '插入链接')
+
+
+@pytest.mark.anyio
+async def test_source_add_table_uses_replayed_headers_and_keeps_cell_styles():
+    book = Workbook()
+    book.active['A1'] = '旧表头'
+    book.active['A1'].font = Font(bold=True)
+    book.active['B2'] = 25
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    model = {'sheets': [{'name': 'Sheet', 'cells': {'A1': {'value': '旧表头'}}}]}
+    tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_cell', 'sheetId': 'Sheet', 'address': 'A1', 'value': '地区'},
+        {'op': 'add_table', 'sheetId': 'Sheet', 'range': 'A1:B2', 'bandedRows': False},
+    ], '更新表头并创建表格')
+    sheet = load_workbook(BytesIO(written)).active
+    table = sheet.tables['Table1']
+    assert table.ref == 'A1:B2'
+    assert [column.name for column in table.tableColumns] == ['地区', 'Column2']
+    assert table.tableStyleInfo.showRowStripes is False
+    assert [sheet[addr].value for addr in ('A1', 'B1', 'B2')] == ['地区', 'Column2', 25]
+    assert sheet['A1'].font.bold
+
+
+@pytest.mark.anyio
+async def test_source_range_writes_formulas_and_clears_content_within_selection():
+    book = Workbook()
+    book.active['B3'] = '=1+2'
+    book.active['B3'].font = Font(bold=True)
+    book.active['C3'] = 'outside selection'
+    original = BytesIO()
+    book.save(original)
+    source = original.getvalue()
+    content = None
+
+    async def preview(operations):
+        nonlocal content
+        content = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
+        return {'draftSha256': hashlib.sha256(content).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet', 'cells': {}}]}, scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 1, 'endRow': 2, 'startColumn': 0, 'endColumn': 1},
+        preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_range', 'sheetId': 'Sheet', 'start': 'a2', 'range': 'A2:B3',
+         'values': [[5, '=A2*2'], [True, None]]},
+        {'op': 'clear_range', 'sheetId': 'Sheet', 'range': '$B$3'},
+        {'op': 'set_formula', 'sheetId': 'Sheet', 'address': 'B2',
+         'expectedFormula': '=A2*2', 'formula': '=A2*3'},
+    ], '更新选区')
+    sheet = load_workbook(BytesIO(content)).active
+    assert [sheet[addr].value for addr in ('A2', 'B2', 'A3', 'B3', 'C3')] == [
+        5, '=A2*3', True, None, 'outside selection',
+    ]
+    assert sheet['B3'].font.bold
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('operation', 'error'), [
+    ({'op': 'set_range', 'start': 'A1', 'values': [[1, 2], [3]]}, 'range_invalid'),
+    ({'op': 'set_range', 'start': 'B1', 'range': 'A1:B1', 'values': [[1, 2]]}, 'range_invalid'),
+    ({'op': 'set_range', 'range': 'A1:A2', 'values': [[1, 2]]}, 'range_invalid'),
+    ({'op': 'set_range', 'start': 'A1', 'values': [[1, 2, 3]]}, 'selection_mismatch'),
+    ({'op': 'clear_range', 'range': 'A1:C2'}, 'selection_mismatch'),
+])
+async def test_source_range_rejects_invalid_geometry_before_preview(operation, error):
+    async def preview(_):
+        pytest.fail('Invalid range reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1, 'startColumn': 0, 'endColumn': 1},
+        preview=preview)
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([{**operation, 'sheetId': 'Sheet'}], '更新选区')
+
+
+@pytest.mark.anyio
+async def test_source_range_expansion_limit_covers_the_batch():
+    async def preview(_):
+        pytest.fail('Oversized range batch reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    with pytest.raises(ValueError, match='range_too_large'):
+        await tools.propose_operations([
+            {'op': 'clear_range', 'sheetId': 'Sheet', 'range': 'A1:B1000'},
+            {'op': 'set_range', 'sheetId': 'Sheet', 'start': 'D1', 'values': [[42]]},
+        ], '清空旧数据并登记合计')
+
+
+@pytest.mark.anyio
+async def test_source_large_clear_replays_on_workbook_with_no_blank_cell_expansion():
+    book = Workbook()
+    book.active['A1'] = 'old'
+    book.active['B1200'] = '=1+2'
+    book.active['B1200'].font = Font(bold=True)
+    book.active['C1200'] = 'outside range'
+    original = BytesIO()
+    book.save(original)
+    source = original.getvalue()
+    content = None
+
+    async def preview(operations):
+        nonlocal content
+        assert operations[1] == {'kind': 'clearCellRange', 'sheetName': 'Sheet', 'range': 'A1:B1200'}
+        content = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
+        return {'draftSha256': hashlib.sha256(content).hexdigest()}
+
+    model = {'sheets': [{'name': 'Sheet', 'cells': {'A1': {'value': 'old'}}}]}
+    tools = WorkbookAIToolkit(model=model, scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1199, 'startColumn': 0, 'endColumn': 1},
+        preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_cell', 'sheetId': 'Sheet', 'address': 'A2', 'value': 'staged'},
+        {'op': 'clear_range', 'sheetId': 'Sheet', 'range': 'A1:B1200'},
+        {'op': 'set_cell', 'sheetId': 'Sheet', 'address': 'A2',
+         'expectedValue': None, 'value': 'added after clear'},
+    ], '清空旧数据')
+    sheet = load_workbook(BytesIO(content)).active
+    assert sheet['A1'].value is None and sheet['B1200'].value is None
+    assert sheet['A2'].value == 'added after clear'
+    assert (sheet['B1200'].font.bold, sheet['C1200'].value) == (True, 'outside range')
 
 
 def test_workbook_formula_trace_reports_precedents_and_rejects_unsupported_syntax():

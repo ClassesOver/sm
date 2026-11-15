@@ -38,7 +38,7 @@ export function setPdfPageSize(operations: NativeOperation[], preset: string): N
 export interface PdfBox { x: number; y: number; width: number; height: number }
 export interface PdfPageIdentity { pageId: string; index: number; blank?: boolean; mediaBox: PdfBox; cropBox: PdfBox; rotation: number; userUnit?:number; textObjects?: PdfTextObject[]; markups?: SavedPdfMarkup[]; markupReadSafe?: boolean; notes?: SavedPdfNote[]; notesReadSafe?: boolean; drawings?: SavedPdfDrawing[]; drawingsReadSafe?: boolean }
 export interface PdfFormField { name: string; kind: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'unsupported'; value: string | boolean | null; options?: string[]; editable: boolean; fieldId: string; expectedFieldSha256: string }
-export interface PdfModel extends PdfAttachmentModel, PdfOutlineModel, PdfDigitalSignatureModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; staticFormFills?:PdfStaticFill[]; formFields?: PdfFormField[]; signatureFields?: PdfSignatureField[]; existingImages?:PdfExistingImage[]; formDesignWidgets?:PdfDesignWidget[]; capabilities?: { moveText?:boolean;moveTextReason?:string|null;staticFill?:boolean;staticFillReason?:string|null;editMetadata?:boolean;editMetadataReason?:string|null;bates?:boolean;batesReason?:string|null;editFormTextProperties?:boolean; editFormTextPropertiesReason?:string|null; appendRadioWidget?:boolean; appendRadioWidgetReason?:string|null; createFormField?:boolean; createFormFieldReason?:string|null; editFormFieldRequired?:boolean; editFormWidget?:boolean; editFormWidgetReason?:string|null; arrangeFormWidgets?:boolean; arrangeFormWidgetsReason?:string|null; editExistingImage?:boolean; editExistingImageReason?:string|null; protectPdf?: boolean; insertText?: boolean; insertTextReason?: string | null; removeFormWidget?:boolean; cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; removeDrawing?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
+export interface PdfModel extends PdfAttachmentModel, PdfOutlineModel, PdfDigitalSignatureModel { sourceSha256: string; pageCount: number; pages: PdfPageIdentity[]; staticFormFills?:PdfStaticFill[]; formFields?: PdfFormField[]; signatureFields?: PdfSignatureField[]; existingImages?:PdfExistingImage[]; formDesignWidgets?:PdfDesignWidget[]; capabilities?: { moveText?:boolean;moveTextReason?:string|null;staticFill?:boolean;staticFillReason?:string|null;editMetadata?:boolean;editMetadataReason?:string|null;bates?:boolean;batesReason?:string|null;editFormTextProperties?:boolean; editFormTextPropertiesReason?:string|null; appendRadioWidget?:boolean; appendRadioWidgetReason?:string|null; createFormField?:boolean; createFormFieldReason?:string|null; editFormFieldRequired?:boolean; editFormWidget?:boolean; editFormWidgetReason?:string|null; arrangeFormWidgets?:boolean; arrangeFormWidgetsReason?:string|null; editExistingImage?:boolean; editExistingImageReason?:string|null; protectPdf?: boolean; insertText?: boolean; insertTextReason?: string | null; removeFormWidget?:boolean; cropPage?: boolean; selectionMarkup?: boolean; removeMarkup?: boolean; removeDrawing?: boolean; notes?: boolean; noteReplies?: boolean; savedReplyEdits?: boolean; savedNoteThreadRemoval?: boolean; pendingNoteReplies?: boolean; pageSize?: boolean; pageSizeReason?: string | null } }
 export type PdfRect = [number, number, number, number]
 export interface PdfViewportInverse { width: number; height: number; convertToPdfPoint(x: number, y: number): number[] }
 
@@ -112,7 +112,7 @@ export function pdfPageState(pages: PdfPageIdentity[], operations: NativeOperati
       validatePendingPdfNote(operation, page)
     } else if (operation.kind === 'editNote' || operation.kind === 'removeNote') {
       if (deleted.has(page.pageId)) throw new Error('便签不能引用已删除页面')
-      const note = validatePdfNoteOperation(operation, pages.find(item => item.pageId === page.pageId)!)
+      const note = validatePdfNoteOperation(operation, pages.find(item => item.pageId === page.pageId)!, operations)
       if (removed.has(note.annotationId)) throw new Error('同一便签不能重复编辑或删除')
       removed.add(note.annotationId)
       page.notes = operation.kind === 'removeNote' ? page.notes?.filter(item => item.annotationId !== note.annotationId) : page.notes?.map(item => item.annotationId === note.annotationId ? { ...item, contents: String(operation.contents) } : item)
@@ -344,14 +344,14 @@ export function pdfCanPrint(state: { loaded: boolean; locked: boolean; dirty: bo
   return state.loaded && !state.locked && !state.dirty && !state.previewing && !state.printing && !state.previewDocument
 }
 
-export async function renderPdfPrintHost(root: HTMLElement, pages: PdfPageIdentity[], getPage: (sourceIndex: number) => Promise<PDFPageProxy>, annotationMode: number, pixelLimit: number) {
+export async function renderPdfPrintHost(root: HTMLElement, pages: {index: number; rotation?: number}[], getPage: (sourceIndex: number) => Promise<PDFPageProxy>, annotationMode: number, pixelLimit: number) {
   const host = root.ownerDocument.createElement('div')
   host.className = 'pdf-print-document'
   root.append(host)
   try {
     for (const [index, identity] of pages.entries()) {
       const page = await getPage(identity.index)
-      const viewport = page.getViewport({ scale: 1, rotation: identity.rotation })
+      const viewport = page.getViewport({ scale: 1, rotation: identity.rotation ?? page.rotate })
       const dpr = Math.min(1.5, Math.sqrt(pixelLimit / (viewport.width * viewport.height)))
       const canvas = root.ownerDocument.createElement('canvas')
       canvas.width = Math.max(1, Math.floor(viewport.width * dpr)); canvas.height = Math.max(1, Math.floor(viewport.height * dpr))
@@ -438,7 +438,13 @@ export function insertBlankPdfPage(pages: PdfPageIdentity[], operations: NativeO
   if (afterPageId !== null && at < 0) throw new Error('页面不存在')
   const neighbor = current[Math.max(0, at)]
   const quarter = neighbor ? neighbor.rotation % 180 !== 0 : false
-  const size = neighbor ? { width: quarter ? neighbor.cropBox.height : neighbor.cropBox.width, height: quarter ? neighbor.cropBox.width : neighbor.cropBox.height } : PDF_A4_POINTS
+  // GenOffice takes the PDF.js viewport at scale 1. Its size includes /UserUnit.
+  const sourceUnit = neighbor?.userUnit ?? 1
+  const unit = Number.isFinite(sourceUnit) && sourceUnit > 0 ? sourceUnit : 1
+  const size = neighbor ? {
+    width: (quarter ? neighbor.cropBox.height : neighbor.cropBox.width) * unit,
+    height: (quarter ? neighbor.cropBox.width : neighbor.cropBox.height) * unit,
+  } : PDF_A4_POINTS
   const pageId = `blank:${newId().toLowerCase()}`
   if (!isPdfBlankPageId(pageId)) throw new Error('空白页身份无效')
   const order = current.map(page => page.pageId)

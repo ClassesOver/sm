@@ -862,3 +862,59 @@ async def test_parallel_changed_request_returns409_without_cancelling_original_t
     finally:
         release.set()
         await asyncio.gather(first, return_exceptions=True)
+
+@pytest.mark.parametrize("mode", ["valid", "swallow_cancel"])
+async def test_word_service_shutdown_allows_same_attempt_recovery(chain, mode):
+    from smart_reporting.task_execution.models import TaskState
+
+    chain.transport.mode = mode
+    chain.transport.release = asyncio.Event()
+    first = await started(chain)
+    await asyncio.wait_for(chain.transport.proposed.wait(), 10)
+
+    await chain.ai.aclose()
+    interrupted = await chain.repository.get_task_snapshot(first["editId"])
+    assert interrupted.state is TaskState.ACTIVE
+    assert interrupted.lease_owner is None
+
+    chain.transport.release = None
+    restored = await restart_projection(chain)
+    assert restored["editId"] == first["editId"]
+    assert restored["status"] == "succeeded", restored
+    completed = await chain.repository.get_task_snapshot(first["editId"])
+    assert completed.state is TaskState.COMPLETED
+    assert completed.current_internal_run_id == interrupted.current_internal_run_id
+    attempt = await chain.repository.get_attempt(completed.current_internal_run_id)
+    assert attempt.resume_count == 1
+    assert chain.transport.calls == 2
+
+async def test_reconnecting_word_service_waits_for_current_lease_holder(chain, monkeypatch):
+    chain.transport.release = asyncio.Event()
+    first = await started(chain)
+    await asyncio.wait_for(chain.transport.proposed.wait(), 10)
+    lease_observed = asyncio.Event()
+    get_snapshot = chain.repository.get_task_snapshot
+
+    async def observe_snapshot(task_id):
+        task = await get_snapshot(task_id)
+        if task is not None and task.lease_owner is not None:
+            lease_observed.set()
+        return task
+
+    monkeypatch.setattr(chain.repository, "get_task_snapshot", observe_snapshot)
+    observer = asyncio.create_task(restart_projection(chain))
+    try:
+        await asyncio.wait_for(lease_observed.wait(), 20)
+        chain.transport.release.set()
+        original = await settled(chain, first["editId"])
+        restored = await asyncio.wait_for(observer, 20)
+        assert original["status"] == "succeeded", original
+        assert restored["editId"] == first["editId"]
+        assert restored["status"] == "succeeded", restored
+        assert restored["proposal"] == original["proposal"]
+        assert chain.transport.calls == 1
+    finally:
+        chain.transport.release.set()
+        if not observer.done():
+            observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)

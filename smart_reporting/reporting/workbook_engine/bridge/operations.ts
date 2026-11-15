@@ -15,6 +15,13 @@ import { applyChartDeletions } from '../packages/xlsx-engine/src/chart-delete'
 import { applyChartEdits } from '@sheets-web/xlsx-engine'
 import { applyChartAnchors } from '../packages/xlsx-engine/src/chart-anchor'
 import { applyChartSource } from './chart-sources'
+import { applyTableSource } from './table-source'
+import { applyNoteSource } from '../packages/xlsx-engine/src/notes'
+import { pivotTablePathsOnSheet } from '../packages/xlsx-engine/src/pivot-refresh'
+import { clearCellRange } from '../packages/xlsx-engine/src/workbook-write'
+import { parseAddress } from '../packages/xlsx-engine/src/cell-address'
+import { normalizeLinkTarget } from '../packages/xlsx-engine/src/hyperlink-target'
+import { cellHyperlinkState, readPackageSheetHyperlinks } from '../packages/xlsx-engine/src/hyperlink-write'
 import { validateExternalSourceBinding } from '../packages/xlsx-engine/src/external-links-source'
 import { applyExternalLinkCaches } from '../packages/xlsx-engine/src/external-links-update'
 import { applyExternalLinkOperation } from '../packages/xlsx-engine/src/external-links'
@@ -105,6 +112,12 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       case 'applyChartEdits': bytes = await applyChartEdits(bytes, op.edits); break
       case 'applyChartAnchors': bytes = await applyChartAnchors(bytes, op.edits); break
       case 'applyCellEdits': bytes = await applyCellEdits(bytes, z.array(edit).max(1000000).parse(op.edits)); break
+      case 'clearCellRange': {
+        const parsed = z.object({kind: z.literal('clearCellRange'), sheetName: z.string().min(1).max(31),
+          range: z.string().max(32)}).strict().parse(op)
+        bytes = await clearCellRange(bytes, parsed.sheetName, parsed.range)
+        break
+      }
       case 'applySheetMerges': bytes = await applySheetMerges(bytes, op.sheetName, op.ranges); break
       case 'applySheetEdits':
         bytes = await renameSparklineSheetReferences(bytes, op.plan.renames)
@@ -157,6 +170,15 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await patchSheetNotes(bytes, parsed.sheetName, parsed.sourceIdentity, parsed.changes); break
       }
       case 'applySheetNotes': bytes = await applySheetNotes(bytes, op.sheetName, op.notes); break
+      case 'applyNoteSource': {
+        const parsed = z.object({
+          kind: z.literal('applyNoteSource'), sheetName: z.string().min(1).max(31),
+          row: z.number().int().min(0).max(1048575), column: z.number().int().min(0).max(16383),
+          text: z.string().min(1).max(32000).nullable(),
+        }).strict().parse(op)
+        bytes = await applyNoteSource(bytes, parsed.sheetName, {row: parsed.row, column: parsed.column, text: parsed.text})
+        break
+      }
       case 'applySheetFilter': {
         const parsed = z.object({
           kind: z.literal('applySheetFilter'), sheetName: z.string().min(1).max(31),
@@ -184,6 +206,7 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       case 'applyRowHeights': bytes = await applyRowHeights(bytes, op.sheetName, op.entries); break
       case 'applyPageSetups': bytes = await applyPageSetups(bytes, op.setups); break
       case 'applyTableAdditions': bytes = await applyTableAdditions(bytes, op.additions); break
+      case 'applyTableSource': bytes = await applyTableSource(bytes, op); break
       case 'applyTableEdits': {
         const parsed = z.object({ kind: z.literal('applyTableEdits'), edits: z.array(z.object({
           worksheetSheetName: z.string().min(1).max(31), tableName: z.string().min(1).max(255),
@@ -197,9 +220,12 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await applyTableEdits(bytes, parsed.edits); break
       }
       case 'refreshPivotCaches': {
+        const parsed = z.object({kind: z.literal('refreshPivotCaches'),
+          sheetName: z.string().min(1).max(31).optional()}).strict().parse(op)
         const before = bytes
-        bytes = await refreshPivotCaches(bytes)
-        bytes = await syncOwnedPivotControls(before, bytes)
+        const tablePaths = parsed.sheetName === undefined ? undefined : await pivotTablePathsOnSheet(bytes, parsed.sheetName)
+        bytes = await refreshPivotCaches(bytes, tablePaths)
+        bytes = await syncOwnedPivotControls(before, bytes, tablePaths)
         break
       }
       case 'applyPivotLayoutExpansions': {
@@ -236,6 +262,24 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
           edits: z.array(z.object({ ref: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}$/), expectedTarget: target, target }).strict()).min(1).max(HYPERLINK_EDIT_LIMIT),
         }).strict().parse(op)
         bytes = await applySheetHyperlinks(bytes, parsed.sheetName, parsed.edits); break
+      }
+      case 'applyHyperlinkSource': {
+        const parsed = z.object({kind: z.literal('applyHyperlinkSource'), sheetName: z.string().min(1).max(31),
+          ref: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}$/), target: z.string().max(HYPERLINK_TARGET_LIMIT).nullable(),
+        }).strict().parse(op)
+        const {row, column} = parseAddress(parsed.ref)
+        if (row >= 1048576 || column >= 16384) throw new Error('workbook_ai_hyperlink_invalid')
+        const target = parsed.target === null ? null : normalizeLinkTarget(parsed.target)
+        if (target === null && parsed.target !== null) throw new Error('workbook_ai_hyperlink_invalid')
+        const expectedTarget = cellHyperlinkState(await readPackageSheetHyperlinks(bytes, parsed.sheetName), row, column)
+        if (expectedTarget === target) break
+        bytes = await applySheetHyperlinks(bytes, parsed.sheetName, [{ref: parsed.ref, expectedTarget, target}])
+        bytes = await applyCellEdits(bytes, [{
+          sheetName: parsed.sheetName, row, column, writeValue: false, cell: {value: null},
+          style: target === null ? {underline: false, fontColor: null}
+            : {underline: true, underlineStyle: 'single', fontColor: '#0563C1'},
+        }])
+        break
       }
       case 'removeSheetSplitPane': bytes = await removeSheetSplitPane(bytes, op); break
       case 'setThemePart': { const valid = setThemePartSchema.parse(op); bytes = await setThemePart(bytes, valid.themePath, valid.state); break }

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..office.contract import SHA256_PATTERN
 from ..reporting.models import ReportingError
-from .native_ai_api import _ai_error
+from .native_ai_api import _ai_error, _revalidate_write_session
 from .native_api import NATIVE_SESSION_COOKIE, _csrf
 
 
@@ -103,7 +103,12 @@ def create_native_pdf_review_ai_router(grants, *, editor, review, allowed_origin
     ):
         try:
             session = await session_for(request, document_id, revision, write=True)
-            return await review.accept(session, edit_id, **payload.model_dump())
+            return await review.accept(
+                session, edit_id, **payload.model_dump(),
+                revalidate_session=lambda: _revalidate_write_session(
+                    grants, editor, request.cookies.get(NATIVE_SESSION_COOKIE, "")
+                ),
+            )
         except ReportingError as error:
             raise _ai_error(error) from None
 

@@ -50,6 +50,24 @@ it('deleting the last thread preserves shared persons and unrelated legacy notes
  expect(zip.file('xl/persons/person.xml')).not.toBeNull()
  expect(zip.file('xl/threadedComments/threadedComment1.xml')).toBeNull()
 })
+it('converts a thread and its replies to a legacy note with its original author in one patch', async () => {
+ const bytes = await engine.applySheetNotes(await engine.createBlankWorkbook('Report'), 'Report', [{row:0,column:0,author:'保留',text:'旧批注'}])
+ const initial = (await engine.readWorkbook(bytes)).sheets[0]!.threads!
+ const thread = {...root, replies:[{id:'{33333333-3333-4333-8333-333333333333}',personId:root.personId,author:root.author,dT:root.dT,text:'回复'}]}
+ const saved = await applyWorkbookOperations(bytes, [{kind:'patchThreadedComments',sheetName:'Report',sourceIdentity:initial.sourceIdentity,changes:[{row:3,column:3,expectedThreadId:null,thread}]}])
+ const state = (await engine.readWorkbook(saved)).sheets[0]!.threads!
+ const convert = {kind:'patchThreadedComments',sheetName:'Report',sourceIdentity:state.sourceIdentity,convertToNotes:true,
+  changes:[{row:3,column:3,expectedThreadId:root.id,thread:null}]}
+ const converted = await applyWorkbookOperations(saved, [convert])
+ const sheet = (await engine.readWorkbook(converted)).sheets[0]!
+ expect(sheet.threads!.threads).toEqual([])
+ expect(sheet.notes!.notes).toEqual([
+  {row:0,column:0,author:'保留',text:'旧批注'},
+  {row:3,column:3,author:root.author,text:'根帖<&\n\n回复'},
+ ])
+ expect((await JSZip.loadAsync(converted)).file('xl/threadedComments/threadedComment1.xml')).toBeNull()
+ await expect(applyWorkbookOperations(saved, [{...convert,changes:[{row:3,column:3,expectedThreadId:null,thread:null}]}])).rejects.toThrow(/身份/)
+})
 it('preserves legacy picture bytes and allows their removal alongside modern threads',async()=>{
  const {readNotePictures,applyNotePictureOperation}=await import('../packages/xlsx-engine/src/note-pictures')
  const {sha256Hex}=await import('../packages/xlsx-engine/src/sha256')

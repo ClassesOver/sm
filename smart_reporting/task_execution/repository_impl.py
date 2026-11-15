@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -50,7 +51,7 @@ from .models import (
     TaskState,
     utcnow,
 )
-from .native_word_contracts import normalize_word_input
+from .native_word_contracts import canonical_bytes, normalize_word_input
 from .native_word_repository import NativeWordTaskRepositoryMixin
 
 TASK_SCHEMA_VERSION = "2.2.0"
@@ -216,6 +217,10 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             Column("mutation_sequence", BigInteger, nullable=False, default=0),
             Column("native_word_input", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_input_sha256", String(64)),
+            Column("native_workbook_request_sha256", String(64)),
+            Column("native_workbook_accepted_at", DateTime(timezone=True)),
+            Column("native_workbook_discarded_at", DateTime(timezone=True)),
+            Column("native_workbook_candidate", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_candidate_receipt", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_candidate_sha256", String(64)),
             CheckConstraint("(native_word_input IS NULL) = (native_word_input_sha256 IS NULL)",
@@ -449,6 +454,10 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                 ("instruction_sequence", "BIGINT NOT NULL DEFAULT 0"),
                 ("native_word_input", "JSONB"),
                 ("native_word_input_sha256", "VARCHAR(64)"),
+                ("native_workbook_request_sha256", "VARCHAR(64)"),
+                ("native_workbook_candidate", "JSONB"),
+                ("native_workbook_accepted_at", "TIMESTAMP WITH TIME ZONE"),
+                ("native_workbook_discarded_at", "TIMESTAMP WITH TIME ZONE"),
                 ("native_word_candidate_receipt", "JSONB"),
                 ("native_word_candidate_sha256", "VARCHAR(64)"),
                 ("acceptance_contract", "JSONB"),
@@ -1234,6 +1243,89 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         value = f"{external_run_id}:attempt:{attempt_no}".encode()
         return hashlib.sha256(value).hexdigest()[:32]
 
+    async def create_native_workbook_task(
+        self, scope: TaskExecutionScope, instruction: str, request_sha256: str,
+    ) -> TaskSnapshot:
+        return await self._create_native_candidate_task(scope, instruction, request_sha256, "native-workbook-ai")
+
+    async def create_native_slides_task(
+        self, scope: TaskExecutionScope, instruction: str, request_sha256: str,
+    ) -> TaskSnapshot:
+        return await self._create_native_candidate_task(scope, instruction, request_sha256, "native-slides-ai")
+
+    async def create_native_pdf_task(
+        self, scope: TaskExecutionScope, instruction: str, request_sha256: str,
+    ) -> TaskSnapshot:
+        return await self._create_native_candidate_task(scope, instruction, request_sha256, "native-pdf-ai")
+
+    async def _create_native_candidate_task(
+        self, scope: TaskExecutionScope, instruction: str, request_sha256: str, executor_id: str,
+    ) -> TaskSnapshot:
+        if (scope.executor_id != executor_id
+                or re.fullmatch(rf"{executor_id}:[0-9a-f]{{32,64}}", scope.external_run_id) is None
+                or not isinstance(request_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None):
+            raise TaskExecutionRepositoryError("native_workbook_input_invalid", "Office 候选任务输入无效。")
+        # Excel introduced these columns. Other editors use the same receipt storage,
+        # while all reads and transitions remain bound to the full task scope.
+        return await self.create_task_with_initial_attempt(
+            scope, instruction, _native_workbook_request_sha256=request_sha256,
+        )
+
+    async def has_native_workbook_task_input(self, scope: TaskExecutionScope, request_sha256: str) -> bool:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:
+            result = await connection.execute(select(self.tasks.c.external_run_id).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.native_workbook_request_sha256 == request_sha256,
+            ))
+            return result.scalar_one_or_none() is not None
+
+    async def is_native_workbook_task_cancelled(self, scope: TaskExecutionScope) -> bool:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:
+            row = await connection.execute(select(self.tasks.c.external_run_id).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.native_workbook_request_sha256.is_not(None),
+                or_(self.tasks.c.status == TaskState.CANCELLED,
+                    self.tasks.c.native_workbook_discarded_at.is_not(None)),
+            ))
+            return row.scalar_one_or_none() is not None
+
+    async def cancel_native_workbook_task(self, scope: TaskExecutionScope, *, create_tombstone=False) -> bool:
+        if create_tombstone and await self.get_task_snapshot(scope.external_run_id) is None:
+            try:
+                await self.create_task_with_initial_attempt(
+                    scope, "Cancelled workbook request.",
+                    _native_workbook_request_sha256=hashlib.sha256(b"native-workbook-cancelled").hexdigest(),
+                    _native_workbook_cancelled=True,
+                )
+                return True
+            except TaskExecutionRepositoryError as error:
+                if error.code not in {"task_initial_instruction_conflict", "native_workbook_input_conflict"}:
+                    raise
+        for _ in range(3):
+            try:
+                task = await self.cancel_and_reject(scope)
+                break
+            except TaskExecutionRepositoryError as error:
+                if error.code != "task_cas_conflict":
+                    raise
+        else:
+            raise TaskExecutionRepositoryError("task_cas_conflict", "XLSX 任务状态已发生变化。")
+        if task.state is not TaskState.COMPLETED:
+            return task.state is TaskState.CANCELLED
+        async with self.db.db_engine.begin() as connection:
+            result = await connection.execute(update(self.tasks).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.status == TaskState.COMPLETED,
+                self.tasks.c.native_workbook_candidate.is_not(None),
+                self.tasks.c.native_workbook_accepted_at.is_(None),
+            ).values(native_workbook_discarded_at=func.coalesce(
+                self.tasks.c.native_workbook_discarded_at, func.clock_timestamp(),
+            )))
+            return result.rowcount == 1
+
     async def create_task_with_initial_attempt(
         self,
         scope: TaskExecutionScope,
@@ -1243,8 +1335,10 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         acceptance_contract: dict[str, Any] | None = None,
         max_instruction_bytes: int = MAX_INSTRUCTION_BYTES,
         _native_word_input: dict[str, Any] | None = None,
+        _native_workbook_request_sha256: str | None = None,
+        _native_workbook_cancelled: bool = False,
     ) -> TaskSnapshot:
-        # Private typed creation seam, used only by create_native_word_task.
+        # Private creation arguments are used by the native Office services.
         # Do not expose this argument in task HTTP/model tools.
         word_payload = word_digest = None
         if _native_word_input is not None:
@@ -1299,9 +1393,11 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                         thread_id=scope.thread_id,
                         agent_id=scope.executor_id,
                         sandbox_id=scope.sandbox_id,
-                        status=TaskState.NEW,
+                        status=TaskState.CANCELLED if _native_workbook_cancelled else TaskState.NEW,
+                        completed_at=now if _native_workbook_cancelled else None,
                         native_word_input=word_payload,
                         native_word_input_sha256=word_digest,
+                        native_workbook_request_sha256=_native_workbook_request_sha256,
                         state_version=1,
                         lease_epoch=0,
                         instruction_sequence=1,
@@ -1320,7 +1416,9 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                         internal_run_id=internal_run_id,
                         external_run_id=scope.external_run_id,
                         continuation_index=0,
-                        status=AttemptState.CREATED,
+                        status=AttemptState.CLOSED if _native_workbook_cancelled else AttemptState.CREATED,
+                        outcome=AttemptOutcome.CANCELLED if _native_workbook_cancelled else None,
+                        completed_at=now if _native_workbook_cancelled else None,
                         resume_count=0,
                         lease_epoch=0,
                         created_at=now,
@@ -1367,10 +1465,17 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     "task_initial_instruction_conflict", "外部 run 的初始目标不一致。"
                 )
             async with self.db.db_engine.connect() as connection:
-                stored_word = (await connection.execute(select(self.tasks.c.native_word_input_sha256)
-                    .where(self.tasks.c.external_run_id == scope.external_run_id))).scalar_one_or_none()
+                stored_native_inputs = (await connection.execute(
+                    select(self.tasks.c.native_word_input_sha256, self.tasks.c.native_workbook_request_sha256)
+                    .where(self.tasks.c.external_run_id == scope.external_run_id)
+                )).one_or_none()
+            if stored_native_inputs is None:
+                raise TaskExecutionRepositoryError("task_create_failed", "执行任务状态创建失败。")
+            stored_word, stored_workbook = stored_native_inputs
             if stored_word != word_digest:
                 raise TaskExecutionRepositoryError("native_word_input_conflict", "Word任务输入不可修改。")
+            if stored_workbook != _native_workbook_request_sha256:
+                raise TaskExecutionRepositoryError("native_workbook_input_conflict", "XLSX 任务输入不可修改。")
             return existing
         created = await self.get_task_snapshot(scope.external_run_id)
         assert created is not None
@@ -1843,6 +1948,69 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         assert snapshot is not None
         return snapshot
 
+    async def request_native_workbook_finish(
+        self, scope: TaskExecutionScope, lease: Lease, expected_state_version: int,
+        request_sha256: str, candidate: dict[str, Any],
+    ) -> TaskSnapshot:
+        try:
+            encoded = canonical_bytes(candidate)
+        except ValueError as error:
+            raise TaskExecutionRepositoryError("native_workbook_candidate_invalid", "XLSX 候选无效。") from error
+        if len(encoded) > MAX_EXECUTION_RECEIPT_BYTES:
+            raise TaskExecutionRepositoryError("finish_receipt_too_large", "XLSX 候选超过 512 KiB。")
+        return await self.request_finish(
+            scope.external_run_id, lease, expected_state_version,
+            {"kind": "native_workbook_candidate", "sha256": hashlib.sha256(encoded).hexdigest()},
+            result_text="Workbook candidate ready for editor review.", retained_execution_ids=[],
+            _native_workbook_candidate=(scope, request_sha256, json.loads(encoded)),
+        )
+
+    async def get_completed_native_workbook_candidate(
+        self, scope: TaskExecutionScope, context_sha256: str,
+    ) -> dict[str, Any] | None:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:
+            row = (await connection.execute(select(self.tasks).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.native_workbook_request_sha256.is_not(None),
+                self.tasks.c.native_workbook_discarded_at.is_(None),
+                self.tasks.c.status == TaskState.COMPLETED,
+                exists(select(self.runs.c.internal_run_id).where(
+                    self.runs.c.internal_run_id == self.tasks.c.current_internal_run_id,
+                    self.runs.c.external_run_id == self.tasks.c.external_run_id,
+                    self.runs.c.status == AttemptState.CLOSED,
+                    self.runs.c.outcome == AttemptOutcome.FINISH_ACCEPTED,
+                )),
+            ))).first()
+        if row is None:
+            return None
+        candidate = row._mapping["native_workbook_candidate"]
+        if not isinstance(candidate, dict) or candidate.get("contextSha256") != context_sha256:
+            return None
+        if row._mapping["finish_receipt"] != {
+            "kind": "native_workbook_candidate", "sha256": hashlib.sha256(canonical_bytes(candidate)).hexdigest(),
+        }:
+            raise TaskExecutionRepositoryError("native_workbook_candidate_invalid", "XLSX 候选回执不匹配。")
+        return {**candidate, "accepted": row._mapping["native_workbook_accepted_at"] is not None}
+
+    async def accept_native_workbook_candidate(
+        self, scope: TaskExecutionScope, candidate: dict[str, Any],
+    ) -> bool:
+        pointer_sha = hashlib.sha256(canonical_bytes(candidate)).hexdigest()
+        await self.initialize()
+        async with self.db.db_engine.begin() as connection:
+            result = await connection.execute(update(self.tasks).where(
+                *self._task_scope_conditions(self.tasks, scope),
+                self.tasks.c.status == TaskState.COMPLETED,
+                self.tasks.c.native_workbook_discarded_at.is_(None),
+                self.tasks.c.native_workbook_candidate == candidate,
+                self.tasks.c.finish_receipt["kind"].as_string() == "native_workbook_candidate",
+                self.tasks.c.finish_receipt["sha256"].as_string() == pointer_sha,
+            ).values(native_workbook_accepted_at=func.coalesce(
+                self.tasks.c.native_workbook_accepted_at, func.clock_timestamp(),
+            )))
+            return result.rowcount == 1
+
     async def request_finish(
         self,
         external_run_id: str,
@@ -1852,6 +2020,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         *,
         result_text: str,
         retained_execution_ids: list[str],
+        _native_workbook_candidate: tuple[TaskExecutionScope, str, dict[str, Any]] | None = None,
     ) -> TaskSnapshot:
         await self.initialize()
         encoded_receipt = json.dumps(finish_receipt, sort_keys=True, separators=(",", ":"))
@@ -1863,6 +2032,16 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                 connection, external_run_id, lease, expected_state_version
             )
             value = task._mapping
+            workbook_values = {}
+            workbook_conditions = []
+            if _native_workbook_candidate is not None:
+                scope, request_sha256, candidate = _native_workbook_candidate
+                if self._task_snapshot(task).scope != scope or value["native_workbook_request_sha256"] != request_sha256:
+                    raise TaskExecutionRepositoryError("native_workbook_input_conflict", "XLSX 任务输入不可修改。")
+                workbook_values["native_workbook_candidate"] = candidate
+                workbook_conditions.append(self.tasks.c.deadline_at > func.clock_timestamp())
+            elif value["native_workbook_request_sha256"] is not None:
+                raise TaskExecutionRepositoryError("native_workbook_candidate_missing", "XLSX 任务需要候选回执。")
             if value["finish_receipt"] is not None:
                 if value["finish_receipt"] != finish_receipt:
                     raise TaskExecutionRepositoryError(
@@ -1922,6 +2101,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     self.tasks.c.lease_epoch == lease.epoch,
                     self.tasks.c.lease_expires_at > func.clock_timestamp(),
                     self.tasks.c.status.in_([TaskState.NEW, TaskState.ACTIVE, TaskState.SUSPENDED]),
+                    *workbook_conditions,
                 )
                 .values(
                     status=TaskState.FINISHING,
@@ -1929,6 +2109,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     result_text=bounded_output(result_text),
                     state_version=self.tasks.c.state_version + 1,
                     updated_at=now,
+                    **workbook_values,
                 )
             )
             if result.rowcount != 1:

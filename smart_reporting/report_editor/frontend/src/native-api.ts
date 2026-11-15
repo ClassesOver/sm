@@ -58,6 +58,7 @@ export interface NativeAIJob {
   }
   error?: { code: string; message: string }
 }
+export type SlidesNameLocale = 'en' | 'zh-CN' | 'zh-TW'
 export type NativeOfficeReadAction = 'ask' | 'summarize' | 'keyPoints'
 export type NativeOfficeReadSelection = null | {sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number} | {slideIndex: number; elementId: string}[]
 export interface NativeOfficeReadContext {operations: NativeOperation[]; selection: NativeOfficeReadSelection}
@@ -182,13 +183,13 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     const headers = new Headers()
     if (payload !== undefined) {
       if (!csrfToken) throw new NativeApiError(403, 'native_csrf_missing', '缺少原生编辑授权，请重新打开文档')
-      headers.set('Content-Type', 'application/json')
+      if (!(payload instanceof FormData)) headers.set('Content-Type', 'application/json')
       headers.set('X-CSRF-Token', csrfToken)
     }
     const response = await fetch(`${base}/${path}`, { method: payload === undefined ? 'GET' : 'POST',
       credentials: 'same-origin', cache: 'no-store', headers, signal,
       ...((path === 'ai/forms/cancel' || path === 'ai/office-read/cancel' || path === 'ai/word-read/cancel' || path === 'ai/read/cancel' || path === 'ai/review/cancel') ? { keepalive: true } : {}),
-      ...(payload === undefined ? {} : { body: JSON.stringify(payload) }) })
+      ...(payload === undefined ? {} : { body: payload instanceof FormData ? payload : JSON.stringify(payload) }) })
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
       throw new NativeApiError(response.status, body.detail?.code ?? 'native_request_failed',
@@ -209,6 +210,14 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     },
     newWord: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/new',payload)).json(),
     saveWordAs: async (payload:NativeWordFileRequest):Promise<NativeWordFileResult> => (await request('word/save-as',payload)).json(),
+    saveSlidesAs: async (payload: NativeWordFileRequest & { operations: NativeOperation[] }): Promise<NativeWordFileResult> =>
+      (await request('slides/save-as', payload)).json(),
+    openSlidesFile: async (file: File, requestId: string, signal: AbortSignal): Promise<NativeWordFileResult> => {
+      const form = new FormData()
+      form.append('file', file)
+      form.append('requestId', requestId)
+      return (await request('slides/open', form, signal)).json()
+    },
     context: async (signal?: AbortSignal): Promise<NativeContextResponse> => (await request('context', undefined, signal)).json(),
     imagePixels: async (target: {sourceSha256: string; pageId: string; imageId: string; expectedImageSha256: string}, signal?: AbortSignal): Promise<{sourceSha256:string;imageId:string;expectedImageSha256:string;pageId:string;image:string;width:number;height:number;sha256:string}> => (await request('image-pixels', target, signal)).json(),
     imageBackground: async (target: {sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};pxWidth:number}, signal?:AbortSignal): Promise<{sourceSha256:string;pageId:string;imageId:string;expectedImageSha256:string;clip:{x:number;y:number;width:number;height:number};image:string;width:number;height:number;sha256:string}> => (await request('image-background',target,signal)).json(),
@@ -249,7 +258,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     pdfReviewEvents: nativeAIProgressListener(`${base}/ai/review`),
     pdfReviewAccept: async (id: string, payload: NativePreviewRequest & {snapshotSha256: string}, signal?: AbortSignal): Promise<{operations: NativeOperation[]; previewDigest: string; appliedOperationIndices: number[]; skippedOperations: NativeSkippedOperation[]}> => (await request('ai/review/' + encodeURIComponent(id) + '/accept', payload, signal)).json(),
     pdfReviewCancel: async (clientRequestId: string): Promise<NativePDFReviewJob> => (await request('ai/review/cancel', {clientRequestId})).json(),
-    officeAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativeOfficeReadAction; instruction: string; previousTaskId?: string; selection: NativeOfficeReadSelection}, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/start', payload, signal)).json(),
+    officeAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativeOfficeReadAction | 'fileName'; nameLocale?: SlidesNameLocale; instruction: string; previousTaskId?: string; selection: NativeOfficeReadSelection}, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/start', payload, signal)).json(),
     officeAIStatus: async (id: string, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     officeAIEvents: nativeAIProgressListener(`${base}/ai/office-read`),
     officeAICancel: async (clientRequestId: string): Promise<NativeOfficeReadTask> => (await request('ai/office-read/cancel', {clientRequestId})).json(),
@@ -261,7 +270,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     pdfAIStatus: async (id: string, signal?: AbortSignal): Promise<NativePDFReadTask> => (await request('ai/read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     pdfAIEvents: nativeAIProgressListener(`${base}/ai/read`),
     pdfAICancel: async (clientRequestId: string): Promise<NativePDFReadTask> => (await request('ai/read/cancel', {clientRequestId})).json(),
-    aiStart: async (payload: NativePreviewRequest & { instruction: string; selection: NativeAISelection[]; clientRequestId?: string }, signal?: AbortSignal): Promise<NativeAIJob> => (await request('ai/start', payload, signal)).json(),
+    aiStart: async (payload: NativePreviewRequest & { instruction: string; selection: NativeAISelection[]; clientRequestId?: string; resumeEditId?: string }, signal?: AbortSignal): Promise<NativeAIJob> => (await request('ai/start', payload, signal)).json(),
     aiCancelRequest: async (clientRequestId: string): Promise<NativeAIJob> => (await request('ai/cancel-request', {clientRequestId})).json(),
     aiStatus: async (id: string, signal?: AbortSignal): Promise<NativeAIJob> => (await request(`ai/${encodeURIComponent(id)}?waitMs=20000`, undefined, signal)).json(),
     aiEvents,

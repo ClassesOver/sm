@@ -5,6 +5,9 @@ import { NativeDocxCustomList } from './docx-custom-list'
 import { editorExtensions } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/extensions'
 import { createDocxRibbon } from './docx-ribbon'
 import { createDocxTableGridlines } from './docx-gridlines'
+import { createDocxViewCommands } from './docx-view'
+import { createDocxReviewPresets } from './docx-review-presets'
+import { StoryViewExtension, storyViewKey } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/story-view'
 import { docxOperations, type DocxAnchor } from './docx-operations'
 import { readFileSync } from 'node:fs'
 
@@ -25,15 +28,136 @@ const TextStyle = Mark.create({
 
 afterEach(() => { document.body.replaceChildren() })
 
-function setupTabNavigation() {
+function setupTabNavigation(tools?: Parameters<typeof createDocxRibbon>[25], section?: Parameters<typeof createDocxRibbon>[4]) {
   const host = document.body.appendChild(document.createElement('div'))
   const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Protected, Text], content: { type: 'doc', content: [
     { type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }, { type: 'docProtected', attrs: { blockType: 'image' } },
   ] } })
-  const ribbon = createDocxRibbon(editor, true); document.body.append(ribbon)
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, section, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, tools); document.body.append(ribbon)
   const tab = (id: string) => ribbon.querySelector<HTMLButtonElement>(`[data-tab-id="${id}"]`)!
   return { editor, ribbon, tab }
 }
+
+it.each([false,true])('routes Layout Arrange through existing picture controls with section settings=%s', withSection => {
+  const open = vi.fn()
+  let unavailable: string | null = '请选择图片'
+  const section = withSection ? { settings: {} as NonNullable<Parameters<typeof createDocxRibbon>[4]>['settings'], onChange: vi.fn() } : undefined
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => null, flipped: () => false, size: () => null, wrap: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
+  try {
+    f.tab('layout').click()
+    const arrange = () => f.ribbon.querySelector('section[aria-label="排列"]')!
+    const action = (name: string) => arrange().querySelector<HTMLButtonElement>(`[data-action="picture-format-${name}"]`)!
+    expect(action('position').disabled).toBe(true)
+    expect(action('wrap').title).toBe(unavailable)
+    unavailable = null
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    expect(action('position').disabled).toBe(false)
+    action('position').click()
+    action('wrap').click()
+    expect(open.mock.calls).toEqual([['position', action('position')], ['wrap', action('wrap')]])
+  } finally { f.editor.destroy() }
+})
+
+it('renders source Picture Format alignment as three immediate pressed buttons', () => {
+  const open = vi.fn()
+  let alignment: 'left' | 'center' | 'right' = 'left'
+  let unavailable: string | null = null
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => alignment, flipped: () => false, size: () => null, wrap: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } })
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    f.tab('pictureFormat').click()
+    const buttons = Array.from(f.ribbon.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="对齐"] button'))
+    expect(buttons.map(button => button.getAttribute('aria-label'))).toEqual(['左对齐', '居中', '右对齐'])
+    expect(buttons.map(button => button.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false'])
+    buttons[1].click()
+    buttons[2].click()
+    expect(open.mock.calls).toEqual([['alignCenter'], ['alignRight']])
+    alignment = 'right'
+    unavailable = '当前文档不可编辑'
+    f.editor.view.dispatch(f.editor.state.tr.setMeta('picture-align-refresh',true))
+    expect(buttons.map(button => button.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true'])
+    expect(buttons.every(button => button.disabled && button.title === unavailable)).toBe(true)
+  } finally { f.editor.destroy() }
+})
+
+it('mounts the source Picture Format size fields with units, aspect lock and reset', () => {
+  const open = vi.fn(), resize = vi.fn()
+  const f = setupTabNavigation({ pictureFormat: {
+    open, reason: () => null, alignment: () => null, flipped: () => false,
+    size: () => ({ key: 'image', width: 192, height: 144, resize }), wrap: () => null,
+    closeArrangeMenu: vi.fn(), dispose: vi.fn(),
+  } })
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    f.tab('pictureFormat').click()
+    const size = f.ribbon.querySelector('section[aria-label="大小"]')!
+    const height = size.querySelector<HTMLInputElement>('input[aria-label="高度"]')!
+    const width = size.querySelector<HTMLInputElement>('input[aria-label="宽度"]')!
+    const aspect = size.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    expect(height.classList).toContain('len-input')
+    expect(aspect.checked).toBe(true)
+    width.value = '1 in'
+    width.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+    flushSync(() => aspect.click())
+    height.value = '36 pt'
+    height.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+    expect(resize.mock.calls).toEqual([['w',1440,true],['h',720,false]])
+    size.querySelector<HTMLButtonElement>('[data-action="picture-format-resetSize"]')!.click()
+    expect(open).toHaveBeenCalledWith('resetSize')
+  } finally { f.editor.destroy() }
+})
+
+it('renders picture rotation and flip in GenOffice Adjust and refreshes their pressed state', () => {
+  const open = vi.fn()
+  let horizontal = false
+  let vertical = true
+  const f = setupTabNavigation({ pictureFormat: {
+    open, reason: () => null, alignment: () => null, size: () => null,
+    flipped: action => action === 'flipH' ? horizontal : vertical, wrap: () => null,
+    closeArrangeMenu: vi.fn(), dispose: vi.fn(),
+  } })
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    f.tab('pictureFormat').click()
+    const columns = Array.from(f.ribbon.querySelectorAll('section[aria-label="调整"] .rb-col'))
+    expect(columns.map(column => Array.from(column.querySelectorAll('button'), button => button.textContent))).toEqual([
+      ['向右旋转 90°', '向左旋转 90°'], ['水平翻转', '垂直翻转'],
+    ])
+    const [flipH, flipV] = Array.from(columns[1].querySelectorAll('button'))
+    expect(flipH.getAttribute('aria-pressed')).toBe('false')
+    expect(flipV.getAttribute('aria-pressed')).toBe('true')
+    flipH.click()
+    columns[0].querySelectorAll('button')[1].click()
+    expect(open.mock.calls).toEqual([['flipH'], ['rotateLeft']])
+    horizontal = true
+    vertical = false
+    f.editor.view.dispatch(f.editor.state.tr.setMeta('picture-flip-refresh',true))
+    expect(flipH.classList).toContain('active')
+    expect(flipV.getAttribute('aria-pressed')).toBe('false')
+  } finally { f.editor.destroy() }
+})
+
+it('renders the selected wrap value and GenOffice keyboard listbox in Picture Format', () => {
+  const pick = vi.fn()
+  const f = setupTabNavigation({ pictureFormat: {
+    open: vi.fn(), reason: () => null, alignment: () => null, size: () => null, flipped: () => false,
+    wrap: () => ({ key: 'picture', value: 'topBottom', pick }),
+    closeArrangeMenu: vi.fn(), dispose: vi.fn(),
+  } })
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    f.tab('pictureFormat').click()
+    const dropdown = f.ribbon.querySelector<HTMLButtonElement>('.rb-wrap-dd button[aria-haspopup="listbox"]')!
+    expect(dropdown.textContent).toContain('上下型环绕')
+    const key = (value: string) => flushSync(() => dropdown.dispatchEvent(new KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true })))
+    key('ArrowDown')
+    expect(f.ribbon.querySelectorAll('[role="listbox"] [role="option"]')).toHaveLength(6)
+    key('End')
+    key('Enter')
+    expect(pick).toHaveBeenCalledWith('front')
+    expect(dropdown.getAttribute('aria-expanded')).toBe('false')
+  } finally { f.editor.destroy() }
+})
 
 it.each(['ArrowLeft', 'ArrowRight', 'Home', 'End'].flatMap(key => ['composition', 'legacy', 'consumed'].map(protection => [key, protection])))('preserves Word tab state for protected %s/%s navigation', (key, protection) => {
   const f = setupTabNavigation()
@@ -48,6 +172,49 @@ it.each(['ArrowLeft', 'ArrowRight', 'Home', 'End'].flatMap(key => ['composition'
     expect(panel.getAttribute('aria-label')).toBe(before)
     expect(event.defaultPrevented).toBe(protection === 'consumed')
   } finally { f.editor.destroy() }
+})
+
+it('routes GenOffice Home AI summary with the source prompt only for a nonempty document', () => {
+  const documentSummary=vi.fn()
+  const f=setupTabNavigation({documentSummary})
+  try {
+    const button=()=>f.ribbon.querySelector<HTMLButtonElement>('[data-action="word-ai-summary"]')!
+    expect(button().disabled).toBe(false)
+    expect(button().querySelector('.ai-feature-icon svg')).not.toBeNull()
+    button().click()
+    expect(documentSummary).toHaveBeenCalledWith('总结这篇文档的主要内容和要点')
+    f.editor.commands.setContent({type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'   '}]}]})
+    expect(button().disabled).toBe(true)
+    button().click()
+    expect(documentSummary).toHaveBeenCalledOnce()
+  } finally {f.editor.destroy()}
+})
+
+it('uses the original GenOffice Home polish button and source-bound callback, disabling while read-only', () => {
+  const host=document.body.appendChild(document.createElement('div'))
+  const editor=new Editor({element:host,extensions:[Doc,Paragraph,Text],content:{type:'doc',content:[
+    {type:'docParagraph',attrs:{docxIndex:0},content:[{type:'text',text:'需要润色'}]},
+  ]}})
+  const anchors=[{docxIndex:0,blockId:'p0',expectedObjectSha256:'a'.repeat(64),editable:true}]
+  const open=vi.fn(), onError=vi.fn()
+  const presets=createDocxReviewPresets({editor,source:editor.state.doc,anchors,reason:()=>null,open,onError})
+  const review={open:vi.fn(),applyAll:vi.fn(),batchReason:()=>null,presets}
+  const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,anchors,undefined,undefined,undefined,undefined,undefined,undefined,[],review)
+  document.body.append(ribbon)
+  try {
+    editor.commands.setTextSelection({from:1,to:3})
+    const button=()=>ribbon.querySelector<HTMLButtonElement>('[data-action="word-ai-polish"]')!
+    expect(button().querySelector('.ai-feature-icon svg')).not.toBeNull()
+    expect(button().textContent).toBe('AI 润色')
+    button().click()
+    expect(open).toHaveBeenCalledWith(expect.stringContaining('润色选中的内容'),[{blockId:'p0'}],'selection')
+    editor.setEditable(false)
+    editor.view.dispatch(editor.state.tr.setMeta('read-only',true))
+    expect(button().disabled).toBe(true)
+    button().click()
+    expect(open).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+  } finally {presets.dispose();editor.destroy()}
 })
 
 it('connects Table Layout gridlines to the screen-only table grid controller', () => {
@@ -113,7 +280,9 @@ it.each([0, 1, 3])('keeps compact Review controls accessible with %i authors', c
   const host = document.body.appendChild(document.createElement('div'))
   const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }] } })
   const authors = ['Alice', 'Bob', 'Carol'].slice(0, count)
-  const commands = { open: vi.fn(), applyAll: vi.fn(), batchReason: () => null, toggleTracking: vi.fn(), view: {
+  let paneVisible = false
+  const togglePane = vi.fn(() => { paneVisible = !paneVisible })
+  const commands = { open: vi.fn(), applyAll: vi.fn(), batchReason: () => null, togglePane, paneVisible: () => paneVisible, toggleTracking: vi.fn(), view: {
     state: () => ({ mode: 'all' as const, insDel: true, format: true, hiddenAuthors: authors }), authors: () => authors, setMode: vi.fn(), setFilter: vi.fn(),
   } }
   const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], commands)
@@ -122,6 +291,12 @@ it.each([0, 1, 3])('keeps compact Review controls accessible with %i authors', c
     expect(Array.from(ribbon.querySelectorAll('.docx-review-revisions-items > button'), button => (button as HTMLButtonElement).dataset.action)).toEqual([
       'track-changes-toggle', 'text-revision-previous', 'text-revision-next', 'text-revision-list', 'text-revision-accept-supported', 'text-revision-reject-supported',
     ])
+    const pane = ribbon.querySelector<HTMLButtonElement>('[data-source-action="onToggleReviewPane"]')!
+    expect(pane.textContent).toContain('审阅窗格')
+    expect(pane.getAttribute('aria-pressed')).toBe('false')
+    pane.click()
+    expect(togglePane).toHaveBeenCalledWith(pane)
+    expect(pane.getAttribute('aria-pressed')).toBe('true')
     const people = ribbon.querySelector<HTMLSelectElement>('.docx-review-authors > [data-action="revision-filter-authors"]')!
     expect(people.multiple).toBe(true)
     expect(people.disabled).toBe(count === 0)
@@ -349,6 +524,70 @@ it('routes navigation and outline view controls while readonly and reflects thei
     expect(outlineButton.getAttribute('aria-pressed')).toBe('false')
     expect(editor.getJSON()).toEqual(before); expect(editor.state.selection.from).toBe(selection)
   } finally {editor.destroy()}
+})
+
+it('refreshes GenOffice view buttons and preview after opening or exiting Reading outside the ribbon', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const scroller = host.appendChild(document.createElement('div'))
+  const editor = new Editor({ element: scroller, extensions: [Doc, Paragraph, Text], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: '原文' }] }] } })
+  const preview = vi.fn()
+  const view = createDocxViewCommands({
+    root: host, scroller, page: editor.view.dom, pageSize: () => ({ width: 800, height: 1000 }),
+    onPaginationPreview: preview, reading: { setActive: active => editor.setEditable(!active, false) },
+    onViewChange: () => editor.view.dispatch(editor.state.tr.setMeta('native-view-state',true)),
+  })
+  const ribbon = createDocxRibbon(editor,true,undefined,undefined,undefined,[],undefined,view)
+  host.prepend(ribbon)
+  try {
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-label="视图"]')!.click()
+    const command = (label: string) => ribbon.querySelector<HTMLButtonElement>(`[data-view-command="${label}"]`)!
+    const print = command('页面视图'), web = command('Web 版式'), reading = command('阅读视图'), pagination = command('分页预览')
+    expect(web.querySelector('.rb-big-icon svg')).not.toBeNull()
+    expect(print.getAttribute('aria-pressed')).toBe('true')
+    web.click(); expect(web.getAttribute('aria-pressed')).toBe('true'); expect(pagination.disabled).toBe(true)
+    web.click(); expect(print.getAttribute('aria-pressed')).toBe('true'); expect(pagination.disabled).toBe(false)
+    reading.click(); expect(reading.getAttribute('aria-pressed')).toBe('true'); expect(pagination.disabled).toBe(true)
+    host.querySelector<HTMLButtonElement>('.docx-read-exit')!.click()
+    expect(print.getAttribute('aria-pressed')).toBe('true'); expect(reading.getAttribute('aria-pressed')).toBe('false')
+    pagination.click(); expect(preview).toHaveBeenCalledOnce()
+  } finally { view.dispose(); editor.destroy() }
+})
+
+it('runs the original GenOffice Story extension from the Word view ribbon', () => {
+  const host = document.body.appendChild(document.createElement('div'))
+  const scroller = host.appendChild(document.createElement('div'))
+  const Heading = Paragraph.extend({ name: 'docHeading', addAttributes: () => ({ level: { default: 2 } }), renderHTML: () => ['h2', 0] })
+  const editor = new Editor({ element: scroller, extensions: [Doc, Paragraph, Heading, Text, TextStyle, StoryViewExtension], content: {
+    type: 'doc', content: [
+      {type:'docHeading',content:[{type:'text',text:'目录标题'}]},
+      {type:'docParagraph',content:[{type:'text',text:'正文',marks:[{type:'docTextStyle',attrs:{color:'#990000'}}]}]},
+    ],
+  } })
+  const view = createDocxViewCommands({
+    root:host,scroller,page:editor.view.dom,pageSize:()=>({width:800,height:1000}),onPaginationPreview:vi.fn(),
+    story:{setActive:active=>editor.commands.setStoryViewActive(active)},
+  })
+  const ribbon = createDocxRibbon(editor,true,undefined,undefined,undefined,[],undefined,view)
+  host.prepend(ribbon)
+  try {
+    const before=editor.getJSON()
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-label="视图"]')!.click()
+    const button=ribbon.querySelector<HTMLButtonElement>('[data-view-command="故事"]')!
+    button.click()
+    expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(storyViewKey.getState(editor.state)?.active).toBe(true)
+    expect(editor.view.dom.querySelector('.story-marker')?.textContent).toBe('##')
+    expect(editor.getJSON()).toEqual(before)
+    const insertAt=editor.state.doc.content.size-1
+    editor.view.someProp('handleTextInput', handler=>handler(editor.view,insertAt,insertAt,'续写',()=>editor.state.tr.insertText('续写',insertAt)))
+    editor.view.dispatch(editor.state.tr.insertText('续写',insertAt))
+    expect(editor.state.doc.lastChild?.firstChild?.marks[0]?.attrs.color).toBe('#990000')
+    expect(editor.state.doc.lastChild?.lastChild?.text).toBe('续写')
+    expect(editor.state.doc.lastChild?.lastChild?.marks).toHaveLength(0)
+    button.click()
+    expect(host.classList.contains('view-story')).toBe(false)
+    expect(editor.view.dom.querySelector('.story-marker')).toBeNull()
+  } finally {view.dispose();editor.destroy()}
 })
 
 it('offers source-bound Home formatting and leaves unsupported Ribbon commands disabled', () => {
@@ -662,7 +901,7 @@ it('keeps source Table Design and Layout commands unavailable when source capabi
     'table-autofit-window', 'table-autofit-fixed', 'table-distribute-rows', 'table-distribute-columns',
     'table-align-top-left', 'table-align-top-center', 'table-align-top-right', 'table-align-middle-left',
     'table-align-middle-center', 'table-align-middle-right', 'table-align-bottom-left', 'table-align-bottom-center',
-    'table-align-bottom-right', 'table-text-direction-horizontal', 'table-text-direction-rotate-90',
+    'table-align-bottom-right', 'table-text-direction-menu', 'table-text-direction-horizontal', 'table-text-direction-rotate-90',
     'table-text-direction-rotate-270', 'table-cell-margins', 'table-repeat-header-rows',
   ])
   editor.destroy()
@@ -722,6 +961,72 @@ it('steps paragraph indentation and only enables list levels present in the sour
     { kind: 'setParagraphListLevel', blockId: 'block-0', expectedObjectSha256: 'source-block-hash', ilvl: 2, listKind: 'ordered' },
   ])
   editor.destroy()
+})
+
+it('opens GenOffice Table Layout Select and Delete command menus with current capabilities', () => {
+  const host=document.body.appendChild(document.createElement('div'))
+  const editor=new Editor({element:host,extensions:[Doc,Paragraph,Table,Text],content:{type:'doc',content:[{type:'docTable',content:[{type:'docParagraph',content:[{type:'text',text:'内容'}]}]}]}})
+  let blocked: string | null = '请先选择一列'
+  const run=vi.fn(), reason=(id:string)=>id==='table-delete-column'?blocked:null
+  const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,[],{reason,run})
+  document.body.append(ribbon)
+  try {
+    editor.commands.setNodeSelection(0)
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
+    const command=(name:string)=>ribbon.querySelector<HTMLButtonElement>(`[data-action="${name}"]`)!
+    const select=command('table-select-menu'), remove=command('table-delete-menu')
+    select.click()
+    const menu=select.parentElement!.querySelector('[role="menu"]')!
+    expect(menu.hasAttribute('hidden')).toBe(false)
+    expect(Array.from(menu.querySelectorAll<HTMLButtonElement>('button'),button=>button.dataset.action)).toEqual(['table-select-cell','table-select-column','table-select-row','table-select-all'])
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true,cancelable:true}))
+    expect(document.activeElement).toBe(command('table-select-all'))
+    document.activeElement!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+    expect(document.activeElement).toBe(select)
+    expect(menu.hasAttribute('hidden')).toBe(true)
+    select.click()
+    command('table-select-row').click()
+    expect(run).toHaveBeenLastCalledWith('table-select-row')
+    expect(select.getAttribute('aria-expanded')).toBe('false')
+    remove.click()
+    expect(command('table-delete-column').disabled).toBe(true)
+    blocked=null
+    editor.view.dispatch(editor.state.tr.setMeta('table-menu-capabilities',true))
+    expect(command('table-delete-column').disabled).toBe(false)
+    command('table-delete-column').click()
+    expect(run).toHaveBeenLastCalledWith('table-delete-column')
+    editor.setEditable(false)
+    editor.view.dispatch(editor.state.tr.setMeta('table-menu-readonly',true))
+    expect(remove.disabled).toBe(true)
+    expect(select.disabled).toBe(false)
+  } finally {editor.destroy()}
+})
+
+it('shows the GenOffice Table Layout AutoFit mode and commits the selected option', () => {
+  const host=document.body.appendChild(document.createElement('div'))
+  const editor=new Editor({element:host,extensions:[Doc,Paragraph,Table,Text],content:{type:'doc',content:[{type:'docTable',content:[{type:'docParagraph',content:[{type:'text',text:'内容'}]}]}]}})
+  let active='table-autofit-fixed'
+  const run=vi.fn((action:string)=>{
+    active=action
+    editor.view.dispatch(editor.state.tr.setMeta('table-autofit',true))
+  })
+  const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,[],{reason:()=>null,run,active:action=>action===active})
+  document.body.append(ribbon)
+  try {
+    editor.commands.setNodeSelection(0)
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
+    const command=(name:string)=>ribbon.querySelector<HTMLButtonElement>(`[data-action="${name}"]`)!
+    const trigger=command('table-autofit-menu')
+    expect(trigger.querySelector('small')?.textContent).toContain('固定列宽')
+    trigger.click()
+    const options=Array.from(trigger.parentElement!.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+    expect(options.map(option=>option.dataset.action)).toEqual(['table-autofit-contents','table-autofit-window','table-autofit-fixed'])
+    expect(options.map(option=>option.getAttribute('aria-checked'))).toEqual(['false','false','true'])
+    command('table-autofit-window').click()
+    expect(run).toHaveBeenCalledExactlyOnceWith('table-autofit-window')
+    expect(trigger.querySelector('small')?.textContent).toContain('窗口')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  } finally {editor.destroy()}
 })
 
 it.each([false, true])('commits the Layout right-indent field with section settings=%s through an anchored DOCX operation', withSection => {
@@ -913,7 +1218,7 @@ it('wires the Word Home clipboard group: paste split menu, cut/copy and the form
   editor.destroy()
 })
 
-it.each([['网格线', 'gridlines-toggle', 'onShowGrid'], ['标尺', 'ruler-toggle', 'onShowRuler']])('routes readonly %s with source identity and updates its pressed state', (label, action, source) => {
+it.each([['网格线', 'gridlines-toggle', 'onShowGrid'], ['标尺', 'ruler-toggle', 'onShowRuler'], ['拆分', 'split-view-toggle', 'onSplitView']])('routes readonly %s with source identity and updates its pressed state', (label, action, source) => {
   const host = document.createElement('div'); document.body.append(host)
   const editor = new Editor({element:host,extensions:[Doc,Paragraph,Text],editable:false,content:{type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'原文'}]}]}})
   let visible = false

@@ -5,6 +5,7 @@
 /// reads the result back before returning the package.
 
 import { formatAddress, parseAddress } from './cell-address'
+import { HYPERLINK_TARGET_LIMIT } from './hyperlink-target'
 import { applyHyperlinkEdits, ensureRelationshipNamespace, HyperlinkEditError, type HyperlinkEdit } from './hyperlinks'
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { escapeRegExp } from './xml'
@@ -19,7 +20,7 @@ const HYPERLINK_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/200
 const MAX_ROW = 1048575
 const MAX_COLUMN = 16383
 /// Excel's URL length limit; the pinned normalizeLinkTarget uses the same bound.
-export const HYPERLINK_TARGET_LIMIT = 2083
+export { HYPERLINK_TARGET_LIMIT } from './hyperlink-target'
 export const HYPERLINK_EDIT_LIMIT = 1000
 
 export interface CellHyperlink {

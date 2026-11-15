@@ -1,17 +1,20 @@
 import { createOfficeAIEntry } from './office-ai-entry'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
+import { HOME_TABLE_STYLE_PRESETS, type HomeTableStylePreset } from './workbook-table-create'
 import type { TableStyleOption } from './workbook-table-style-edit'
 import { PROTECTED_SHEET_REASON, PROTECTED_SHEET_RIBBON } from './workbook-protection'
 import { ROTATION_VALUES, univerRotationToOoxml, type RotationValue } from './workbook-rotation'
 import { BorderStyleTypes, BorderType } from '@univerjs/core'
 import { workbookCommandIcon } from './workbook-ribbon-command-icons'
-import { selectedWorkbookFormat, type WorkbookFormatState, type FormatValue, type NumberFormatTarget } from './workbook-format'
+import { selectedWorkbookFormat, NUMBER_FORMAT_PRESETS, RIBBON_NUMBER_FORMAT_SHORTCUTS, type RibbonNumberFormatShortcut, numberFormatPresetLabel, type NumberFormatPreset, type WorkbookFormatState, type FormatValue, type NumberFormatTarget } from './workbook-format'
 import { applyWorkbookFontDecoration, type FontDecorationRange } from './workbook-font'
 import { indentToUniverPadding, univerPaddingToIndent, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboard'
 import { CELL_STYLE_PRESETS } from './workbook-cell-style-presets'
 import { THEME_MENU_OPTIONS } from './workbook-theme'
 import { chartPresetMenuOptions, type ChartPresetSource } from './workbook-chart-presets'
+import { supportsWorkbookScreenshot } from './workbook-screenshot'
+import { workbookTranslationLanguages, type WorkbookTranslationLanguage } from './workbook-ai-translation'
 
 type RibbonTab =
   | 'File'
@@ -50,6 +53,7 @@ type RibbonCommand =
   | `chart-layout:${'1' | '2' | '3' | '4'}`
   | `chart-colors:${'office' | 'blue' | 'green' | 'warm' | 'gray'}`
   | 'format-as-table'
+  | `format-as-table:${HomeTableStylePreset}`
   | 'bold'
   | 'italic'
   | 'underline'
@@ -73,6 +77,8 @@ type RibbonCommand =
   | 'insert-col-here'
   | 'delete-col-here'
   | 'clear-contents'
+  | 'clear-hyperlinks'
+  | 'clear-comments'
   | 'clear-formats'
   | 'clear-all'
   | 'insert-sheet'
@@ -82,9 +88,10 @@ type RibbonCommand =
   | `fill:#${string}`
   | 'border:all'
   | 'format:0.00'
-  | 'format:0%'
+  | RibbonNumberFormatShortcut
   | 'format:#,##0.00'
   | 'format:custom-open'
+  | `number-format:${NumberFormatPreset}`
   | 'decimal-inc'
   | 'decimal-dec'
   | 'toggle-gridlines'
@@ -147,7 +154,18 @@ type RibbonCommand =
   | 'note-prev'
   | 'note-next'
   | 'note-show-toggle'
-  | 'freeze-panes'
+  | 'note-show-all'
+  | 'note-insert-picture'
+  | 'note-pictures-pane-toggle'
+  | 'notes-convert'
+  | 'comment-new'
+  | 'comment-delete'
+  | 'comment-prev'
+  | 'comment-next'
+  | 'comments-pane-toggle'
+  | 'spell-check'
+  | 'spellcheck-toggle'
+  | 'freeze-here' | 'freeze-top-row' | 'freeze-first-col' | 'unfreeze'
   | 'zoom-in'
   | 'zoom-out'
   | 'zoom-reset'
@@ -177,7 +195,7 @@ type RibbonCommand =
   | `page-fit:${'width' | 'height'}:${number}`
   | 'print-scale-open'
   | 'header-footer-open'
-  | 'insert-picture' | 'insert-equation' | 'insert-icons' | 'insert-symbol'
+  | 'insert-picture' | 'insert-screenshot' | 'insert-equation' | 'insert-icons' | 'insert-symbol'
   | 'link-open'
   | 'split-window'
   | 'refresh-all'
@@ -358,21 +376,7 @@ const commandLabels: Record<string, string> = {
   "merge-workbooks": "合并工作簿",
   "refresh-all": "全部刷新",
   "queries-open": "查询",
-  "forecast-sheet": "预测工作表",
   "what-if-analysis": "模拟分析",
-  "outline-group:rows": "组合行",
-  "outline-group:cols": "组合列",
-  "outline-ungroup:rows": "取消行组合",
-  "outline-ungroup:cols": "取消列组合",
-  "outline-hide-detail": "隐藏明细",
-  "outline-show-detail": "显示明细",
-  "outline-hide-detail:rows": "隐藏行明细",
-  "outline-hide-detail:cols": "隐藏列明细",
-  "outline-show-detail:rows": "显示行明细",
-  "outline-show-detail:cols": "显示列明细",
-  "outline-summary-below": "汇总行在明细下方",
-  "outline-summary-right": "汇总列在明细右侧",
-  "outline-clear": "清除分级显示",
   "chart-title": "图表标题",
   "chart-axis-cat": "分类轴",
   "chart-axis-val": "数值轴",
@@ -401,15 +405,22 @@ const commandLabels: Record<string, string> = {
   "chart-type-radar": "雷达图",
   "chart-type-doughnut": "圆环图",
   "chart-type-combo": "组合图",
-  "sparkline:line": "折线迷你图",
-  "sparkline:column": "柱形迷你图",
-  "sparkline:stacked": "盈亏迷你图",
   "sparkline:delete": "删除选中迷你图"
   ,"sparkline:edit": "编辑选中迷你图"
 }
 
 const action = (label: string, id: string, command?: RibbonCommand): RibbonAction =>
   command === undefined ? { label: commandLabels[id] ?? label, id } : { label: commandLabels[id] ?? label, id, command }
+
+// GenOffice ExcelShell Review ▸ Notes and the Chinese app language pack.
+const noteMenuChoices = [
+  ['note-open', '新建注释'],
+  ['note-insert-picture', '插入图片'],
+  ['note-show-toggle', '显示/隐藏注释'],
+  ['note-show-all', '显示所有注释'],
+  ['notes-convert', '转换为注释'],
+  ['note-pictures-pane-toggle', '批注图片'],
+] as const
 
 // Groups and command ids follow GenOffice ExcelShell.tsx at f8c17004.
 const groups: Record<RibbonTab, RibbonGroup[]> = {
@@ -432,21 +443,16 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '对齐方式', actions: [
       action('顶端对齐', 'valign:top', 'valign:top'), action('垂直居中', 'valign:middle', 'valign:middle'),
       action('底端对齐', 'valign:bottom', 'valign:bottom'), action('自动换行', 'wrap', 'wrap'),
-      action('文本逆时针旋转', 'rotate:45', 'rotate:45'), action('文本顺时针旋转', 'rotate:-45', 'rotate:-45'),
-      action('竖排文本', 'rotate:vertical', 'rotate:vertical'), action('向上旋转', 'rotate:90', 'rotate:90'),
-      action('向下旋转', 'rotate:-90', 'rotate:-90'), action('清除旋转', 'rotate:0', 'rotate:0'),
       action('左对齐', 'align:left', 'align:left'),
       action('居中', 'align:center', 'align:center'), action('右对齐', 'align:right', 'align:right'),
-      action('增加缩进', 'indent-step:increase', 'indent-step:increase'), action('减少缩进', 'indent-step:decrease', 'indent-step:decrease'), action('合并单元格', 'merge:cells', 'merge:cells'),
-      action('合并后居中', 'merge:center', 'merge:center'), action('跨越合并', 'merge:across', 'merge:across'),
-      action('取消单元格合并', 'merge:unmerge', 'merge:unmerge'),
+      action('增加缩进', 'indent-step:increase', 'indent-step:increase'), action('减少缩进', 'indent-step:decrease', 'indent-step:decrease'),
     ] },
     { title: '数字', actions: [
-      action('小数', 'format:0.00', 'format:0.00'), action('百分比', 'format:0%', 'format:0%'), action('千位分隔', 'format:#,##0.00', 'format:#,##0.00'),
+      ...RIBBON_NUMBER_FORMAT_SHORTCUTS.map(({ command, label }) => action(label, command, command)),
       action('增加小数位', 'decimal-inc', 'decimal-inc'), action('减少小数位', 'decimal-dec', 'decimal-dec'),
       action('自定义数字格式', 'format:custom-open', 'format:custom-open'),
     ] },
-    { title: '样式', actions: [action('条件格式', 'cf-open', 'cf-open'), action('套用表格格式', 'format-as-table', 'format-as-table'), action('单元格样式', 'cell-style')] },
+    { title: '样式', actions: [action('条件格式', 'cf-open', 'cf-open'), action('单元格样式', 'cell-style')] },
     { title: '单元格', actions: [
       action('设置单元格格式', 'format-cells', 'format-cells'),
       action('插入行', 'insert-row-here', 'insert-row-here'),
@@ -454,24 +460,18 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('插入列', 'insert-col-here', 'insert-col-here'),
       action('删除列', 'delete-col-here', 'delete-col-here'),
       action('插入单元格', 'insert-cells', 'insert-cells'), action('删除单元格', 'delete-cells', 'delete-cells'),
-      action('行高', 'row-height-open', 'row-height-open'), action('自动调整行高', 'autofit-row-height', 'autofit-row-height'),
-      action('列宽', 'col-width-open', 'col-width-open'), action('自动调整列宽', 'autofit-col-width', 'autofit-col-width'),
-      action('全部清除', 'clear-all', 'clear-all'), action('清除格式', 'clear-formats', 'clear-formats'),
-      action('清除内容', 'clear-contents', 'clear-contents'),
     ] },
     { title: '编辑', actions: [
-      ...(['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'] as const).map((fn, index) =>
-        action(['自动求和', '平均值', '计数值', '最大值', '最小值'][index]!, `autofn:${fn}`, `autofn:${fn}`)),
-      action('排序', 'sort-custom-open', 'sort-custom-open'), action('查找', 'find', 'find'),
+      action('查找', 'find', 'find'),
       action('替换', 'replace', 'replace'), action('定位', 'goto-open', 'goto-open'),
     ] },
   ],
   Insert: [
     { title: '表格', actions: ['pivot-open', 'pivot-edit', 'format-as-table'].map(id => action(id, id, id as RibbonCommand)) },
-    { title: '插图', actions: ['insert-picture', 'insert-shape', 'insert-icons', 'insert-screenshot'].map(id => action(id, id, id === 'insert-picture' || id === 'insert-icons' ? id : undefined)) },
+    { title: '插图', actions: ['insert-picture', 'insert-shape', 'insert-icons', 'insert-screenshot'].map(id => action(id, id, id === 'insert-shape' ? undefined : id as RibbonCommand)) },
     { title: '复选框', actions: [action('复选框', 'insert-checkbox', 'insert-checkbox')] },
     { title: '图表', actions: ['recommended-charts-open', 'insert-chart:column', 'insert-chart:bar', 'insert-chart:line', 'insert-chart:area', 'insert-chart:pie', 'insert-chart:scatter', 'insert-chart:radar', 'insert-chart:doughnut', 'insert-chart:combo'].map(id => action(id, id, id as RibbonCommand)) },
-    { title: '迷你图', actions: (['sparkline:line', 'sparkline:column', 'sparkline:stacked', 'sparkline:edit', 'sparkline:delete'] as const).map(id => action(id, id, id)) },
+    { title: '迷你图', actions: (['sparkline:edit', 'sparkline:delete'] as const).map(id => action(id, id, id)) },
     { title: '筛选器', actions: (['slicer-open', 'timeline-open'] as const).map(id => action(id, id, id)) },
     { title: '链接', actions: [action('link-open', 'link-open', 'link-open')] },
     { title: '批注', actions: [action('批注', 'note-open', 'note-open')] },
@@ -494,8 +494,6 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
   Formulas: [
     { title: '函数库', actions: [
       action('插入函数', 'insert-function-open', 'insert-function-open'),
-      ...(['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'] as const).map((fn, index) =>
-        action(['自动求和', '平均值', '计数', '最大值', '最小值'][index]!, `autofn:${fn}`, `autofn:${fn}`)),
       action('最近使用的函数', 'insert-function-open:All', 'insert-function-open:All'),
       action('财务', 'insert-function-open:Financial', 'insert-function-open:Financial'), action('逻辑', 'insert-function-open:Logical', 'insert-function-open:Logical'),
       action('文本', 'insert-function-open:Text', 'insert-function-open:Text'), action('日期和时间', 'insert-function-open:Date & Time', 'insert-function-open:Date & Time'),
@@ -517,31 +515,29 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '数据透视表', actions: ['pivot-open', 'pivot-edit'].map(id => action(id, id, id as RibbonCommand)) },
     { title: '获取数据', actions: [action('import-csv', 'import-csv', 'import-csv'), action('queries-open', 'queries-open', 'queries-open'), action('merge-workbooks', 'merge-workbooks', 'merge-workbooks'), action('refresh-all', 'refresh-all', 'refresh-all')] },
     { title: '排序和筛选', actions: [
-      action('升序', 'sort:asc', 'sort:asc'), action('降序', 'sort:desc', 'sort:desc'),
-      action('自定义排序…', 'sort-custom-open', 'sort-custom-open'), action('筛选', 'filter-toggle', 'filter-toggle'), action('清除筛选条件', 'filter-clear', 'filter-clear'),
+      action('筛选', 'filter-toggle', 'filter-toggle'), action('清除筛选条件', 'filter-clear', 'filter-clear'),
       action('重新应用筛选', 'filter-reapply', 'filter-reapply'), action('高级筛选', 'filter-advanced', 'filter-advanced'),
     ] },
     { title: '数据工具', actions: [
-      action('按逗号拆分', 'text-to-columns:2', 'text-to-columns:2'), action('按分号拆分', 'text-to-columns:4', 'text-to-columns:4'),
-      action('按空格拆分', 'text-to-columns:8', 'text-to-columns:8'), action('按制表符拆分', 'text-to-columns:1', 'text-to-columns:1'),
       action('快速填充', 'flash-fill', 'flash-fill'), action('删除重复值', 'remove-duplicates-open', 'remove-duplicates-open'),
       action('数据验证', 'dv-open', 'dv-open'), action('合并计算', 'consolidate-open', 'consolidate-open'),
     ] },
-    { title: '预测', actions: [action('forecast-sheet', 'forecast-sheet'), action('单变量求解', 'goal-seek-open', 'goal-seek-open'), action('模拟运算表', 'data-table-open', 'data-table-open')] },
-    { title: '分级显示', actions: [
-      ...['outline-group:rows', 'outline-group:cols', 'outline-ungroup:rows', 'outline-ungroup:cols', 'outline-hide-detail', 'outline-show-detail', 'outline-hide-detail:rows', 'outline-hide-detail:cols', 'outline-show-detail:rows', 'outline-show-detail:cols', 'outline-summary-below', 'outline-summary-right', 'outline-clear'].map(id => action(id, id, id as RibbonCommand)),
-      action('分类汇总', 'subtotal-open', 'subtotal-open'),
-    ] },
+    { title: '预测', actions: [] },
+    { title: '分级显示', actions: [action('分类汇总', 'subtotal-open', 'subtotal-open')] },
   ],
   Review: [
-    { title: '校对', actions: [action('工作簿统计信息', 'workbook-statistics', 'workbook-statistics')] },
-    { title: '语言', actions: [action('翻译', 'translate')] },
-    { title: '批注', actions: [
-      action('新建/编辑批注', 'note-open', 'note-open'), action('删除', 'note-delete', 'note-delete'),
-      action('上一条', 'note-prev', 'note-prev'), action('下一条', 'note-next', 'note-next'),
-      action('显示批注', 'note-show-toggle', 'note-show-toggle'),
+    { title: '校对', actions: [
+      action('拼写检查', 'spell-check', 'spell-check'),
+      action('工作簿统计信息', 'workbook-statistics', 'workbook-statistics'),
+      action('检查拼写', 'spellcheck-toggle', 'spellcheck-toggle'),
     ] },
-    { title: '注释', actions: [action('注释', 'note-open', 'note-open')] },
+    { title: '语言', actions: [] },
+    { title: '批注', actions: [
+      action('新建批注', 'comment-new', 'comment-new'), action('删除', 'comment-delete', 'comment-delete'),
+      action('上一条', 'comment-prev', 'comment-prev'), action('下一条', 'comment-next', 'comment-next'),
+      action('显示批注', 'comments-pane-toggle', 'comments-pane-toggle'),
+    ] },
+    { title: '注释', actions: [] },
     { title: '保护', actions: [
       action('保护工作表', 'sheet-protect', 'sheet-protect'), action('保护工作簿', 'workbook-protect', 'workbook-protect'),
       action('允许编辑区域', 'allow-edit-ranges-open', 'allow-edit-ranges-open'),
@@ -555,11 +551,11 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('突出显示活动行和列', 'toggle-cross-highlight', 'toggle-cross-highlight'),
     ] },
     { title: '缩放', actions: [
-      action('缩放', 'zoom-open', 'zoom-open'), action('重置缩放', 'zoom-reset', 'zoom-reset'), action('缩放到选定区域', 'zoom-to-selection', 'zoom-to-selection'),
+      action('100%', 'zoom-reset', 'zoom-reset'), action('缩放到选定区域', 'zoom-to-selection', 'zoom-to-selection'), action('自定义缩放', 'zoom-open', 'zoom-open'),
       action('放大', 'zoom-in', 'zoom-in'), action('缩小', 'zoom-out', 'zoom-out'),
     ] },
     { title: '窗口', actions: [
-      action('新建窗口', 'new-window'), action('全部重排', 'arrange-all'), action('冻结窗格', 'freeze-panes', 'freeze-panes'),
+      action('新建窗口', 'new-window'), action('全部重排', 'arrange-all'),
       action('拆分窗口', 'split-window', 'split-window'), action('隐藏窗口', 'hide-window'), action('切换窗口', 'switch-window'),
     ] },
   ],
@@ -584,18 +580,168 @@ const COMMAND_GLYPHS: Record<string, string> = {
   'import-csv': '🗎',
   bold: 'B', italic: 'I', underline: 'U', 'align:left': '≡', 'align:center': '≣', 'align:right': '☰',
   'valign:top': '⤒', 'valign:middle': '↕', 'valign:bottom': '⤓', wrap: '↩',
-  'merge:cells': '⇔', 'merge:center': '⇔', 'merge:across': '⇔', 'merge:unmerge': '⊟',
   'decimal-inc': 'A↑', 'decimal-dec': 'A↓', 'format:0.00': '0.00', 'format:0%': '%',
   'format:#,##0.00': ',', 'border:all': '▦', 'clear-contents': '⌫',
   'insert-row-here': '⊞', 'delete-row-here': '⊟', 'insert-col-here': '⊞', 'delete-col-here': '⊟',
   find: '🔍', replace: '⇄', 'pivot-open': '▥', 'pivot-edit': '▦', 'format-as-table': '▦', 'insert-chart:column': '📊',
 }
 
+const AUTOSUM_MENU = {
+  id: 'autosum', label: '自动求和', icon: 'Σ', detail: '自动求和 — 插入到选区下方',
+  choices: [
+    { command: 'autofn:SUM', label: '求和' },
+    { command: 'autofn:AVERAGE', label: '平均值' },
+    { command: 'autofn:COUNT', label: '计数' },
+    { command: 'autofn:MAX', label: '最大值' },
+    { command: 'autofn:MIN', label: '最小值' },
+  ],
+} as const
+
+const SORT_CHOICES = [
+  { command: 'sort:asc', label: '升序' },
+  { command: 'sort:desc', label: '降序' },
+  { command: 'sort-custom-open', label: '自定义排序…' },
+] as const
+
+const RIBBON_COMMAND_MENUS: ReadonlyArray<{
+  id: string
+  label: string
+  tab: RibbonTab
+  group: string
+  after?: RibbonCommand
+  icon: string
+  detail: string
+  choices: ReadonlyArray<{ command?: RibbonCommand; label: string; detail?: string; summary?: 'below' | 'right' }>
+}> = [
+  { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
+  {
+    tab: 'Home', id: 'table-style-presets', label: '套用表格格式', group: '样式', after: 'cf-open', icon: '▦',
+    detail: '基于选区创建真实 Excel 表格（首行为表头）',
+    choices: HOME_TABLE_STYLE_PRESETS.map(({ style, label }) => ({ command: `format-as-table:${style}`, label })),
+  },
+  {
+    tab: 'Home', id: 'text-orientation', label: '方向', group: '对齐方式', after: 'wrap', icon: '⤴', detail: '方向',
+    choices: [
+      { command: 'rotate:45', label: '逆时针角度' },
+      { command: 'rotate:-45', label: '顺时针角度' },
+      { command: 'rotate:vertical', label: '竖排文字' },
+      { command: 'rotate:90', label: '向上旋转文字' },
+      { command: 'rotate:-90', label: '向下旋转文字' },
+      { command: 'rotate:0', label: '清除旋转' },
+    ],
+  },
+  {
+    tab: 'Home', id: 'merge', label: '合并', group: '对齐方式', after: 'indent-step:decrease', icon: '⇔', detail: '合并单元格',
+    choices: [
+      { command: 'merge:center', label: '合并后居中' },
+      { command: 'merge:across', label: '跨越合并' },
+      { command: 'merge:cells', label: '合并单元格' },
+      { command: 'merge:unmerge', label: '取消单元格合并' },
+    ],
+  },
+  {
+    tab: 'Home', id: 'format-size', label: '格式', group: '单元格', after: 'delete-cells', icon: '⇳', detail: '格式',
+    choices: [
+      { command: 'row-height-open', label: '行高…' },
+      { command: 'autofit-row-height', label: '自动调整行高' },
+      { command: 'col-width-open', label: '列宽…' },
+      { command: 'autofit-col-width', label: '自动调整列宽' },
+    ],
+  },
+  {
+    tab: 'Insert', id: 'sparkline-insert', label: '迷你图', group: '迷你图', icon: '〜',
+    detail: '单元格内迷你图，每个所选行一个（放在选区右侧）',
+    choices: [
+      { command: 'sparkline:line', label: '折线' },
+      { command: 'sparkline:column', label: '柱形' },
+      { command: 'sparkline:stacked', label: '盈亏' },
+    ],
+  },
+  { ...AUTOSUM_MENU, tab: 'Formulas', group: '函数库', after: 'insert-function-open' },
+  {
+    tab: 'Home', id: 'sort-filter', label: '排序和筛选', group: '编辑', icon: '⇅', detail: '排序和筛选',
+    choices: [
+      ...SORT_CHOICES,
+      { command: 'filter-toggle', label: '筛选' },
+      { command: 'filter-clear', label: '清除筛选条件' },
+      { command: 'filter-reapply', label: '重新应用当前筛选' },
+    ],
+  },
+  {
+    tab: 'Home', id: 'fill-menu', label: '填充', group: '编辑', icon: '↓', detail: '填充',
+    choices: [
+      { command: 'fill-down', label: '向下填充' },
+      { command: 'fill-right', label: '向右填充' },
+      { command: 'fill-up', label: '向上填充' },
+      { command: 'fill-left', label: '向左填充' },
+      { command: 'fill-series-open', label: '序列…' },
+      { command: 'flash-fill', label: '快速填充' },
+    ],
+  },
+  {
+    tab: 'Home', id: 'clear-selection', label: '清除', group: '编辑', icon: '⌫', detail: '清除',
+    choices: [
+      { command: 'clear-all', label: '全部清除' },
+      { command: 'clear-formats', label: '清除格式' },
+      { command: 'clear-contents', label: '清除内容' },
+      { command: 'clear-comments', label: '清除批注和注释', detail: '清除所选单元格的传统注释' },
+      { command: 'clear-hyperlinks', label: '清除超链接' },
+    ],
+  },
+  {
+    tab: 'Data', id: 'sort', label: '排序', group: '排序和筛选', icon: '⇅', detail: '对所选内容排序',
+    choices: SORT_CHOICES,
+  },
+  {
+    tab: 'Data', id: 'text-to-columns', label: '分列', group: '数据工具', icon: '⇶', detail: '拆分单列文本（需完整加载的工作簿）',
+    choices: [
+      { command: 'text-to-columns:2', label: '按逗号拆分' },
+      { command: 'text-to-columns:4', label: '按分号拆分' },
+      { command: 'text-to-columns:8', label: '按空格拆分' },
+      { command: 'text-to-columns:1', label: '按制表符拆分' },
+    ],
+  },
+  {
+    tab: 'Data', id: 'what-if-analysis', label: '模拟分析', group: '预测', icon: '❔', detail: '对目标值反解输入',
+    choices: [
+      { command: 'goal-seek-open', label: '单变量求解' },
+      { command: 'data-table-open', label: '数据表' },
+    ],
+  },
+  {
+    tab: 'Data', id: 'outline-group', label: '组合', group: '分级显示', icon: '⊟', detail: '将所选行或列组合为分级显示',
+    choices: [
+      { command: 'outline-group:rows', label: '组合行' },
+      { command: 'outline-group:cols', label: '组合列' },
+      { command: 'outline-hide-detail:rows', label: '隐藏明细（行）' },
+      { command: 'outline-hide-detail:cols', label: '隐藏明细（列）' },
+      { command: 'outline-summary-below', label: '汇总行在明细数据下方', summary: 'below' },
+      { command: 'outline-summary-right', label: '汇总列在明细数据右侧', summary: 'right' },
+    ],
+  },
+  {
+    tab: 'Data', id: 'outline-ungroup', label: '取消组合', group: '分级显示', icon: '⊞', detail: '从选区移除一个分级层级',
+    choices: [
+      { command: 'outline-ungroup:rows', label: '取消组合行' },
+      { command: 'outline-ungroup:cols', label: '取消组合列' },
+      { command: 'outline-show-detail:rows', label: '显示明细（行）' },
+      { command: 'outline-show-detail:cols', label: '显示明细（列）' },
+      { command: 'outline-clear', label: '清除分级显示' },
+    ],
+  },
+]
+
+const FREEZE_CHOICES = [
+  ['freeze-here', '在所选位置冻结窗格'],
+  ['freeze-top-row', '冻结首行'],
+  ['freeze-first-col', '冻结首列'],
+  ['unfreeze', '取消冻结窗格'],
+] as const
+
 /** 视图▸拆分窗口：固定源窗口组只有冻结窗格；网格无拆分视口，只能取消文件中已有的拆分窗格。 */
 export const SPLIT_WINDOW_UNAVAILABLE = '固定源未提供拆分窗口，网格无拆分视口；当前工作表没有可取消的拆分窗格'
 
 const disabledReasons: Record<string, string> = {
-  'translate': '尚未接入基于选区的翻译操作',
   'background': '尚无工作表背景图片读取与回写',
   'new-window': '网页编辑器不管理桌面工作簿窗口',
   'arrange-all': '网页编辑器不管理桌面工作簿窗口',
@@ -757,6 +903,8 @@ export function mountWorkbookRibbon(
   onCommand: (command: RibbonCommand, target?: NumberFormatTarget) => void,
   view?: {
     onAssistant?: () => void
+    onTranslate?: (language: WorkbookTranslationLanguage) => void
+    translateReason?(): string | undefined
     rotation(): number | 'mixed' | undefined
     editable(): boolean
     unavailableReason?(): string | undefined
@@ -769,6 +917,7 @@ export function mountWorkbookRibbon(
     headings?(): { visible: boolean; available: boolean }
     rightToLeft?(): { active: boolean; available: boolean }
     noteReason?(command: string): string | undefined
+    spelling?(): { ready: boolean; enabled: boolean }
     /// 缩进继承样式不可完整回读时的禁用原因（引擎 indentReadOnlyReason）。
     indentReason?(): string | undefined
     /// 格式刷是否处于单次/锁定状态（aria-pressed 镜像）。
@@ -882,6 +1031,35 @@ export function mountWorkbookRibbon(
     }
     const rotation = view.rotation(), editable = view.editable(), reason = view.unavailableReason?.()
     const format = view.format?.(), selected = view.hasSelection?.() ?? rotation !== undefined
+    for (const menu of RIBBON_COMMAND_MENUS) {
+      if (menu.tab !== active) continue
+      const select = body.querySelector<HTMLSelectElement>('[data-ribbon-control="' + menu.id + '"]')
+      if (!select) continue
+      const orientation = menu.id === 'text-orientation'
+      const selectionReason = (orientation ? reason : undefined)
+        ?? (!selected || (orientation && rotation === undefined) ? '请先选择单元格或区域' : undefined)
+      const disabledReason = !editable ? '当前工作簿不可编辑或正在保存'
+        : selectionReason ?? (view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : undefined)
+          ?? (menu.id === 'table-style-presets' ? view.table?.()?.reason : undefined)
+      select.disabled = !!disabledReason
+      select.title = disabledReason ?? menu.detail
+      const mixed = orientation && rotation === 'mixed'
+      if (mixed) select.dataset.formatState = 'mixed'
+      else delete select.dataset.formatState
+      const description = disabledReason ?? (mixed ? '选区的文字方向不一致' : undefined)
+      if (description) select.setAttribute('aria-description', description)
+      else select.removeAttribute('aria-description')
+      const summary = view.outlineSummary?.()
+      for (const choice of menu.choices) {
+        if (!choice.summary && !orientation) continue
+        const option = select.querySelector<HTMLOptionElement>('[value="' + choice.command + '"]')
+        if (!option) continue
+        const value = ROTATION_VALUES[choice.command as keyof typeof ROTATION_VALUES]
+        const expectedRotation = value === 'v' ? 255 : value === undefined ? undefined : univerRotationToOoxml({ a: value })
+        const checked = choice.summary ? summary?.[choice.summary] ?? true : rotation !== undefined && rotation === expectedRotation
+        option.text = (checked ? '✓ ' : '') + choice.label
+      }
+    }
     const cellStyle = body.querySelector<HTMLSelectElement>('[data-ribbon-control="cell-style"]')
     if (cellStyle) cellStyle.disabled = !editable || !selected || !!view.protection?.().sheet.protected
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')) {
@@ -953,8 +1131,13 @@ export function mountWorkbookRibbon(
         button.setAttribute('aria-pressed', String(state?.active ?? false))
         button.title = button.disabled ? '工作簿正在加载或保存' : button.textContent ?? ''
       }
-      if ((id === 'zoom-to-selection' || id === 'zoom-open') && view.zoomSelectionAvailable?.() === false) { button.disabled = true; button.title = '工作表视图尚未就绪' }
-      if (id === 'outline-summary-below' || id === 'outline-summary-right') button.setAttribute('aria-pressed', String(view.outlineSummary?.()[id === 'outline-summary-below' ? 'below' : 'right'] ?? true))
+      if (['zoom-to-selection', 'zoom-open', 'zoom-reset', 'zoom-in', 'zoom-out'].includes(id)) {
+        const available = view.zoomSelectionAvailable?.() !== false
+        button.disabled = !available || (id === 'zoom-to-selection' && !selected)
+        button.title = !available ? '工作表视图尚未就绪'
+          : id === 'zoom-to-selection' ? selected ? '缩放至选区大小' : '请先选择单元格或区域'
+          : id === 'zoom-reset' ? '重置缩放' : button.textContent ?? ''
+      }
       if (id === 'sheet-protect' || id === 'workbook-protect') {
         const state = id === 'sheet-protect' ? { on: !!protection?.sheet.protected, reason: protection?.sheet.reason } : { on: !!protection?.workbook.locked, reason: protection?.workbook.reason }
         const label = id === 'sheet-protect' ? (state.on ? '撤销工作表保护' : '保护工作表') : (state.on ? '撤销工作簿保护' : '保护工作簿')
@@ -978,6 +1161,18 @@ export function mountWorkbookRibbon(
         const noteReason = view.noteReason?.(id) ?? (!view.noteReason ? '批注来源尚未完成身份读取' : undefined)
         if (noteReason) { button.disabled = true; button.title = noteReason }
       }
+      if (id.startsWith('comment-') || id === 'comments-pane-toggle') {
+        const reason = view.noteReason?.(id) ?? (view.noteReason ? undefined : '批注来源尚未就绪')
+        button.disabled = !!reason
+        button.title = reason ?? button.getAttribute('aria-label') ?? ''
+      }
+      if (id === 'spell-check' || id === 'spellcheck-toggle') {
+        const spelling = view.spelling?.()
+        button.disabled = !spelling?.ready
+        button.title = !spelling?.ready ? '工作簿尚未就绪'
+          : id === 'spell-check' ? '检查工作表文本 (F7)' : '开启或关闭拼写检查'
+        if (id === 'spellcheck-toggle') button.setAttribute('aria-pressed', String(!!spelling?.enabled))
+      }
       if (format) {
         const property = ({ bold: 'bold', italic: 'italic', underline: 'underline', 'underline:double': 'doubleUnderline', strike: 'strikethrough' } as const)[id as 'bold']
         const state = property ? format[property] : undefined
@@ -996,15 +1191,6 @@ export function mountWorkbookRibbon(
     }
     const calcMode = body.querySelector<HTMLSelectElement>('[data-ribbon-control="calc-mode"]')
     if (calcMode) calcMode.value = view.calculation?.().manual ? 'manual' : 'auto'
-    for (const [id, value] of Object.entries(ROTATION_VALUES)) {
-      const button = body.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-      if (!button) continue
-      button.disabled = !editable || rotation === undefined || !!reason
-      const expected = value === 'v' ? 255 : value < 0 ? 90 - value : value
-      button.setAttribute('aria-pressed', rotation === 'mixed' ? 'mixed' : String(rotation === expected))
-      if (button.disabled) { button.title = editable ? reason ?? '请先选择单元格或区域' : '当前工作簿不可编辑或正在保存'; button.setAttribute('aria-description', button.title) }
-      else { button.title = button.textContent ?? ''; button.removeAttribute('aria-description') }
-    }
     const pasteSpecial = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="paste-special"]')
     if (pasteSpecial) {
       pasteSpecial.disabled = !editable || !selected
@@ -1069,18 +1255,32 @@ export function mountWorkbookRibbon(
         String(pageState?.[key] ?? 0))
     }
     // 页面布局动作下拉依赖页面设置读模型；选择性粘贴下拉由上方剪贴板状态单独管理。
-    const fillMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="fill"]')
-    if (fillMenu) {
-      const sheetProtected = !!view.protection?.().sheet.protected
-      fillMenu.disabled = !editable || !selected || sheetProtected
-      fillMenu.title = !editable ? '当前工作簿不可编辑或正在保存' : sheetProtected ? PROTECTED_SHEET_REASON : !selected ? '请先选择单元格或区域' : '填充'
-    }
     const zoomMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')
     if (zoomMenu) {
       zoomMenu.disabled = view.zoomSelectionAvailable?.() === false
-      zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放比例'
+      zoomMenu.title = zoomMenu.disabled ? '工作表视图尚未就绪' : '缩放工作表'
     }
-    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="fill"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"]):not([data-ribbon-menu^="chart-"])')) {
+    const freezeMenu = body.querySelector<HTMLSelectElement>('[data-ribbon-control="freeze-panes"]')
+    if (freezeMenu) {
+      freezeMenu.disabled = !editable
+      freezeMenu.title = editable ? '冻结行和列' : '当前工作簿不可编辑或正在保存'
+      freezeMenu.setAttribute('aria-description', freezeMenu.title)
+      freezeMenu.options[1]!.disabled = !selected
+    }
+    const notes = body.querySelector<HTMLSelectElement>('[data-ribbon-control="notes"]')
+    if (notes) for (const option of Array.from(notes.options).slice(1)) {
+      const reason = view.noteReason?.(option.value) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
+      option.disabled = !!reason
+      option.title = reason ?? ''
+    }
+    const translation = body.querySelector<HTMLSelectElement>('[data-ribbon-control="translate"]')
+    if (translation) {
+      const reason = view.translateReason?.() ?? (view.onTranslate ? undefined : '当前会话未开放 AI 翻译')
+      translation.disabled = !!reason
+      translation.title = reason ?? '用 AI 翻译选区文本'
+      translation.setAttribute('aria-description', translation.title)
+    }
+    for (const select of body.querySelectorAll<HTMLSelectElement>('[data-ribbon-menu]:not([data-ribbon-menu="paste-special"]):not([data-ribbon-menu="zoom"]):not([data-ribbon-menu^="theme"]):not([data-ribbon-menu^="chart-"])')) {
       select.disabled = !editable || !pageState
       select.title = select.disabled ? '当前工作簿不可编辑或正在保存' : select.getAttribute('aria-label') ?? ''
       select.setAttribute('aria-description', select.title)
@@ -1134,8 +1334,17 @@ export function mountWorkbookRibbon(
       label.setAttribute('role', 'button')
       label.setAttribute('aria-disabled', String(!editable || state.kind === 'unavailable'))
     }
-    const number = body.querySelector<HTMLElement>('[data-ribbon-control="number-format"]')
-    if (number) { number.textContent = format.numberFormat.kind === 'value' && format.numberFormat.value === 'General' ? '常规' : stateText(format.numberFormat); number.dataset.formatState = format.numberFormat.kind; number.title = format.numberFormat.kind === 'unavailable' ? format.numberFormat.reason : number.textContent }
+    const number = body.querySelector<HTMLSelectElement>('[data-ribbon-control="number-format"]')
+    if (number) {
+      const state = format.numberFormat
+      const reason = !editable ? '当前工作簿不可编辑或正在保存'
+        : !selected ? '请先选择单元格或区域'
+        : view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : state.kind === 'unavailable' ? state.reason : undefined
+      number.options[0]!.text = state.kind === 'value' ? numberFormatPresetLabel(state.value) : stateText(state)
+      number.dataset.formatState = state.kind
+      number.disabled = !!reason
+      number.title = reason ?? (state.kind === 'value' ? state.value : '数字格式')
+    }
   }
   const render = () => {
     visibleTabs = view?.table?.() ? [...tabs, 'Table Design'] : tabs
@@ -1161,6 +1370,40 @@ export function mountWorkbookRibbon(
       const heading = document.createElement('h2')
       heading.textContent = group.title
       section.append(heading)
+      if (active === 'Review' && group.title === '语言') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('translate') ?? ''
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'translate'
+        select.setAttribute('aria-label', '翻译')
+        select.disabled = !view?.onTranslate
+        select.append(new Option('翻译', ''), ...workbookTranslationLanguages.map(language => new Option(language, language)))
+        select.addEventListener('change', () => {
+          const language = workbookTranslationLanguages.find(item => item === select.value)
+          select.value = ''
+          if (language && !select.disabled) view?.onTranslate?.(language)
+        })
+        wrapper.append(icon, select); section.append(wrapper)
+      }
+      if (active === 'Review' && group.title === '注释') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('', '🗒') ?? ''
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'notes'
+        select.setAttribute('aria-label', '注释')
+        select.setAttribute('aria-description', '在所选位置添加或编辑')
+        select.append(new Option('注释', ''), ...noteMenuChoices.map(([id, label]) => new Option(label, id)))
+        select.addEventListener('change', () => {
+          const choice = select.selectedOptions[0]
+          select.value = ''
+          if (choice?.value && !choice.disabled) onCommand(choice.value as RibbonCommand)
+        })
+        wrapper.append(icon, select); section.append(wrapper)
+      }
       if (group.title === 'AI 助手') {
         section.classList.add('office-ai-group')
         section.append(createOfficeAIEntry(view?.onAssistant))
@@ -1248,16 +1491,6 @@ export function mountWorkbookRibbon(
           wrapper.append(input, status); section.append(wrapper)
         }
       }
-      if (active === 'Home' && group.title === '编辑') {
-        // 固定源 Fill 菜单（ExcelShell.tsx:4149-4153）：选中后回弹到菜单标题。
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '填充'); select.dataset.ribbonMenu = 'fill'
-        select.append(...[['', '填充'], ['fill-down', '向下'], ['fill-right', '向右'], ['fill-up', '向上'], ['fill-left', '向左'], ['fill-series-open', '序列…']].map(([value, label]) => {
-          const option = document.createElement('option'); option.value = value!; option.textContent = label!; return option
-        }))
-        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(value as RibbonCommand) })
-        section.append(select)
-      }
       if (active === 'Home' && group.title === '剪贴板') {
         // 固定源粘贴分体按钮的下拉：选中后回弹到菜单标题（同页面布局动作下拉）。
         const select = document.createElement('select')
@@ -1269,7 +1502,18 @@ export function mountWorkbookRibbon(
         section.append(select)
       }
       if (active === 'Home' && group.title === '数字') {
-        const number = document.createElement('span'); number.className = 'workbook-ribbon-number-format'; number.dataset.ribbonControl = 'number-format'; number.setAttribute('aria-label', '当前数字格式'); number.textContent = '不可判定'; section.append(number)
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select workbook-ribbon-number-format'
+        select.dataset.ribbonControl = 'number-format'
+        select.setAttribute('aria-label', '数字格式')
+        select.disabled = true
+        select.append(new Option('不可判定', ''), ...NUMBER_FORMAT_PRESETS.map(({ id, label }) => new Option(label, id)))
+        select.addEventListener('change', () => {
+          const preset = NUMBER_FORMAT_PRESETS.find(({ id }) => id === select.value)
+          select.value = ''
+          if (preset && !select.disabled) onCommand(`number-format:${preset.id}`)
+        })
+        section.append(select)
       }
       if (active === 'Page Layout' && group.title === '主题') {
         // 固定源 ExcelShell：Themes 大菜单 + Colors / Fonts MenuSelect，选中即应用，菜单回弹到标题。
@@ -1329,26 +1573,43 @@ export function mountWorkbookRibbon(
         })
         section.append(select)
       }
-      if (active === 'View' && group.title === '缩放') {
+      if (active === 'View' && group.title === '窗口') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span')
+        icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true')
+        icon.innerHTML = workbookCommandIcon('freeze-panes') ?? ''
         const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '缩放比例'); select.dataset.ribbonMenu = 'zoom'
-        const title = document.createElement('option'); title.value = ''; title.textContent = '缩放比例'
+        select.className = 'workbook-ribbon-select'
+        select.setAttribute('aria-label', '冻结窗格')
+        select.dataset.ribbonControl = 'freeze-panes'
+        select.title = '冻结行和列'
+        select.append(new Option('冻结窗格', ''), ...FREEZE_CHOICES.map(([id, label]) => new Option(label, id)))
+        select.addEventListener('change', () => {
+          const option = select.selectedOptions[0]
+          select.value = ''
+          if (option?.value && !option.disabled && !select.disabled) onCommand(option.value as RibbonCommand)
+        })
+        wrapper.append(icon, select)
+        section.append(wrapper)
+      }
+      if (active === 'View' && group.title === '缩放') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span')
+        icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true')
+        icon.innerHTML = workbookCommandIcon('', '🔍') ?? ''
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '缩放'); select.dataset.ribbonMenu = 'zoom'
+        const title = document.createElement('option'); title.value = ''; title.textContent = '缩放'
         select.append(title, ...[50, 75, 100, 125, 150, 200].map(percent => {
           const option = document.createElement('option'); option.value = String(percent); option.textContent = `${percent}%`; return option
         }))
         select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`zoom:${Number(value)}`) })
-        section.append(select)
-      }
-      if (active === 'Home' && group.title === '样式') {
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'cell-style'; select.setAttribute('aria-label', '单元格样式')
-        const labels = ['好', '差', '适中', '输入', '输出', '计算', '警告文本', '标题', '标题 1', '标题 2', '汇总', '强调色 1 20%', '强调色 1 40%', '强调色 1']
-        for (const [index, value] of ['', ...Object.keys(CELL_STYLE_PRESETS)].entries()) {
-          const option = document.createElement('option'); option.value = value; option.textContent = index === 0 ? '单元格样式' : labels[index - 1]!
-          select.append(option)
-        }
-        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`cell-style:${value}`) })
-        section.append(select)
+        wrapper.append(icon, select)
+        section.append(wrapper)
       }
       for (const item of group.actions) {
         if (active === 'Home' && item.id === 'cell-style') continue
@@ -1358,13 +1619,16 @@ export function mountWorkbookRibbon(
         const button = document.createElement('button')
         button.type = 'button'; button.dataset.ribbonCommand = item.id; button.title = item.label; button.setAttribute('aria-label', item.label)
         if (item.id === 'format-as-table') button.setAttribute('aria-label', '创建表格')
+        if (item.id === 'zoom-reset') button.setAttribute('aria-label', '重置缩放至 100%')
         const icon = workbookCommandIcon(item.id, COMMAND_GLYPHS[item.id])
         if (icon) {
           const iconHost = document.createElement('span'); iconHost.className = 'workbook-ribbon-icon'; iconHost.setAttribute('aria-hidden', 'true'); iconHost.innerHTML = icon
           const label = document.createElement('span'); label.textContent = item.label; button.append(iconHost, label)
         } else button.textContent = item.label
-        if (item.command === undefined || disabledReasons[item.id] !== undefined) {
-          const reason = disabledReasons[item.id] ?? `“${item.label}”尚未接入完整的文件读取与回写`
+        const unavailable = item.id === 'insert-screenshot' && !supportsWorkbookScreenshot()
+          ? '当前浏览器不支持屏幕截图' : disabledReasons[item.id]
+        if (item.command === undefined || unavailable !== undefined) {
+          const reason = unavailable ?? `“${item.label}”尚未接入完整的文件读取与回写`
           button.disabled = true; button.dataset.unavailableReason = reason; button.title = reason; button.setAttribute('aria-description', reason)
         } else {
           let target: NumberFormatTarget | undefined
@@ -1378,6 +1642,48 @@ export function mountWorkbookRibbon(
           button.addEventListener('click', event => { if (!button.disabled && !captureError) { if (item.command === 'format:custom-open') onCommand(item.command, target); else if (item.command === 'format-painter') onCommand(event.detail >= 2 ? 'format-painter:dblclick' : 'format-painter'); else onCommand(item.command!) } })
         }
         section.append(button)
+      }
+      for (const menu of RIBBON_COMMAND_MENUS) {
+        if (menu.tab !== active || menu.group !== group.title) continue
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span')
+        icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true')
+        const iconMarkup = workbookCommandIcon('', menu.icon)
+        if (iconMarkup) icon.innerHTML = iconMarkup
+        else icon.textContent = menu.icon
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'
+        select.dataset.ribbonControl = menu.id
+        select.setAttribute('aria-label', menu.label)
+        select.title = menu.detail
+        select.append(new Option(menu.label, ''), ...menu.choices.map(({ command, label, detail }) => {
+          const option = new Option(label, command ?? label)
+          option.disabled = !command
+          option.title = detail ?? (!command ? '尚未接入选区回写' : '')
+          return option
+        }))
+        select.addEventListener('change', () => {
+          const choice = menu.choices.find(({ command }) => command === select.value)
+          select.value = ''
+          if (choice?.command && !select.disabled) onCommand(choice.command)
+        })
+        wrapper.append(icon, select)
+        const after = menu.after && section.querySelector('[data-ribbon-command="' + menu.after + '"]')
+        if (after) after.after(wrapper)
+        else section.insertBefore(wrapper, section.querySelector('button[data-ribbon-command]'))
+      }
+      if (active === 'Home' && group.title === '样式') {
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'cell-style'; select.setAttribute('aria-label', '单元格样式')
+        const labels = ['好', '差', '适中', '输入', '输出', '计算', '警告文本', '标题', '标题 1', '标题 2', '汇总', '强调色 1 20%', '强调色 1 40%', '强调色 1']
+        for (const [index, value] of ['', ...Object.keys(CELL_STYLE_PRESETS)].entries()) {
+          const option = document.createElement('option'); option.value = value; option.textContent = index === 0 ? '单元格样式' : labels[index - 1]!
+          select.append(option)
+        }
+        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`cell-style:${value}`) })
+        section.append(select)
       }
       sections.push(section)
     }

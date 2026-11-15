@@ -162,6 +162,7 @@ RUN for tool in pandoc soffice pdftoppm pdfinfo dot rsvg-convert qpdf; do comman
     && /app/.venv/bin/python -c "import matplotlib; matplotlib.use('Agg'); import matplotlib.pyplot as plt; figure = plt.figure(); figure.add_subplot(111).plot([1], [1]); figure.savefig('/tmp/matplotlib-smoke.png'); plt.close(figure)"
 
 COPY --from=app-source /app/smart_reporting ./smart_reporting
+COPY alembic-management.ini ./alembic-management.ini
 COPY docker/matplotlibrc /etc/reporting/matplotlibrc
 # 前端产物放在源码目录之外：Compose 以只读 bind mount 覆盖 /app/smart_reporting，
 # 若放在源码树内会被宿主空目录遮蔽；命名卷又只在首次创建时播种，升级镜像后仍是旧前端。

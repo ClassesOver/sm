@@ -10,14 +10,14 @@ from ..reporting.delivery.office_engine import run_bridge
 from ..reporting.models import ReportingError
 
 
-def render_pptx_tree(content: bytes) -> dict[str, Any]:
+def render_pptx_tree(content: bytes, *, purpose: str | None = None) -> dict[str, Any]:
     """只在已核验的 PPTX bytes 上运行冻结版本的静态 RenderTree builder。"""
     with tempfile.TemporaryDirectory(prefix="report-slides-render-") as directory:
         root = Path(directory)
         source = root / "source.pptx"
         source.write_bytes(content)
         request = root / "request.json"
-        request.write_text(json.dumps({"input": str(source)}), encoding="utf-8")
+        request.write_text(json.dumps({"input": str(source), "purpose": purpose}), encoding="utf-8")
         result = run_bridge("slides", "render-pptx", request)
         if result.returncode:
             raise ReportingError("report_slides_render_failed", result.stderr[-2000:] or "幻灯片画布载入失败。")
@@ -39,8 +39,8 @@ def validate_slide_edits(edits: Any) -> list[dict[str, Any]]:
     for edit in edits:
         if (
             not isinstance(edit, dict)
-            or not set(edit).issubset({"slideIndex", "elementId", "text", "geometry"})
-            or not ({"text", "geometry"} & set(edit))
+            or not set(edit).issubset({"slideIndex", "elementId", "text", "geometry", "pictureTransform"})
+            or not ({"text", "geometry", "pictureTransform"} & set(edit))
             or not isinstance(edit.get("slideIndex"), int)
             or isinstance(edit.get("slideIndex"), bool)
             or edit["slideIndex"] < 0
@@ -49,6 +49,12 @@ def validate_slide_edits(edits: Any) -> list[dict[str, Any]]:
             or ("text" in edit and (not isinstance(edit["text"], str) or len(edit["text"]) > _MAX_SLIDE_EDIT_TEXT))
         ):
             raise ReportingError("report_slides_edit_invalid", "幻灯片修改内容无效。")
+        if "pictureTransform" in edit:
+            transform = edit["pictureTransform"]
+            if (not isinstance(transform, dict) or set(transform) != {"rot", "flipH", "flipV"}
+                or type(transform["rot"]) is not int or not 0 <= transform["rot"] < 21600000
+                or not all(type(transform[key]) is bool for key in ("flipH", "flipV"))):
+                raise ReportingError("report_slides_edit_invalid", "图片旋转或翻转无效。")
         if "geometry" in edit:
             geometry = edit["geometry"]
             if (

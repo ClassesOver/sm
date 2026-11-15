@@ -6,6 +6,7 @@ import type { RenderNode, RenderSlide } from '@genoffice/pptx-render'
 import { StaticNode } from './vendor/genoffice/renderer/NodeBody'
 import { boxPivotProps, fillToKonva } from './vendor/genoffice/renderer/konva-adapter'
 import { applyCanvasEdits, canvasEditable, canvasGeometryEdit, type CanvasEdit, type CanvasGeometry } from './slides-canvas-model'
+import { clampZoom, ZOOM_MIN } from './slides-view-zoom'
 import { slidesMarqueeIds, slidesMarqueeRect, type MarqueePoint } from './slides-marquee'
 
 /** Konva 不能解析 CSS 变量：从统一视觉 token（office-theme.css）读取当前强调色。 */
@@ -32,7 +33,7 @@ function collectImages(value: unknown, urls = new Set<string>()): Set<string> {
   return urls
 }
 
-function SlideCanvas({ state, width }: { state: SlidesCanvasState; width: number }) {
+function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; width: number; onLayout(): void }) {
   const [images, setImages] = useState(new Map<string, HTMLImageElement>())
   const transformer = useRef<Konva.Transformer>(null)
   const nodes = useRef(new Map<string, Konva.Group>())
@@ -47,6 +48,7 @@ function SlideCanvas({ state, width }: { state: SlidesCanvasState; width: number
   const selectedIds = state.selectedIds ?? (state.selectedId ? [state.selectedId] : [])
   const selected = new Set(selectedIds)
   const multiple = selectedIds.length > 1
+  useLayoutEffect(onLayout)
   const cancelMarquee = () => { marquee.current = null; setMarqueeBox(null) }
   // 切页、更新几何或缩放时丢弃拖动，避免旧画布坐标提交到新状态。
   useLayoutEffect(cancelMarquee, [state.slide, state.edits, state.selectableIds, width])
@@ -136,12 +138,59 @@ function SlideCanvas({ state, width }: { state: SlidesCanvasState; width: number
   </Stage>
 }
 
-export function mountSlidesCanvas(host: HTMLElement) {
+export function mountSlidesCanvas(host: HTMLElement, onZoomChange?: (zoom: number) => void) {
   const root = createRoot(host)
   let state: SlidesCanvasState | undefined
-  let width = Math.max(1, host.clientWidth || 960)
-  const render = () => { if (state) root.render(<SlideCanvas state={state} width={Math.min(width, state.slide.widthPx)} />) }
-  const observer = new ResizeObserver(entries => { width = Math.max(1, entries[0]?.contentRect.width ?? host.clientWidth); render() })
+  let width = host.clientWidth || 960
+  let height = host.clientHeight || Number.POSITIVE_INFINITY
+  let manualZoom: number | null = null
+  const rawFit = () => state ? Math.min(width / state.slide.widthPx, height / state.slide.heightPx) : 1
+  type Anchor = { x: number; y: number }
+  let pendingAnchor: { point: Anchor; fraction: Anchor } | undefined
+  const pageBox = () => host.querySelector<HTMLElement>('.konvajs-content')?.getBoundingClientRect()
+  const restoreAnchor = () => {
+    const anchor = pendingAnchor
+    pendingAnchor = undefined
+    if (!anchor) return
+    const rect = pageBox()
+    if (!rect?.width || !rect.height) return
+    host.scrollLeft += rect.left + anchor.fraction.x * rect.width - anchor.point.x
+    host.scrollTop += rect.top + anchor.fraction.y * rect.height - anchor.point.y
+  }
+  const getZoom = () => {
+    if (manualZoom !== null) return manualZoom
+    if (!state) return 1
+    return Math.min(1.5, Math.max(ZOOM_MIN, rawFit()))
+  }
+  const render = () => {
+    if (!state) return
+    const zoom = getZoom()
+    root.render(<SlideCanvas state={state} width={state.slide.widthPx * zoom} onLayout={restoreAnchor} />)
+    onZoomChange?.(zoom)
+  }
+  const observer = new ResizeObserver(([entry]) => {
+    const viewport = entry?.contentRect
+    if (!viewport?.width) return
+    width = viewport.width
+    if (viewport.height > 0) height = viewport.height
+    render()
+  })
   observer.observe(host)
-  return { update(next: SlidesCanvasState) { state = next; render() }, destroy() { observer.disconnect(); root.unmount() } }
+  return {
+    getZoom,
+    fitsViewport: () => getZoom() <= rawFit() + 0.001,
+    setZoom(next: number | null, anchor?: Anchor) {
+      if (next !== null && !Number.isFinite(next)) return
+      const previous = getZoom()
+      manualZoom = next === null ? null : clampZoom(next)
+      const rect = anchor && manualZoom !== previous ? pageBox() : undefined
+      pendingAnchor = anchor && rect?.width && rect.height ? {
+        point: anchor, fraction: { x: (anchor.x - rect.left) / rect.width, y: (anchor.y - rect.top) / rect.height },
+      } : undefined
+      if (next === null) host.scrollLeft = host.scrollTop = 0
+      render()
+    },
+    update(next: SlidesCanvasState) { state = next; render() },
+    destroy() { observer.disconnect(); root.unmount() },
+  }
 }

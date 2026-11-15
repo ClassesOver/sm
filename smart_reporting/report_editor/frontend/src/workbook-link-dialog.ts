@@ -1,19 +1,9 @@
 // 固定源 f8c17004 apps/sheets/src/renderer/ExcelShell.tsx LinkDialog（Insert ▸ 链接）：地址输入，已有链接时显示“删除链接”，
 // 空地址时“确定”不可用，Enter 提交。文案取固定源 i18n/app/zh.ts；地址规范化 normalizeLinkTarget 逐字照搬 univer-sync.ts。
 import { createModal } from './modal'
+import { normalizeLinkTarget } from '@sheets-web/xlsx-engine/hyperlink-target'
 
-/// Normalizes dialog input into the wire target format: '#Sheet!A1' for
-/// internal anchors, a full URL otherwise. Bare domains get https://.
-export function normalizeLinkTarget(input: string): string | null {
-  const trimmed = input.trim()
-  if (trimmed.length === 0 || trimmed.length > 2083) return null
-  if (/^(https?:\/\/|mailto:)/i.test(trimmed)) return trimmed
-  if (/^#?'?[^'!]+'?!\$?[A-Za-z]{1,3}\$?[0-9]+$/.test(trimmed)) {
-    return trimmed.startsWith('#') ? trimmed : `#${trimmed}`
-  }
-  if (/^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(trimmed)) return `https://${trimmed}`
-  return null
-}
+export { normalizeLinkTarget }
 
 export const LINK_TEXT = {
   insertTitle: '插入链接', editTitle: '编辑链接',

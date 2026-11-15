@@ -9,5 +9,6 @@
   "packages/xlsx-engine/tests/chart-delete-namespaces.test.ts": "7acbdfa0af908445e5bad1caeacbede3b23fded101275b7b1eca69852ee020c6",
   "packages/xlsx-engine/tests/chart-edit-namespaces.test.ts": "16eb1ef82c42a21d88badf6274678c86a0a8e9ebeb905dd81b122f624af197b6",
   "packages/xlsx-engine/src/chart-anchor.ts": "ddb6013cb14241537db4f6b44a3998ed5ed312ec007b9103d8d16503eaa26eb0",
-  "packages/xlsx-engine/src/index.ts": "105d063f77967cda8c263024994224b24144849af83967885739d2aacf310872"
+  "packages/xlsx-engine/src/index.ts": "105d063f77967cda8c263024994224b24144849af83967885739d2aacf310872",
+  "packages/xlsx-engine/tests/structural-grid-bounds.test.ts": "84a4cf797fb94219259dcb4fd4036eb5f450277c086dd1f39b9e140dd4db9391"
 }

@@ -1,6 +1,7 @@
 /** Small monochrome SVG icons approximating Word's ribbon glyphs. */
 
 import type { ReactNode } from 'react'
+import type { CellHAlign, CellVAlign } from '../editor/table-ops'
 
 interface IconProps {
   size?: number
@@ -1408,6 +1409,18 @@ export function IconOutlineView(props: IconProps) {
   )
 }
 
+export function IconStoryView(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="3" y="3.76" width="10.01" height="8.47" rx="0.62" />
+      <path d="M 6.46 3.76 v 8.47" strokeWidth="1" />
+      <path d="M 8 5.69 h 3.85 M 8 7.62 h 3.85 M 8 9.54 h 2.31" strokeWidth="1" />
+      {/* the '#' mark in the margin */}
+      <path d="M 4.3 5.2 v 1.3 M 5.5 5.2 v 1.3 M 4.05 5.85 h 1.7" strokeWidth="1" />
+    </Svg>
+  )
+}
+
 export function IconRuler(props: IconProps) {
   return (
     <Svg {...props}>
@@ -1998,6 +2011,59 @@ export function IconChevronRight(props: IconProps) {
   return (
     <Svg {...props}>
       <path d="M 6 3.5 10.5 8 6 12.5" />
+    </Svg>
+  )
+}
+
+/** a cell outline with three text strokes parked in one of the nine positions */
+export function IconCellAlign({ v, h, size }: { v: CellVAlign; h: CellHAlign; size?: number }) {
+  const y = v === 'top' ? 5.2 : v === 'center' ? 7.2 : 9.2
+  const long = 6
+  const short = 3.8
+  const x1 = h === 'left' ? 4.4 : h === 'center' ? 8 - long / 2 : 11.6 - long
+  const x2 = h === 'left' ? 4.4 : h === 'center' ? 8 - short / 2 : 11.6 - short
+  return (
+    <Svg size={size}>
+      <rect x="2.5" y="2.9" width="11" height="10.2" rx="0.7" />
+      <path d={`M ${x1} ${y} h ${long} M ${x2} ${y + 1.8} h ${short}`} />
+    </Svg>
+  )
+}
+
+export function IconTextDirection(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2.5" y="2.9" width="11" height="10.2" rx="0.7" />
+      <path d="M 5.2 10.6 V 5.4 M 5.2 5.4 L 6.9 10.6 M 5.2 5.4 L 3.5 10.6 M 4.1 8.9 h 2.2" />
+      <path d="M 9.6 5 v 6 M 9.6 11 l -1.4 -1.4 M 9.6 11 l 1.4 -1.4" />
+    </Svg>
+  )
+}
+
+export function IconDeleteCells(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M 2.5 2.9 h 7 v 10.2 h -7 z M 2.5 8 h 7 M 6 2.9 v 10.2" />
+      <path d="M 11.2 6.6 l 2.8 2.8 M 14 6.6 l -2.8 2.8" />
+    </Svg>
+  )
+}
+
+/** a grid with the caret's row filled: Table Layout ▸ Select */
+export function IconSelectCells(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="2.5" width="12" height="11" rx="1" />
+      <path d="M2 6.2h12M2 9.8h12M6 2.5v11" />
+      <rect
+        x="2"
+        y="6.2"
+        width="12"
+        height="3.6"
+        fill="currentColor"
+        opacity="0.35"
+        stroke="none"
+      />
     </Svg>
   )
 }

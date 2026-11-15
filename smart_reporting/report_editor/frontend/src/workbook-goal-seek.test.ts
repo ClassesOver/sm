@@ -36,9 +36,10 @@ it('exposes the fixed-source Goal Seek entry for an editable workbook', () => {
   const ribbon = mountWorkbookRibbon(host, vi.fn(), { rotation: () => 0, editable: () => true })
   try {
     host.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-    const button = host.querySelector<HTMLButtonElement>('[data-ribbon-command="goal-seek-open"]')
-    expect(button, '固定源存在Goal Seek，本地缺入口').not.toBeNull()
-    expect(button!.disabled).toBe(false)
+    const select = host.querySelector<HTMLSelectElement>('[data-ribbon-control="what-if-analysis"]')
+    expect(select).not.toBeNull()
+    expect(select!.querySelector('option[value="goal-seek-open"]')?.textContent).toBe('单变量求解')
+    expect(select!.disabled).toBe(false)
   } finally { ribbon.dispose(); host.remove() }
 })
 

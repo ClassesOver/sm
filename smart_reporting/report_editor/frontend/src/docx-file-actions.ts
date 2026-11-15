@@ -1,11 +1,11 @@
 import { createModal } from './modal'
 import { buttonClasses } from './button'
-import type { createNativeApi, NativeWordFileResult } from './native-api'
+import type { createNativeApi, NativeWordFileRequest, NativeWordFileResult } from './native-api'
 
 export type DocxFileAction = 'new' | 'save-as'
 const savedOnly = '另存为仅复制已保存的修订；请先保存或撤销当前修改，再另存为。'
 
-function createdDocumentUrl(result: NativeWordFileResult): string {
+export function createdDocumentUrl(result: NativeWordFileResult): string {
   const raw = result?.editor?.openUrl
   if (typeof result?.documentId !== 'string' || !result.documentId || !Number.isSafeInteger(result.revision) || result.revision < 1 || typeof raw !== 'string' || !raw || raw !== raw.trim()) throw new Error('新文档地址无效，请重试')
   let url: URL
@@ -15,19 +15,36 @@ function createdDocumentUrl(result: NativeWordFileResult): string {
 }
 
 /** Creates a separate server document from the saved source; never rewrites the live editor. */
-export function createDocxFileActions(options: {
+type FileActionOptions = {
   root: HTMLElement
-  api: Pick<ReturnType<typeof createNativeApi>, 'newWord' | 'saveWordAs'>
   sourceSha256: string
   displayName?: string | null
   blocked(): string | null
-  pendingEdits(): boolean
+  pendingEdits?(): boolean
   flush(): void
   onError(error: unknown): void
   navigate?(url: string): void
+}
+
+export function createDocxFileActions(options: FileActionOptions & {
+  api: Pick<ReturnType<typeof createNativeApi>, 'newWord' | 'saveWordAs'>
 }) {
+  return createNativeFileActions({
+    ...options, extension: 'docx', formatLabel: 'Word 文档', saveAsNote: savedOnly,
+    create: (action, payload) => action === 'new' ? options.api.newWord(payload) : options.api.saveWordAs(payload),
+  })
+}
+
+export function createNativeFileActions(options: FileActionOptions & {
+  extension: 'docx' | 'pptx'
+  formatLabel: string
+  saveAsNote: string
+  create(action: DocxFileAction, payload: NativeWordFileRequest): Promise<NativeWordFileResult>
+}) {
+  const suffix = '.' + options.extension
   let disposed = false, busy = false, generation = 0, kind: DocxFileAction = 'new'
-  const reason = (action: DocxFileAction): string | null => disposed ? 'Word 文件操作已关闭' : options.blocked() ?? (action === 'save-as' && options.pendingEdits() ? savedOnly : null)
+  let retry: { filename: string; requestId: string } | undefined
+  const reason = (action: DocxFileAction): string | null => disposed ? '文件操作已关闭' : options.blocked() ?? (action === 'save-as' && options.pendingEdits?.() ? options.saveAsNote : null)
   const report = (error: unknown) => {
     message.textContent = error instanceof Error ? error.message : String(error)
     options.onError(error)
@@ -57,11 +74,12 @@ export function createDocxFileActions(options: {
         const afterFlush = reason(action); if (afterFlush) throw new Error(afterFlush)
         let filename = input.value.trim()
         if (!filename || /[\\/:*?"<>|\u0000-\u001f\u007f]/.test(filename) || filename.startsWith('.')) throw new Error('请输入有效文件名，不得包含路径、保留符号或控制字符')
-        if (!/\.docx$/i.test(filename)) filename += '.docx'
-        if (Array.from(filename).length > 160) throw new Error('文件名（含 .docx 扩展名）不能超过 160 个字符')
+        if (!filename.toLowerCase().endsWith(suffix)) filename += suffix
+        if (Array.from(filename).length > 160) throw new Error(`文件名（含 ${suffix} 扩展名）不能超过 160 个字符`)
         busy = true; input.disabled = true; submit.disabled = true; message.textContent = ''; delivery.replaceChildren()
-        const payload = { requestId: crypto.randomUUID(), expectedSha256: options.sourceSha256, filename }
-        const result = await (action === 'new' ? options.api.newWord(payload) : options.api.saveWordAs(payload))
+        if (retry?.filename !== filename) retry = { filename, requestId: crypto.randomUUID() }
+        const payload = { requestId: retry.requestId, expectedSha256: options.sourceSha256, filename }
+        const result = await options.create(action, payload)
         if (!current()) return
         const blockedAfter = reason(action); if (blockedAfter) throw new Error(blockedAfter)
         const url = createdDocumentUrl(result), link = document.createElement('a')
@@ -82,16 +100,17 @@ export function createDocxFileActions(options: {
   })
   return {
     reason,
-    open(action: DocxFileAction) {
+    open(action: DocxFileAction, suggestedStem?: string) {
       if (disposed) return
       const blocked = reason(action)
       if (blocked) { options.onError(new Error(blocked)); return }
-      generation++; busy = false; kind = action; resetBusy(); message.textContent = ''; delivery.replaceChildren()
-      const name = options.displayName?.replace(/\.docx$/i, '') || '文档'
-      input.value = action === 'new' ? '新建文档.docx' : `${name} - 副本.docx`
-      title.textContent = action === 'new' ? '新建 Word 文档' : '另存为 Word 文档'
+      generation++; busy = false; retry = undefined; kind = action; resetBusy(); message.textContent = ''; delivery.replaceChildren()
+      const sourceName = options.displayName || '文档'
+      const name = sourceName.toLowerCase().endsWith(suffix) ? sourceName.slice(0, -suffix.length) : sourceName
+      input.value = action === 'new' ? '新建文档' + suffix : (suggestedStem || `${name} - 副本`) + suffix
+      title.textContent = (action === 'new' ? '新建 ' : '另存为 ') + options.formatLabel
       modal.overlay.setAttribute('aria-label', title.textContent)
-      note.textContent = action === 'new' ? '创建独立的空白文档；当前文档及未保存的修改保持不变。' : savedOnly
+      note.textContent = action === 'new' ? '创建独立的空白文档；当前文档及未保存的修改保持不变。' : options.saveAsNote
       submit.textContent = action === 'new' ? '新建' : '另存为'
       modal.open(input); input.select()
     },

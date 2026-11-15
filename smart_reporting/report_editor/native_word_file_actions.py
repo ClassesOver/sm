@@ -8,10 +8,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from ..office.repository import OfficeError
 from ..reporting.delivery.office_engine import last_json_line, run_bridge, run_office_engine
 from ..reporting.models import ReportingError
-from .native_import import NativeImportService
+from .native_file_actions import register_native_file
 from .native_models import native_digest
 
 
@@ -61,21 +60,5 @@ async def create_word_file(editor, context, *, action: str, expected_sha256: str
     else:raise ReportingError('native_word_file_action_invalid','Word 文件操作无效。')
     creation_id=native_digest({'action':action,'scope':context.scope.model_dump(),'documentId':context.document_id,
         'revision':context.revision,'sourceSha256':expected_sha256,'requestId':request_id,'filename':filename})
-    authorize_created = None
-    if session is not None and (session.capabilities or {}).get('office'):
-        documents = getattr(getattr(editor, 'office_authorize', None), '__self__', None)
-        if documents is None:
-            raise ReportingError('native_permission_denied', 'Office 文件权限服务不可用。')
-
-        async def authorize_created(created):
-            try:
-                return {'office': await documents.register_derived(session, created, name=filename)}
-            except OfficeError as error:
-                raise ReportingError('native_permission_denied', '无法将新文件登记到当前工作区。') from error
-
-    result=await NativeImportService(editor.workspace,editor.repository,editor.grants).import_file(
-        scope=context.scope,content=content,request_id=creation_id,filename=filename,display_name=filename,
-        authorize_created=authorize_created)
-    result['filename']=filename
-    result['editor']['openUrl']=result['editor']['url']
-    return result
+    return await register_native_file(editor, context, content=content, creation_id=creation_id,
+                                      filename=filename, session=session)

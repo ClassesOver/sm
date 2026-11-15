@@ -5,6 +5,7 @@
 .pdf-ribbon-palette input[type=color]{width:28px;height:26px;padding:1px;border:1px solid var(--office-border-strong);border-radius:var(--office-radius);background:var(--office-chrome);cursor:pointer}
 .pdf-ribbon .pdf-form-controls{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .pdf-ribbon .pdf-form-navigation{display:flex;align-items:center;gap:6px}
+.pdf-ribbon .pdf-form-navigation-progress{color:var(--office-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 /* 静态填写长说明参与列宽计算；末行替代原底部预留，保留三个命令行。 */
 .pdf-ribbon [data-pdf-ribbon-panel=fillForm]>.pdf-ribbon-group:has(>[data-pdf-static-fill-action]){
   grid-template-columns:repeat(2,max-content);

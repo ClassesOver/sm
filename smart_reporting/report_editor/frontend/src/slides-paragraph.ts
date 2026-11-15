@@ -6,7 +6,7 @@ export const NUMBER_TYPES = ['arabicPeriod', 'arabicParenR', 'romanUcPeriod', 'a
 export const BULLET_COLORS = ['#000000', '#5A5A5A', '#FFFFFF', '#C43E1C', '#E97132', '#FFC000', '#4EA72E', '#0F9ED5', '#0A50A1', '#7030A0']
 export type ParagraphPatch = {
   align?: 'left' | 'center' | 'right' | 'justify'; lineSpacingPct?: number; spaceBeforePt?: number; spaceAfterPt?: number
-  bullet?: 'char' | 'number' | 'none'; bulletChar?: string; bulletFont?: string; numType?: typeof NUMBER_TYPES[number]; startAt?: number
+  bullet?: 'char' | 'number' | 'none' | 'blip'; bulletImage?: { bytesBase64: string; extension: 'png' | 'jpg' }; bulletChar?: string; bulletFont?: string; numType?: typeof NUMBER_TYPES[number]; startAt?: number
   bulletHangEmu?: number; bulletSizePct?: number; bulletColor?: string; rtl?: boolean; indentDelta?: 1 | -1
 }
 export type ParagraphFormatting = ParagraphPatch & { slideIndex: number; elementId: string }
@@ -35,6 +35,7 @@ export function projectParagraphs(formatting: ParagraphSourceFormatting[] = [], 
         if (!previous || previous === 'none') Object.assign(state, { bulletSizePct: null, bulletSizePt: null, bulletColor: null })
         Object.assign(state, patch.bullet === 'number'
           ? { bulletKind: 'number', bulletChar: null, bulletFont: null, numType: patch.numType ?? (previous === 'number' ? state.numType : null) ?? 'arabicPeriod', startAt: patch.startAt ?? (previous === 'number' ? state.startAt : null) }
+          : patch.bullet === 'blip' ? { bulletKind: 'blip', bulletChar: null, bulletFont: null, numType: null, startAt: null }
           : { bulletKind: 'char', bulletChar: patch.bulletChar ?? '•', bulletFont: font ?? null, numType: null, startAt: null })
         if (patch.bulletHangEmu !== undefined || !(typeof state.indentEmu === 'number' && state.indentEmu < 0)) {
           const hang = patch.bulletHangEmu ?? 285750
@@ -112,4 +113,4 @@ export function paragraphCommandPatch(command: string, value: unknown): Paragrap
   if (command === 'bulletSizePct' && [75, 90, 100, 125, 150].includes(number)) return { bulletSizePct: number }
   return null
 }
-export const PARAGRAPH_LIST_COMMANDS = ['bulletChar', 'bulletNumber', 'bulletNone', 'bulletCharPreset', 'bulletSymbol', 'bulletCustomChar', 'numType', 'startAt', 'bulletHangEmu', 'bulletHangPx', 'bulletSizePct', 'bulletColorPreset', 'bulletColor', 'indentDecrease', 'indentIncrease', 'directionLtr', 'directionRtl']
+export const PARAGRAPH_LIST_COMMANDS = ['bulletChar', 'bulletNumber', 'bulletNone', 'bulletCharPreset', 'bulletSymbol', 'bulletCustomChar', 'pictureBullet', 'numType', 'startAt', 'bulletHangEmu', 'bulletHangPx', 'bulletSizePct', 'bulletColorPreset', 'bulletColor', 'indentDecrease', 'indentIncrease', 'directionLtr', 'directionRtl']

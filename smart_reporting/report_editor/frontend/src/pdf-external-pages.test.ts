@@ -9,10 +9,10 @@ beforeEach(()=>{
 })
 afterEach(()=>{document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals()})
 const result=():NativeSaveResponse=>({documentId:'parent',revision:5,parentRevision:4,revisionRegistered:true,artifacts:{pdf:{downloadUrl:'/real.pdf'}},editor:{openUrl:'/next'},validation:{ok:false,issues:[{code:'pending',message:'尚待验收'}]}})
-function fixture(){
+function fixture(prepareSource?:()=>Promise<{sha256:string;submit:(payload:PdfExternalPagesRequest)=>Promise<NativeSaveResponse>}>){
   const root=document.createElement('div');document.body.append(root);let blocked:string|null=null
   const submit=vi.fn(async(_payload:PdfExternalPagesRequest)=>result())
-  const view=bindPdfExternalPagesDialog({root,sourceSha256:'a'.repeat(64),pageCount:()=>3,currentPage:()=>2,unavailable:()=>blocked,submit})
+  const view=bindPdfExternalPagesDialog({root,sourceSha256:'a'.repeat(64),pageCount:()=>3,currentPage:()=>2,unavailable:()=>blocked,submit,prepareSource})
   const dialog=root.querySelector('dialog')!,file=root.querySelector<HTMLInputElement>('input[type=file]')!,apply=root.querySelector<HTMLButtonElement>('[data-pdf-external-pages-apply]')!
   const upload=(value='%PDF-external')=>{const picked=new File([value],'external.pdf',{type:'application/pdf'});Object.defineProperty(picked,'arrayBuffer',{value:async()=>new TextEncoder().encode(value).buffer});Object.defineProperty(file,'files',{configurable:true,value:[picked]});file.dispatchEvent(new Event('change'))}
   return {root,view,dialog,file,apply,submit,upload,block:()=>{blocked='请先保存草稿'}}
@@ -48,4 +48,16 @@ it.each(['close','dispose'])('late server result does not repaint after %s',asyn
   if(action==='close')f.dialog.close();else f.view.dispose()
   const before=f.root.innerHTML;finish(result());await new Promise(resolve=>setTimeout(resolve,0));expect(f.root.innerHTML).toBe(before)
   if(action==='close'){f.view.open('insert');expect(f.root.querySelectorAll('a')).toHaveLength(2)}
+})
+
+it.each(['insert','replace'] as const)('validates the uploaded file first and writes only against the authorized post-save source: %s', async action => {
+  const newSubmit=vi.fn(async(_payload:PdfExternalPagesRequest)=>result())
+  const prepareSource=vi.fn(async()=>({sha256:'b'.repeat(64),submit:newSubmit}))
+  const f=fixture(prepareSource);f.view.open(action);f.upload('invalid');f.apply.click()
+  await vi.waitFor(()=>expect(f.root.textContent).toContain('外部文件不是有效 PDF'))
+  expect(prepareSource).not.toHaveBeenCalled()
+  f.upload();f.apply.click()
+  await vi.waitFor(()=>expect(f.root.querySelectorAll('a')).toHaveLength(2))
+  expect(newSubmit.mock.calls[0]?.[0]).toMatchObject({expectedSha256:'b'.repeat(64),action,...(action==='insert'?{afterPage:2}:{pages:[2]})})
+  expect(f.submit).not.toHaveBeenCalled()
 })

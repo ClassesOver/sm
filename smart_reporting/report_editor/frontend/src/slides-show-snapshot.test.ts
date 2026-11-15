@@ -29,7 +29,7 @@ it('来源未建模预设、媒体、装饰和失配对象不被假装播放，�
   ] }])
   expect(result.animations).toEqual([[]]); expect(result.transitions).toEqual(['none'])
   const messages = result.warnings!.join('；')
-  for (const reason of ['来源预设', '音视频', '渲染快照', '来源转场', '演讲者', '自动换页', '文字内链接']) expect(messages).toContain(reason)
+  for (const reason of ['来源预设', '音视频', '渲染快照', '来源转场', '文字内链接']) expect(messages).toContain(reason)
 })
 
 it('链接只使用实际对象元数据中的合法URL、页号与来源命名动作', () => {

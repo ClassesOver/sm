@@ -138,3 +138,84 @@ passed (1 passed, 8.81s). Thus the earlier statement that delivery stores are
 doubles remains true for the original runs, not this new dedicated scenario.
 Exact run counts, grant rotation behavior, cleanup and remaining synthetic
 ASGI/tenant boundaries: `NATIVE_WORD_TABLE_SQL_ACCEPTANCE.md`.
+
+## GenOffice Word AI task recovery
+
+`test_native_word_task_chain_docx.py` uses a real DOCX, PostgreSQL task and
+revision repositories, an ASGI editor client, and a synthetic MCP transport.
+Run it against a disposable PostgreSQL database because its fixture truncates
+task and document tables. Set both `REPORTING_TEST_DB_URL` and `AGENT_DB_URL` to
+that database. The fixture imports the application middleware, so set
+`AGENT_WORKSPACE_HMAC_SECRET`, `AGENT_MANAGEMENT_CREDENTIAL_KEYS` with a throwaway
+Fernet key, and `AGENT_REPORT_PUBLIC_BASE_URL` for the isolated run. Put a
+working Node executable for the test OS on `PATH` and install the frontend
+dependencies used by the native DOCX engine.
+
+The application can also construct the dispatcher with the configured GenOffice
+Agno model when `AGENT_REPORT_EDITOR_WORD_TASKS_ENABLED=true`. It reuses the
+reporting task repository for supported DOCX paragraph selections. An isolated
+ASGI application run with PostgreSQL and a scripted Agno model covered Office
+login, DOCX upload, authenticated MCP registration, completed task lookup,
+explicit acceptance, revision save and independent download readback.
+
+A follow-up ran the application in two independent processes with a shared
+disposable PostgreSQL database and workspace. The first process stopped after
+Agno read the authorized paragraph through MCP. Its lease was released and the
+task kept its open attempt. The second process reused the same editor session and
+retried the original HTTP start payload. PostgreSQL returned the same task and
+internal attempt IDs with a resume count of one. The second process completed the
+Agno/MCP run, explicitly accepted the candidate, saved revision 2 and downloaded a
+DOCX that retained the adjacent paragraph. The probe used a scripted model to
+control the interruption point. The open Word panel retries the original payload once when status returns a
+missing task. The server binds the retry to the existing task ID and exact input.
+Component tests cover the retry and explicit acceptance. The two-process HTTP
+probe rejects changed instructions and request IDs before resuming the original.
+
+Edge also verified the production Vite build against two independent Uvicorn
+processes with scripted Agno and the same disposable PostgreSQL database. The
+probe held the first status request until the second process was available.
+That process returned the actual missing-task response. The open panel retried
+with the original payload and task ID, then displayed the candidate for explicit
+acceptance. PostgreSQL showed completion on the original attempt, and independent
+readback of the signed revision 2 download confirmed the edit and adjacent text.
+
+A second Edge run released the status request while the listening socket was
+down. The panel waited through the actual connection failure and recovered the
+same task and attempt after the new worker started. The recovery window is
+bounded to 45 seconds for an acknowledged Word task. This run passed the
+production build budget and confirmed the downloaded DOCX by independent readback.
+
+A further Edge run used the configured CCTQ `gpt-6-sol` model in the second
+worker. The first worker used the scripted model to stop at a reproducible
+point after reading the authorized paragraph. After a real connection failure,
+the browser resumed the original PostgreSQL task and attempt. The live model
+registered a candidate through authenticated MCP, the user accepted it, and
+revision 2 was saved and downloaded. Independent DOCX readback matched the
+requested replacement and the unchanged adjacent paragraph. The disposable
+database was removed after both processes exited.
+
+The isolated run passed five selected cases on PostgreSQL with Node 24. It
+covered HTTP upload, start, explicit acceptance, save and independent DOCX
+readback, plus completed-receipt replay, stale-worker cancellation after
+takeover, and recovery after both a lost commit acknowledgement and a finish
+failure. The recovery cases verified that the model transport was not called
+again once a trusted receipt existed.
+
+```bash
+python -m pytest -q -o addopts='' \
+  smart_reporting/reporting/tests/test_native_word_task_chain_docx.py \
+  -k 'existing_http_start_status or old_executor_cancel or completed_receipt_restores or persisted_receipt_after_uncertain'
+```
+
+## GenOffice XLSX AI task recovery
+
+Enable `AGENT_REPORT_EDITOR_WORKBOOK_TASKS_ENABLED=true` to use the existing
+PostgreSQL task repository for native XLSX edit candidates. The local application
+was built with Vite and exercised in Edge with two Uvicorn processes sharing a
+disposable PostgreSQL database. The first worker stopped at the planner boundary
+after validating and reading A1. Edge encountered a real connection failure and
+resubmitted the original request. The second worker reclaimed the same task and
+attempt and used the configured CCTQ `gpt-6-sol` model through Agno to generate
+the candidate. Explicit acceptance and save produced revision 2. Independent
+XLSX readback confirmed the expected A1 value and the adjacent control cell.
+The worker processes exited and the disposable database was removed.

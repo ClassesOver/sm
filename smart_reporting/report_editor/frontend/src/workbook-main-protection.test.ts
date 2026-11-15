@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { applyCellEdits, applyTableAdditions, applyPageSetups, createBufferEntrySource, assemblePackage, applySheetEdits, createBlankWorkbook, protectSheet, readWorkbook } from '@sheets-web/xlsx-engine'
+import { applyCellEdits, applySheetHyperlinks, readPackageSheetHyperlinks, applyTableAdditions, applyPageSetups, createBufferEntrySource, assemblePackage, applySheetEdits, createBlankWorkbook, protectSheet, readWorkbook } from '@sheets-web/xlsx-engine'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import { createWorkbookEditorView } from './workbook-main'
 import { createNativeOfficeTransport } from './native-office-view'
@@ -19,6 +19,10 @@ vi.mock('./workbook-ribbon', () => ({
 vi.mock('./workbook-vendor/grid/decimal-step', () => ({ stepSelectionDecimals() {} }))
 vi.mock('./workbook-vendor/grid/sparkline-render', () => ({ setSparklines() {}, setSparklineWorkbookResolver() {} }))
 vi.mock('./workbook-vendor/grid/chart-render', () => ({ setCharts() {} }))
+vi.mock('./workbook-threaded-comments-host', () => ({ mountWorkbookThreads: () => ({ load() {}, dispose() {} }) }))
+vi.mock(import('./workbook-note-pictures-host'), async original => ({
+  ...await original(), installNotePictureHover: () => ({ dispose() {} }),
+}))
 vi.mock('./workbook-vendor/grid/create-univer', async () => {
   const { Univer, IUniverInstanceService, LocaleType, mergeLocales } = await import('@univerjs/core')
   const CoreZhCN = (await import('@univerjs/preset-sheets-core/locales/zh-CN')).default
@@ -89,6 +93,75 @@ const write = (row: number, column: number, value: string) => grid.api.executeCo
 afterEach(() => {
   for (const instance of grid.instances.splice(0)) instance.dispose()
   document.body.replaceChildren()
+})
+
+it('clears only the selection hyperlinks through the draft and preserves cell content', async () => {
+  const source = await applySheetHyperlinks(await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'Label' }, style: { bold: true, underline: true, fontColor: '#0563C1' } },
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: null, formula: '=1+2' } },
+  ]), 'Sheet1', [
+    { ref: 'A1', expectedTarget: null, target: 'https://example.com' },
+    { ref: 'A2', expectedTarget: null, target: '#Sheet1!A1' },
+    { ref: 'B2', expectedTarget: null, target: 'https://example.org' },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let output: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    output = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/links.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('A1:A2').activate()
+    grid.ribbon('clear-hyperlinks')
+    await vi.waitFor(() => expect(kinds(draft)).toContain('applySheetHyperlinks'))
+    expect(draft.operations.find(operation => operation.kind === 'applySheetHyperlinks')).toMatchObject({
+      edits: [
+        { ref: 'A1', expectedTarget: 'https://example.com', target: null },
+        { ref: 'A2', expectedTarget: '#Sheet1!A1', target: null },
+      ],
+    })
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    expect(await readPackageSheetHyperlinks(output!, 'Sheet1')).toEqual([
+      { ref: 'B2', target: 'https://example.org', readOnlyReason: null },
+    ])
+    const saved = await readWorkbook(output!)
+    expect(saved.sheets[0]!.cells.A1?.value).toBe('Label')
+    expect(saved.sheets[0]!.cells.A2?.formula).toBe('=1+2')
+    const { importedStyleOf } = await import('./workbook-vendor/core/session-core')
+    expect(importedStyleOf(saved, 'Sheet1', 'A1')).toMatchObject({ bold: true })
+    expect(importedStyleOf(saved, 'Sheet1', 'A1')?.underline).not.toBe(true)
+  } finally { current.view?.dispose() }
+})
+
+it('routes GenOffice Freeze Panes commands, preserves source protection and writes the selected pane to XLSX', async () => {
+  const source = await fixture(), draft = new NativeDraft(identity, store())
+  let output: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    output = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/freeze.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().getRange('B2').activate()
+    grid.ribbon('freeze-here')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 1, ySplit: 1 })
+    grid.ribbon('freeze-here')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 1, ySplit: 1 })
+    grid.ribbon('freeze-top-row')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 0, ySplit: 1 })
+    grid.ribbon('unfreeze')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 0, ySplit: 0 })
+    grid.ribbon('freeze-first-col')
+    expect(sheet().getFreeze()).toMatchObject({ xSplit: 1, ySplit: 0 })
+    await vi.waitFor(() => expect(draft.operations).toContainEqual({
+      kind: 'applyPageSetups', setups: [{ sheetName: 'Sheet1', frozenRows: 0, frozenColumns: 1 }],
+    }))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(output).toBeDefined())
+    const model = await readWorkbook(output!)
+    expect(model.sheets[0]).toMatchObject({ freeze: { frozenRows: 0, frozenColumns: 1 }, protection: { protected: true } })
+    expect(model.sheets[1]?.freeze).toBeNull()
+  } finally { current.view?.dispose() }
 })
 
 it.each(['sheet-protect', 'workbook-protect'] as const)('undoes %s in native history without undoing source frozen panes', async command => {
@@ -306,6 +379,39 @@ it('saves full moved formatting when creating a table without headers through th
   expect(importedStyleOf(saved, 'Sheet1', 'A4')).toMatchObject({ bold: true, fillColor: '#FF0000', numberFormat: '0.000' })
   expect(saved.sheets[0]!.tables).toHaveLength(1)
   current.view?.dispose()
+})
+
+it('applies Home table presets to a new selection and the existing table, then saves the chosen style', async () => {
+  const source = await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'Name' } },
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 'Ada' } },
+    { sheetName: 'Sheet1', row: 2, column: 0, writeValue: true, cell: { value: 'Grace' } },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/p.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().setActiveSelection(sheet().getRange(1, 0))
+    grid.ribbon('format-as-table:TableStyleMedium4')
+    expect(grid.view.table()).toMatchObject({ style: 'TableStyleMedium4', range: 'A1:A3' })
+    const id = grid.view.table().id
+    grid.ribbon('format-as-table:TableStyleDark2')
+    expect(grid.view.table()).toMatchObject({ id, style: 'TableStyleDark2' })
+    history('undo')
+    expect(grid.view.table()).toMatchObject({ id, style: 'TableStyleMedium4' })
+    history('redo')
+    expect(grid.view.table()).toMatchObject({ id, style: 'TableStyleDark2' })
+    await vi.waitFor(() => expect(kinds(draft)).toContain('applyTableAdditions'))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = await readWorkbook(downloaded!)
+    expect(saved.sheets[0]!.tables).toHaveLength(1)
+    expect(saved.sheets[0]!.tables![0]).toMatchObject({ style: { name: 'TableStyleDark2', showRowStripes: true } })
+    expect(saved.sheets[0]!.cells.A3?.value).toBe('Grace')
+  } finally { current.view?.dispose() }
 })
 
 it('saves a header row toggle through the editor and restores the original table on undo', async () => {

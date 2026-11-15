@@ -30,7 +30,35 @@
 | `select_range` | 尚无独立 AI 导航回执与前端采纳导航协议。 |
 | `create_document` | 未接源新文档任务；现有保存新修订不等同新文档创建。 |
 
-图表来源子链已交付：源 `add_chart(dataRange, anchorCell?)`、`edit_chart(seriesData)` 经 `applyChartSource` 按重放时实际工作表生成引用及缓存，拒绝模型自填缓存；限整簿授权、2000 格与可信目标，不与结构操作混批。此前纯数值分类引用及环形图多系列两项失败已修，25 项引擎／5 项手工入口／15 项 Python 专项通过；final8 ScriptedModel 浏览器拒绝／采纳、UndoRedo、草稿恢复与两次保存下载重开通过，172 份资产身份匹配。真实 provider 新增与换绑均通过标题／引用／缓存独立回读，与浏览器证据分别登记。原失败日志保留；单点折线无可见标记、完整图表视觉及生产真实模型浏览器同链仍开放，见[来源图表专项](NATIVE_XLSX_AI_CHART_SOURCES_ACCEPTANCE_20261113.md)。新增 shape／image／sparkline 等语义仍未接全。现有推荐图表、限定对象几何属于手工交付，不重列全缺，也不外推为全部 AI 已交付。
+图表来源子链已交付：源 `add_chart(dataRange, anchorCell?)`、`edit_chart(seriesData)` 经 `applyChartSource` 按重放时实际工作表生成引用及缓存，拒绝模型自填缓存；限整簿授权、2000 格与可信目标，不与结构操作混批。此前纯数值分类引用及环形图多系列两项失败已修，25 项引擎／5 项手工入口／15 项 Python 专项通过；final8 ScriptedModel 浏览器拒绝／采纳、UndoRedo、草稿恢复与两次保存下载重开通过，172 份资产身份匹配。真实 provider 新增与换绑均通过标题／引用／缓存独立回读，与浏览器证据分别登记。原失败日志保留，完整图表视觉及生产真实模型浏览器同链仍开放，见[来源图表专项](NATIVE_XLSX_AI_CHART_SOURCES_ACCEPTANCE_20261113.md)。新增 shape、image 等语义仍未接全。现有推荐图表、限定对象几何属于手工交付，不重列全缺，也不外推为全部 AI 已交付。
+
+2026-11-15 补齐 `add_sparkline`。整簿授权下支持线形、柱形和盈亏图，可指定颜色与起始格，也可放在来源右侧。每行生成一个迷你图，最多取前 200 行。复用原生 `appendSheetSparklines` 写入 Excel x14 记录，保留候选预览、显式采纳与保存链路。单点折线的同表换绑已通过保存下载重开复测，见[来源图表专项](NATIVE_XLSX_AI_CHART_SOURCES_ACCEPTANCE_20261113.md)。
+
+柱形迷你图浏览器验收使用 `WORKBOOK_AI_CHARTS_SPARKLINE=1` 运行 `frontend/smoke/workbook-ai-charts-smoke.mjs`。Edge 经实际 HTTP、Agno 工具与 XLSX 写入器完成采纳、撤销重做、草稿恢复及修订 4→5 的下载重开。画布在采纳、草稿恢复、下载重开三处均为 B8 和 B9 各绘制两根格内柱。独立回读确认 x14 引用与颜色、两张原图、源数据和手工加粗。验收仍返回 `native_source_review_pending`，实际文件照常签发。验收使用 ScriptedModel 与内存修订仓储，证据位于 Windows `%TEMP%/genoffice-ai-sparkline-edge`。
+
+XLSX 图表删除也接受源 DSL `delete_visual(visualId)`。目标使用冻结草稿中的唯一 `chartPath`，所属工作表由草稿解析。与原生图表删除共用候选及保存链路，尚未覆盖形状和图片的 `visualId`。
+
+XLSX 编辑工具接入 `set_range` 和 `clear_range`。矩形写入可使用起始格或同尺寸范围，支持公式和空值。单元格级操作每批最多展开 2000 格。大范围清空每项最多覆盖 200000 格，写入器只修改实际有内容的单元格，保留样式和范围外的共享公式。选区授权检查整个目标矩形，浏览器候选显示工作表和待清空范围。纯单元格源操作中，后续条件写入按同批变更后的值和公式核对，包括大范围清空。
+
+XLSX `add_chart` 接入本地 GenOffice 参考源码 `19a389b3` 的 `columns` 参数。第一列作为分类，后续列按传入顺序作为系列。首行作为表头，列可不相邻，XLSX 引用及缓存由实际工作表生成。回读覆盖分类列 C 和系列 D、B，保持原数据范围决定的默认锚点。
+
+XLSX `add_table` 接到原生 Excel 表格写入器。表头从操作重放时的草稿读取，空白补为 `ColumnN`，重复名补数字后缀，并同步表头格与表格列名。支持默认全簿唯一名称、显式名称、内置样式与隔行底纹。尚无法核实实时计算值的公式表头会保留原样并拒绝该候选。
+
+表格浏览器验收使用 `WORKBOOK_AI_CHARTS_TABLE=1` 运行 `frontend/smoke/workbook-ai-charts-smoke.mjs`。Edge 在采纳后、草稿恢复后和下载重开后均从表格设计页读到 Revenue。撤销会移除表格。独立回读确认 A1:B3、内置样式、隔行底纹关闭、人工加粗、两张原图及源数据。修订 4→5 的验收返回 `native_source_review_pending` 并照常签发实际下载。首次构建主引擎块为 431.0 KiB；拆出表格写入模块后为 414.1 KiB，预算保持 428 KiB。拆分后用同一 XLSX 零保存复验，305 个实际资源通过身份校验。两次证据位于 Windows `%TEMP%/genoffice-ai-table-edge` 和 `%TEMP%/genoffice-ai-table-reopen-final`，使用 ScriptedModel 和内存修订仓储。
+
+XLSX `set_hyperlink` 接到既有超链接写入器，支持网页地址、工作簿内部位置以及传 `null` 移除链接。沿用手工插入链接的地址规范化和目标校验，保留原值或公式及其他格式，只更新链接本身、字体颜色和下划线。现阶段需要整簿授权。
+
+XLSX `set_freeze` 在整簿授权下复用原生工作表视图写入器。行列从左上角计数，各支持 0–100，两个零取消冻结。独立回读覆盖仅冻结行、仅冻结列、同时冻结和取消冻结，并确认网格线设置和单元格内容仍在。
+
+XLSX `move_sheet` 接到原生工作表顺序写入器，标签位置从 1 开始。同一候选的多个移动依次应用。回读验证活动工作表、局部名称及跨表公式仍指向原工作表，所有工作表部件保持字节一致。
+
+XLSX `add_sheet`、`rename_sheet` 和 `delete_sheet` 接到原生结构写入器，可与 `move_sheet` 在同一工作表结构候选中顺序执行。按当前工作表名寻址；重命名更新跨表引用，仍被引用的表由引擎拒绝删除。新建使用 Excel 空白工作表，桌面临时网格的 rows／columns 参数未接入。
+
+XLSX `set_page_setup` 接到原生打印设置写入器，支持纸张、方向、缩放或按页适配、边距、打印网格线和标题、打印区域、重复行列、页眉页脚及手动分页。只改某一适配轴时保留另一轴的已知设置。Excel 重复标题保存为带工作表限定的行列引用。
+
+XLSX `set_note` 在整簿授权下更新 Excel 旧式单元格备注，`null` 删除。每步从当前重放文件核对备注身份，替换文字时保留原作者，模型参数只提供地址和文字。沿用写入器对线程批注与带图备注的限制。
+
+XLSX `refresh_pivot` 接到按工作表限定的原生刷新。透视表从操作重放时的源数据更新，其他工作表的独立缓存和输出保留。跨表共享缓存会拒绝单表刷新。现有全簿刷新继续可用；无法在编辑器内重建输出的外部透视表仍沿用 Excel 打开时重算的缓存路径。
 
 ## PDF
 

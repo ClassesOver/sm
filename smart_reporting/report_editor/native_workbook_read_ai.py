@@ -13,7 +13,7 @@ from openpyxl.utils.cell import get_column_letter
 from pydantic import Field
 
 from ..office.contract import StrictModel
-from .workbook_ai_tools import WorkbookAIToolkit, _bounds
+from .workbook_ai_tools import WorkbookAIToolkit, _bounds, _cell_address
 
 
 class NativeWorkbookReadAnswer(StrictModel):
@@ -124,8 +124,10 @@ class NativeWorkbookReadTools:
                    offset: int = 0) -> dict[str, Any]:
         """按JSON字符分页读取明确授权的离散格；沿nextOffset读完才登记覆盖。"""
         if (not isinstance(addresses, list) or not addresses or
-                any(not isinstance(address, str) or ':' in address for address in addresses) or
-                len(set(addresses)) != len(addresses)):
+                any(not isinstance(address, str) or ':' in address for address in addresses)):
+            raise ValueError('native_workbook_ai_addresses_invalid')
+        addresses = [_cell_address(address) for address in addresses]
+        if len(set(addresses)) != len(addresses):
             raise ValueError('native_workbook_ai_addresses_invalid')
         sheet = self._tools._sheet(sheetId)
         for address in addresses:
@@ -145,9 +147,9 @@ class NativeWorkbookReadTools:
 
     def find_cells(self, query: str = '', sheetId: str | None = None,
                    look_in: str = 'both', errors_only: bool = False,
-                   max_results: int = 50) -> dict[str, Any]:
-        """仅在授权值/公式中查找；搜索片段不计为完整阅读。"""
-        result = self._tools.find_cells(query, sheetId, look_in, errors_only, max_results)
+                   max_results: int = 50, regex: bool = False) -> dict[str, Any]:
+        """仅查授权值/公式；regex 使用 JavaScript 正则，搜索片段不计为完整阅读。"""
+        result = self._tools.find_cells(query, sheetId, look_in, errors_only, max_results, regex)
         self.tool_events.append({'tool': 'find_cells'})
         return result
 
@@ -214,7 +216,8 @@ class AgnoNativeWorkbookReadPlanner:
             VerifiedModelCapabilityResolver,
         )
 
-        model = deepcopy(self.model)
+        from ..office.settings import native_model
+        model = await native_model(self.model)
         modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(
             model.id, configured_mode=modes.get('standard') if isinstance(modes, dict) else None,
@@ -236,8 +239,8 @@ class AgnoNativeWorkbookReadPlanner:
                 '不能编辑、提出操作、保存或导出，不得声称已修改文件。没有依据应明确说明。',
                 '最终仅返回answer和citations（sheetName!A1字符串列表）的JSON，不返回operations。',
             ])
-        from ..office.ai_sources import attach_office_sources
-        attach_office_sources(agent)
+        from ..office.settings import configure_office_agent
+        await configure_office_agent(agent)
         output = await run_owned_agent_with_events(agent,
             json.dumps({'action': action, 'instruction': instruction, 'scope': reader.scope},
                        ensure_ascii=False), session_id=session_id, user_id=user_id)

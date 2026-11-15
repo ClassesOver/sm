@@ -49,6 +49,9 @@ def test_native_upload_has_separate_streaming_limit_above_json_limit():
     assert native_import_request_limit('/reports/v1/native/import','POST') == 24*1024*1024+64*1024
     assert native_import_request_limit('/reports/v1/native/import/','POST') == 24*1024*1024+64*1024
     assert native_import_request_limit('/reports/v1/native/doc/1/api/save','POST') is None
+    assert native_import_request_limit('/reports/v1/native/doc/1/api/slides/open','POST') == 24*1024*1024+64*1024
+    assert native_import_request_limit('/reports/v1/native/doc/1/api/slides/open','GET') is None
+    assert report_editor_write_request_limit('/reports/v1/native/doc/1/api/slides/open','POST') is None
     assert report_editor_write_request_limit('/reports/v1/native/import','POST') is None
 
 

@@ -15,6 +15,7 @@ from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.report_editor.native_models import NativeArtifacts
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.models import ReportingError
+from smart_reporting.reporting.tests.test_native_ai import pdf_sample as pdf_sample
 from smart_reporting.reporting.tests.test_native_pdf_extract import extract_fixture
 from smart_reporting.reporting.tests.test_workbook_native_ai import proposal
 from smart_reporting.runtime.database import create_agent_database
@@ -65,7 +66,7 @@ async def durable(tmp_path):
             await connection.execute(delete(repository.tasks).where(
                 repository.tasks.c.thread_id == context.scope.thread_id,
                 repository.tasks.c.sandbox_id.like('native-workspace-%'),
-                repository.tasks.c.agent_id == 'native-workbook-ai'))
+                repository.tasks.c.agent_id.in_(['native-workbook-ai', 'native-slides-ai', 'native-pdf-ai'])))
         await fixture.workspace.registry.aclose()
         await database.async_engine.dispose()
         database.sync_engine.dispose()
@@ -166,3 +167,224 @@ async def test_cross_instance_cancel_fences_late_model_result(durable):
     with pytest.raises(ReportingError):
         await first.accept_edit(d['session'],job['editId'],expected_sha256=d['request']['expected_sha256'],
             operations=[],snapshot_sha256=job['snapshotSha256'])
+
+async def test_workbook_task_registration_is_atomic_and_keeps_digest_private(durable):
+    from smart_reporting.task_execution.models import TaskExecutionScope
+    from smart_reporting.task_execution.repository import TaskExecutionRepositoryError
+
+    repository = durable['repository']
+    context = durable['context']
+    task_id = 'native-workbook-ai:' + uuid4().hex
+    scope = TaskExecutionScope(task_id, context.scope.user_id, context.scope.thread_id,
+                               'native-workspace-registration', 'native-workbook-ai')
+    one, two = await asyncio.gather(*(
+        repository.create_native_workbook_task(scope, 'Change selected range', 'a' * 64)
+        for _ in range(2)
+    ))
+    assert one == two
+    assert one.state is TaskState.NEW
+    assert one.scope == scope
+    assert await repository.attempt_instruction(task_id, 0) == 'Change selected range'
+    assert 'a' * 64 not in repr(await repository.get_task_snapshot(task_id))
+
+    with pytest.raises(TaskExecutionRepositoryError) as mismatch:
+        await repository.create_native_workbook_task(scope, 'Change selected range', 'b' * 64)
+    assert mismatch.value.code == 'native_workbook_input_conflict'
+    with pytest.raises(TaskExecutionRepositoryError) as generic_retry:
+        await repository.create_task_with_initial_attempt(scope, 'Change selected range')
+    assert generic_retry.value.code == 'native_workbook_input_conflict'
+
+@pytest.mark.parametrize('executor', ['native-workbook-ai', 'native-slides-ai', 'native-pdf-ai'])
+async def test_native_candidate_finish_is_fenced_and_recoverable(durable, executor):
+    from dataclasses import replace
+    from smart_reporting.task_execution.models import TaskExecutionScope
+    from smart_reporting.task_execution.repository import TaskExecutionRepositoryError
+
+    repository = durable['repository']
+    context = durable['context']
+    task_id = executor + ':' + uuid4().hex
+    scope = TaskExecutionScope(task_id, context.scope.user_id, context.scope.thread_id,
+                               'native-workspace-candidate', executor)
+    request_sha256 = 'a' * 64
+    create = getattr(repository, {
+        'native-workbook-ai': 'create_native_workbook_task',
+        'native-slides-ai': 'create_native_slides_task',
+        'native-pdf-ai': 'create_native_pdf_task',
+    }[executor])
+    task = await create(scope, 'Change selection', request_sha256)
+    lease = await repository.claim_lease(task_id, 'candidate-worker')
+    task, _ = await repository.open_initial(task_id, lease, task.state_version)
+    if executor == 'native-workbook-ai':
+        operations = proposal().engine_operations()
+    elif executor == 'native-slides-ai':
+        operations = [{'kind': 'editSlides', 'edits': [{'slideIndex': 0, 'elementId': 'title', 'text': 'New title'}]}]
+    else:
+        operations = [{'kind': 'replaceText', 'pageId': 'page', 'objectId': 'text', 'newText': 'New text'}]
+    receipt = {'contextSha256': context.digest(), 'snapshotSha256': 'b' * 64,
+               'clientRequestId': 'original-request',
+               'proposal': {'summary': 'Private candidate', 'operations': operations, 'previewSha256': 'c' * 64}}
+
+    with pytest.raises(TaskExecutionRepositoryError):
+        await repository.request_native_workbook_finish(
+            scope, replace(lease, epoch=lease.epoch + 1), task.state_version, request_sha256, receipt,
+        )
+    with pytest.raises(TaskExecutionRepositoryError):
+        await repository.request_native_workbook_finish(scope, lease, task.state_version, 'd' * 64, receipt)
+    with pytest.raises(TaskExecutionRepositoryError):
+        await repository.request_finish(task_id, lease, task.state_version, {'invalid': True},
+                                        result_text='control', retained_execution_ids=[])
+    task = await repository.request_native_workbook_finish(scope, lease, task.state_version, request_sha256, receipt)
+    assert task.state is TaskState.FINISHING
+    assert 'Private candidate' not in repr(task)
+    assert await repository.get_completed_native_workbook_candidate(scope, context.digest()) is None
+
+    await repository.release_lease(task_id, lease.owner)
+    recovered_lease = await repository.claim_lease(task_id, 'recovery-worker')
+    completed = await repository.finalize_finish(task_id, recovered_lease, task.state_version, agno_status='recovered')
+    assert completed.state is TaskState.COMPLETED
+    assert await repository.get_completed_native_workbook_candidate(scope, context.digest()) == {**receipt, "accepted": False}
+    assert not await repository.accept_native_workbook_candidate(scope, {**receipt, "snapshotSha256": "f" * 64})
+    assert not await repository.accept_native_workbook_candidate(replace(scope, owner_user_id="foreign"), receipt)
+    assert await repository.accept_native_workbook_candidate(scope, receipt)
+    assert await repository.accept_native_workbook_candidate(scope, receipt)
+    assert await repository.get_completed_native_workbook_candidate(scope, context.digest()) == {**receipt, "accepted": True}
+    assert await repository.get_completed_native_workbook_candidate(scope, 'f' * 64) is None
+    assert await repository.get_completed_native_workbook_candidate(
+        replace(scope, owner_user_id='foreign'), context.digest(),
+    ) is None
+
+@pytest.mark.parametrize("accepted_before_cancel", [False, True])
+async def test_completed_workbook_cancellation_respects_explicit_acceptance(durable, accepted_before_cancel):
+    d = durable
+    first = d["service"]()
+    started = await first.start_edit(d["session"], **d["request"])
+    edit_id = started["editId"]
+    candidate = await first.wait_edit_status(d["session"], edit_id)
+    assert candidate["status"] == "succeeded", candidate
+    adoption = dict(expected_sha256=d["request"]["expected_sha256"], operations=[],
+                    snapshot_sha256=candidate["snapshotSha256"])
+    if accepted_before_cancel:
+        await first.accept_edit(d["session"], edit_id, **adoption)
+
+    second = d["service"](never_call)
+    response = await second.cancel_edit(d["session"], edit_id)
+    if accepted_before_cancel:
+        assert response["status"] == "succeeded" and response["accepted"]
+    else:
+        assert response["status"] == "cancelled" and "proposal" not in response
+        projected = await first.wait_edit_status(d["session"], edit_id)
+        assert projected["status"] == "cancelled" and "proposal" not in projected
+        with pytest.raises(ReportingError):
+            await first.accept_edit(d["session"], edit_id, **adoption)
+
+async def test_workbook_resume_is_bound_to_existing_task_and_frozen_input(durable):
+    d = durable
+    second = d["service"](never_call)
+    session, request = d["session"], d["request"]
+    edit_id = second._durable_edit_id(d["context"], request["client_request_id"])
+    with pytest.raises(ReportingError) as missing:
+        await second.start_edit(session, **request, resume_edit_id=edit_id)
+    assert missing.value.code == "native_ai_job_missing"
+    assert await d["repository"].get_task_snapshot("native-workbook-ai:" + edit_id) is None
+
+    first = d["service"]()
+    acknowledged = await first.start_edit(session, **request)
+    assert acknowledged["editId"] == edit_id
+    completed = await first.wait_edit_status(session, edit_id)
+    assert completed["status"] == "succeeded", completed
+    await first.aclose()
+
+    with pytest.raises(ReportingError) as wrong_id:
+        await second.start_edit(session, **request, resume_edit_id="b" * 64)
+    with pytest.raises(ReportingError) as changed:
+        await second.start_edit(session, **{**request, "instruction": "Changed instruction"}, resume_edit_id=edit_id)
+    assert wrong_id.value.code == changed.value.code == "native_ai_job_missing"
+    recovered = await second.start_edit(session, **request, resume_edit_id=edit_id)
+    assert recovered["editId"] == edit_id
+    assert await second.wait_edit_status(session, edit_id) == completed
+
+
+async def test_slides_candidate_survives_service_rebuild(durable):
+    from contextlib import aclosing
+    from smart_reporting.report_editor.slides_ai import SlidesAIProposal
+    from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
+    from smart_reporting.reporting.tests.test_slides_native_ai import Editor
+
+    editor = Editor()
+    editor.context = editor.context.model_copy(update={"scope": durable["context"].scope})
+    editor.workspace = durable["fixture"].workspace
+
+    async def planner(_prompt, **_kwargs):
+        return SlidesAIProposal(summary="Update title", edits=[
+            {"slideIndex": 0, "elementId": "title", "text": "Recovered title"},
+        ], order=[0, 1])
+
+    repository = durable["repository"]
+    async with aclosing(NativeSlidesAIService(editor, planner=planner, enabled=True, task_repository=repository)) as first:
+        initial = await first.start_edit(None, client_request_id=uuid4().hex, instruction="Update title",
+            expected_sha256="a" * 64, operations=[], selection=[{"slideIndex": 0, "elementId": "title"}])
+        candidate = await first.wait_edit_status(None, initial["editId"])
+        assert candidate["status"] == "succeeded", candidate
+
+    async with aclosing(NativeSlidesAIService(editor, planner=never_call, enabled=True, task_repository=repository)) as second:
+        recovered = await second.wait_edit_status(None, initial["editId"])
+        assert recovered == candidate
+        await second.accept_edit(None, initial["editId"], expected_sha256="a" * 64,
+            operations=[], snapshot_sha256=candidate["snapshotSha256"])
+        assert (await second.wait_edit_status(None, initial["editId"]))["accepted"] is True
+
+
+async def test_pdf_candidate_rebuild_rechecks_original_preview_and_requires_acceptance(durable, pdf_sample):
+    from contextlib import aclosing
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from smart_reporting.report_editor.native_ai_api import create_native_ai_router
+    from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
+
+    from smart_reporting.report_editor.native_pdf_candidate import DurablePDFCandidateService
+    from smart_reporting.reporting.tests.test_native_ai import pdf_ai_plan, pdf_ai_selection
+
+    editor, context, session, model, source = pdf_sample
+    selected = pdf_ai_selection(model)
+    request = dict(client_request_id=uuid4().hex, instruction="Change amount",
+        expected_sha256=context.source_file.sha256, operations=[], selection=[selected])
+
+    async def planner(*_args, **_kwargs):
+        return pdf_ai_plan(selected, "Amount due 700")
+
+    repository = durable["repository"]
+    async with aclosing(DurablePDFCandidateService(editor, planner=planner, enabled=True, task_repository=repository)) as first:
+        initial = await first.start_edit(session, **request)
+        ready = await first.wait_edit_status(session, initial["editId"])
+        assert ready["status"] == "succeeded", ready
+        assert ready["proposal"]["skippedOperations"] == []
+        assert ready["accepted"] is False
+
+    async with aclosing(DurablePDFCandidateService(editor, planner=never_call, enabled=True, task_repository=repository)) as second:
+        app = FastAPI()
+        app.include_router(create_native_ai_router(editor.grants, editor=editor, ai=None, pdf_candidate=second))
+        raw, _ = await editor.grants.issue(context, capabilities=editor.capabilities(context))
+        token, _ = await editor.grants.exchange(raw)
+        endpoint = f"/reports/v1/native/{context.document_id}/{context.revision}/api/ai"
+        headers = {"Origin": "http://test", "X-CSRF-Token": editor.grants.csrf_token(token)}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            client.cookies.set(NATIVE_SESSION_COOKIE, token)
+            restored = await client.get(f"{endpoint}/{initial['editId']}")
+            assert restored.status_code == 200, restored.text
+            assert restored.json() == ready
+            rejected = await client.post(f"{endpoint}/start", headers=headers, json={
+                "clientRequestId": request["client_request_id"], "instruction": "Changed instruction",
+                "expectedSha256": context.source_file.sha256, "operations": [], "selection": [selected],
+                "resumeEditId": initial["editId"],
+            })
+            assert rejected.status_code == 404, rejected.text
+            accepted = await client.post(f"{endpoint}/{initial['editId']}/accept", headers=headers, json={
+                "expectedSha256": context.source_file.sha256, "operations": [],
+                "snapshotSha256": ready["snapshotSha256"],
+            })
+            assert accepted.status_code == 200, accepted.text
+            assert accepted.json()["needsVerification"] is True
+            assert (await client.get(f"{endpoint}/{initial['editId']}")).json()["accepted"] is True
+        assert await editor.read_file(context) == source

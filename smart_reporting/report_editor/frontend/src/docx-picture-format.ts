@@ -14,14 +14,15 @@ function patchOf(op:NativeOperation):PictureFormatPatch{
  for(const k of ['flipH','flipV'] as const)if(patch[k]!==undefined&&typeof patch[k]!=='boolean')throw new Error('图片翻转无效')
  if(patch.align!==undefined&&patch.align!==null&&!['left','center','right'].includes(patch.align))throw new Error('图片对齐无效')
  if(patch.wrap!==undefined&&patch.wrap!==null&&!PICTURE_WRAPS.includes(patch.wrap))throw new Error('图片环绕无效')
- if((patch.posH===undefined)!==(patch.posV===undefined)||patch.posH!==undefined&&(!['left','center','right'].includes(patch.posH)||!['top','center','bottom'].includes(patch.posV!)||patch.wrap!==(patch.posH==='right'?'square-right':'square-left')))throw new Error('图片位置无效')
+ if((patch.posH===undefined)!==(patch.posV===undefined)||patch.posH!==undefined&&(!['left','center','right'].includes(patch.posH)||!['top','center','bottom'].includes(patch.posV!)||!patch.wrap||patch.wrap.endsWith('-right')&&patch.posH!=='right'||patch.wrap.endsWith('-left')&&patch.posH==='right'))throw new Error('图片位置无效')
  return patch
 }
 export function projectDocxPictureFormat(source:DocxPmNode,anchor:PictureFormatAnchor,op:NativeOperation):DocxPmNode{
  if(!anchor.imageFormatEditable||source.type!=='docProtected'||source.attrs?.blockType!=='image'||source.attrs.imageReplace||op.kind!=='formatImage'||op.blockId!==anchor.blockId||op.expectedObjectSha256!==anchor.expectedObjectSha256||op.expectedImageSha256!==anchor.imageSha256)throw new Error('图片格式来源身份无效或含未保存的图片替换')
  const patch=patchOf(op),attrs:Record<string,unknown>={...source.attrs,imageFormat:patch}
  for(const key of Object.keys(patch) as (keyof PictureFormatPatch)[])attrs[mapping[key]]=patch[key]
- if(patch.posH){attrs.imageOffsetXEmu=null;attrs.imageOffsetYEmu=null}
+ if(patch.posH||patch.wrap===null){attrs.imageOffsetXEmu=null;attrs.imageOffsetYEmu=null}
+ if(patch.wrap===null){attrs.imagePosH=null;attrs.imagePosV=null}
  return {...structuredClone(source),attrs}
 }
 export function normalizeDocxPictureFormats(baseline:DocxPmNode,current:DocxPmNode,anchors:PictureFormatAnchor[]){
@@ -32,7 +33,8 @@ export function normalizeDocxPictureFormats(baseline:DocxPmNode,current:DocxPmNo
   if(!anchor||!source||node.attrs.imageReplace)throw new Error('图片格式与图片替换需分别保存')
   const op={kind:'formatImage',blockId:anchor.blockId,expectedObjectSha256:anchor.expectedObjectSha256,expectedImageSha256:anchor.imageSha256,...node.attrs.imageFormat}
   const projected=projectDocxPictureFormat(source,anchor,op)
-  for(const key of [...Object.values(mapping),'imageFormat',...((node.attrs.imageFormat as PictureFormatPatch).posH?['imageOffsetXEmu','imageOffsetYEmu']:[])]){
+  const patch=node.attrs.imageFormat as PictureFormatPatch
+  for(const key of [...Object.values(mapping),'imageFormat',...(patch.posH||patch.wrap===null?['imageOffsetXEmu','imageOffsetYEmu']:[])]){
    if(JSON.stringify(node.attrs[key])!==JSON.stringify(projected.attrs?.[key]))throw new Error('图片格式预览与草稿不一致')
    if(Object.hasOwn(source.attrs!,key))node.attrs[key]=source.attrs![key];else delete node.attrs[key]
   }

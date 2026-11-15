@@ -121,7 +121,7 @@ describe('structural row/column ops', () => {
     expect(cells.A3?.value).toBe(20)
     expect(cells.A4?.value).toBe(30)
     expect(cells.B1?.formula).toBe('=SUM(A1:A4)')
-    expect(model.sheets[0]?.dimension).toBe('A1')
+    expect(model.sheets[0]?.dimension).toBe('A1:B4')
   })
 
   it('deleting a row shrinks ranges and drops deleted cells', async () => {

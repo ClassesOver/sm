@@ -20,6 +20,16 @@ it('fits the full page in both axes and rejects unavailable viewport dimensions'
   expect(docxFitZoom('width', { width: 0, height: 648 }, { width: 800, height: 1000 })).toBeUndefined()
   expect(docxFitZoom('width', { width: Infinity, height: 648 }, { width: 800, height: 1000 })).toBeUndefined()
 })
+it('routes Split through the read-only secondary view and reflects its visibility', () => {
+  let open = false
+  const split = { toggle: vi.fn(() => { open = !open }), get visible() { return open } }
+  const { view } = setup({ split })
+  expect(view.reason('拆分')).toBeNull()
+  expect(view.active?.('拆分')).toBe(false)
+  view.run('拆分')
+  expect(split.toggle).toHaveBeenCalledOnce()
+  expect(view.active?.('拆分')).toBe(true)
+})
 it('uses source zoom limits and keeps original document content and physical dimensions unchanged', () => {
   const f = setup(); const content = f.page.innerHTML
   for (let i = 0; i < 60; i++) f.view.run('放大')
@@ -70,6 +80,57 @@ it('routes heading navigation and outline modes without changing zoom or paper c
   expect(f.view.active?.('大纲')).toBe(true)
   f.view.run('页面视图'); expect(f.view.active?.('页面视图')).toBe(true)
   expect(f.view.zoom).toBe(100); expect(f.page.innerHTML).toBe(original)
+})
+
+it('follows GenOffice view toggles and gates pagination preview to print outside reading', () => {
+  let mode = 'page'
+  const outline = { run: vi.fn((label: string) => { mode = label === '大纲' ? 'outline' : 'page' }), reason: () => null, get mode() { return mode } }
+  const reading = { setActive: vi.fn() }
+  const { view, preview, root } = setup({ outline, reading })
+  view.run('Web 版式')
+  expect(view.active?.('Web 版式')).toBe(true)
+  expect(view.reason('分页预览')).not.toBeNull()
+  view.run('分页预览')
+  expect(preview).not.toHaveBeenCalled()
+  view.run('Web 版式')
+  expect(view.active?.('页面视图')).toBe(true)
+  view.run('大纲')
+  expect(view.active?.('大纲')).toBe(true)
+  view.run('大纲')
+  expect(view.active?.('页面视图')).toBe(true)
+  view.run('阅读视图')
+  expect(view.active?.('阅读视图')).toBe(true)
+  expect(view.active?.('页面视图')).toBe(false)
+  expect(view.reason('分页预览')).not.toBeNull()
+  view.run('页面视图')
+  expect(root.classList.contains('docx-read-mode')).toBe(false)
+  expect(reading.setActive.mock.calls).toEqual([[true], [false]])
+  view.run('分页预览')
+  expect(preview).toHaveBeenCalledOnce()
+})
+
+it('opens GenOffice Story view with editable display callbacks and returns to Print on a second click', () => {
+  const story = { setActive: vi.fn() }
+  const { view, root, page, preview } = setup({ story })
+  const original = page.innerHTML
+  view.run('故事')
+  expect(view.mode).toBe('story')
+  expect(root.classList.contains('view-story')).toBe(true)
+  expect(view.active?.('故事')).toBe(true)
+  expect(view.active?.('页面视图')).toBe(false)
+  view.run('分页预览')
+  expect(preview).not.toHaveBeenCalled()
+  view.run('故事')
+  expect(view.mode).toBe('page')
+  expect(story.setActive.mock.calls).toEqual([[true], [false]])
+  expect(page.innerHTML).toBe(original)
+  view.run('故事')
+  view.run('Web 版式')
+  expect(view.mode).toBe('web')
+  expect(root.classList.contains('view-story')).toBe(false)
+  view.run('故事')
+  view.dispose()
+  expect(story.setActive).toHaveBeenLastCalledWith(false)
 })
 
 it('routes gridlines as an independent display toggle without changing document or zoom', () => {

@@ -42,30 +42,74 @@ export function createDocxTableStyleControls(options:{editor:Editor;anchors:read
  Object.assign(element.style,{display:'flex',gap:'12px',alignItems:'stretch',maxWidth:'100%'})
  const getAnchors=()=>typeof options.anchors==='function'?options.anchors():options.anchors
  let disposed=false
- function button(label:string,reason:string|null,pressed:boolean,run:()=>void){
-  const button=document.createElement('button');button.type='button';button.title=reason??label;button.disabled=Boolean(reason);button.setAttribute('aria-pressed',String(pressed));button.className='table-tool-button'+(pressed?' active':'');button.addEventListener('mousedown',event=>event.preventDefault());button.addEventListener('click',()=>{try{run()}catch(error){options.onError?.(error)}});return button
+ function setButtonState(button:HTMLButtonElement,label:string,reason:string|null,pressed:boolean){
+  button.title=reason??label
+  button.disabled=Boolean(reason)
+  button.setAttribute('aria-pressed',String(pressed))
+  button.classList.toggle('active',pressed)
+  if(reason)button.setAttribute('aria-description',reason)
+  else button.removeAttribute('aria-description')
  }
- function group(label:string){const section=document.createElement('div'),content=document.createElement('div'),caption=document.createElement('div');section.className='table-tool-group';caption.className='ribbon-group-label';caption.textContent=label;Object.assign(section.style,{display:'flex',flexDirection:'column',gap:'4px'});section.append(content,caption);element.append(section);return content}
+ function button(run:()=>void){
+  const button=document.createElement('button')
+  button.type='button'
+  button.addEventListener('mousedown',event=>event.preventDefault())
+  button.addEventListener('click',()=>{try{run()}catch(error){options.onError?.(error)}})
+  return button
+ }
+ function group(label:string,contentClass:string){
+  const section=document.createElement('section'),content=document.createElement('div'),caption=document.createElement('div')
+  section.className='table-tool-group'
+  section.setAttribute('aria-label',label)
+  content.className=contentClass
+  caption.className='ribbon-group-label'
+  caption.textContent=label
+  section.append(content,caption)
+  element.append(section)
+  return content
+ }
+ const gallery=group('表格样式','table-style-gallery')
+ const looks=group('表格样式选项','table-style-options')
+ // GenOffice Ribbon.tsx Table Design appearance switches.
+ const lookButtons=([
+  ['firstRow','首行'],['lastRow','末行'],['bandedRows','镶边行'],
+  ['firstColumn','首列'],['lastColumn','末列'],['bandedColumns','镶边列'],
+ ] as const).map(([key,label])=>{
+  const control=button(()=>{toggleDocxTableStyleLook(editor,key,getAnchors())})
+  control.dataset.tableLook=key
+  control.className='table-option-toggle table-tool-button'
+  const check=document.createElement('span'),caption=document.createElement('span')
+  check.className='table-option-check'
+  check.setAttribute('aria-hidden','true')
+  caption.textContent=label
+  control.append(check,caption)
+  looks.append(control)
+  return {key,label,control}
+ })
  function refresh(){
   if(disposed)return
   const anchors=getAnchors(),state=selectedDocxTableStyle(editor,anchors),table=selected(editor),pending=table?.node.attrs.nativeTableStyle
-  element.replaceChildren()
-  const gallery=group('表格样式');gallery.className='table-style-gallery';Object.assign(gallery.style,{display:'flex',gap:'4px',flexWrap:'wrap',maxWidth:'640px'})
+  gallery.replaceChildren()
   function card(id:string,label:string,pressed:boolean,run:()=>void,preset?:typeof TABLE_STYLE_PRESETS[keyof typeof TABLE_STYLE_PRESETS]){
    const anchor=anchors.find(item=>item.docxIndex===table?.node.attrs.docxIndex),reason=state.reason??(preset&&anchor?.tableStyleState?.presetEditable===false?'当前表格含合并或无法逐格写入的单元格，内置样式暂不支持':null)
-   const control=button(label,reason,pressed,run),preview=document.createElement('span'),name=document.createElement('span');control.dataset.tableStyle=id;control.classList.add('table-style-card');name.textContent=label
-   Object.assign(control.style,{display:'flex',flexDirection:'column',gap:'3px',alignItems:'center',padding:'4px',minWidth:'72px',fontSize:'11px'})
-   Object.assign(preview.style,{display:'block',width:'56px',height:'30px',border:`1px solid #${preset?.borderColor??'BFC6D0'}`,borderTop:`7px solid #${preset?.headerFill??'FFFFFF'}`,background:`repeating-linear-gradient(to bottom,#${preset?.band1Fill??'FFFFFF'} 0 7px,#${preset?.band2Fill??'FFFFFF'} 7px 14px)`})
+   const control=button(run),preview=document.createElement('span'),name=document.createElement('span')
+   control.dataset.tableStyle=id
+   control.className='table-style-card'
+   setButtonState(control,label,reason,pressed)
+   name.textContent=label
+   preview.className=id==='none'?'table-style-card-grid plain':'table-style-card-grid'
+   if(preset)Object.assign(preview.style,{
+    borderColor:`#${preset.borderColor}`,
+    borderTopColor:`#${preset.headerFill??'FFFFFF'}`,
+    background:`repeating-linear-gradient(to bottom,#${preset.band1Fill??'FFFFFF'} 0 50%,#${preset.band2Fill??'FFFFFF'} 50% 100%)`,
+   })
    preview.setAttribute('aria-hidden','true');control.append(preview,name);gallery.append(control)
   }
   card('none','无样式',state.styleId===null&&!pending?.preset,()=>{applyDocxTableStyle(editor,{style:{kind:'none'}},getAnchors())})
   const labels:Record<keyof typeof TABLE_STYLE_PRESETS,string>={'grid':'网格样式','blue-header':'蓝色标题','blue-banded':'蓝色带状','gray-banded':'灰色带状','green-header':'绿色标题'}
   for(const id of Object.keys(TABLE_STYLE_PRESETS) as Array<keyof typeof TABLE_STYLE_PRESETS>)card(id,labels[id],pending?.style?.kind==='preset'&&pending.style.id===id,()=>{applyDocxTableStyle(editor,{style:{kind:'preset',id}},getAnchors())},TABLE_STYLE_PRESETS[id])
   for(const info of state.options)card(`document:${info.styleId}`,info.name,state.styleId===info.styleId,()=>{applyDocxTableStyle(editor,{style:{kind:'document',styleId:info.styleId}},getAnchors())})
-  const looks=group('表格样式选项');looks.className='table-style-options';Object.assign(looks.style,{display:'grid',gridTemplateColumns:'repeat(2,max-content)',gap:'2px 8px'})
-  for(const [key,label] of [['firstRow','首行'],['lastRow','末行'],['bandedRows','镶边行'],['firstColumn','首列'],['lastColumn','末列'],['bandedColumns','镶边列']] as Array<[keyof TableStyleLook,string]>){
-   const control=button(label,state.reason,state.look[key],()=>{toggleDocxTableStyleLook(editor,key,getAnchors())});control.dataset.tableLook=key;control.classList.add('table-option-toggle');control.textContent=`${state.look[key]?'☑':'☐'} ${label}`;Object.assign(control.style,{fontSize:'12px',textAlign:'left',whiteSpace:'nowrap',padding:'3px 6px'});looks.append(control)
-  }
+  for(const {key,label,control} of lookButtons)setButtonState(control,label,state.reason,state.look[key])
  }
  editor.on('transaction',refresh);editor.on('selectionUpdate',refresh);refresh()
  return{element,refresh,dispose(){if(disposed)return;disposed=true;editor.off('transaction',refresh);editor.off('selectionUpdate',refresh);element.remove()}}

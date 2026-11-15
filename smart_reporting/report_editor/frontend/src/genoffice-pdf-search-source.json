@@ -5,11 +5,12 @@
       "upstreamPath": "apps/pdf/src/renderer/search.ts",
       "localPath": "genoffice-pdf-search.ts",
       "upstreamSha256": "1ebe7106ab8f95726d86d570b0547864ded66ddbce268aa1aa049c3570d61eff",
-      "localSha256": "1bdf923ceb77876620404751889ac078ce77e69d53c924e2d376dcf2c2411d45",
+      "localSha256": "446d16c7510b0812564266d62e609ce4b68588bbcbf7f052940999b2b2112b73",
       "adaptations": [
         "provenance notice added",
         "UI helper import targets local pinned copy",
-        "whole-word boundaries read complete Unicode code points; preserve UTF-16 hit offsets and source CJK substring semantics"
+        "whole-word boundaries read complete Unicode code points; preserve UTF-16 hit offsets and source CJK substring semantics",
+        "genoffice 19a389b39be75f611ec21dcda4a7b91a658239d2 contributes rangeRects and pattern search; retain only detection geometry and reject incomplete or unsupported writing directions"
       ]
     },
     {
@@ -17,6 +18,16 @@
       "localPath": "genoffice-find-text.ts",
       "upstreamSha256": "f8e9fe09a74a1806be1e109e482a2ad2835d488e800e46b0459e7048c99831e2",
       "localSha256": "a3b0401fa792614e349cfec0a7da4557ae50a3db92be4c829dcca3b3ed1c905a",
+      "adaptations": [
+        "provenance notice added"
+      ]
+    },
+    {
+      "sourceCommit": "19a389b39be75f611ec21dcda4a7b91a658239d2",
+      "upstreamPath": "apps/pdf/src/renderer/redact-patterns.ts",
+      "localPath": "genoffice-pdf-redact-patterns.ts",
+      "upstreamSha256": "488adc119e0baa45f63e04bec445c2e65f6ca834eb130af98ea4474be44f1ea1",
+      "localSha256": "e714dd8dd0582d3068e9bb8f0cf4b7575c2528e74f5066da955c1b106c74b54f",
       "adaptations": [
         "provenance notice added"
       ]

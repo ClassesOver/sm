@@ -183,3 +183,35 @@ it('失焦或尺寸变化取消框选，触摸保留空白清空', async () => {
   await act(async () => rendered.stage.onTouchStart(mouse(0, 0)))
   expect(select).toHaveBeenCalledExactlyOnceWith('')
 })
+
+it('scales at the source preset and re-fits using both viewport dimensions', async () => {
+  const initial = state()
+  await act(async () => canvas.update(initial))
+  await act(async () => rendered.resize!([{ contentRect: { width: 720, height: 270 } }]))
+  expect(canvas.getZoom()).toBe(0.5)
+  expect(rendered.stage.width).toBe(480)
+  await act(async () => canvas.setZoom(0.66))
+  expect(rendered.stage.width).toBeCloseTo(633.6)
+  await act(async () => rendered.resize!([{ contentRect: { width: 480, height: 210 } }]))
+  expect(canvas.getZoom()).toBe(0.66)
+  await act(async () => canvas.setZoom(null))
+  expect(rendered.stage.height).toBeCloseTo(210)
+  expect(initial.edits).toEqual([])
+  expect(geometry).not.toHaveBeenCalled()
+})
+
+it('keeps the same slide point under the gesture anchor after the Konva stage renders', async () => {
+  const viewport = document.body.lastElementChild as HTMLElement
+  await act(async () => canvas.update(state()))
+  await act(async () => rendered.resize!([{ contentRect: { width: 480, height: 270 } }]))
+  expect(canvas.fitsViewport()).toBe(true)
+  const content = viewport.appendChild(document.createElement('div'))
+  content.className = 'konvajs-content'
+  vi.spyOn(content, 'getBoundingClientRect').mockImplementation(() => ({
+    left: 100, top: 80, width: rendered.stage.width, height: rendered.stage.height,
+  }) as DOMRect)
+  await act(async () => canvas.setZoom(1, { x: 220, y: 147.5 }))
+  expect(canvas.fitsViewport()).toBe(false)
+  expect(viewport.scrollLeft).toBe(120)
+  expect(viewport.scrollTop).toBeCloseTo(67.5)
+})

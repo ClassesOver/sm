@@ -293,14 +293,53 @@ native_editor = NativeEditorService(
 )
 # Office 文件内 AI 按部署配置独立创建模型；配置了 GenOffice 独立模型（AGENT_OFFICE_MODEL*）时优先使用。
 genoffice_model = office_model(settings, create_office_model(settings))
+# Word/XLSX/PPTX/PDF AI 持久任务复用 PostgreSQL 任务仓储；仅在开启任一持久任务时创建（仓储只支持 PostgreSQL）。
+office_task_repository = None
+if settings.native_ai_enabled and (
+    settings.native_word_tasks_enabled or settings.native_workbook_tasks_enabled
+    or settings.native_slides_tasks_enabled or settings.native_pdf_candidate_tasks_enabled
+):
+    from .task_execution.repository import TaskExecutionRepository
+
+    office_task_repository = TaskExecutionRepository(agent_database.async_db)
+word_task_dispatcher = None
+if settings.native_ai_enabled and settings.native_word_tasks_enabled:
+    from .report_editor.native import bind_native_workspace
+    from .report_editor.native_word_agno_transport import AgnoWordTaskTransport
+    from .report_editor.native_word_task_dispatcher import WordTaskDispatcher
+    from .task_execution.models import TaskExecutionScope
+
+    def word_task_scope(context, task_id):
+        return TaskExecutionScope(
+            task_id, context.scope.user_id, context.scope.thread_id,
+            bind_native_workspace(native_editor.workspace, context.scope), "native-word-candidate",
+        )
+
+    word_task_dispatcher = WordTaskDispatcher(
+        office_task_repository, report_editor_grants, native_editor,
+        scope_factory=word_task_scope, secret=settings.workspace_hmac_secret,
+        transport=AgnoWordTaskTransport(genoffice_model), enabled=True,
+    )
 native_ai = create_native_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,
+    word_task_dispatcher=word_task_dispatcher,
 )
+native_pdf_candidate = None
+if settings.native_ai_enabled and settings.native_pdf_candidate_tasks_enabled:
+    from .report_editor.native_pdf_candidate import DurablePDFCandidateService
+
+    native_pdf_candidate = DurablePDFCandidateService(
+        native_editor, planner=native_ai.planner, enabled=True, task_repository=office_task_repository,
+    )
 native_slides_ai = create_native_slides_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,
+    task_repository=(office_task_repository
+                     if settings.native_ai_enabled and settings.native_slides_tasks_enabled else None),
 )
 native_workbook_ai = create_native_workbook_ai_service(
     genoffice_model, native_editor, enabled=settings.native_ai_enabled,
+    task_repository=(office_task_repository
+                     if settings.native_ai_enabled and settings.native_workbook_tasks_enabled else None),
 )
 native_pdf_read_ai = NativePDFReadService(
     native_editor, planner=create_native_pdf_read_planner(genoffice_model),
@@ -395,7 +434,7 @@ def create_base_app(
     application.middleware("http")(require_workspace_capability)
     application.include_router(router)
     application.include_router(create_report_download_router(report_downloads))
-    application.include_router(create_office_entry_router(static_dir=settings.report_editor_static_dir))
+    application.include_router(create_office_entry_router(static_dir=settings.report_editor_static_dir, office=office_repository))
     static_root = Path(
         settings.report_editor_static_dir
         or Path(__file__).with_name("report_editor") / "static"
@@ -408,7 +447,7 @@ def create_base_app(
         cookie_secure=bool(settings.report_public_base_url and settings.report_public_base_url.startswith("https://")),
     ))
     application.include_router(create_native_ai_router(
-        report_editor_grants, editor=native_editor, ai=native_ai, pdf_read=native_pdf_read_ai,
+        report_editor_grants, editor=native_editor, ai=native_ai, pdf_candidate=native_pdf_candidate, pdf_read=native_pdf_read_ai,
         word_read=native_word_read_ai,
         office_read=native_office_read_ai,
         allowed_origin=settings.report_public_base_url,
@@ -454,6 +493,8 @@ def create_base_app(
     application.router.add_event_handler("shutdown", office_search.aclose)
     application.router.add_event_handler("shutdown", native_workspace.registry.aclose)
     application.router.add_event_handler("shutdown", native_ai.aclose)
+    if native_pdf_candidate is not None:
+        application.router.add_event_handler("shutdown", native_pdf_candidate.aclose)
     application.router.add_event_handler("shutdown", native_pdf_read_ai.aclose)
     application.router.add_event_handler("shutdown", native_word_read_ai.aclose)
     application.router.add_event_handler("shutdown", native_office_read_ai.aclose)

@@ -40,8 +40,11 @@ class Repository:
         self.revisions = {}
         self.keys = {}
 
-    async def create_from_source(self, source, *, scope, request_id):
-        key = native_digest([source.model_dump(mode="json"), scope.model_dump(), request_id])
+    async def create_from_source(self, source, *, scope, request_id, generation_key=None):
+        binding = source.model_dump(mode="json") if generation_key is None else {
+            "format": source.format, "generationKey": generation_key,
+        }
+        key = native_digest([binding, scope.model_dump(), request_id])
         if key in self.keys:
             return self.documents[self.keys[key]]
         document = NativeDocument(

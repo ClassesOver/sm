@@ -14,6 +14,13 @@ it('replaces successive note edits, drops restored contents and replaces edit wi
   expect(removed[0].kind).toBe('removeNote'); expect(pdfPageState([page], removed)[0].notes).toEqual([])
   expect(pdfPageState([page], first)[0].notes?.[0].contents).toBe('first'); expect(page.notes[0].contents).toBe('original')
 })
+it('stages a root text edit without enabling deletion or a simultaneous reply', () => {
+  const rootPage = { ...page, notes: [{ ...note, replyable: true, removable: false, removalReason: '关联回复' }] }
+  const staged = stagePdfNote([rootPage], [], page.pageId, note.annotationId, 'updated root', when)
+  expect(pdfPageState([rootPage], staged)[0].notes?.[0]).toMatchObject({ contents: 'updated root', removable: false })
+  expect(() => stagePdfNote([rootPage], staged, page.pageId, note.annotationId, null)).toThrow(/关联回复/)
+  expect(() => stagePdfNote([rootPage], [{ kind: 'replyNote', pageId: page.pageId, annotationId: note.annotationId }], page.pageId, note.annotationId, 'updated root', when)).toThrow(/回复/)
+})
 it('preserves full note snapshots through undo redo and reload', () => {
   const values = new Map<string, string>(), storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value) }, removeItem: (key: string) => { values.delete(key) } }
   const identity = { documentId: 'note', revision: 1, sourceSha256: 'c'.repeat(64), scope: { database: 'db', companyId: 'co', userId: 'u', threadId: 't' } }

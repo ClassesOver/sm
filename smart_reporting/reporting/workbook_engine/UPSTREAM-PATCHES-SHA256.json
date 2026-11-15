@@ -17,7 +17,7 @@
   "packages/xlsx-engine/src/filter-read.ts": "77030f9e244922e471f6359e8daea73c185a46593c5271c169e0821168a39f0c",
   "packages/xlsx-engine/src/filters.ts": "dc7ff31ba3679761dda1473ce7ca5a28db34c190f0717b89062790f616604779",
   "packages/xlsx-engine/tests/filters.test.ts": "1696a65cbcff80a3e33341f4a261fb06fa492364c2bccaba365781a17937dc94",
-  "packages/xlsx-engine/src/structural.ts": "542daf58a2da9d1bc0ef0ffc69d00f6d019730fcb0887bb7fa0d1fdc7819419b",
+  "packages/xlsx-engine/src/structural.ts": "628a320a45423b34b30a807e957931d53fe84135d847af271082fef45e020aa4",
   "packages/xlsx-engine/src/page-setup.ts": "0c7bd9c6bd7811542ca52803c40242d4dac1d91ec84e4398248a5980b53b2175",
   "packages/xlsx-engine/tests/protection-page-setup.test.ts": "d5fdbc87bec238bd75c9c88f014167c5cc54f299e22f505b329db499ee3fa06a",
   "packages/xlsx-engine/src/geometry.ts": "db2f93111bb30ce41493bde7d70225cac96a03073ba8035322ba0ed8e5b70403",
@@ -107,5 +107,6 @@
   "packages/xlsx-engine/src/pivot-refresh.ts": "2d0896002f950bedd0f8a1cccdf38dcda66aedc13581ff50d60f3bff8f1b42f8",
   "packages/xlsx-engine/tests/pivot-controls.test.ts": "5f9050c0b81b3caf3b4147076a8a73b7a128784dee368ecdf337b6ba25412350",
   "packages/xlsx-engine/src/pivot-source-format.ts": "7b90b4dc4a8b2721c95b2cb9cad13971f83b2d8cce293d4a712efe5dac3ff99b",
-  "packages/xlsx-engine/tests/pivot-source-format.test.ts": "a269741b8f57b18f0b1b4f6b3a551d5d751adf9bdbb8e6e22dc3934d37c1e723"
+  "packages/xlsx-engine/tests/pivot-source-format.test.ts": "a269741b8f57b18f0b1b4f6b3a551d5d751adf9bdbb8e6e22dc3934d37c1e723",
+  "packages/xlsx-engine/tests/sheet-ops.test.ts": "e4c9343c46a2ed9a72fe8bc0ce0c401e6022ad7492ea567aff0f27b9e1994884"
 }

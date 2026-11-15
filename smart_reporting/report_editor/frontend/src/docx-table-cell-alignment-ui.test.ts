@@ -49,11 +49,22 @@ it('caret单格、CellSelection合并owner、NodeSelection全表及独立undo/re
 })
 it('Ribbon九入口启用且active同步，readonly/锁/nested/同表文字与其他结构混编拒绝',()=>{
  const f=setup();f.select();const ribbon=createDocxRibbon(f.editor,true,undefined,undefined,undefined,[f.anchor],f.commands);document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
- for(const v of ['top','middle','bottom'])for(const h of ['left','center','right'])expect(ribbon.querySelector<HTMLButtonElement>(`[data-action="table-align-${v}-${h}"]`)!.disabled).toBe(false)
+ const grid=ribbon.querySelector('.cell-align-grid[aria-label="单元格对齐"]')!
+ const options=Array.from(grid.querySelectorAll<HTMLButtonElement>('button'))
+ expect(options.map(button=>button.dataset.action)).toEqual(['top','middle','bottom'].flatMap(v=>['left','center','right'].map(h=>`table-align-${v}-${h}`)))
+ expect(options.every(button=>!button.disabled&&button.querySelector('svg'))).toBe(true)
  f.anchor.cellAlignmentEditable=false;f.anchor.cellAlignmentReadOnlyReason='来源段落对齐歧义';expect(f.commands.reason('table-align-top-left')).toBe('来源段落对齐歧义');f.anchor.cellAlignmentEditable=true
  f.editor.setEditable(false);expect(f.commands.reason('table-align-top-left')).toMatch(/保存|不可编辑/);f.editor.setEditable(true)
  expect(createDocxTableCommands(f.editor,f.baseline,[f.anchor],()=>{},()=>true).reason('table-align-top-left')).toMatch(/嵌套/)
- f.commands.run('table-align-bottom-center');expect(ribbon.querySelector('[data-action="table-align-bottom-center"]')!.getAttribute('aria-pressed')).toBe('true')
+ f.editor.view.dispatch(f.editor.state.tr.setMeta('table-alignment-editable',true))
+ const center=grid.querySelector<HTMLButtonElement>('[data-action="table-align-bottom-center"]')!
+ center.click()
+ expect(center.getAttribute('aria-pressed')).toBe('true')
+ expect(center.classList).toContain('active')
+ f.editor.commands.undo()
+ expect(center.getAttribute('aria-pressed')).toBe('false')
+ expect(center.classList).not.toContain('active')
+ f.editor.commands.redo()
  for(const action of ['table-autofit-fixed','table-row-height','table-column-width','table-text-direction-horizontal','table-repeat-header-rows','table-insert-row-before'])expect(f.commands.reason(action)).toMatch(/对齐|先保存/)
 })
 it('真实collector/replay保完整九宫格顺序，baseline与同表文字保护',()=>{

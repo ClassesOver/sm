@@ -19,7 +19,7 @@ export interface NoteWorkbook {
 export function validateNoteCoordinates(row: number, column: number): void {
   if (!Number.isSafeInteger(row) || row < 0 || row > 1048575 || !Number.isSafeInteger(column) || column < 0 || column > 16383) throw new Error('批注目标坐标无效')
 }
-export function adjacentNote(notes: GridNote[], row: number, column: number, next: boolean): GridNote | undefined {
+export function adjacentNote<T extends Pick<GridNote, 'row' | 'col'>>(notes: T[], row: number, column: number, next: boolean): T | undefined {
   const ordered = [...notes].sort((a, b) => a.row - b.row || a.col - b.col)
   return next
     ? ordered.find(note => note.row > row || note.row === row && note.col > column) ?? ordered[0]

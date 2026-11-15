@@ -6,7 +6,8 @@ from smart_reporting.office.repository import Identity, OfficeError, OfficeRepos
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change', ['none', 'attachment', 'foreign_attachment', 'unstar', 'logout', 'revision', 'fabricated', 'uncited'])
+@pytest.mark.parametrize('change', ['none', 'attachment', 'foreign_attachment', 'unstar', 'logout', 'revision',
+                                    'fabricated', 'uncited', 'insufficient', 'insufficient_with_citation'])
 async def test_knowledge_answers_require_actual_reading_and_current_file_access(change):
     engine = create_async_engine('sqlite+aiosqlite://')
     office = OfficeRepository(engine)
@@ -44,6 +45,9 @@ async def test_knowledge_answers_require_actual_reading_and_current_file_access(
             await office.logout(raw)
         elif change == 'revision':
             await office.record_revision(admin, entry['id'], 'doc', 2)
+        if change.startswith('insufficient'):
+            return {'answer': 'Unsupported sensitive text', 'insufficientEvidence': True,
+                    'citations': [read['citationId']] if change == 'insufficient_with_citation' else []}
         return {'answer': 'Revenue is 42.', 'citations': [] if change == 'uncited' else [read['citationId']]}
 
     service = OfficeKnowledge(office, Documents(), planner=planner,
@@ -62,6 +66,11 @@ async def test_knowledge_answers_require_actual_reading_and_current_file_access(
             await office.update_file(admin, entry['id'], expected_version=1, deleted=True)
             hidden = (await office.knowledge_history(actor, space, conversation=conversation))[0]
             assert '42' not in hidden['answer'] and hidden['citations'] == [] and hidden['sources'] == []
+        elif change == 'insufficient':
+            answer = await service.ask(actor, space, 'Revenue?')
+            assert answer['citations'] == answer['sources'] == []
+            assert '资料不足' in answer['answer'] and 'Unsupported' not in answer['answer']
+            assert (await office.knowledge_history(actor, space))[0]['answer'] == answer['answer']
         else:
             with pytest.raises(OfficeError):
                 await service.ask(actor, space, 'Revenue?', attachment_ids=attachment_ids)
@@ -170,10 +179,18 @@ async def test_knowledge_uses_provider_structured_output_policy_without_dropping
     monkeypatch.setattr(agent_events, "run_agent_with_events", run)
     model = OpenAIChat(id="deepseek-v4.1-flash", api_key="test",
                        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
-    tools = KnowledgeTools(None, None, Identity("db", "1", "10"), "space", parser=None)
-    assert await OfficeKnowledge(None, None, model).plan(tools, "Test", []) == {
-        "answer": "42", "citations": ["file"],
-    }
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        actor = Identity("db", "1", "10")
+        await office.bootstrap(actor, "Owner")
+        tools = KnowledgeTools(office, None, actor, "space", parser=None)
+        assert await OfficeKnowledge(office, None, model).plan(tools, "Test", []) == {
+            "answer": "42", "citations": ["file"],
+        }
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

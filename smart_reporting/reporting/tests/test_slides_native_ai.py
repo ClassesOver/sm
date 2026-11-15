@@ -63,6 +63,10 @@ class Editor:
         self.context = context()
         self.previews = []
 
+    async def read_file(self, _context):
+        # Controlled editor; HTTP accept now rechecks file identity after preview.
+        return b"synthetic source"
+
     async def context_for_session(self, _session):
         return self.context
 
@@ -76,6 +80,61 @@ class Editor:
             "slides": [{"slideIndex": i, "elements": [{"id": "title", "text": text, "editable": True,
                 "geometry": {"x": 10, "y": 10, "width": 100, "height": 30}}]}
                 for i, text in enumerate(["原文", "未选择的机密文字"])]}}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_native_pptx_candidate_is_visible_only_after_persist(commit_fails):
+    from datetime import UTC, datetime
+
+    from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService, _SlidesAIJob
+
+    editor = Editor()
+
+    async def planner(_prompt, **_kwargs):
+        return SlidesAIProposal(summary="润色标题", edits=[
+            {"slideIndex": 0, "elementId": "title", "text": "候选标题"},
+        ], order=[0, 1])
+
+    ai = NativeSlidesAIService(editor, planner=planner, enabled=True)
+    job = _SlidesAIJob("test-edit", editor.context.digest(), "snapshot", "user", datetime.now(UTC))
+    persisted = []
+
+    async def persist(proposal):
+        assert job.status == "running"
+        assert job.proposal is None
+        assert len(editor.previews) == 2
+        persisted.append(proposal)
+        if commit_fails:
+            raise RuntimeError("receipt storage failed")
+
+    await ai._prepare_slides_job(job, editor.context, [], {},
+        [{"slideIndex": 0, "elementId": "title"}], "selection", "润色", "a" * 64, persist=persist)
+    assert persisted[0]["previewSha256"] == "b" * 64
+    assert job.status == ("failed" if commit_fails else "succeeded")
+    assert job.proposal == (None if commit_fails else persisted[0])
+
+
+@pytest.mark.anyio
+async def test_native_pptx_ai_keeps_the_submitted_selection_during_background_preview():
+    from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
+
+    prompts = []
+
+    async def planner(prompt, **_kwargs):
+        prompts.append(prompt)
+        return SlidesAIProposal(summary="润色标题", edits=[
+            {"slideIndex": 0, "elementId": "title", "text": "候选标题"},
+        ], order=[0, 1])
+
+    ai = NativeSlidesAIService(Editor(), planner=planner, enabled=True)
+    selection = [{"slideIndex": 0, "elementId": "title"}]
+    started = await ai.start_edit(None, client_request_id=uuid4().hex, instruction="润色",
+        expected_sha256="a" * 64, operations=[], selection=selection)
+    selection[0]["slideIndex"] = 1
+    result = await ai.wait_edit_status(None, started["editId"])
+    assert prompts and "未选择的机密文字" not in prompts[0]
+    assert result["status"] == "succeeded", result
 
 
 @pytest.mark.anyio
@@ -192,7 +251,7 @@ async def test_native_pptx_ai_http_requires_csrf_version_scope_and_strict_select
         async def lookup_session(self, raw):
             if raw != "session":
                 raise ReportingError("native_permission_denied", "无原生编辑授权")
-            return SimpleNamespace(report_id="slides", revision=1)
+            return SimpleNamespace(report_id="slides", revision=1, capabilities={})
 
     async def planner(_prompt, **_kwargs):
         return SlidesAIProposal(summary="候选", edits=[{"slideIndex": 0, "elementId": "title", "text": "候选"}], order=[0, 1])

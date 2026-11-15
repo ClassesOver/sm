@@ -60,8 +60,12 @@ it('严格拒绝非法输入、冻结选区变化、保存锁、复杂混编与�
 it('Ribbon开放来源行高及均分行并拒绝同表其他结构修改',()=>{
  const f=setup();f.select();const ribbon=createDocxRibbon(f.editor,true,undefined,undefined,undefined,[f.anchor],f.commands);document.body.append(ribbon)
  ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click();const button=(id:string)=>ribbon.querySelector<HTMLButtonElement>(`[data-action="${id}"]`)!
- expect(button('table-row-height').disabled).toBe(false);expect(button('table-distribute-rows').disabled).toBe(false)
- button('table-row-height').click();submit('600');expect(f.heights()[0]).toEqual([600,'exact'])
+ const height=ribbon.querySelector<HTMLInputElement>('.table-size-inputs input[aria-label="行高"]')!
+ expect(height.disabled).toBe(false);expect(button('table-distribute-rows').disabled).toBe(false)
+ height.value='30 pt';height.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+ expect(f.heights()[0]).toEqual([600,'exact'])
+ height.value='';height.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+ expect(f.heights()[0]).toEqual([null,null])
  for(const action of ['table-column-width','table-merge-cells','table-insert-row-before','table-repeat-header-rows']){if(action==='table-merge-cells'){const start=f.editor.state.doc.child(0).nodeSize+1,map=TableMap.get(f.editor.state.doc.child(1));f.editor.view.dispatch(f.editor.state.tr.setSelection(CellSelection.create(f.editor.state.doc,start+map.map[0],start+map.map[3])))}expect(f.commands.reason(action)).toMatch(/先保存|行高|来源表格/)}
 })
 

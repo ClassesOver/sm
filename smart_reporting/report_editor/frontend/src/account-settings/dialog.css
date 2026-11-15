@@ -1,0 +1,298 @@
+/* Adapted from GenOffice settings.css; see SOURCE.md. */
+.editor-account-settings { --surface:#fff;--text-primary:#242424;--text-secondary:#666;--text-tertiary:#888;--bg-hover:#f1f1f1;--bg-content:#f7f7f7;--border-subtle:#ededed;--color-bg-overlay:#0005;--shadow-modal-strong:0 24px 80px #0003; font:14px/1.5 system-ui,sans-serif; }
+/* Settings modal (opened from the account menu): two-pane dialog matched to
+   GenMail's settings window (values read from its packaged CSS) — borderless
+   header/nav, label-left / control-right rows with hairline dividers.
+   Chrome colors use semantic tokens only (see CLAUDE.md theming rules). */
+
+.editor-account-settings .set-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5vh 24px;
+  background: var(--color-bg-overlay);
+  backdrop-filter: blur(6px);
+}
+
+.editor-account-settings .set-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(960px, 100%);
+  height: min(720px, 90vh);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-modal-strong);
+  overflow: hidden;
+}
+
+.editor-account-settings .set-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+}
+
+.editor-account-settings .set-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.editor-account-settings .set-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.editor-account-settings .set-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.editor-account-settings .set-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.editor-account-settings .set-nav {
+  flex-shrink: 0;
+  width: 232px;
+  padding: 8px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.editor-account-settings .set-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.editor-account-settings .set-nav-item svg {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.editor-account-settings .set-nav-item:hover:not(.active) {
+  background: var(--bg-content);
+}
+
+.editor-account-settings .set-nav-item.active {
+  background: var(--bg-hover);
+  font-weight: 600;
+}
+
+.editor-account-settings .set-nav-item.active svg {
+  color: var(--text-primary);
+}
+
+.editor-account-settings .set-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0 28px 24px;
+  overflow-y: auto;
+  /* height of the sticky title row, so focus/scroll-into-view lands below it */
+  scroll-padding-top: 49px;
+}
+
+/* the pane scrolls, so rows must keep their natural height: .set-field's
+   explicit min-height would otherwise let flex shrink collapse tall rows
+   (multi-line stacks) below their content and overlap the next row */
+.editor-account-settings .set-pane > * {
+  flex-shrink: 0;
+}
+
+.editor-account-settings .set-pane-title {
+  margin: 8px 0 18px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+/* title row pinned to the top of the scrolling pane so the test/save actions
+   and their result pill stay in view however long the form is */
+
+.editor-account-settings .set-field {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-height: 52px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.editor-account-settings .set-field:last-child {
+  border-bottom: none;
+}
+
+.editor-account-settings .set-field-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.editor-account-settings .set-field-label {
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-primary);
+}
+
+.editor-account-settings .set-field-value {
+  font-size: 14px;
+  color: var(--text-secondary);
+  text-align: right;
+  user-select: text;
+  word-break: break-all;
+}
+
+/* stacked label + secondary description (analytics toggle row) */
+
+.editor-account-settings .set-field-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* MCP service row: the label + description + status stack reads better with the
+   switch aligned to the label line instead of centered against three lines */
+
+/* MCP pane: running/stopped line with a status dot */
+
+/* MCP pane: client config example — heading row with the copy button, then the
+   snippet on its own full-width row (a side-by-side flex row squeezes the
+   tall snippet against the button) */
+
+/* MCP pane: compact action group in a config/log head row */
+
+/* MCP pane: copyable config snippet */
+
+/* MCP pane: in-pane log viewer — fixed height, scrolls, follows the tail */
+
+/* on/off switch (analytics toggle) */
+
+/* GenMail-style select pill: the visible layer is just the current value +
+   chevron (width hugs the content); the real <select> sits on top invisibly
+   and only supplies the click target and the native popup. */
+
+/* Shared dropdown (@genoffice/ui gs-dd) in settings rows: borderless text
+ * trigger matching the old .set-select-wrap look */
+
+/* brand mark in the AI provider dropdown (trigger value + option rows are
+   flex containers from gs-dd); monochrome marks follow the text color */
+
+.editor-account-settings .set-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.editor-account-settings .set-btn:hover {
+  background: var(--bg-hover-strong);
+}
+
+.editor-account-settings .set-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.editor-account-settings .set-btn.primary {
+  border-color: var(--color-btn-primary);
+  background: var(--color-btn-primary);
+  color: var(--color-btn-primary-text);
+}
+
+.editor-account-settings .set-btn.primary:hover {
+  background: var(--color-btn-primary-hover);
+}
+
+.editor-account-settings .set-btn.danger {
+  color: var(--danger);
+}
+
+.editor-account-settings .set-pane-footer {
+  margin-top: auto;
+  padding-top: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── AI model pane ── */
+
+/* multi-line variant for header / model-declaration blobs; same chrome as .set-input */
+
+/* feedback pill: spinner while testing, green on success/saved, red on failure */
+
+@keyframes set-ai-spin {
+}
+
+/* ── Integrations pane ── */
+
+/* the two routes (CLI, MCP) as numbered parts with a rule between them */
+
+/* a group of skill rows under one heading */
+
+/* the path about to be written, shown before any write happens */
+
+/* Settings → About: the one-click update entry next to the version row */
+
+/* ── custom endpoint profile pane ── */
+
+/* The shell supports a 720px window; leave room for translated labels and
+   endpoint actions when the settings sidebar consumes most of that width. */
+@media (max-width: 900px) {
+}
+
+.editor-account-settings .set-overlay { z-index:10000; }
+.editor-account-settings .set-field-desc { display:block; }
+.editor-account-settings .set-confirm { padding:12px; border:1px solid var(--border-subtle); }
+.editor-account-settings select { background:var(--surface);color:var(--text-primary);border:1px solid var(--border-subtle);border-radius:6px;padding:7px; }
+.editor-account-settings .set-btn { cursor:pointer; }
+.editor-account-settings button:disabled { opacity:.5;cursor:default; }
+.editor-account-settings button:focus-visible,.editor-account-settings select:focus-visible { outline:2px solid #4976dc;outline-offset:2px; }
+@media(max-width:600px){.editor-account-settings .set-overlay{padding:12px}.editor-account-settings .set-dialog{height:90dvh}.editor-account-settings .set-nav{width:108px;padding:8px}.editor-account-settings .set-nav-item{gap:6px;padding:8px 6px}.editor-account-settings .set-pane{padding:0 16px 16px}}

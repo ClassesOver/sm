@@ -16,6 +16,10 @@ class Editor:
             sourceFile={"path": "native/source.xlsx", "size": 10, "sha256": "a" * 64, "mediaType": NATIVE_MEDIA["xlsx"]})
         self.previews = []
 
+    async def read_file(self, _context):
+        # Controlled editor; HTTP accept now rechecks file identity after preview.
+        return b"synthetic source"
+
     async def context_for_session(self, _session):
         return self.context
 
@@ -72,6 +76,29 @@ async def test_native_xlsx_ai_rejects_outside_range_and_cancels_before_receipt()
     assert result["status"] == "cancelled" and len(calls) == 1
     await ai.aclose()
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('target', 'status'), [
+    ('A1:B1200', 'succeeded'), ('A1:C1200', 'failed'), ('A1:B1201', 'failed'),
+])
+async def test_large_clear_candidate_obeys_native_selection(target, status):
+    from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
+
+    async def planner(*_args, **_kwargs):
+        return WorkbookAIProposal.model_validate({'summary': '清空旧数据', 'operations': [{
+            'kind': 'clearCellRange', 'arguments': {'sheetName': 'Sheet', 'range': target},
+        }]})
+
+    editor = Editor()
+    ai = NativeWorkbookAIService(editor, planner=planner, enabled=True)
+    job = await ai.start_edit(None, client_request_id='clear', instruction='清空旧数据',
+        expected_sha256='a' * 64, operations=[], scope='range',
+        selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1199, 'startColumn': 0, 'endColumn': 1})
+    result = await ai.wait_edit_status(None, job['editId'])
+    assert result['status'] == status, result
+    assert len(editor.previews) == (2 if status == 'succeeded' else 1)
+    await ai.aclose()
+
 @pytest.mark.anyio
 async def test_native_xlsx_ai_real_engine_and_independent_formula_readback():
     import hashlib
@@ -117,7 +144,7 @@ async def test_native_xlsx_ai_http_scope_csrf_selection_and_cancel_request():
         def csrf_token(self, _raw): return 'csrf'
         async def lookup_session(self, raw):
             assert raw == 'session'
-            return SimpleNamespace(report_id='workbook', revision=1)
+            return SimpleNamespace(report_id='workbook', revision=1, capabilities={})
     async def planner(*_args, **_kwargs): return proposal()
     editor = Editor(); ai = NativeWorkbookAIService(editor, planner=planner, enabled=True)
     app = FastAPI(); app.include_router(create_native_workbook_ai_router(Grants(), editor=editor, ai=ai, allowed_origin='https://editor.test'))
@@ -130,6 +157,9 @@ async def test_native_xlsx_ai_http_scope_csrf_selection_and_cancel_request():
         assert (await client.post(base.replace('/workbook/1/', '/workbook/2/')+'/start', json=payload, headers=headers)).status_code == 403
         assert (await client.post(base+'/start', json={**payload, 'path': '/tmp/foreign'}, headers=headers)).status_code == 422
         assert (await client.post(base+'/start', json={**payload, 'selection': {**payload['selection'], 'startRow': True}}, headers=headers)).status_code == 422
+        resume = await client.post(base+'/start', json={**payload, 'resumeEditId': 'b' * 64}, headers=headers)
+        assert resume.status_code == 404 and resume.json()['detail']['code'] == 'native_ai_job_missing'
+        assert not ai._jobs
         cancelled = await client.post(base+'/cancel-request', json={'clientRequestId': 'http'}, headers=headers)
         started = await client.post(base+'/start', json=payload, headers=headers)
         assert started.status_code == 200 and started.json()['status'] == 'cancelled'

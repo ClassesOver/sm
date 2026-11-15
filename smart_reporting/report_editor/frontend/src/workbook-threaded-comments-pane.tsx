@@ -4,6 +4,7 @@ import {formatAddress} from '@sheets-web/xlsx-engine'
 import {parseThreadTimestamp,ThreadStore,ThreadPaneController,type CellThread,type ThreadReply} from './workbook-threaded-comments'
 import type {ThreadHover} from './workbook-threaded-comment-marker'
 import type {createUniver} from './workbook-vendor/grid/create-univer'
+import { spellcheckEnabled } from './vendor/genoffice-sheets-spelling/spellcheck-pref'
 type UniverRuntime = ReturnType<typeof createUniver>
 export const ThreadsContext = createContext<{threadStore:ThreadStore;threadPane:ThreadPaneController;editable:()=>boolean}|null>(null)
 const labels: Record<string,string> = {
@@ -82,7 +83,7 @@ function Composer({
         // cell editor is canvas-rendered), so the native squiggle the spelling
         // preference promises can exist exactly here; read per mount, like
         // docs' header/footer editors
-        spellCheck={true}
+        spellCheck={spellcheckEnabled()}
         maxLength={32000}
         disabled={!editable() || threadStore.isBusy()}
         onChange={(event) => setText(event.target.value)}

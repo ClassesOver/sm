@@ -642,7 +642,8 @@ class AgnoNativePDFReviewPlanner:
         )
 
         candidates = NativePDFReviewTools(reader)
-        model = deepcopy(self.model)
+        from ..office.settings import native_model
+        model = await native_model(self.model)
         modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(
             model.id,
@@ -684,8 +685,8 @@ class AgnoNativePDFReviewPlanner:
         )
         from ..reporting.agent_events import run_owned_agent_with_events
 
-        from ..office.ai_sources import attach_office_sources
-        attach_office_sources(agent)
+        from ..office.settings import configure_office_agent
+        await configure_office_agent(agent)
         output = await run_owned_agent_with_events(
             agent,
             json.dumps(

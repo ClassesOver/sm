@@ -52,6 +52,31 @@ function render(kind: ChartReadSpec['kind'], series: Array<Array<unknown>>, extr
   return { fills: fills.filter(rect => rect.color !== '#ffffff'), pathColors, texts, allTexts, tickTexts, categoryTexts, paths, ctx }
 }
 const paint = (kind: 'bar' | 'column', series: Array<Array<unknown>>) => render(kind, series).fills
+it('plots a single rebound value from its saved cache when the referenced sheet is not the chart sheet', async () => {
+  const bytes = await applyChartAdditions(await createBlankWorkbook(), [{
+    worksheetSheetName: 'Sheet1',
+    anchor: { fromRow: 0, fromColumn: 0, fromRowOffset: 0, fromColumnOffset: 0, toRow: 10, toColumn: 10, toRowOffset: 0, toColumnOffset: 0 },
+    chart: { chartType: 'line', title: '第二季度收入', series: [{
+      name: '收入', categories: ['第二季度'], values: [73], valuesRef: "'Sales ! 2026'!$B$3",
+    }] },
+  }])
+  const [chart] = await readCharts(bytes, 'xl/worksheets/sheet1.xml')
+  expect(chart?.series[0]?.cachedValues).toEqual([73])
+  const result = render('line', [[], [null, null, 999]], {
+    ...chart,
+    dataLabels: { showValue: true },
+  })
+  expect(result.ctx.arc).toHaveBeenCalledTimes(1)
+  expect(result.allTexts.some(label => label.text === '73')).toBe(true)
+  expect(result.allTexts.some(label => label.text === '999')).toBe(false)
+})
+
+it('keeps a cleared local point blank even when the chart still has a cached value', () => {
+  const result = render('line', [[null]], {
+    series: [{ valuesRef: "'Test'!$A$1", cachedValues: [73] }],
+  })
+  expect(result.ctx.arc).not.toHaveBeenCalled()
+})
 it.each(['line','area','scatter','radar'] as const)('%s previews saved series and point colors',kind=>{
  const result=render(kind,[],{series:[{valuesRef:'',values:[2,4,3],xValues:[1,2,3],color:'#123456',pointColors:{1:'#abcdef'}}]})
  expect([...result.pathColors,...result.paths.map(path=>path.color)]).toContain('#123456')

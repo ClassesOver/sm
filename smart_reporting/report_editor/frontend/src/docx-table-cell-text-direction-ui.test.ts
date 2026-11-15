@@ -50,8 +50,16 @@ it('签发方向或格网失配拒绝，readonly/锁/nested/新表/文字修改�
 it('Ribbon三方向可用且aria-pressed随选区，方向后其他表编辑互斥',()=>{
  const f=setup();f.select();const ribbon=createDocxRibbon(f.editor,true,undefined,undefined,undefined,[f.anchor],f.commands);document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
  for(const suffix of ['horizontal','rotate-90','rotate-270'])expect(ribbon.querySelector<HTMLButtonElement>(`[data-action="table-text-direction-${suffix}"]`)!.disabled).toBe(false)
- expect(ribbon.querySelector('[data-action="table-text-direction-horizontal"]')!.getAttribute('aria-pressed')).toBe('true')
- f.commands.run('table-text-direction-rotate-90');for(const action of ['table-autofit-fixed','table-column-width','table-row-height','table-repeat-header-rows','table-insert-row-before'])expect(f.commands.reason(action)).toMatch(/文字方向|先保存/)
+ const trigger=ribbon.querySelector<HTMLButtonElement>('[data-action="table-text-direction-menu"]')!;trigger.click()
+ const menu=trigger.parentElement!.querySelector('[role="menu"]')!
+ expect(Array.from(menu.querySelectorAll('button'),button=>button.textContent)).toEqual(['水平','将所有文字旋转 90°','将所有文字旋转 270°'])
+ expect(ribbon.querySelector('[data-action="table-text-direction-horizontal"]')!.getAttribute('aria-checked')).toBe('true')
+ ribbon.querySelector<HTMLButtonElement>('[data-action="table-text-direction-rotate-90"]')!.click()
+ expect(trigger.getAttribute('aria-expanded')).toBe('false')
+ expect(f.directions()[0]).toBe('tbRl')
+ trigger.click()
+ expect(ribbon.querySelector('[data-action="table-text-direction-rotate-90"]')!.getAttribute('aria-checked')).toBe('true')
+ for(const action of ['table-autofit-fixed','table-column-width','table-row-height','table-repeat-header-rows','table-insert-row-before'])expect(f.commands.reason(action)).toMatch(/文字方向|先保存/)
 })
 
 it('真实collector/replay保留有序设置/清除/重复方向，baseline原属性不动',()=>{

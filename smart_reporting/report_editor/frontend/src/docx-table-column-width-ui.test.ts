@@ -135,12 +135,15 @@ it('exposes only the two supported sizing Ribbon controls and refreshes their sa
   const ribbon=createDocxRibbon(f.editor,true,undefined,undefined,undefined,f.anchors,f.commands)
   document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
   const button=(action:string)=>ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)!
-  expect(button('table-column-width').disabled).toBe(false);expect(button('table-distribute-columns').disabled).toBe(false)
-  expect(button('table-row-height').disabled).toBe(true);expect(button('table-distribute-rows').disabled).toBe(true)
-  button('table-column-width').click();setWidth('3000')
+  const width=ribbon.querySelector<HTMLInputElement>('.table-size-inputs input[aria-label="列宽"]')!
+  const height=ribbon.querySelector<HTMLInputElement>('.table-size-inputs input[aria-label="行高"]')!
+  expect(width.disabled).toBe(false);expect(button('table-distribute-columns').disabled).toBe(false)
+  expect(height.disabled).toBe(true);expect(button('table-distribute-rows').disabled).toBe(true)
+  width.value='150 pt';width.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
   expect(f.draft.operations[0]!.kind).toBe('resizeTableColumns')
   f.editor.setEditable(false);f.editor.commands.setMeta('saving',true)
-  expect(button('table-column-width').disabled).toBe(true);expect(button('table-distribute-columns').disabled).toBe(true)
+  expect(ribbon.querySelector<HTMLInputElement>('.table-size-inputs input[aria-label="列宽"]')!.disabled).toBe(true)
+  expect(button('table-distribute-columns').disabled).toBe(true)
 })
 
 it('uses the actual host schema for a full-width rowspan source and preserves zero-cell rows/content',()=>{

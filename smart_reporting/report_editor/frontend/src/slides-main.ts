@@ -1,4 +1,10 @@
 import { mountSlidesRailNavigation } from './slides-rail-navigation'
+import { createSlidesPdfExport } from './slides-export-pdf'
+import { createSlidesOpenFile } from './slides-open-file'
+import type { createNativeApi, NativePreviewRequest } from './native-api'
+import { createNativeFileActions } from './docx-file-actions'
+import { OfficeAssistantController } from './office-assistant-controller'
+import { sanitizeFileStem, slidesNameLocale } from './slides-file-name'
 import {validateZoomDraft} from './slides-zoom-model'
 import {mountModel3d} from './slides-model3d-ui'
 import {validateModelDraft,type ModelInsertion,type ModelViewEdit,type ModelSource} from './slides-model3d'
@@ -30,10 +36,12 @@ import { binaryRefreshLock, mountOfficeReportRefresh } from './binary-refresh'
 import './slides.css'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import { requestJson } from './api-request'
-import type { SlidesCanvasState } from './slides-canvas'
+import type { mountSlidesCanvas } from './slides-canvas'
+import { nextPreset, notchStep, prevPreset } from './slides-view-zoom'
+import { createWheelPager, createZoomWheelClassifier } from './docx-view-wheel'
 import type { createSlidesSorter } from './slides-view-modes'
 import type { createSlidesOutline, createSlidesReading } from './slides-outline-reading'
-import { applyCanvasEdits } from './slides-canvas-model'
+import { applyCanvasEdits, type PictureTransform } from './slides-canvas-model'
 import { createSlidesChartTools } from './slides-chart-tools'
 import { createSlidesNativeRibbon, stepNativeFontSize, type NativeSlidesContext, type NativeSlidesRibbon } from './slides-native-ribbon'
 import { slidesLayoutLabel } from './slides-native-ribbon-locales'
@@ -45,6 +53,7 @@ import { openSlidesSizeDialog } from './slides-size-dialog'
 import { mountSlidesRuler } from './slides-ruler'
 import { mountSlidesGuides } from './slides-guides'
 import { showSlidesSettingsDialog } from './slides-settings-dialog'
+import { formatClock } from './vendor/genoffice/renderer/slideshow-utils'
 import { equationTextBox, openSlidesEquationDialog } from './slides-equation'
 import { EFFECT_LABELS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
@@ -65,7 +74,7 @@ import { captureSlidesBrush, planSlidesBrushApply, type BrushSource } from './sl
 import { validateSlidesClipboardDraft, captureSlidesClipboard, planSlidesClipboardPaste } from './slides-native-clipboard'
 import { validateSlidesLinkDraft, openSlidesLink } from './slides-native-link'
 
-type DeckElement = { model3d?:ModelSource; mediaKind?:'video'|'audio'; id: string; type: string; name: string; text: string; editable: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { model3d?:ModelSource; mediaKind?:'video'|'audio'; id: string; type: string; name: string; text: string; editable: boolean; pictureOutlineEditable?: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureTransform?: PictureTransform; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = SourceAnimation
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
@@ -78,6 +87,7 @@ type Edit = {
   elementId: string
   text?: string
   geometry?: { x: number; y: number; width: number; height: number }
+  pictureTransform?: PictureTransform
 }
 type TextFormatting = { slideIndex: number; elementId: string; fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
 type BusinessTheme = 'executive' | 'clinical' | 'modern'
@@ -133,6 +143,7 @@ type SlideChanges = {
   backgroundGraphics?: { slideIndex: number; hidden: boolean }[]
   chartEdits?: ({ slideIndex: number; elementId: string } & NativeChartPatch)[]
   hiddenSlides?: { slideIndex: number; hidden: boolean }[]
+  advanceTimes?: { slideIndex: number; ms: number }[];
   transitions?: { slideIndex: number; kind: SlideTransition }[]; animations?: AnimationEdit[]; animationSequences?: { slideIndex: number; items: SequenceItem[] }[]
   slideLayouts?: { slideIndex: number; layoutPath: string }[]; backgrounds?: { slideIndex: number; color: string }[]
   textBoxes?: Omit<TextBoxEdit, 'watermark'>[]; deletions?: { slideIndex: number; elementId: string }[]
@@ -146,6 +157,11 @@ export function createSlidesEditorView(host: HTMLElement, sharedShell?: {
   draft?: NativeDraft
   onAssistant?: () => void
   nativeAI?: SlidesNativeAIClient
+  previewPdf?: (payload: NativePreviewRequest, signal: AbortSignal) => Promise<ArrayBuffer>
+  filename?: string
+  saveAs?: ReturnType<typeof createNativeApi>['saveSlidesAs']
+  slideNaming?: Pick<ReturnType<typeof createNativeApi>, 'officeAIStart' | 'officeAIStatus' | 'officeAICancel'>
+  openFile?: ReturnType<typeof createNativeApi>['openSlidesFile']
 }) {
 const root = host
 const basePath = location.pathname.replace(/\/$/, '')
@@ -179,7 +195,7 @@ root.innerHTML = `${embedded ? '' : `
     <section class="slides-stage" aria-label="幻灯片预览"><div class="slides-canvas" role="group" aria-label="可编辑幻灯片画布" hidden></div><p class="canvas-status" role="status">画布载入中</p><iframe class="preview-frame" title="幻灯片预览"></iframe></section>
     <aside class="slides-inspector" aria-label="对象编辑"><div class="inspector-heading">对象</div><div class="slide-lineage"><span class="lineage-label">母版</span><span class="slide-master"></span><span class="lineage-label">版式</span><select id="layout-select" aria-label="当前页版式"></select></div><label class="field-label" for="object-select">可编辑对象</label><select id="object-select"></select><label class="field-label" for="object-text">文字</label><textarea id="object-text" rows="7" spellcheck="false"></textarea><div class="geometry-heading">位置与大小</div><div class="geometry-grid"><label>X <input name="x" type="number" min="0" step="1"></label><label>Y <input name="y" type="number" min="0" step="1"></label><label>宽 <input name="width" type="number" min="1" step="1"></label><label>高 <input name="height" type="number" min="1" step="1"></label></div><div class="structure-controls"><label class="field-label" for="background-color">页面背景</label><div class="structure-row"><input id="background-color" type="color" value="#ffffff" aria-label="当前页背景颜色"><button class="background-reset" type="button">恢复原背景</button></div><div class="field-label">页面对象</div><div class="structure-row"><button class="text-add" type="button">新增文本</button><button class="watermark-add" type="button">新增水印</button><button class="object-delete" type="button">删除对象</button></div><ul class="structure-pending" aria-label="待保存的页面结构修改"></ul></div><label class="field-label" for="theme-select">商务主题</label><select id="theme-select"><option value="">保持当前主题</option><option value="executive">执行汇报</option><option value="clinical">临床医疗</option><option value="modern">现代商务</option></select><label class="field-label" for="transition-select">页面转场</label><select id="transition-select"><option value="none">无</option><option value="fade">淡化</option><option value="push">推进</option><option value="wipe">擦除</option><option value="split">分割</option><option value="circle">圆形</option><option value="cover">覆盖</option><option value="pull">拉伸</option><option value="dissolve">溶解</option><option value="zoom">缩放</option><option value="morph">变形</option><option value="random">随机</option></select><div class="animation-controls"><label class="field-label" for="animation-effect">动画效果</label><select id="animation-effect"><option value="fade">淡化</option><option value="appear">出现</option><option value="flyIn">飞入</option><option value="wipe">擦除</option><option value="wipeDown">向下擦除</option><option value="splitIn">分割进入</option><option value="bounce">弹跳</option><option value="flipIn">翻转进入</option><option value="zoom">缩放进入</option><option value="pulse">脉冲</option><option value="spin">旋转</option><option value="grow">放大</option><option value="teeter">摇摆</option><option value="disappear">消失</option><option value="fadeOut">淡出</option><option value="flyOut">飞出</option><option value="wipeOut">擦除退出</option><option value="shrink">缩小退出</option><option value="zoomOut">缩小退出</option><option value="motionPath">路径</option><option value="mediaPlay">播放媒体</option><option value="mediaPause">暂停媒体</option><option value="mediaStop">停止媒体</option></select><label class="field-label" for="animation-trigger">触发方式</label><select id="animation-trigger"><option value="onClick">点击时</option><option value="withPrev">与上一动画同时</option><option value="afterPrev">上一动画后</option></select><div class="animation-timing"><label>持续 <input id="animation-duration" type="number" min="1" max="120000" step="50" value="500"> ms</label><label>延迟 <input id="animation-delay" type="number" min="0" max="120000" step="50" value="0"> ms</label></div><button class="animation-add" type="button">添加对象动画</button></div><p class="animation-state"></p><p class="object-note">未编辑对象会保留在原始 PPTX 中。</p></aside>
   </div>
-  <footer class="slides-statusbar"><span class="status-dot"></span><span class="status-message">读取 PPTX…</span><span class="status-spacer"></span><span>编辑器</span></footer>
+  <footer class="slides-statusbar"><span class="status-dot"></span><span class="status-message">读取 PPTX…</span><span class="status-spacer"></span><div class="slides-status-zoom" role="group" aria-label="画布缩放" hidden><button type="button" data-zoom-step="-1" aria-label="缩小">−</button><input type="range" min="10" max="400" step="5" value="100" aria-label="缩放比例"><button type="button" data-zoom-step="1" aria-label="放大">+</button><output>100%</output></div><span>编辑器</span></footer>
 `
 if (embedded) root.classList.add('slides-embedded')
 if (native) for (const panel of root.querySelectorAll<HTMLElement>('.slides-ai, .slides-image-tools')) { panel.hidden = true; panel.inert = true }
@@ -277,6 +293,7 @@ let brush: ReturnType<typeof captureSlidesBrush>['brush'] = null
 let brushMode: 'once' | 'continuous' | undefined
 let linkDialog: ReturnType<typeof openSlidesLink> | undefined
 let showOverlay: { dispose(): void } | undefined
+let rehearsalDialog: HTMLDialogElement | undefined
 let showOpening = false
 let animationPreviewOverlay: { dispose(): void } | undefined
 let animationPreviewGeneration = 0
@@ -610,6 +627,19 @@ function opacityReason(): string | null {
   if (!pictureOpacities.some(item => item.slideIndex === selectedSlide && item.elementId === element.id) && pictureOpacities.length >= 50) return '待保存的图片透明度修改已达 50 项，请先保存'
   return null
 }
+function pictureOutlineEnabled(element: DeckElement | undefined) {
+  return element?.type === 'picture' && element.pictureOutlineEditable === true
+}
+function currentPictureOutline(elementId: string): NonNullable<ShapeStyleEdit['stroke']> {
+  const pending = shapeStyleEdits.get(editKey(selectedSlide, elementId))
+  if (pending) return pending.stroke ? { ...pending.stroke } : { color: '#000000', widthPt: 1 }
+  const node = renderTree?.slides.find(slide => slide.slideIndex === selectedSlide)?.nodes.find(item => item.sourceId === elementId)
+  const sourceStroke = node?.type === 'picture' ? node.stroke : undefined
+  return {
+    color: sourceStroke && /^#[a-f\d]{6}$/i.test(sourceStroke.color) ? sourceStroke.color : '#000000',
+    widthPt: sourceStroke?.widthPt && sourceStroke.widthPt >= 0.01 && sourceStroke.widthPt <= 100 ? sourceStroke.widthPt : 1,
+  }
+}
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
   return backgroundImageReuseEdits.some(item=>item.slideIndices.includes(slideIndex)) || backgroundImageEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundGradientEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundResetEdits.has(slideIndex) || backgroundGraphicsEdits.has(slideIndex) || pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
     || commentPane.hasDraft(slideIndex) || commentEdits.some(edit => edit.slideIndex === slideIndex) || hiddenSlideEdits.has(slideIndex) || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...tableStyleEdits.values(), ...tableStructureEdits.values(), ...chartEdits, ...smartArtEdits, ...mediaInsertions, ...nativeImages, ...pictureReplacements, ...pictureCrops, ...nativeChartEdits].some(item => item.slideIndex === slideIndex)
@@ -730,6 +760,7 @@ const commentEdits: CommentEdit[] = []
 let commentsPaneOpen = false
 const hiddenSlideEdits = new Map<number, boolean>()
 const transitionEdits = new Map<number, SlideTransition>()
+const advanceTimeEdits = new Map<number, number>()
 const layoutEdits = new Map<number, string>()
 let slideSizeEdit: { cx: number; cy: number } | undefined
 let animationDirection: AnimationDirection = 'bottom'
@@ -788,6 +819,7 @@ for (const kind of ['click', 'input', 'change', 'submit']) root.addEventListener
 
 let renderTree: { masterTextParts?: MasterTextRenderPart[]; slides: (RenderSlide & { slideIndex: number; slideIdentity?: string; mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] } | undefined
 let slidesViewMode: 'normal' | 'outline' | 'sorter' | 'reading' = 'normal'
+let showThumbnails = true
 const railNavigation = mountSlidesRailNavigation(list, { enabled: () => native && !disposed && !loading && slidesViewMode === 'normal', current: () => selectedSlide })
 let slideSorter: ReturnType<typeof createSlidesSorter> | undefined
 let slideOutline: ReturnType<typeof createSlidesOutline> | undefined
@@ -801,7 +833,23 @@ const outlineHost = document.createElement('div'), readingHost = document.create
 outlineHost.hidden = true; readingHost.hidden = true
 root.querySelector<HTMLElement>('.slides-sidebar')!.append(outlineHost)
 root.querySelector<HTMLElement>('.slides-workspace')!.append(readingHost)
+const viewZoomCommands = ['viewZoomIn', 'viewZoomOut', 'viewZoom100', 'viewZoomFit'] as const
+function syncViewZoomControls() {
+  const available = !!canvas && !locked() && (slidesViewMode === 'normal' || slidesViewMode === 'outline')
+  root.querySelector<HTMLElement>('.slides-status-zoom')!.hidden = !native || !available
+  for (const command of viewZoomCommands) {
+    const button = root.querySelector<HTMLButtonElement>('[data-command="' + command + '"]')
+    if (button) button.disabled = !available
+  }
+}
 function syncSlidesViewMode() {
+  const workspace = root.querySelector<HTMLElement>('.slides-workspace')!
+  const sidebar = root.querySelector<HTMLElement>('.slides-sidebar')!
+  const hideThumbnails = !showThumbnails && slidesViewMode === 'normal'
+  workspace.classList.toggle('slides-thumbnails-hidden', hideThumbnails)
+  sidebar.hidden = hideThumbnails
+  nativeRibbon?.setValue('thumbnailPane', String(showThumbnails))
+  syncViewZoomControls()
   for (const [command, mode] of [['normalView', 'normal'], ['outlineView', 'outline'], ['slideSorter', 'sorter'], ['readingView', 'reading']]) nativeRibbon?.setValue(command!, String(slidesViewMode === mode))
 }
 async function setSlidesViewMode(mode: typeof slidesViewMode) {
@@ -900,7 +948,25 @@ function renderSlideSorter() {
   slideSorter?.update(state); slideOutline?.update(state); slideReading?.update(state)
 }
 let inkControls:ReturnType<typeof mountSlidesInk>|undefined
-let canvas: { update: (state: SlidesCanvasState) => void; destroy?: () => void } | undefined
+let canvas: ReturnType<typeof mountSlidesCanvas> | undefined
+const zoomStatus = root.querySelector<HTMLElement>('.slides-status-zoom')!
+const zoomRange = zoomStatus.querySelector<HTMLInputElement>('input')!
+const zoomOutput = zoomStatus.querySelector<HTMLOutputElement>('output')!
+function updateZoomStatus(zoom: number) {
+  const percent = Math.round(zoom * 100)
+  zoomRange.value = String(percent)
+  zoomRange.setAttribute('aria-valuetext', percent + '%')
+  zoomOutput.value = percent + '%'
+}
+function updateZoomFromStatus(next: (zoom: number) => number) {
+  if (!canvas || zoomStatus.hidden || locked()) return
+  canvas.setZoom(next(canvas.getZoom()))
+  ruler.update()
+}
+zoomRange.addEventListener('input', () => updateZoomFromStatus(() => zoomRange.valueAsNumber / 100))
+for (const button of zoomStatus.querySelectorAll<HTMLButtonElement>('[data-zoom-step]')) {
+  button.addEventListener('click', () => updateZoomFromStatus(value => notchStep(value, button.dataset.zoomStep === '-1' ? -1 : 1)))
+}
 let previewSequence = 0
 let previewTimer: ReturnType<typeof setTimeout> | undefined
 // 每个页面最多一个预览请求在途：服务端每次预览要启动两个引擎进程，连续输入时
@@ -921,7 +987,7 @@ function sendCanvasPreview() {
   const sequence = previewSequence
   void request<{ slides: (RenderSlide & { slideIndex: number;mediaSources?:SlideMediaSource[];modelSources?:ModelSource[] })[] }>('render-tree', {
     method: 'POST', body: JSON.stringify(native
-      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', ...(masterElementEdits.length ? { masterElementEdits: structuredClone(masterElementEdits) } : {}), ...(masterTextEdits.length ? { masterTextEdits: structuredClone(masterTextEdits) } : {}), edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()], tableCells: [...tableCellEdits.values()], tableStyles: [...tableStyleEdits.values()], ...(modelInsertions.length?{modelInsertions:structuredClone(modelInsertions)}:{}),...(modelViews.length?{modelViews:structuredClone(modelViews)}:{}),...(mediaInsertions.length?{mediaInsertions:structuredClone(mediaInsertions)}:{}),...(zoomInsertions.length?{zoomInsertions:structuredClone(zoomInsertions)}:{}), backgrounds:slideChanges().backgrounds,backgroundImages:slideChanges().backgroundImages,backgroundImageReuses:slideChanges().backgroundImageReuses,backgroundGradients:slideChanges().backgroundGradients,backgroundResets:slideChanges().backgroundResets,backgroundGraphics:slideChanges().backgroundGraphics,customShows:slideChanges().customShows }] }
+      ? { expectedSha256: deck.sha256, operations: [{ kind: 'editSlides', ...(masterElementEdits.length ? { masterElementEdits: structuredClone(masterElementEdits) } : {}), ...(masterTextEdits.length ? { masterTextEdits: structuredClone(masterTextEdits) } : {}), edits: [...edits.values()], textFormatting: [...textFormattingEdits.values()], paragraphFormatting: [...paragraphFormattingEdits.values()], tableCells: [...tableCellEdits.values()], tableStyles: [...tableStyleEdits.values()], shapeKinds: [...shapeKindEdits.values()], ...(modelInsertions.length?{modelInsertions:structuredClone(modelInsertions)}:{}),...(modelViews.length?{modelViews:structuredClone(modelViews)}:{}),...(mediaInsertions.length?{mediaInsertions:structuredClone(mediaInsertions)}:{}),...(zoomInsertions.length?{zoomInsertions:structuredClone(zoomInsertions)}:{}), backgrounds:slideChanges().backgrounds,backgroundImages:slideChanges().backgroundImages,backgroundImageReuses:slideChanges().backgroundImageReuses,backgroundGradients:slideChanges().backgroundGradients,backgroundResets:slideChanges().backgroundResets,backgroundGraphics:slideChanges().backgroundGraphics,customShows:slideChanges().customShows }] }
       : { expectedSha256: deck.sha256, edits: [...edits.values()] }),
   }).then(tree => {
     if (sequence !== previewSequence || locked()) return
@@ -939,6 +1005,35 @@ function sendCanvasPreview() {
 
 const canvasHost = root.querySelector<HTMLElement>('.slides-canvas')!
 if (native) canvasHost.tabIndex = 0
+const pageWheel = createWheelPager()
+const zoomWheel = createZoomWheelClassifier()
+const onCanvasWheel = (event: WheelEvent) => {
+  if (!native || !canvas || locked() || loading || event.defaultPrevented ||
+      slidesViewMode === 'reading' || slidesViewMode === 'sorter' ||
+      (event.target instanceof Element && event.target.closest('dialog,[role="dialog"]'))) return
+  if (event.ctrlKey || event.metaKey) {
+    event.preventDefault()
+    const intent = zoomWheel.feed(event, event.timeStamp)
+    if (!intent) return
+    const current = canvas.getZoom()
+    const next = intent === 'pinch' ? current * Math.exp(-event.deltaY * 0.01)
+      : notchStep(current, intent === 'zoom-in' ? 1 : -1)
+    canvas.setZoom(next, { x: event.clientX, y: event.clientY })
+    return
+  }
+  if (!canvas.fitsViewport() || event.shiftKey || event.altKey || Math.abs(event.deltaX) > Math.abs(event.deltaY) ||
+      cropOverlay || structureDialog || document.activeElement?.closest('input,textarea,[contenteditable="true"],dialog,[role="dialog"]')) return
+  const flip = pageWheel.feed(event.deltaY, event.timeStamp)
+  if (!flip) return
+  const target = order[order.indexOf(selectedSlide) + flip]
+  if (target === undefined) return
+  const button = root.querySelector<HTMLButtonElement>('.slide-open[data-slide-index="' + target + '"]')
+  if (button) {
+    event.preventDefault()
+    button.click()
+  }
+}
+if (native) canvasHost.addEventListener('wheel', onCanvasWheel, { passive: false })
 const onMediaDragOver=(event:DragEvent)=>{if(native&&event.dataTransfer?.types.includes('Files'))event.preventDefault()}
 const onMediaDrop=(event:DragEvent)=>{
   const file=event.dataTransfer?.files[0];if(!native||!file)return
@@ -969,6 +1064,7 @@ const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
 
 let canvasSelectionGeneration = 0
 function renderCanvas() {
+  syncViewZoomControls()
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   mediaPlayback?.dispose();mediaPlayback=undefined
   animationPreviewOverlay?.dispose()
@@ -993,10 +1089,17 @@ function renderCanvas() {
   const ordered=blocks.filter(block=>rank.has(block[0]!.sourceId)).sort((a,b)=>rank.get(a[0]!.sourceId)!-rank.get(b[0]!.sourceId)!)
   let orderedIndex=0
   const projectedNodes=[...prefix,...blocks.flatMap(block=>rank.has(block[0]!.sourceId)?ordered[orderedIndex++]!:block)]
+  const outlinedNodes = projectedNodes.map(node => {
+    const stroke = shapeStyleEdits.get(editKey(selectedSlide, node.sourceId))?.stroke
+    if (node.type !== 'picture' || stroke === undefined) return node
+    return { ...node, stroke: stroke === null ? undefined : {
+      ...node.stroke, color: stroke.color, widthPt: stroke.widthPt, widthPx: stroke.widthPt * 4 / 3, gradient: undefined,
+    } }
+  })
   renderMediaControls(source)
   modelControls?.update()
   canvas.update({
-    slide: {...slide,nodes:projectedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
+    slide: {...slide,nodes:outlinedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
     selectableIds: new Set(locked()?[]:slideAt(selectedSlide).elements.filter(item=>!deletions.has(editKey(selectedSlide,item.id))).map(item=>item.id)),
     editableIds: new Set(locked() || pendingGroup(selectedSlide) ? [] : slideAt(selectedSlide).elements.filter(item => (item.editable || item.arrangeEditable) && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
     edits: [...edits.values()].filter(item => item.slideIndex === selectedSlide),
@@ -1122,6 +1225,10 @@ function cropReason(): string | null {
   if(pictureReplacements.some(item=>item.slideIndex===selectedSlide&&item.elementId===element.id))return '此图片有待保存的替换，请先保存或撤回替换再裁切'
   return null
 }
+function finishPictureCrop() {
+  cropOverlay = undefined
+  nativeRibbon?.setValue('cropPicture', 'false')
+}
 function openPictureCrop() {
   try{
     const reason=cropReason();if(reason)throw new Error(reason)
@@ -1131,20 +1238,26 @@ function openPictureCrop() {
     const pending=pictureCrops.find(item=>item.slideIndex===slideIndex&&item.elementId===element.id)
     const box=edits.get(editKey(slideIndex,element.id))?.geometry??pending?.geometry??element.geometry
     if(!box)throw new Error('图片来源位置无法读取')
+    const previousCrop = pending ? pending.srcRect : element.srcRect ?? null
     cropOverlay?.dispose()
-    cropOverlay=openSlidesPictureCrop(canvasHost,{box,srcRect:pending?pending.srcRect:element.srcRect??null,imgSrc:picture.dataUrl,slideWidthPx:deck.size.cx/9525,
+    finishPictureCrop()
+    cropOverlay=openSlidesPictureCrop(canvasHost,{box,srcRect:previousCrop,imgSrc:picture.dataUrl,slideWidthPx:deck.size.cx/9525,
       onConfirm:({srcRect,geometry})=>{
         if(disposed||locked()||deck.sha256!==sourceSha||selectedSlide!==slideIndex||currentElement()?.id!==element.id||selectedObjects.size!==1||JSON.stringify(slideChanges())!==snapshot)throw new Error('页面、对象或草稿已变化，请取消后重新打开裁切')
+        if (!srcRect && !previousCrop) { finishPictureCrop(); return }
         const changes=slideChanges()
         changes.edits=(changes.edits??[]).flatMap(edit=>{
           if(edit.slideIndex!==slideIndex||edit.elementId!==element.id)return [edit]
-          const {geometry:_geometry,...rest}=edit
-          return rest.text===undefined?[]:[rest]
+          // Cropping owns the frame geometry; the picture's separately staged rotation and flips still apply.
+          const { geometry: _geometry, ...rest } = edit
+          return rest.pictureTransform ? [rest] : []
         })
         changes.pictureCrops=[...pictureCrops.filter(item=>item.slideIndex!==slideIndex||item.elementId!==element.id),{slideIndex,elementId:element.id,expectedSha256:element.pictureSha256!,expectedSize:element.pictureSize!,srcRect,geometry}]
-        commitNativeChanges(changes);cropOverlay=undefined
-      },onCancel:()=>{cropOverlay=undefined},
+        commitNativeChanges(changes)
+        finishPictureCrop()
+      },onCancel:finishPictureCrop,
     })
+    nativeRibbon?.setValue('cropPicture', 'true')
     canvasStatus.textContent='拖动裁切手柄；Enter 或点击外部确认，Esc 取消'
   }catch(error){statusMessage.textContent=error instanceof Error?error.message:'裁切未打开'}
 }
@@ -1242,6 +1355,18 @@ function onClipboardKey(event: KeyboardEvent) {
   if(event.key==='Escape'&&screenRecordingController&&!disposed){event.preventDefault();event.stopPropagation();screenRecordingController.abort();return}
   if(!native||!nativeDraft||disposed||event.defaultPrevented||event.isComposing||event.keyCode===229||!root.contains(document.activeElement))return
   const target=event.target
+  if (openFileDialog && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'o') {
+    if (target instanceof Element && target.closest('dialog,[role="dialog"]')) return
+    event.preventDefault(); event.stopPropagation()
+    if (!event.repeat && !loading && !locked() && !mutationPending) openFileDialog.open()
+    return
+  }
+  if (saveAsActions && (event.ctrlKey || event.metaKey) && !event.altKey && event.shiftKey && event.key.toLowerCase() === 's') {
+    if (target instanceof Element && target.closest('dialog,[role="dialog"]')) return
+    event.preventDefault(); event.stopPropagation()
+    if (!event.repeat) openSlideSaveAs()
+    return
+  }
   // 固定源文件菜单 CmdOrCtrl+S：先提交失焦输入，再复用保存修订动作。
   if((event.ctrlKey||event.metaKey)&&!event.altKey&&!event.shiftKey&&event.key.toLowerCase()==='s'){
     if(target instanceof Element&&target.closest('dialog'))return
@@ -1298,19 +1423,24 @@ function changeGroup(ungroup: boolean) {
 }
 /** 固定源 File ▸ Export Images：当前草稿渲染树中的可见页 → PNG/JPG → ZIP 下载（浏览器宿主等效于写入文件夹）。 */
 let exportingImages = false
-function openExportImagesDialog() {
-  if (!nativeDraft || disposed || saving || mutationPending || exportingImages) return
-  const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-export-images-dialog'; dialog.setAttribute('aria-label', '导出图片')
-  dialog.innerHTML = '<h3>导出图片</h3><label>格式 <select name="format" aria-label="图片格式"><option value="png">PNG</option><option value="jpg">JPG</option></select></label><p>导出全部可见页面（跳过隐藏页），包含尚未保存的修改，打包为一个 ZIP 下载。</p><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">导出</button></div>'
+function openExportImagesDialog(format: 'png' | 'jpg') {
+  if (!nativeDraft || loading || disposed || locked() || mutationPending || exportingImages) return
+  const draft = nativeDraft
+  const title = `导出为 ${format.toUpperCase()}`
+  const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-export-images-dialog'; dialog.setAttribute('aria-label', title)
+  dialog.innerHTML = `<h3>${title}</h3><p>导出全部可见页面（跳过隐藏页），包含尚未保存的修改，打包为一个 ZIP 下载。</p><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">导出</button></div>`
   host.append(dialog)
   dialog.addEventListener('close', () => dialog.remove())
   dialog.querySelector<HTMLButtonElement>('button[value=cancel]')!.addEventListener('click', () => dialog.close())
   dialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListener('click', async () => {
     const alert = dialog.querySelector('[role=alert]')!, ok = dialog.querySelector<HTMLButtonElement>('button[value=ok]')!
-    const format = dialog.querySelector<HTMLSelectElement>('select[name=format]')!.value === 'jpg' ? 'jpg' : 'png'
+    if (exportingImages || !flushSlideOutputInputs('请先确认或取消当前编辑，再导出图片')) {
+      alert.textContent = '请先确认或取消当前编辑，再导出图片'
+      return
+    }
     exportingImages = true; ok.disabled = true; alert.textContent = '正在渲染页面…'
     try {
-      const tree = await request<{slides:(RenderSlide & {slideIndex:number;hidden?:boolean})[]}>('render-tree', { method: 'POST', body: JSON.stringify({ expectedSha256: deck.sha256, operations: nativeDraft!.operations }) })
+      const tree = await request<{slides:(RenderSlide & {slideIndex:number;hidden?:boolean})[]}>('render-tree', { method: 'POST', body: JSON.stringify({ expectedSha256: deck.sha256, operations: draft.operations }) })
       if (!Array.isArray(tree.slides) || !tree.slides.every(slide => Array.isArray(slide.nodes) && Number.isFinite(slide.widthPx) && slide.widthPx > 0 && Number.isFinite(slide.heightPx) && slide.heightPx > 0)) throw new Error('渲染快照无效')
       const visible = tree.slides.filter(slide => !slide.hidden)
       if (!visible.length) throw new Error('没有可导出的可见页面')
@@ -1365,17 +1495,84 @@ async function openZoom(mode:'slide'|'section') {
  }catch(error){if(!controller.signal.aborted)statusMessage.textContent=error instanceof Error?error.message:'缩放定位未打开';controller.abort();zoomDialog?.remove();zoomDialog=undefined}
  finally{if(!zoomDialog&&zoomController===controller)zoomController=undefined}
 }
-async function openPrint() {
-  if (!nativeDraft || disposed || loading || locked() || mutationPending || printOpening) return
-  if (!commentPane.flush() || (notesPane && !notesPane.flush())) return
-  if(chartFormatPane&&!chartFormatPane.flush()||geometryPane&&!geometryPane.flush()||backgroundPane&&!backgroundPane.flush()||shapeFormatPane&&!shapeFormatPane.flush())return
+function flushSlideOutputInputs(blockedMessage: string) {
+  if (!commentPane.flush() || (notesPane && !notesPane.flush())) return false
+  if(chartFormatPane&&!chartFormatPane.flush()||geometryPane&&!geometryPane.flush()||backgroundPane&&!backgroundPane.flush()||shapeFormatPane&&!shapeFormatPane.flush())return false
   const active=document.activeElement
   if(active instanceof HTMLElement&&root.contains(active)){
     active.blur()
     if(active.isConnected)active.focus({preventScroll:true})
   }
-  if(disposed||locked()||mutationPending)return
-  if (cropOverlay || structureDialog) { statusMessage.textContent='请先确认或取消当前编辑，再打开打印预览'; return }
+  if(disposed||locked()||mutationPending)return false
+  if (cropOverlay || structureDialog) { statusMessage.textContent=blockedMessage; return false }
+  return true
+}
+const pdfExport = sharedShell?.previewPdf && createSlidesPdfExport({
+  preview: sharedShell.previewPdf,
+  filename: sharedShell.filename,
+  snapshot: () => !nativeDraft || loading || locked() || mutationPending ? undefined
+    : { expectedSha256: deck.sha256, operations: nativeDraft.operations },
+  status: message => { statusMessage.textContent = message },
+})
+const saveAs = sharedShell?.saveAs
+const slideNaming = sharedShell?.slideNaming
+const namingController = slideNaming && new OfficeAssistantController({
+  start: slideNaming.officeAIStart,
+  status: slideNaming.officeAIStatus,
+  cancelRequest: slideNaming.officeAICancel,
+  id: job => job.taskId,
+  running: job => job.status === 'running',
+})
+let naming = false
+async function nameWithAi() {
+  if (!nativeDraft || !saveAsActions || !namingController || naming || loading || locked() || mutationPending) return
+  if (!flushSlideOutputInputs('请先确认或取消当前编辑，再用 AI 命名。')) return
+  const expectedSha256 = deck.sha256
+  const snapshot = JSON.stringify(nativeDraft.operations)
+  const clientRequestId = crypto.randomUUID()
+  naming = true
+  statusMessage.textContent = '正在生成文件名建议…'
+  try {
+    const job = await namingController.run({ expectedSha256, operations: JSON.parse(snapshot), clientRequestId,
+      action: 'fileName', nameLocale: slidesNameLocale(document.documentElement.lang), instruction: '', selection: null }, clientRequestId)
+    if (disposed || !job) return
+    if (deck.sha256 !== expectedSha256 || JSON.stringify(nativeDraft.operations) !== snapshot) {
+      statusMessage.textContent = '草稿已变化，请重新用 AI 命名。'
+      return
+    }
+    const stem = job.status === 'completed' && job.result?.sourceSha256 === expectedSha256
+      ? sanitizeFileStem(job.result.answer) : ''
+    statusMessage.textContent = stem ? '' : job.error?.message ?? 'AI 暂未提供文件名建议。'
+    if (stem) saveAsActions.open('save-as', stem)
+  } catch {
+    if (!disposed) statusMessage.textContent = '文件名生成失败，请重试。'
+  } finally { naming = false }
+}
+const openFileDialog = sharedShell?.openFile && createSlidesOpenFile(root, sharedShell.openFile)
+const saveAsActions = nativeDraft && saveAs ? createNativeFileActions({
+  root, extension: 'pptx', formatLabel: 'PowerPoint 演示文稿',
+  sourceSha256: nativeDraft.identity.sourceSha256,
+  displayName: sharedShell?.filename,
+  saveAsNote: '将当前草稿另存为独立演示文稿。',
+  blocked: () => loading || locked() || mutationPending ? '当前演示文稿正在加载、保存或处理修改。' : null,
+  flush: () => {
+    const message = '请先确认或取消当前编辑，再另存为。'
+    if (!flushSlideOutputInputs(message)) throw new Error(message)
+  },
+  create: (_action, payload) => saveAs({ ...payload, operations: nativeDraft.operations }),
+  onError: error => { statusMessage.textContent = error instanceof Error ? error.message : '另存为失败。' },
+}) : undefined
+function openSlideSaveAs() {
+  if (!saveAsActions || loading || locked() || mutationPending) return
+  if (naming) {
+    void namingController?.cancel().catch(() => {})
+    statusMessage.textContent = ''
+  }
+  saveAsActions.open('save-as')
+}
+async function openPrint() {
+  if (!nativeDraft || disposed || loading || locked() || mutationPending || printOpening ||
+      !flushSlideOutputInputs('请先确认或取消当前编辑，再打开打印预览')) return
   const sourceSha=deck.sha256,slideIndex=selectedSlide,snapshot=JSON.stringify(nativeDraft.operations)
   const isCurrent=()=>!disposed&&!saving&&!mutationPending&&!nativeDraft?.closed&&deck.sha256===sourceSha&&selectedSlide===slideIndex&&JSON.stringify(nativeDraft?.operations)===snapshot
   printOpening=true
@@ -1398,9 +1595,37 @@ async function openPrint() {
   }catch(error){if(!disposed)statusMessage.textContent=error instanceof Error?error.message:'打印预览未打开'}
   finally{printOpening=false}
 }
-async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow) {
-  if (!nativeDraft || disposed || saving || mutationPending || showOpening || showOverlay) return
-  if (cropOverlay || structureDialog || order.some(index=>commentPane.hasDraft(index))) { statusMessage.textContent='请先确认或取消当前编辑，再打开放映'; return }
+function confirmRehearsal(times: {slideIndex: number; ms: number}[], current: () => boolean) {
+  if (!current() || !times.length) return
+  const dialog = document.createElement('dialog')
+  rehearsalDialog = dialog
+  dialog.className = 'slides-table-dialog'
+  dialog.setAttribute('aria-label', '排练计时')
+  dialog.innerHTML = '<h3>排练计时</h3><p></p><footer class="slides-table-actions"><button value="cancel">不保存</button><button data-confirm-rehearsal>保存</button></footer>'
+  const duration = formatClock(times.reduce((total, time) => total + time.ms, 0))
+  dialog.querySelector('p')!.textContent = `本次放映总时长 ${duration}。是否保存每页停留时间作为自动换片时间？`
+  dialog.querySelector('[value=cancel]')!.addEventListener('click', () => dialog.close())
+  dialog.querySelector('[data-confirm-rehearsal]')!.addEventListener('click', () => {
+    try {
+      if (!current()) throw new Error('草稿已变化，请重新排练。')
+      const merged = new Map(advanceTimeEdits)
+      for (const { slideIndex, ms } of times) merged.set(slideIndex, ms)
+      commitNativeChanges({ ...slideChanges(), advanceTimes: Array.from(merged, ([slideIndex, ms]) => ({ slideIndex, ms })) })
+      dialog.close()
+    } catch (error) {
+      dialog.querySelector('p')!.textContent = error instanceof Error ? error.message : '排练计时未保存。'
+    }
+  })
+  dialog.addEventListener('close', () => { rehearsalDialog = undefined; dialog.remove() }, { once: true })
+  root.append(dialog)
+  showSlidesSettingsDialog(dialog)
+}
+
+async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow, mode?: 'rehearse' | 'presenter') {
+  if (!nativeDraft || disposed || saving || mutationPending || showOpening || showOverlay || rehearsalDialog) return
+  const rehearse = mode === 'rehearse'
+  if (rehearse && newSlides.length) { statusMessage.textContent = '请先保存新建页面，再开始排练计时。'; return }
+  if (!flushSlideOutputInputs('请先确认或取消当前编辑，再打开放映')) return
   const sourceSha=deck.sha256, slideIndex=selectedSlide, snapshot=JSON.stringify(nativeDraft.operations)
   const requestedPosition=fromCurrent?order.indexOf(slideIndex):0
   showOpening=true
@@ -1420,7 +1645,14 @@ async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow) {
     if(customShow&&!customOrder?.length)throw Error('该自定义放映没有可放映页面')
     const first=tree.slides.findIndex(slide=>!slide.hidden), startIndex=fromCurrent?Math.max(0,requestedPosition):Math.max(0,first)
     const playback=slidesShowSnapshot(tree.slides,preview.model.slides)
-    showOverlay=openSlidesShow(root,{slides:tree.slides,mediaSources:tree.slides.map(slide=>(slide as RenderSlide & {mediaSources?:SlideMediaSource[];modelSources?:ModelSource[]}).mediaSources??[]),startIndex:customOrder?.[0]??startIndex,customOrder,...playback,onClose:(lastIndex)=>{
+    const sourceOrder = [...order]
+    const onRehearseDone = rehearse ? (seconds: number[]) => confirmRehearsal(
+      seconds.flatMap((sec, index) => sec > 0 && sourceOrder[index] !== undefined
+        ? [{ slideIndex: sourceOrder[index]!, ms: sec * 1000 }] : []),
+      () => !locked() && !mutationPending && deck.sha256 === sourceSha && JSON.stringify(nativeDraft.operations) === snapshot,
+    ) : undefined
+    showOverlay=openSlidesShow(root,{slides:tree.slides,mediaSources:tree.slides.map(slide=>(slide as RenderSlide & {mediaSources?:SlideMediaSource[];modelSources?:ModelSource[]}).mediaSources??[]),startIndex:customOrder?.[0]??startIndex,customOrder,...playback,onRehearseDone,
+      presenterNotes: mode === 'presenter' ? preview.model.slides.map(slide => slide.notesText ?? '') : undefined, onClose:(lastIndex)=>{
       showOverlay=undefined
       if(!disposed){const id=order[lastIndex??startIndex];root.querySelector<HTMLButtonElement>('.slide-open[data-slide-index="'+id+'"]')?.click();statusMessage.textContent='放映已结束；草稿未改动'}
     }})
@@ -1620,6 +1852,28 @@ async function openPictureCutout(){
  }catch(error){if(!disposed&&generation===cutoutGeneration)statusMessage.textContent=error instanceof Error?error.message:'去背景未打开，原图片保留'}
 }
 
+function transformSelectedPicture(command: 'rotatePictureRight' | 'rotatePictureLeft' | 'flipPictureH' | 'flipPictureV') {
+  const element = currentElement()
+  if (!nativeDraft || locked() || mutationPending || selectedObjects.size !== 1 ||
+      !element?.pictureTransform || pendingGroup(selectedSlide)) return
+  const key = editKey(selectedSlide, element.id)
+  const change = edits.get(key)
+  const current = change?.pictureTransform ?? element.pictureTransform
+  const next = { ...current }
+  if (command === 'flipPictureH') next.flipH = !next.flipH
+  else if (command === 'flipPictureV') next.flipV = !next.flipV
+  else next.rot = (next.rot + (command === 'rotatePictureRight' ? 5400000 : 16200000)) % 21600000
+  const changes = slideChanges()
+  changes.edits = [...edits.values()].filter(edit => editKey(edit.slideIndex, edit.elementId) !== key)
+  const retained = { ...change, slideIndex: selectedSlide, elementId: element.id }
+  delete retained.pictureTransform
+  if (next.rot !== element.pictureTransform.rot || next.flipH !== element.pictureTransform.flipH ||
+      next.flipV !== element.pictureTransform.flipV) {
+    changes.edits.push({ ...retained, pictureTransform: next })
+  } else if (retained.geometry) changes.edits.push(retained)
+  commitNativeChanges(changes)
+}
+
 async function chooseNativePicture(replace: boolean) {
   const slideIndex=selectedSlide, element=currentElement(), sourceSha=deck.sha256
   const snapshot=JSON.stringify(slideChanges())
@@ -1740,6 +1994,7 @@ function slideChanges(): SlideChanges {
     ...(nativeChartEdits.length ? { chartEdits: structuredClone(nativeChartEdits) } : {}),
     ...(commentEdits.length ? { commentEdits: commentEdits.map(edit => ({ ...edit })) } : {}),
     ...(hiddenSlideEdits.size ? { hiddenSlides: [...hiddenSlideEdits].map(([slideIndex, hidden]) => ({ slideIndex, hidden })) } : {}),
+    ...(advanceTimeEdits.size ? { advanceTimes: Array.from(advanceTimeEdits, ([slideIndex, ms]) => ({ slideIndex, ms })).filter(item => !deletedSlides.has(item.slideIndex)) } : {}),
     transitions: [...transitionEdits].map(([slideIndex, kind]) => ({ slideIndex, kind })), animations: [...animationEdits],
     ...(animationSequences.size ? { animationSequences: [...animationSequences].map(([slideIndex, items]) => ({ slideIndex, items: items.map(item => ({ ...item })) })) } : {}),
     slideLayouts: [...layoutEdits].map(([slideIndex, layoutPath]) => ({ slideIndex, layoutPath })),
@@ -1756,7 +2011,7 @@ function slideChanges(): SlideChanges {
 function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false) {
   if (!nativeDraft) return
   const operations = candidate ?? nativeDraft.operations
-  const supported = new Set(['zoomInsertions','modelInsertions','modelViews','customShows', 'mediaInsertions', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundImageReuses', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
+  const supported = new Set(['zoomInsertions','modelInsertions','modelViews','customShows', 'mediaInsertions', 'masterElementEdits', 'masterTextEdits', 'notesEdits', 'linkEdits', 'clipboardPastes', 'groupEdits', 'elementOrders', 'images', 'pictureReplacements', 'pictureCrops', 'pictureOpacities', 'backgroundImages', 'backgroundImageReuses', 'backgroundGradients', 'backgroundResets', 'backgroundGraphics', 'chartEdits', 'commentEdits', 'kind', 'edits', 'order', 'newSlides', 'deletedSlides', 'resetLayouts', 'shapes', 'tables', 'shapeStyles', 'shapeKinds', 'sections', 'headerFooter', 'tableCells', 'tableStyles', 'tableStructures', 'charts', 'smartArts', 'theme', 'slideSize', 'textFormatting', 'paragraphFormatting', 'animationSequences', 'hiddenSlides', 'transitions', 'advanceTimes', 'animations', 'slideLayouts', 'backgrounds', 'textBoxes', 'deletions'])
   // 多操作批次不能安全折叠为对象面板快照；拒绝打开并保留原草稿，防止下一次输入覆盖它。
   if (operations.length > 1 || operations.some(operation => operation.kind !== 'editSlides' || Object.keys(operation).some(key => !supported.has(key)))) {
     throw new Error('当前 PPTX 草稿包含暂不支持恢复的操作，草稿已保留')
@@ -1773,6 +2028,14 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   const restoredLinks = validateSlidesLinkDraft(changes, deck.slides)
   const restoredPastes = validateSlidesClipboardDraft(changes, deck.slides)
   const transitions = restoredTransitions(changes.transitions, deck.slides.length)
+  const advanceTimes = changes.advanceTimes ?? []
+  if (!Array.isArray(advanceTimes) || advanceTimes.length > 500 ||
+      advanceTimes.some(time => !time || Object.keys(time).sort().join() !== 'ms,slideIndex' ||
+        !Number.isInteger(time.slideIndex) || time.slideIndex < 0 || time.slideIndex >= deck.slides.length ||
+        (changes.deletedSlides ?? []).includes(time.slideIndex) || !Number.isInteger(time.ms) || time.ms < 1 || time.ms > 4294967295) ||
+      new Set(advanceTimes.map(time => time.slideIndex)).size !== advanceTimes.length) {
+    throw new Error('排练计时草稿无效。')
+  }
   if (native && transitions.some(item => !transitionEditingAllowed(deck.slides[item.slideIndex]))) throw new Error('来源含尚不能安全修改的转场兼容性内容；原草稿已保留')
   const restoredBackgroundImages = changes.backgroundImages ?? []
   {
@@ -1816,7 +2079,8 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   const restoredStyles = changes.shapeStyles ?? []
   const hex = (value: unknown) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
   if (!Array.isArray(restoredStyles) || restoredStyles.length > 500 || restoredStyles.some(item => !item || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
-    || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId && ['text', 'shape'].includes(element.type))
+    || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId &&
+      (['text', 'shape'].includes(element.type) || (item.fill === undefined && pictureOutlineEnabled(element))))
     || Object.keys(item).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || (item.fill === undefined && item.stroke === undefined)
     || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || (item.stroke !== undefined && item.stroke !== null && (!hex(item.stroke.color) || !(item.stroke.widthPt > 0 && item.stroke.widthPt <= 100))))) throw new Error('草稿中的形状样式无效；原草稿已保留')
   const restoredSmartArts = changes.smartArts ?? []
@@ -1909,6 +2173,8 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   // Older drafts already stored an array: retain every record, including noncommuting list commands.
   paragraphFormattingEdits.push(...(changes.paragraphFormatting ?? []).map(format => ({ ...format })))
   for (const transition of transitions) transitionEdits.set(transition.slideIndex, transition.kind)
+  advanceTimeEdits.clear()
+  for (const time of advanceTimes) advanceTimeEdits.set(time.slideIndex, time.ms)
   for (const layout of changes.slideLayouts ?? []) layoutEdits.set(layout.slideIndex, layout.layoutPath)
   for (const background of changes.backgrounds ?? []) backgroundEdits.set(background.slideIndex, background.color)
   customShowEdits=restoredShows===undefined?undefined:structuredClone(restoredShows)
@@ -2130,7 +2396,7 @@ function renderInspector() {
   if(cutoutCurrent&&!cutoutCurrent()){++cutoutGeneration;cutoutDialog?.dispose();cutoutDialog=undefined;cutoutCurrent=undefined}
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   renderNotes()
-  if(selectionSlide!==selectedSlide){selectedObjects.clear();selectionSlide=selectedSlide;explicitEmptySelection=false;cropOverlay?.dispose();cropOverlay=undefined}
+  if(selectionSlide!==selectedSlide){selectedObjects.clear();selectionSlide=selectedSlide;explicitEmptySelection=false;cropOverlay?.dispose();finishPictureCrop()}
   renderComments()
   // 表格虽不能整体编辑/删除，但单元格可改字，因此也列入可选对象。
   const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable || !!item.tableCells || item.type === 'chart' || item.type === 'group' || item.model3d) && !deletions.has(editKey(selectedSlide, item.id)))
@@ -2219,6 +2485,11 @@ function renderInspector() {
   nativeRibbon?.setValue('background', backgroundColor.value)
   { const picture = currentElement(), pending = picture ? pictureOpacities.find(item => item.slideIndex === selectedSlide && item.elementId === picture.id) : undefined
     nativeRibbon?.setValue('pictureOpacity', picture?.type === 'picture' ? String(Math.round((1 - (pending?.opacity ?? picture.pictureOpacity ?? 1)) * 100)) : '') }
+  if (selectedElement) {
+    const stroke = currentPictureOutline(selectedElement)
+    nativeRibbon?.setValue('pictureOutlineColor', stroke.color)
+    nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
+  }
   nativeRibbon?.setValue('animationEffect', animationEffect.value)
   nativeRibbon?.setValue('animationTrigger', animationTrigger.value)
   nativeRibbon?.setValue('animationDuration', animationDuration.value)
@@ -2284,7 +2555,12 @@ function renderInspector() {
   for(const [command,enabled,reason] of [
     ['removeBackground',!cutoutReason(),cutoutReason()??''],
     ['cropPicture',!cropReason(),cropReason()??''],
+    ['changeShape',selectedObjects.size===1 && element?.type==='shape' && element.orderEditable!==false && !pendingGroup(selectedSlide), '请选择可更改类型的来源形状'],
     ['pictureOpacity', !opacityReason(), opacityReason() ?? '图片透明度（0–100%）：0 为不透明'],
+    ...(['pictureOutlineMenu', 'pictureOutlineColor', 'pictureOutlineWidth', 'pictureNoOutline'].map(command =>
+      [command, selectedObjects.size === 1 && pictureOutlineEnabled(element) && !pendingGroup(selectedSlide), '请选择支持轮廓编辑的来源图片'] as const)),
+    ...(['rotatePictureRight', 'rotatePictureLeft', 'flipPictureH', 'flipPictureV'].map(command =>
+      [command, selectedObjects.size === 1 && !!element?.pictureTransform && !pendingGroup(selectedSlide), '请选择支持旋转或翻转的来源图片'] as const)),
     ['replacePicture',selectedObjects.size===1&&!element?.mediaKind&&element?.pictureReplaceable===true&&!pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id),pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id)?'请先保存或撤回此图片裁切':element?.pictureReplaceReason??'请选择已核验身份的来源图片'],
     ['chartData',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全编辑数据'],
     ['chartType',selectedObjects.size===1&&element?.chartEditSafe===true,'此来源图表不能安全更改类型'],
@@ -2352,6 +2628,30 @@ function projectedParagraphs(element: DeckElement | undefined) {
   const formatting = element?.paragraphFormatting ?? element?.paragraphAlignments?.map(align => ({ align })) ?? []
   return projectParagraphs(formatting, element?.paragraphLists ?? [], paragraphFormattingEdits.filter(patch => patch.slideIndex === selectedSlide && patch.elementId === element?.id))
 }
+let choosingPictureBullet = false
+async function choosePictureBullet() {
+  const element = currentElement()
+  if (!nativeDraft || locked() || choosingPictureBullet || selectedObjects.size > 1 ||
+      !element?.editable || !element.text.trim() || !['shape', 'text'].includes(element.type)) return
+  const slideIndex = selectedSlide, sourceSha = deck.sha256
+  const snapshot = JSON.stringify(nativeDraft.operations)
+  const current = () => !locked() && !mutationPending && deck.sha256 === sourceSha &&
+    selectedSlide === slideIndex && currentElement()?.id === element.id && JSON.stringify(nativeDraft.operations) === snapshot
+  choosingPictureBullet = true
+  try {
+    const file = await pickSlideImage()
+    if (!file || !current()) return
+    if (file.size > 256 * 1024) throw new Error('图片项目符号不能超过 256 KiB')
+    const { bytesBase64, extension } = await prepareSlideImage(file, deck.size)
+    if (!current()) return
+    updateSelectedParagraph({ bullet: 'blip', bulletImage: { bytesBase64, extension } })
+  } catch (error) {
+    if (current()) statusMessage.textContent = error instanceof Error ? error.message : '无法读取图片项目符号'
+  } finally {
+    choosingPictureBullet = false
+  }
+}
+
 function updateSelectedParagraph(patch: Omit<ParagraphFormatting, 'slideIndex' | 'elementId'>) {
   const element = currentElement()
   if (selectedObjects.size>1 || !element?.editable || !element.text.trim()) return
@@ -2368,7 +2668,7 @@ function updateSelectedParagraph(patch: Omit<ParagraphFormatting, 'slideIndex' |
     return
   }
   // Keep a repeated absolute value from manufacturing a history entry and a false undo step.
-  if (JSON.stringify(proposal) === JSON.stringify(paragraphs)) return
+  if (!patch.bulletImage && JSON.stringify(proposal) === JSON.stringify(paragraphs)) return
   if (paragraphFormattingEdits.length >= 500) {
     statusMessage.textContent = '段落格式修改已达到 500 条；请先保存并打开新修订，再继续分批编辑。当前操作未应用。'
     return
@@ -2415,13 +2715,38 @@ function mountInkControls(){
 }
 
 if (native) nativeRibbon = createSlidesNativeRibbon(root, {
+  pdfExportAvailable: !!pdfExport,
+  saveAsAvailable: !!saveAsActions,
+  openFileAvailable: !!openFileDialog,
+  imageExportAvailable: !!nativeDraft,
+  nameWithAiAvailable: !!(namingController && saveAsActions),
   onAssistant: sharedShell?.onAssistant ?? (sharedShell?.nativeAI ? () => nativeAIHost?.open() : undefined),
   onAction(command, value) {
+    if (command === 'openFile') {
+      if (!loading && !locked() && !mutationPending) openFileDialog?.open()
+      return
+    }
+    if (command === 'nameWithAi') { void nameWithAi(); return }
+    if (command === 'saveAs') { openSlideSaveAs(); return }
+    if (command === 'exportPdf') {
+      if (pdfExport && !loading && !locked() && !mutationPending &&
+          flushSlideOutputInputs('请先确认或取消当前编辑，再导出 PDF')) void pdfExport.run()
+      return
+    }
     if (command === 'slideMaster') { void openMasterText(); return }
     if (['normalView', 'outlineView', 'slideSorter', 'readingView'].includes(command)) { void setSlidesViewMode(command === 'normalView' ? 'normal' : command === 'outlineView' ? 'outline' : command === 'readingView' ? 'reading' : 'sorter'); return }
     if(notesPane&&!notesPane.flush())return
     if(command==='print'){void openPrint();return}
     if(command==='notes'){notesPane?.setVisible(!notesVisible);syncNotesVisibility();return}
+    if (command === 'thumbnailPane') { showThumbnails = !showThumbnails; syncSlidesViewMode(); return }
+    if (command === 'viewZoomIn' || command === 'viewZoomOut' || command === 'viewZoom100' || command === 'viewZoomFit') {
+      if (!canvas || loading || locked() || slidesViewMode === 'sorter' || slidesViewMode === 'reading') return
+      const current = canvas.getZoom()
+      canvas.setZoom(command === 'viewZoomFit' ? null : command === 'viewZoom100' ? 1
+        : command === 'viewZoomIn' ? nextPreset(current) : prevPreset(current))
+      ruler.update()
+      return
+    }
     if (command === 'grid') { gridVisible = !gridVisible; syncGrid(); return }
     if (command === 'ruler') { rulerVisible = !rulerVisible; ruler.setVisible(rulerVisible); syncGrid(); return }
     if (command === 'guides') { guidesVisible = !guidesVisible; guides.setVisible(guidesVisible); syncGrid(); return }
@@ -2429,7 +2754,12 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     if(command==='paste'){pasteObjects();return}
     if(command==='formatBrush'){startBrush(value==='continuous');return}
     if(command==='insertLink'){openLinkDialog();return}
-    if (command === 'exportImages') { openExportImagesDialog(); return }
+    if (command === 'exportImages' || command === 'exportImagesJpg') {
+      openExportImagesDialog(command === 'exportImages' ? 'png' : 'jpg')
+      return
+    }
+    if (command === 'rehearse') { stopBrush(); void startSlidesShow(false, undefined, 'rehearse'); return }
+    if (command === 'presenter') { stopBrush(); void startSlidesShow(false, undefined, 'presenter'); return }
     if (command === 'startShow' || command === 'startShowCurrent') { stopBrush(); void startSlidesShow(command === 'startShowCurrent'); return }
     if (command === 'animationPreview') { stopBrush(); void startAnimationPreview(); return }
     if (command === 'groupObjects' || command === 'ungroupObjects') { changeGroup(command === 'ungroupObjects'); return }
@@ -2442,6 +2772,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     if (locked()) return
     // 新建页保存前只能移动/再新建；页面级与对象级修改需要来源身份，由引擎拒绝。
     if (isNewSlide(selectedSlide) && !['commentsPane', 'newComment', 'addSlide', 'addSlideWithLayout', 'movePrevious', 'moveNext', 'theme', 'slideSize', 'slideOrientation', 'customSlideSize', 'saveRevision'].includes(command)) { statusMessage.textContent = NEW_SLIDE_REASON; return }
+    if (command === 'pictureBullet') { void choosePictureBullet(); return }
     if (PARAGRAPH_LIST_COMMANDS.includes(command)) {
       const patch = paragraphCommandPatch(command, value)
       if (patch) updateSelectedParagraph(patch)
@@ -2461,6 +2792,37 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'insertPicture': void chooseNativePicture(false); return
       case 'removeBackground': void openPictureCutout(); return
       case 'replacePicture': void chooseNativePicture(true); return
+      case 'rotatePictureRight':
+      case 'rotatePictureLeft':
+      case 'flipPictureH':
+      case 'flipPictureV':
+        transformSelectedPicture(command)
+        return
+      case 'pictureOutlineColor':
+      case 'pictureOutlineWidth':
+      case 'pictureNoOutline': {
+        const target = currentElement()
+        if (!target || !pictureOutlineEnabled(target) || selectedObjects.size !== 1 || pendingGroup(selectedSlide)) return
+        const key = editKey(selectedSlide, target.id)
+        if (deletions.has(key) || (!shapeStyleEdits.has(key) && shapeStyleEdits.size >= 500)) return
+        const stroke = currentPictureOutline(target.id)
+        if (command === 'pictureOutlineColor') {
+          if (typeof value !== 'string' || !/^#[a-f\d]{6}$/i.test(value)) return
+          stroke.color = value.toUpperCase()
+        } else if (command === 'pictureOutlineWidth') {
+          const width = Number(value)
+          if (!Number.isFinite(width) || width < 0.01 || width > 100) return
+          stroke.widthPt = width
+        }
+        shapeStyleEdits.set(key, { slideIndex: selectedSlide, elementId: target.id, stroke: command === 'pictureNoOutline' ? null : stroke })
+        renderStructurePending()
+        markDirty()
+        if (command === 'pictureNoOutline') {
+          nativeRibbon?.setValue('pictureOutlineColor', '#000000')
+          nativeRibbon?.setValue('pictureOutlineWidth', '')
+        } else nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
+        return
+      }
       case 'pictureOpacity': {
         // 固定源 onPictureOpacity：控件输入的是透明度百分比，写回不透明度（1 − 透明度）。
         const target = currentElement(), reason = opacityReason()
@@ -2473,6 +2835,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         if (opacity === (target.pictureOpacity ?? 1)) { if (index < 0) break }
         else pictureOpacities.push({ slideIndex: selectedSlide, elementId: target.id, expectedSha256: target.pictureSha256!, expectedSize: target.pictureSize!, opacity })
         markDirty()
+        nativeRibbon?.setValue('pictureOpacity', String(transparency))
         break
       }
       case 'chartData': openNativeChart('data'); return
@@ -2498,13 +2861,17 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         openSectionDialog(); break
       case 'changeShape': {
         const kind = String(value ?? ''), element = currentElement()
-        if (!kind) break
-        if (isNewSlide(selectedSlide)) { statusMessage.textContent = NEW_SLIDE_REASON; break }
-        if (!element || element.type !== 'shape' || deletions.has(editKey(selectedSlide, element.id))) { statusMessage.textContent = '更改形状仅适用于形状（不含文本框与线条）'; break }
-        if (!SHAPE_PRESETS.includes(kind) || LINE_SHAPE_KINDS.includes(kind)) break
-        shapeKindEdits.set(editKey(selectedSlide, element.id), { slideIndex: selectedSlide, elementId: element.id, kind })
-        canvasStatus.textContent = '形状类型修改将在保存并打开新修订后显示在画布中。'
-        renderStructurePending(); markDirty(); break
+        if (!SHAPE_PRESETS.includes(kind) || LINE_SHAPE_KINDS.includes(kind)) return
+        if (!element || selectedObjects.size !== 1 || element.type !== 'shape' || element.orderEditable === false ||
+            isNewSlide(selectedSlide) || pendingGroup(selectedSlide) || deletions.has(editKey(selectedSlide, element.id))) return
+        const key = editKey(selectedSlide, element.id)
+        if (shapeKindEdits.get(key)?.kind === kind) return
+        const changes = slideChanges()
+        changes.shapeKinds = [...[...shapeKindEdits].filter(([id]) => id !== key).map(([, edit]) => edit),
+          { slideIndex: selectedSlide, elementId: element.id, kind }]
+        try { commitNativeChanges(changes) }
+        catch (error) { statusMessage.textContent = error instanceof Error ? error.message : '形状类型未更改' }
+        return
       }
       case 'tableStyle':
       case 'tableFirstRow':
@@ -3070,7 +3437,7 @@ function renderStructurePending() {
   for (const [index, section] of sectionEdits.entries()) row(`第 ${order.indexOf(section.slideIndex) + 1} 页前 · 新增节「${section.name}」`, () => { sectionEdits.splice(index, 1); renderSlides() })
   for (const [key, item] of shapeKindEdits) {
     const name = deck.slides[item.slideIndex]?.elements.find(element => element.id === item.elementId)?.name || item.elementId
-    row(`第 ${order.indexOf(item.slideIndex) + 1} 页 · ${name} · 更改为${SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes).find(shape => shape.prst === item.kind)?.label ?? item.kind}`, () => shapeKindEdits.delete(key))
+    row(`第 ${order.indexOf(item.slideIndex) + 1} 页 · ${name} · 更改为${SHAPE_GALLERY_GROUPS.flatMap(group => group.shapes).find(shape => shape.prst === item.kind)?.label ?? item.kind}`, () => { shapeKindEdits.delete(key); refreshCanvasPreview() })
   }
   for (const [key, style] of shapeStyleEdits) {
     const name = deck.slides[style.slideIndex]?.elements.find(element => element.id === style.elementId)?.name || style.elementId
@@ -3389,6 +3756,7 @@ const save = async () => {
     commentEdits.splice(0); commentPane.clearDrafts()
     hiddenSlideEdits.clear()
     transitionEdits.clear()
+    advanceTimeEdits.clear()
     layoutEdits.clear()
     slideSizeEdit = undefined
     groupEdits.splice(0)
@@ -3493,7 +3861,7 @@ async function start() {
       renderTree = tree
       canvasHost.hidden = false
       preview.hidden = true
-      canvas = mountSlidesCanvas(canvasHost)
+      canvas = mountSlidesCanvas(canvasHost, updateZoomStatus)
       canvasStatus.textContent = '点击对象选择，拖动调整位置，拖动角点缩放'
       renderCanvas()
       if (nativeDraft?.dirty) refreshCanvasPreview()
@@ -3527,7 +3895,7 @@ return { ready, get officeEditAssistant() { return nativeAIHost }, async officeR
   }
   nativeDraft.setOperations(operations)
   return {operations:structuredClone(operations),selection}
-}, dispose() { disposed = true; railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
+}, dispose() { disposed = true; void namingController?.cancel().catch(() => {}); pdfExport?.dispose(); saveAsActions?.dispose(); openFileDialog?.dispose(); railNavigation.dispose(); zoomController?.abort();zoomDialog?.remove(); screenRecordingController?.abort(); printDialog?.dispose(); inkControls?.dispose(); modelControls?.dispose(); ++cutoutGeneration;cutoutDialog?.dispose(); customShowDialog?.dispose(); mediaPickerController?.abort(); mediaPlayback?.dispose();canvasHost.removeEventListener('wheel',onCanvasWheel);canvasHost.removeEventListener('dragover',onMediaDragOver);canvasHost.removeEventListener('drop',onMediaDrop); ++masterTextDialogGeneration; masterTextDialog?.dispose(); ++animationPreviewGeneration; animationPreviewOverlay?.dispose(); slideOutline?.dispose(); slideReading?.dispose(); slideSorter?.dispose(); ruler.dispose(); guides.dispose(); refresh?.dispose(); notesPane?.dispose(); stopBrush(); nativeClipboard=undefined; linkDialog?.dispose(); window.removeEventListener('keydown',onClipboardKey); rehearsalDialog?.remove(); showOverlay?.dispose(); nativeAIHost?.dispose(); closeStructureDialog(); ++previewSequence; clearTimeout(previewTimer); saveButton.removeEventListener('click', save); for(const type of ['input','change','click'])root.removeEventListener(type,guardPendingGroup,true); nativeRibbon?.dispose(); chartFormatPane?.dispose(); geometryPane?.dispose(); shapeFormatPane?.dispose(); backgroundPane?.dispose(); findDialog?.dispose(); chartDialog?.dispose(); cropOverlay?.dispose(); sizeDialog?.dispose(); equationDialog?.dispose(); canvas?.destroy?.() } }
 }
 
 if (document.querySelector('#slides-app')) createSlidesEditorView(document.querySelector('#slides-app')!)

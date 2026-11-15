@@ -1,0 +1,85 @@
+import { afterEach, expect, it, vi } from 'vitest'
+import { showOfficeSources } from './office-sources'
+
+afterEach(() => {
+  Reflect.deleteProperty(HTMLDialogElement.prototype, 'showModal')
+  vi.unstubAllGlobals()
+  document.body.replaceChildren()
+})
+
+it.each([403, 409])('clears query results and reloads table access after HTTP %s', async status => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true, value: function (this: HTMLDialogElement) { this.open = true },
+  })
+  let queries = 0
+  const original = 'SELECT amount FROM db.old_table'
+  const transport = vi.fn(async (url: string) => {
+    if (url.endsWith('/query')) {
+      if (++queries === 1) return Response.json({ columns: ['amount'], rows: [[42]], source: { queryId: 'first' } })
+      return Response.json({ message: '数据源授权或版本已变化，请重新查询。' }, { status })
+    }
+    if (queries >= 2 && status === 403) return Response.json({ items: [{ id: 'sales', available: false, reason: '数据源授权已撤销' }] })
+    return Response.json({ items: [{ id: 'sales', name: '销售', available: true,
+      tables: queries < 2 ? ['db.old_table'] : ['db.new_table'] }] })
+  })
+  vi.stubGlobal('fetch', transport)
+  const host = document.body.appendChild(document.createElement('div'))
+  await showOfficeSources(host, { admin: false, space: {
+    id: 'team', name: '团队', role: 'viewer', personal_user: null, archived: false,
+  } })
+  const input = host.querySelector('textarea')!
+  const execute = [...host.querySelectorAll('button')].find(button => button.textContent === '执行查询')!
+  input.value = original
+  input.dispatchEvent(new Event('input'))
+  execute.click()
+  await vi.waitFor(() => expect(host.querySelector('.source-query-result td')?.textContent).toBe('42'))
+  execute.click()
+  await vi.waitFor(() => expect(host.textContent).toContain(status === 403 ? '数据源授权已撤销' : '可访问表：db.new_table'))
+  expect(host.textContent).not.toContain('可访问表：db.old_table')
+  expect(host.querySelector('.source-query-result td')).toBeNull()
+  expect(host.querySelector('textarea')?.value).toBe(status === 403 ? undefined : original)
+  expect(host.querySelector('[role=status]')?.textContent).toContain('数据源授权或版本已变化')
+})
+
+it('shows the effective member table scope after saving and restoring inheritance', async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true, value: function (this: HTMLDialogElement) { this.open = true },
+  })
+  const tables = ['db.orders', 'db.items']
+  let memberTables: string[] | null = null
+  const updates: (string[] | null)[] = []
+  vi.stubGlobal('fetch', async (url: string, request: RequestInit) => {
+    if (request.method === 'PUT') {
+      memberTables = JSON.parse(String(request.body)).tables
+      updates.push(memberTables)
+      return Response.json({})
+    }
+    if (url.endsWith('/sales/members')) {
+      return Response.json({ tables, items: memberTables === null ? [] : [{ user: 'member', tables: memberTables }] })
+    }
+    if (url.endsWith('/members')) return Response.json({
+      items: [{ user: 'member', name: '成员' }, { user: 'other', name: '另一位成员' }],
+    })
+    return Response.json({ items: [{ id: 'sales', name: '销售', available: true, tables }] })
+  })
+  const host = document.body.appendChild(document.createElement('div'))
+  await showOfficeSources(host, { admin: false, space: {
+    id: 'team', name: '团队', role: 'owner', personal_user: null, archived: false,
+  } })
+  const click = (label: string) => [...host.querySelectorAll('button')].find(button => button.textContent === label)!.click()
+  click('成员表权限')
+  await vi.waitFor(() => expect(host.textContent).toContain('继承工作区范围 · 2 张表'))
+  const boxes = (member: string) => {
+    const heading = [...host.querySelectorAll('h4')].find(node => node.textContent === member)!
+    return [...heading.parentElement!.querySelectorAll<HTMLInputElement>('input[type=checkbox]')]
+  }
+  boxes('另一位成员')[0].checked = false
+  for (const input of boxes('成员')) input.checked = false
+  click('保存成员范围')
+  await vi.waitFor(() => expect(host.textContent).toContain('自定义范围 · 无可访问表'))
+  expect(boxes('另一位成员').map(box => box.checked)).toEqual([false, true])
+  click('继承工作区范围')
+  await vi.waitFor(() => expect(host.textContent).not.toContain('自定义范围 · 无可访问表'))
+  expect(boxes('另一位成员').map(box => box.checked)).toEqual([false, true])
+  expect(updates).toEqual([[], null])
+})

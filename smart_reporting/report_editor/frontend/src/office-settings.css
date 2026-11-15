@@ -1,0 +1,23 @@
+.office-personal-host{border:0;padding:0;background:transparent;color:inherit;max-width:none;max-height:none;overflow:visible}
+.office-personal-host::backdrop{background:transparent}
+.office-account-entry{display:flex;align-items:center;gap:10px;width:100%;padding:8px;border-radius:8px;text-align:left}
+.office-account-entry:hover{background:#8881}
+.office-account-avatar{display:flex;align-items:center;justify-content:center;border-radius:50%;width:30px;height:30px;flex:none;background:#f0f0f0;color:#555}
+.office-account-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+html[data-office-theme=dark] .editor-account-settings{--surface:#242424;--text-primary:#eee;--text-secondary:#bbb;--text-tertiary:#aaa;--bg-hover:#383838;--bg-content:#303030;--border-subtle:#444}
+html[data-office-theme=dark] #office{color:#eee;--line:#444;--muted:#bbb}
+html[data-office-theme=dark] #office :is(.office-body,main,.tabbar,aside,.space-selector,.file-list,.home-content){background:#222;color:#eee}
+html[data-office-theme=dark] #office :is(.tab.active,.file-tab.active,.file-row:hover){background:#333;color:#eee}
+html[data-office-theme=dark] :is(.app-bar,.report-meta,.report-outline,.report-actions){background:#242424;color:#eee;border-color:#444;--color-ink:#eee;--color-ink-2:#ddd;--color-text-muted:#bbb;--color-border:#444;--color-primary-soft:#354359}
+html[data-office-theme=dark] .report-app{background:#191919}
+.office-admin-page{max-width:1120px;margin:auto;padding:28px;font:14px/1.6 system-ui,sans-serif}
+.office-admin-page header{display:flex;align-items:center;justify-content:space-between}
+.office-admin-layout{display:grid;grid-template-columns:200px 1fr;gap:24px;margin-top:24px}
+.office-admin-layout nav{display:flex;flex-direction:column;gap:6px}
+.office-admin-layout nav button{text-align:left;padding:10px;border-radius:8px}
+.office-admin-layout nav button[aria-current=true]{background:#eee;font-weight:600}
+.office-admin-layout form{display:grid;gap:20px;max-width:540px}
+.office-admin-layout label{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.office-admin-layout input:not([type=checkbox]){padding:8px;border:1px solid #ddd;border-radius:6px;max-width:65%}
+.office-admin-layout button[type=submit]{padding:8px 18px;background:#222;color:white;border-radius:6px;justify-self:end}
+@media(max-width:600px){.office-admin-page{padding:16px}.office-admin-layout{grid-template-columns:110px 1fr;gap:12px}.office-admin-layout label{align-items:start;flex-direction:column}.office-admin-layout input:not([type=checkbox]){max-width:100%;width:100%}}

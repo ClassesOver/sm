@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { createHash } from 'node:crypto'
 import { PDFDocument, PDFName } from 'pdf-lib'
 import { extractPagesBytes } from '../src/main/save-pdf'
+import { inspectPdf, patchPdfWithReceipt } from './operations'
 
 async function source() {
   const document = await PDFDocument.create()
@@ -20,6 +21,22 @@ test('extracts selected pages in requested order without changing the source', a
 
   assert.deepEqual(output.getPages().map(page => [page.getWidth(), page.getHeight()]), [[612, 792], [300, 400]])
   assert.equal(createHash('sha256').update(bytes).digest('hex'), sourceSha256)
+})
+
+test('extracts the current page positions from a new revision after rotation, deletion and reorder', async () => {
+  const original = await source()
+  const model = await inspectPdf(original)
+  const [first, second, third] = model.pages
+  const saved = await patchPdfWithReceipt(original, [
+    {kind:'deletePage',pageId:second.pageId},
+    {kind:'reorderPages',pageIds:[third.pageId,first.pageId]},
+    {kind:'rotatePage',pageId:third.pageId,delta:90},
+  ], model.sourceSha256)
+  const extracted = await extractPagesBytes(saved.bytes, [0])
+  const [page] = (await PDFDocument.load(extracted)).getPages()
+  assert.deepEqual([page.getWidth(),page.getHeight(),page.getRotation().angle], [612,792,90])
+  assert.equal((await PDFDocument.load(original)).getPageCount(), 3)
+  assert.equal(createHash('sha256').update(original).digest('hex'), model.sourceSha256)
 })
 
 test('rejects empty, duplicate, non-integer and out-of-range page selections', async () => {

@@ -11,9 +11,10 @@
 
 import { parseRange, type RangeBounds } from './cell-address'
 import { groupLabel, isValidGrouping, type PivotFieldGrouping } from './pivot-grouping'
-import { rebuildPivotOutput, readPivotState } from './pivot-add'
+import { rebuildPivotOutput, readPivotState, resolvePivotTarget } from './pivot-add'
 import { readSourceAreaRows, escapeXmlAttribute, type SourceValue } from './pivot-source'
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
+import { readXmlAttribute } from './xml'
 import { assemblePackage, createBufferEntrySource } from './zip'
 
 const MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
@@ -113,7 +114,22 @@ function measureCellXml(value: SourceValue): string {
 /// Refreshes every pivot cache in the workbook against its current worksheet
 /// source. Returns the patched package bytes; a workbook without pivot caches
 /// throws (the AI layer surfaces the message).
-export async function refreshPivotCaches(sourceBytes: Uint8Array): Promise<Uint8Array> {
+export async function pivotTablePathsOnSheet(bytes: Uint8Array, sheetName: string): Promise<string[]> {
+  const source = await createBufferEntrySource(bytes)
+  const sheet = parseSheetElements(await source.readText('xl/workbook.xml')).find(item => item.name === sheetName)
+  if (!sheet?.relationshipId) throw new PivotRefreshError('透视表所在工作表不存在。')
+  const path = await resolveWorksheetPath(source, sheet.relationshipId)
+  const relationshipPath = relsPathFor(path)
+  if (!(await source.has(relationshipPath))) return []
+  const relationships = await source.readText(relationshipPath)
+  return [...relationships.matchAll(/<Relationship\b[^>]*\/>/g)].flatMap(([tag]) => {
+    const target = readXmlAttribute(tag, 'Target')
+    return target && readXmlAttribute(tag, 'Type') === REL_NS + '/pivotTable'
+      ? [resolvePivotTarget(path, target)] : []
+  })
+}
+
+export async function refreshPivotCaches(sourceBytes: Uint8Array, tablePaths?: readonly string[]): Promise<Uint8Array> {
   const source = await createBufferEntrySource(sourceBytes)
   const workbookXml = await source.readText('xl/workbook.xml')
   const cachePaths = (await source.paths()).filter((path) =>
@@ -137,12 +153,20 @@ export async function refreshPivotCaches(sourceBytes: Uint8Array): Promise<Uint8
 
   const managedTables: Array<{ tablePath: string; cachePath: string; outputRef: string | undefined }> = []
   const tableGroupingsByCachePath = new Map<string, Map<number, PivotFieldGrouping>>()
+  const selected = tablePaths === undefined ? undefined : new Set(tablePaths)
+  const selectedCachePaths = new Map<string, string>()
+  const otherCachePaths = new Set<string>()
   for (const path of await source.paths()) {
     if (!/^xl\/pivotTables\/[^/]+\.xml$/.test(path)) continue
     const tableXml = await source.readText(path)
     const cacheId = Number(tableXml.match(/\bcacheId="(\d+)"/)?.[1] ?? -1)
     const cachePath = cacheIdToPath.get(cacheId)
     if (!cachePath) continue
+    if (selected && !selected.has(path)) {
+      otherCachePaths.add(cachePath)
+      continue
+    }
+    if (selected) selectedCachePaths.set(path, cachePath)
     const groupings = parseGroupingsFromTable(tableXml)
     const existing = tableGroupingsByCachePath.get(cachePath)
     if (existing) {
@@ -159,9 +183,19 @@ export async function refreshPivotCaches(sourceBytes: Uint8Array): Promise<Uint8
       managedTables.push({ tablePath: path, cachePath, outputRef })
     }
   }
+  if (selected) {
+    if (selected.size === 0 || selectedCachePaths.size !== selected.size ||
+        [...selectedCachePaths.values()].some(path => !cachePaths.includes(path))) {
+      throw new PivotRefreshError('指定工作表没有可核验缓存的数据透视表。')
+    }
+    if ([...selectedCachePaths.values()].some(path => otherCachePaths.has(path))) {
+      throw new PivotRefreshError('透视缓存由其他工作表共享，无法只刷新指定工作表。')
+    }
+  }
 
   const replaced = new Map<string, string>()
-  for (const cachePath of cachePaths) {
+  const caches = selected ? new Set(selectedCachePaths.values()) : cachePaths
+  for (const cachePath of caches) {
     const cacheXml = await source.readText(cachePath)
     // Managed pivots regenerate both grouped raw cache and output atomically below.
     if(managedTables.some(table=>table.cachePath===cachePath))continue

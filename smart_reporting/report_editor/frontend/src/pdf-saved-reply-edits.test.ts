@@ -1,5 +1,5 @@
 import {expect,it} from 'vitest'
-import {stagePdfNote} from './pdf-notes'
+import {stagePdfNote,stagePdfThreadRemoval} from './pdf-notes'
 import {pdfPageState} from './pdf-operations'
 import {projectPageComments} from './pdf-comments'
 import {NativeDraft} from './native-draft'
@@ -25,4 +25,24 @@ it('retains exact leaf operations across history/reload and restores source text
  const identity={documentId:'thread',revision:1,sourceSha256:'f'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},draft=new NativeDraft(identity,storage)
  draft.setOperations(stagePdfNote([page],[],page.pageId,child.annotationId,'edited','2026-11-09T09:00:00Z'));const edited=draft.operations;draft.setOperations(stagePdfNote([page],draft.operations,page.pageId,child.annotationId,null));draft.undo();expect(draft.operations).toEqual(edited);draft.redo();expect(new NativeDraft(identity,storage).operations).toEqual(draft.operations)
  expect(stagePdfNote([page],edited,page.pageId,child.annotationId,'same')).toEqual([])
+})
+it('stages an entire saved thread as one undo step, preserving unrelated drafts', () => {
+  const unrelated = { kind:'rotatePage', pageId:'p', delta:90 }
+  const pendingReply = { kind:'replyNote', pageId:'p', annotationId:root.annotationId, expectedAnnotationSha256:root.expectedAnnotationSha256, contents:'unsaved child', createdMs:0 }
+  const previous = stagePdfNote([page], [unrelated, pendingReply], 'p', child.annotationId, 'unsaved edit', '2026-11-09T09:00:00Z')
+  const result = stagePdfThreadRemoval([page], previous, 'p', root.annotationId)
+  expect(result.map(op => [op.kind, op.annotationId])).toEqual([
+    ['rotatePage', undefined], ['removeNote', child.annotationId], ['removeNote', sibling.annotationId], ['removeNote', root.annotationId],
+  ])
+  expect(pdfPageState([page], result)[0].notes).toEqual([])
+  expect(projectPageComments(raw, page, 1, result, false)).toEqual([])
+  expect(() => pdfPageState([page], result.filter(op => op.annotationId !== sibling.annotationId))).toThrow(/thread root/)
+  expect(() => stagePdfThreadRemoval([{ ...page, notes:[{ ...root, replyable:false },child,sibling] }], previous, 'p', root.annotationId)).toThrow(/只读/)
+
+  const identity={documentId:'remove-thread',revision:1,sourceSha256:'f'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}}
+  const storage={getItem:()=>null,setItem:()=>{},removeItem:()=>{}}
+  const draft=new NativeDraft(identity,storage)
+  draft.setOperations(previous); draft.setOperations(result)
+  draft.undo(); expect(draft.operations).toEqual(previous)
+  draft.redo(); expect(draft.operations).toEqual(result)
 })

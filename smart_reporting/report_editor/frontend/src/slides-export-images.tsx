@@ -15,6 +15,9 @@ import type { RenderSlide } from '@genoffice/pptx-render'
 import { StaticNode } from './vendor/genoffice/renderer/NodeBody'
 import { fillToKonva } from './vendor/genoffice/renderer/konva-adapter'
 
+import { downloadSlidesBlob } from './slides-export-download'
+export { exportBaseName } from './slides-export-download'
+
 export const EXPORT_PIXEL_RATIO = 2
 export type ExportImageFormat = 'png' | 'jpg'
 
@@ -22,12 +25,6 @@ export type ExportImageFormat = 'png' | 'jpg'
 export function exportImageNames(baseName: string, count: number, ext: ExportImageFormat): string[] {
   const pad = count >= 100 ? 3 : 2
   return Array.from({ length: Math.max(0, count) }, (_, index) => `${baseName}-${String(index + 1).padStart(pad, '0')}.${ext}`)
-}
-
-/** 来源文件名去掉扩展名与路径；不能用作文件名的字符替换为下划线。 */
-export function exportBaseName(path: string | undefined): string {
-  const name = (path ?? '').split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') ?? ''
-  return name.replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '_').trim() || 'slides'
 }
 
 /** 预先加载渲染树中的全部内嵌图片，保证首帧即完整（固定源由 ctx.images 提供已加载图片）。 */
@@ -91,9 +88,6 @@ export async function downloadSlideImages(slides: RenderSlide[], baseName: strin
   const zip = new JSZip()
   names.forEach((name, index) => zip.file(name, pages[index]!, { base64: true }))
   const blob = await zip.generateAsync({ type: 'blob', compression: 'STORE' })
-  const link = document.createElement('a')
-  link.href = URL.createObjectURL(blob); link.download = `${baseName}-${format === 'jpg' ? 'jpg' : 'png'}.zip`
-  document.body.append(link); link.click(); link.remove()
-  setTimeout(() => URL.revokeObjectURL(link.href), 60_000)
+  downloadSlidesBlob(blob, `${baseName}-${format === 'jpg' ? 'jpg' : 'png'}.zip`)
   return names
 }

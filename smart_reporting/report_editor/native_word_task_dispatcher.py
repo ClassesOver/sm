@@ -9,10 +9,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from ..external_word_transport import ExternalWordTransport
+from ..office.native_access import check as check_office_access
 from ..reporting.models import ReportingError
 from ..task_execution.models import AttemptOutcome, TaskExecutionScope, TaskState
 from ..task_execution.native_word_contracts import (
@@ -52,11 +54,13 @@ class WordTaskDispatcher:
             raise _invalid('native_word_task_unavailable')
 
     async def prepare(self, *, context, session_reference, instruction, expected_sha256,
-                      operations, selection, request_id):
+                      operations, selection, request_id, resume_edit_id=None):
         self.require_available()
         if not session_reference:
             raise _invalid()
         task_id = 'word-' + canonical_digest({'context': context.digest(), 'request': request_id})
+        if resume_edit_id is not None and task_id != resume_edit_id:
+            raise _invalid('native_ai_job_missing')
         scope = self.scope_factory(context, task_id)
         if not isinstance(scope, TaskExecutionScope) or scope.external_run_id != task_id:
             raise _invalid()
@@ -68,13 +72,18 @@ class WordTaskDispatcher:
                 raise
             raise ReportingError('native_ai_selection_invalid',
                 '当前 Word 任务输入不受支持或授权已变化，请重新选择。') from None
+        input_sha256 = canonical_digest(value.model_dump(mode='json', by_alias=True))
+        if resume_edit_id is not None:
+            if not await self.repository.has_native_word_task_input(scope, input_sha256):
+                raise _invalid('native_ai_job_missing')
+            return WordTaskReference(scope, input_sha256, value)
         try:
             await self.repository.create_native_word_task(scope, instruction, value)
         except TaskExecutionRepositoryError as error:
             if error.code in {'native_word_input_conflict', 'task_initial_instruction_conflict'}:
                 raise _invalid('native_ai_snapshot_changed') from None
             raise
-        return WordTaskReference(scope, canonical_digest(value.model_dump(mode='json', by_alias=True)), value)
+        return WordTaskReference(scope, input_sha256, value)
 
     @staticmethod
     def _fence(ref, task_session, task):
@@ -102,6 +111,7 @@ class WordTaskDispatcher:
         final_context = await self.editor.context_for_session(last)
         if final_context.digest() != binding.context_sha256:
             raise _invalid()
+        await check_office_access(context.document_id, write=True)
         last = await self.grants.lookup_registered_session(session_reference)
         if (_session_identity(last) != identity or last.expires_at <= datetime.now(UTC)):
             raise _invalid()
@@ -117,15 +127,31 @@ class WordTaskDispatcher:
         await self._current_editor(ref, session_reference, base)
         return NativeWordAIProposal.model_validate(receipt['proposal'])
 
-    async def execute(self, ref):
+    async def execute(self, ref, *, shutdown_requested=None):
         self.require_available()
-        task = await self.repository.get_task_snapshot(ref.scope.external_run_id)
-        if task is None or task.scope != ref.scope:
-            raise _invalid()
-        if task.state is TaskState.COMPLETED:
-            return await self._completed_proposal(ref)
-        async with TaskSession(self.repository, ref.scope) as task_session:
-            return await self._execute_claim(ref, task_session)
+        while True:
+            task = await self.repository.get_task_snapshot(ref.scope.external_run_id)
+            if task is None or task.scope != ref.scope:
+                raise _invalid()
+            if task.state is TaskState.COMPLETED:
+                return await self._completed_proposal(ref)
+            if task.state is TaskState.CANCELLED:
+                raise asyncio.CancelledError
+            now = datetime.now(UTC)
+            if task.state is TaskState.FAILED or task.deadline_at <= now:
+                raise _invalid()
+            if task.lease_owner is not None and task.lease_expires_at is not None and task.lease_expires_at > now:
+                await asyncio.sleep(0.5)
+                continue
+            async with AsyncExitStack() as stack:
+                try:
+                    task_session = await stack.enter_async_context(TaskSession(self.repository, ref.scope))
+                except TaskExecutionRepositoryError as error:
+                    if error.code != 'task_lease_conflict':
+                        raise
+                else:
+                    return await self._execute_claim(ref, task_session, shutdown_requested=shutdown_requested)
+            await asyncio.sleep(0.5)
 
     async def _completed_proposal(self, ref):
         receipt = await self.repository.get_completed_native_word_candidate(ref.scope,
@@ -159,7 +185,7 @@ class WordTaskDispatcher:
             # failure, retry the model, or acquire authority via scope-only cancel.
             return
 
-    async def _execute_claim(self, ref, task_session):
+    async def _execute_claim(self, ref, task_session, *, shutdown_requested):
         task_id = ref.scope.external_run_id
         session_reference = ref.word_input.binding.server_session_reference
         bridge = None
@@ -213,6 +239,8 @@ class WordTaskDispatcher:
                 if external is not None:
                     transport_args['registered_proposal'] = lambda: bridge.registered_proposal
                 final = await self.transport.run(**transport_args)
+                if shutdown_requested is not None and shutdown_requested():
+                    raise asyncio.CancelledError
                 parsed = await bridge.reconcile(final, ticket=ticket)
                 task_session.assert_alive()
                 await self._current_editor(ref, session_reference)
@@ -234,7 +262,11 @@ class WordTaskDispatcher:
         except BaseException as error:
             if bridge is not None:
                 bridge.cancel()
-            await self._close_failed_claim(ref, task_session, error)
+            # On service shutdown TaskSession releases the lease. Keep the durable
+            # attempt open for another instance to resume with the same request.
+            if not (isinstance(error, asyncio.CancelledError)
+                    and shutdown_requested is not None and shutdown_requested()):
+                await self._close_failed_claim(ref, task_session, error)
             if not isinstance(error, asyncio.CancelledError):
                 owner = asyncio.current_task()
                 if owner is not None and owner.cancelling():

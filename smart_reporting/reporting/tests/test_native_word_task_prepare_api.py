@@ -1,4 +1,5 @@
 """Legal generic Word selections unsupported by this stage fail as domain input."""
+import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
@@ -20,7 +21,8 @@ from smart_reporting.task_execution.models import TaskExecutionScope
 
 
 @pytest.mark.anyio
-async def test_http_legal_table_selection_rejected_before_task_or_provider():
+@pytest.mark.parametrize("generic_planner", [False, True])
+async def test_http_legal_table_selection_uses_generic_planner_when_available(generic_planner):
     data = inputs()
     data.block.update(type='table', cells=[], columnWidthEditable=True)
     selection = [{'blockId': 'p1'}]
@@ -34,7 +36,16 @@ async def test_http_legal_table_selection_rejected_before_task_or_provider():
     dispatcher = WordTaskDispatcher(repository, grants, data.editor,
         scope_factory=lambda context, task_id: TaskExecutionScope(task_id, 'user', 'thread', 'workspace', 'word'),
         secret='s' * 32, transport=transport, enabled=True)
-    ai = NativeAIService(data.editor, planner=object(), enabled=True, word_task_dispatcher=dispatcher)
+
+    generic_entered = asyncio.Event()
+
+    class GenericPlanner:
+        async def plan_word(self, *args, **kwargs):
+            generic_entered.set()
+            await asyncio.Event().wait()
+
+    planner = GenericPlanner() if generic_planner else object()
+    ai = NativeAIService(data.editor, planner=planner, enabled=True, word_task_dispatcher=dispatcher)
     app = FastAPI()
     app.include_router(create_native_ai_router(grants, editor=data.editor, ai=ai))
     try:
@@ -45,12 +56,17 @@ async def test_http_legal_table_selection_rejected_before_task_or_provider():
                 headers={'Origin': 'http://test', 'X-CSRF-Token': grants.csrf_token(raw_session)},
                 json={'clientRequestId': 'unsupported-table', 'instruction': 'Edit selected table',
                       'expectedSha256': 'a' * 64, 'operations': [], 'selection': selection})
-        assert response.status_code == 422, response.text
-        assert response.json()['detail']['code'] == 'native_ai_selection_invalid'
-        assert 'native_word_builder_invalid' not in response.text
+        if generic_planner:
+            assert response.status_code == 200, response.text
+            assert not response.json()["editId"].startswith("word-")
+            await asyncio.wait_for(generic_entered.wait(), 3)
+        else:
+            assert response.status_code == 422, response.text
+            assert response.json()['detail']['code'] == 'native_ai_selection_invalid'
+            assert 'native_word_builder_invalid' not in response.text
+            assert ai._jobs == {}
         repository.create_native_word_task.assert_not_called()
         transport.run.assert_not_called()
-        assert ai._jobs == {}
     finally:
         await ai.aclose()
 
@@ -74,5 +90,36 @@ async def test_prepare_does_not_convert_unknown_or_authorization_errors(kind):
             instruction='Edit', expected_sha256='a' * 64, operations=[],
             selection=[{'blockId': 'p1'}], request_id='known-boundary-only')
     assert caught.value is error
+    repository.create_native_word_task.assert_not_called()
+    transport.run.assert_not_called()
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("matches_existing_input", [False, True])
+async def test_retry_only_matches_existing_word_task_input(matches_existing_input):
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.task_execution.native_word_contracts import canonical_digest
+
+    data = inputs()
+    repository = AsyncMock(spec=['has_native_word_task_input', 'create_native_word_task'])
+    repository.has_native_word_task_input = AsyncMock(return_value=matches_existing_input)
+    transport = AsyncMock(spec=['run'])
+    dispatcher = WordTaskDispatcher(repository, data.grants, data.editor,
+        scope_factory=lambda context, task_id: TaskExecutionScope(task_id, 'user', 'thread', 'workspace', 'word'),
+        secret='s' * 32, transport=transport, enabled=True)
+    request_id = 'original'
+    edit_id = 'word-' + canonical_digest({'context': data.context.digest(), 'request': request_id})
+    prepare = dict(context=data.context, session_reference='c' * 64,
+        instruction='Edit', expected_sha256='a' * 64, operations=[],
+        selection=[{'blockId': 'p1'}], request_id=request_id, resume_edit_id=edit_id)
+
+    if matches_existing_input:
+        reference = await dispatcher.prepare(**prepare)
+        assert reference.scope.external_run_id == edit_id
+        repository.has_native_word_task_input.assert_awaited_once_with(reference.scope, reference.input_sha256)
+    else:
+        with pytest.raises(ReportingError) as caught:
+            await dispatcher.prepare(**prepare)
+        assert caught.value.code == 'native_ai_job_missing'
+
     repository.create_native_word_task.assert_not_called()
     transport.run.assert_not_called()

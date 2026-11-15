@@ -5,14 +5,16 @@ export interface PdfExternalPagesRequest {
   requestId:string;expectedSha256:string;action:'insert'|'replace';externalSha256:string;bytesBase64:string
   afterPage?:number;pages?:number[]
 }
+type SubmitExternalPages = (payload: PdfExternalPagesRequest) => Promise<NativeSaveResponse>
 const MAX_BYTES=6*1024*1024
 export function bindPdfExternalPagesDialog(options:{
   root:HTMLElement;sourceSha256:string;pageCount:()=>number;currentPage:()=>number
-  unavailable:()=>string|null;submit:(payload:PdfExternalPagesRequest)=>Promise<NativeSaveResponse>
+  unavailable:()=>string|null;submit:SubmitExternalPages
+  prepareSource?:()=>Promise<{sha256:string;submit:SubmitExternalPages}>
 }){
   const owner=options.root.ownerDocument,dialog=owner.createElement('dialog');dialog.className='pdf-layout-dialog';dialog.setAttribute('aria-label','外部 PDF 页面')
   const title=owner.createElement('h3'),hint=owner.createElement('p')
-  hint.textContent='选择不超过 6 MiB 的真实 PDF。双方须无表单、批注、保护或导航结构；外部文件全部页面按原顺序写入新修订。替换会在最早选中页的位置插入外部页面，其余选中页删除。原修订保留；不支持安全擦除。'
+  hint.textContent=(options.prepareSource ? '有未保存修改时先保存，再按当前页序操作。' : '') + '选择不超过 6 MiB 的真实 PDF。双方须无表单、批注、保护或导航结构；外部文件全部页面按原顺序写入新修订。替换会在最早选中页的位置插入外部页面，其余选中页删除。原修订保留；不支持安全擦除。'
   const fileLabel=owner.createElement('label');fileLabel.textContent='外部 PDF 文件'
   const file=owner.createElement('input');file.type='file';file.accept='application/pdf,.pdf';file.setAttribute('aria-label','外部 PDF 文件');fileLabel.append(file)
   const afterLabel=owner.createElement('label');afterLabel.textContent='插入到父 PDF 第几页之后（0 为最前）'
@@ -55,9 +57,11 @@ export function bindPdfExternalPagesDialog(options:{
       let binary='';for(let offset=0;offset<bytes.length;offset+=32768)binary+=String.fromCharCode(...bytes.subarray(offset,offset+32768))
       if(disposed||!dialog.open||generation!==token)return
       const reason=options.unavailable();if(reason)throw Error(reason)
-      const key=JSON.stringify([chosenAction,digest,position])
+      const source = options.prepareSource ? await options.prepareSource() : { sha256:options.sourceSha256, submit:options.submit }
+      if(disposed||!dialog.open||generation!==token)return
+      const key=JSON.stringify([source.sha256,chosenAction,digest,position])
       if(key!==requestKey){requestKey=key;requestId=crypto.randomUUID();cached=undefined}
-      const result=await options.submit({requestId,expectedSha256:options.sourceSha256,action:chosenAction,externalSha256:digest,bytesBase64:btoa(binary),...position})
+      const result=await source.submit({requestId,expectedSha256:source.sha256,action:chosenAction,externalSha256:digest,bytesBase64:btoa(binary),...position})
       cached=result
       if(!disposed&&dialog.open&&generation===token)show(result)
     }catch(error){if(!disposed&&dialog.open&&generation===token)message.textContent=error instanceof Error?error.message:String(error)}

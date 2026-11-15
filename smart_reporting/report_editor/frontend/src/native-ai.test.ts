@@ -181,3 +181,32 @@ it('注释使用显式身份授权、显示前后差异，普通正文选区不�
  expect(root.textContent).toContain('候选：新的引用说明');expect(root.querySelector('img')).toBeNull();expect(draft.operations).toEqual([])
  root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click();await vi.waitFor(()=>expect(draft.operations).toEqual([op]));binding.dispose()
 })
+
+it.each([{format:'docx',outage:false},{format:'docx',outage:true},{format:'pdf',outage:false}] as const)('重连时使用原持久任务 ID 恢复轮询（%o）', async ({format,outage}) => {
+  const { NativeApiError } = await import('./native-api')
+  const draft = new NativeDraft({documentId:'restart-word',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
+  const editId = (format === 'docx' ? 'word-' : '') + 'b'.repeat(64)
+  const pending = {editId,status:'running'}
+  const polling = vi.fn()
+  if (outage) polling.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  const api = {
+    aiStart: vi.fn().mockResolvedValue(pending),
+    aiStatus: polling.mockRejectedValueOnce(new NativeApiError(404, 'native_ai_job_missing', '任务不存在'))
+      .mockResolvedValueOnce({editId,status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'恢复后的候选',operations:[]}}),
+    aiCancel: vi.fn().mockResolvedValue({}),
+    aiCancelRequest: vi.fn().mockResolvedValue({}),
+    aiAccept: vi.fn(),
+  }
+  const root = document.createElement('div')
+  const binding = bindNativeAI(root,{api:api as never,draft,format,view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+  binding.setSelection(format === 'docx' ? [{blockId:'p1'}] : [{pageId:'p1',objectId:'o1'}])
+  root.querySelector('textarea')!.value = '修改'
+  root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+  await vi.waitFor(() => expect(root.textContent).toContain('恢复后的候选'), {timeout:5000})
+  expect(api.aiStart).toHaveBeenCalledTimes(2)
+  expect(api.aiStart.mock.calls[1][0]).toEqual({...api.aiStart.mock.calls[0][0],resumeEditId:editId})
+  expect(api.aiCancelRequest).not.toHaveBeenCalled()
+  expect(api.aiAccept).not.toHaveBeenCalled()
+  expect(draft.operations).toEqual([])
+  binding.dispose()
+})

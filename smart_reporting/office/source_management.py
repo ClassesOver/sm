@@ -72,17 +72,23 @@ class OfficeSourceScopes:
         await self.office._audit(connection, identity, action, **details)
 
     async def ensure_registered(self, identity):
-        from ..management.repository import tenant_settings
-
         async with self.office.transaction(identity) as connection:
             await self.office._user(connection, identity, admin=True)
-            exists = await connection.scalar(select(tenant_settings.c.id).where(
-                tenant_settings.c.database == identity.database,
-                tenant_settings.c.company_id == identity.company))
-            if exists is None:
-                await connection.execute(insert(tenant_settings).values(
-                    id=str(uuid4()), database=identity.database, company_id=identity.company,
-                    name=identity.company, version=1,
-                    default_source_ids=[], default_knowledge_base_ids=[],
-                ))
+            await self.scope_id(connection, identity, create=True)
         return ManagementScope(identity.database, identity.company)
+
+    @staticmethod
+    async def scope_id(connection, identity, *, create=False):
+        from ..management.repository import tenant_settings
+
+        scope_id = await connection.scalar(select(tenant_settings.c.id).where(
+            tenant_settings.c.database == identity.database,
+            tenant_settings.c.company_id == identity.company))
+        if scope_id is None and create:
+            scope_id = str(uuid4())
+            await connection.execute(insert(tenant_settings).values(
+                id=scope_id, database=identity.database, company_id=identity.company,
+                name=identity.company, version=1,
+                default_source_ids=[], default_knowledge_base_ids=[],
+            ))
+        return scope_id

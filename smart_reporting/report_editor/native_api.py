@@ -19,7 +19,9 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError
+from starlette.datastructures import UploadFile
 
+from ..http.request_limits import install_streaming_body_limit
 from ..office.contract import SHA256_PATTERN
 from ..office.editor_grants import ReportEditorGrantService
 from ..reporting.delivery.docx_native import inspect_docx
@@ -80,6 +82,14 @@ class NativeMailMergeSourcePayload(BaseModel):
     request_id: str = Field(alias="requestId", min_length=1, max_length=256)
     filename: str = Field(default="recipients.csv", min_length=1, max_length=256)
     bytes_base64: str = Field(alias="bytesBase64", min_length=4, max_length=6 * 1024 * 1024)
+
+
+class NativeSlidesSaveAsPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    request_id: str = Field(alias="requestId", min_length=1, max_length=256)
+    expected_sha256: str = Field(alias="expectedSha256", pattern=SHA256_PATTERN)
+    filename: str = Field(min_length=1, max_length=160)
+    operations: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
 
 
 
@@ -285,6 +295,42 @@ def create_native_editor_router(
             if error.code in {"native_word_filename_invalid", "native_word_file_action_invalid"}:
                 raise HTTPException(422, detail={"code":error.code,"message":error.message}) from None
             raise _error(error) from None
+
+    @router.post("/reports/v1/native/{document_id}/{revision}/api/slides/save-as")
+    async def slides_save_as(document_id: str, revision: int, request: Request, payload: NativeSlidesSaveAsPayload):
+        from .native_slides_file_actions import save_slides_as
+
+        session, context = await session_context(request, document_id, revision, write=True)
+        try:
+            return await save_slides_as(editor, context, expected_sha256=payload.expected_sha256,
+                request_id=payload.request_id, filename=payload.filename, operations=payload.operations, session=session)
+        except ReportingError as error:
+            if error.code == "native_slides_filename_invalid":
+                raise HTTPException(422, detail={"code": error.code, "message": error.message}) from None
+            raise _error(error) from None
+
+    @router.post("/reports/v1/native/{document_id}/{revision}/api/slides/open")
+    async def slides_open(document_id: str, revision: int, request: Request):
+        from .native_import import MAX_IMPORT_BYTES
+        from .native_slides_file_actions import open_slides_file
+
+        session, context = await session_context(request, document_id, revision, write=True)
+        install_streaming_body_limit(request, MAX_IMPORT_BYTES + 64 * 1024)
+        async with request.form(max_files=1, max_fields=1, max_part_size=1024) as form:
+            uploaded = form.get("file")
+            request_id = form.get("requestId")
+            if not isinstance(uploaded, UploadFile) or not isinstance(request_id, str) or not 0 < len(request_id) <= 256:
+                raise HTTPException(422, detail={"code": "native_format_invalid", "message": "请选择要打开的 PPTX 文件。"})
+            content = await uploaded.read(MAX_IMPORT_BYTES + 1)
+            if not 0 < len(content) <= MAX_IMPORT_BYTES:
+                raise HTTPException(413, detail={"code": "native_file_too_large", "message": "文件必须为 1 字节至 24 MiB。"})
+            try:
+                return await open_slides_file(editor, context, request_id=request_id, filename=uploaded.filename or '',
+                                              content=content, session=session)
+            except ReportingError as error:
+                if error.code in {"native_slides_filename_invalid", "native_import_invalid"}:
+                    raise HTTPException(422, detail={"code": error.code, "message": error.message}) from None
+                raise _error(error) from None
 
     @router.get("/reports/v1/native/open/{raw_grant}", include_in_schema=False)
     async def open_native(raw_grant: str):

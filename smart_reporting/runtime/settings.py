@@ -123,10 +123,25 @@ def _database_url(values: MutableMapping[str, str]) -> str:
     return f"postgresql+psycopg://{credentials}@{host}:{port}/{database}"
 
 
+def _environment_file(values: MutableMapping[str, str]) -> str:
+    return (values.get("AGENT_ENV_FILE") or DEFAULT_ENV_FILE).strip() or DEFAULT_ENV_FILE
+
+
+def _load_environment_file(values: MutableMapping[str, str], env_file: str) -> None:
+    for key, value in dotenv_values(env_file).items():
+        if value is not None:
+            values.setdefault(key, value)
+
+
 def database_url_from_environment(
     environ: MutableMapping[str, str] | None = None,
+    *,
+    load_env_file: bool = False,
 ) -> str:
     values = os.environ if environ is None else environ
+    if load_env_file:
+        values = dict(values)
+        _load_environment_file(values, _environment_file(values))
     return _database_url(values)
 
 
@@ -215,6 +230,10 @@ class AgentSettings:
     native_docx_enabled: bool = True
     native_pdf_enabled: bool = True
     native_ai_enabled: bool = True
+    native_word_tasks_enabled: bool = False
+    native_workbook_tasks_enabled: bool = False
+    native_slides_tasks_enabled: bool = False
+    native_pdf_candidate_tasks_enabled: bool = False
     office_model_id: str = ""
     office_model_base_url: str = ""
     office_model_api_key: str = field(default="", repr=False)
@@ -245,11 +264,9 @@ class AgentSettings:
         load_env_file: bool = True,
     ) -> "AgentSettings":
         values = os.environ if environ is None else environ
-        env_file = (values.get("AGENT_ENV_FILE") or DEFAULT_ENV_FILE).strip() or DEFAULT_ENV_FILE
+        env_file = _environment_file(values)
         if load_env_file:
-            for key, value in dotenv_values(env_file).items():
-                if value is not None and key not in values:
-                    values[key] = value
+            _load_environment_file(values, env_file)
         from ..management.configuration_catalog import CONFIGURATION_CATALOG
 
         deployment_keys = frozenset(key for item in CONFIGURATION_CATALOG
@@ -367,6 +384,10 @@ class AgentSettings:
             native_docx_enabled=_flag(values.get("AGENT_REPORT_EDITOR_DOCX_ENABLED", values.get("AGENT_NATIVE_DOCX_ENABLED")), default=True),
             native_pdf_enabled=_flag(values.get("AGENT_REPORT_EDITOR_PDF_ENABLED", values.get("AGENT_NATIVE_PDF_ENABLED")), default=True),
             native_ai_enabled=_flag(values.get("AGENT_REPORT_EDITOR_AI_ENABLED", values.get("AGENT_NATIVE_AI_ENABLED")), default=True),
+            native_word_tasks_enabled=_flag(values.get("AGENT_REPORT_EDITOR_WORD_TASKS_ENABLED")),
+            native_workbook_tasks_enabled=_flag(values.get("AGENT_REPORT_EDITOR_WORKBOOK_TASKS_ENABLED")),
+            native_slides_tasks_enabled=_flag(values.get("AGENT_REPORT_EDITOR_SLIDES_TASKS_ENABLED")),
+            native_pdf_candidate_tasks_enabled=_flag(values.get("AGENT_REPORT_EDITOR_PDF_CANDIDATE_TASKS_ENABLED")),
             office_model_id=values.get("AGENT_OFFICE_MODEL", "").strip(),
             office_model_base_url=values.get("AGENT_OFFICE_MODEL_BASE_URL", "").strip(),
             office_model_api_key=values.get("AGENT_OFFICE_MODEL_API_KEY", "").strip(),

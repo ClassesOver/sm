@@ -22,6 +22,7 @@ class WorkbookBuildResult:
 
 
 _OPERATION_KINDS = frozenset({
+    'clearCellRange', 'applyTableSource', 'applyHyperlinkSource', 'applyNoteSource',
     'applyStaticImages', 'applyChartAdditions', 'applyChartDeletions', 'applyChartEdits', 'applyChartAnchors', 'applyChartSource', 'applyCellEdits', 'applySheetMerges', 'applySheetEdits', 'applyRowColumnOps', 'applyCellShift', 'applyDvRules',
     'applyCfRules', 'replaceSheetConditionalFormats', 'applySheetNotes', 'patchSheetNotes', 'applySheetFilter', 'replaceSheetDataValidations', 'addPivot',
     'applyColumnWidths', 'applyRowHeights', 'applySheetOutline', 'applyPageSetups', 'applyTableAdditions', 'applyTableEdits', 'sortRange',

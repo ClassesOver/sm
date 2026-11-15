@@ -36,6 +36,16 @@ HttpOnly 会话 Cookie 和 CSRF 校验保护。原生 Word/PDF 编辑、四格�
 
 GenOffice 网页入口为 `/office`。使用独立的组织域、公司、账号和密码登录。部署时运行 `python -m smart_reporting.office.bootstrap --database <组织域> --company <公司> --user <账号> --name <显示名称>` 创建首位管理员，命令会交互读取密码。个人和团队工作区的文件、文件夹、最近记录及收藏保存在服务端。公司管理员可管理用户和 StarRocks 数据源。团队所有者可管理成员和收窄表权限。知识库问答在当前工作区使用用户收藏的文件，并在回答中链接到引用修订。
 
+初始化命令与应用使用相同的 PostgreSQL 配置，支持 `AGENT_DB_URL`、`DATABASE_URL` 或分开的 `AGENT_POSTGRES_*`。使用 Compose 部署时，在 `reporting-os` 容器中执行初始化命令即可使用容器已有的数据库配置。
+
+公司数据源管理复用既有管理数据表。首次部署或升级时，运行 `docker compose run --rm reporting-os /app/.venv/bin/python -m alembic -c /app/alembic-management.ini upgrade head`。继续使用现有数据源时保留原 `AGENT_MANAGEMENT_CREDENTIAL_KEYS`，使已保存的连接凭据能继续解密。
+
+将实例层的存量数据源分配给指定公司时，在 `reporting-os` 容器内运行 `python -m smart_reporting.office.source_migration --database <组织域> --company <公司> --user <公司管理员账号> --source <数据源ID> --dry-run`。核对预览后移除 `--dry-run` 执行复制。可重复传入 `--source` 指定多个数据源。实例原配置保留，目标公司已有同标识数据源时整批拒绝覆盖。
+
+设置 `AGENT_REPORT_EDITOR_WORD_TASKS_ENABLED=true` 可启用 Word 段落 AI 编辑的持久任务。任务复用现有 PostgreSQL 任务仓储和 GenOffice 模型。服务恢复后，在同一编辑会话重试原请求可接管原任务。其他 Word 选区继续使用现有编辑链路。
+
+设置 `AGENT_REPORT_EDITOR_WORKBOOK_TASKS_ENABLED=true` 可启用 XLSX AI 编辑的持久任务。它复用 PostgreSQL 任务仓储保存候选、采纳和取消状态。正在运行的候选可由另一实例接管，确认采纳后仍需保存才能生成新修订。
+
 发布前按 [`frontend/smoke/README.md`](frontend/smoke/README.md) 使用真实编辑会话执行冒烟；Vite fixture 不替代真实后端链路。
 
 ## 限制
@@ -58,6 +68,8 @@ pytest -m integration smart_reporting/reporting/tests/test_native_office_read_ta
 ```
 
 服务器可通过 `AGENT_OFFICE_MODEL` 和 `AGENT_OFFICE_MODEL_BASE_URL` 为 GenOffice 指定独立的 OpenAI 兼容模型。服务需要凭据时，从部署环境注入 `AGENT_OFFICE_MODEL_API_KEY`。该配置用于原生文档助手、首页问答和手动搜索重排。全部留空时，GenOffice 沿用报告工作流的模型配置。
+
+需要在 GenOffice 中修改 PDF 原文时，部署需启用 `AGENT_REPORT_EDITOR_PDF_TEXT_ENABLED=true`。PDF 阅读问答无需打开该开关。
 
 StarRocks 验收需配置 `REPORTING_STARROCKS_INTEGRATION_DSN` 和独立的 `REPORTING_MANAGEMENT_TEST_DB_URL`。用例会在 StarRocks 创建并清理独立测试数据库，并重建 PostgreSQL 的管理测试表，请使用专用测试库。用例覆盖真实表目录发布、工作区授权、成员表范围收窄和撤销后的查询拒绝：
 

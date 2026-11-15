@@ -20,11 +20,11 @@ import { LengthInput } from './vendor/genoffice-docs/apps/docs/src/renderer/comp
 import { IconTableProperties } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import './docx-table-properties-source.css'
 
-export const TABLE_AUTO_FIT_OPTIONS: Array<[TableAutoFitMode, StringKey]> = [
+export const TABLE_AUTO_FIT_OPTIONS = [
   ['contents', 'ribbonAutoFitContents'],
   ['window', 'ribbonAutoFitWindow'],
   ['fixed', 'ribbonFixedColumnWidth'],
-]
+] as const satisfies readonly (readonly [TableAutoFitMode, StringKey])[]
 
 export type TablePropertiesTab = 'table' | 'row' | 'column' | 'cell' | 'alt'
 

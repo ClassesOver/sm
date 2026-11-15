@@ -1,18 +1,18 @@
 """Initialize a company's first Office administrator using an existing account ID."""
 import argparse
 import asyncio
-import os
 from getpass import getpass
 
 from pwdlib import PasswordHash
 
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from ..runtime.settings import database_url_from_environment
 from .repository import Identity, OfficeRepository
 
 
 async def initialize(args):
-    url = os.environ["AGENT_DB_URL"]
+    url = database_url_from_environment(load_env_file=True)
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg://", 1)
     engine = create_async_engine(url)

@@ -107,3 +107,50 @@ it('控制栏退出也返回最后查看的完整数组页号，用于退出后�
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="退出放映"]')!.click())
   expect(onClose).toHaveBeenCalledExactlyOnceWith(2)
 })
+
+it('advances from saved timings and records dwell times only during rehearsal', async () => {
+  const advanceTimes = [1000, 1000, 1000]
+  await act(async () => { show = openSlidesShow(document.body, { slides, advanceTimes, onClose() {} }) })
+  await tick(1000)
+  expect(counter()).toBe('2 / 2')
+  await tick(1000)
+  expect(document.querySelector('.ss-end')).not.toBeNull()
+  await act(async () => show?.dispose())
+  const onRehearseDone = vi.fn()
+  await act(async () => { show = openSlidesShow(document.body, { slides, advanceTimes, onClose() {}, onRehearseDone }) })
+  await tick(3000)
+  expect(counter()).toBe('1 / 2')
+  await key('ArrowRight')
+  await tick(5000)
+  expect(counter()).toBe('2 / 2')
+  await key('Escape')
+  expect(onRehearseDone).toHaveBeenCalledWith([3, 0, 5])
+})
+
+it('presents notes and next-slide preview, then switches to normal show at the same slide', async () => {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
+  document.documentElement.lang = 'zh-CN'
+  const onClose = vi.fn()
+  try {
+    await act(async () => { show = openSlidesShow(document.body, {
+      slides, presenterNotes: ['First notes', 'Hidden notes', 'Last notes'], onClose,
+    }) })
+    expect(document.querySelector('dialog')?.getAttribute('aria-label')).toBe('\u6f14\u793a\u8005\u89c6\u56fe')
+    expect(document.querySelector('.pv-notes')?.textContent).toContain('First notes')
+    expect(document.querySelectorAll('.pv-film-item')).toHaveLength(2)
+    expect(document.querySelector('.pv-next')?.textContent).not.toContain('Hidden notes')
+    await tick(3000)
+    expect(document.querySelector('.pv-timer')?.textContent).toBe('00:03')
+    await key('ArrowRight')
+    expect(document.querySelector('.pv-notes')?.textContent).toContain('Last notes')
+    const switchToNormal = document.querySelector<HTMLButtonElement>('.pv-top-btn:not(.pv-top-exit)')!
+    await act(async () => { switchToNormal.click() })
+    expect(document.querySelector('.presenter')).toBeNull()
+    expect(counter()).toBe('2 / 2')
+    await key('Escape')
+    expect(onClose).toHaveBeenCalledWith(2)
+  } finally {
+    document.documentElement.lang = ''
+    vi.restoreAllMocks()
+  }
+})

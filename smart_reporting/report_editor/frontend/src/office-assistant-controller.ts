@@ -23,14 +23,16 @@ export class OfficeAssistantController<Input, Job> {
   private pendingCancel: { generation: number; promise: Promise<void> } | undefined
   constructor(private readonly transport: OfficeTaskTransport<Input, Job>) {}
   get signal() { return this.abort.signal }
-  run(input: Input, requestId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
-    return this.track(signal => this.transport.start(input, signal), requestId, onStart)
+  run(input: Input, requestId: string, onStart?: (job: Job, signal: AbortSignal) => void,
+    recover?: (job: Job, error: unknown, signal: AbortSignal) => Promise<Job> | undefined): Promise<Job | undefined> {
+    return this.track(signal => this.transport.start(input, signal), requestId, onStart, recover)
   }
   follow(taskId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
     return this.track(signal => this.transport.status(taskId, signal), '', onStart)
   }
   private async track(load: (signal: AbortSignal) => Promise<Job>, requestId: string,
-    onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
+    onStart?: (job: Job, signal: AbortSignal) => void,
+    recover?: (job: Job, error: unknown, signal: AbortSignal) => Promise<Job> | undefined): Promise<Job | undefined> {
     if (this.busy || this.accepting) throw new Error('office_task_busy')
     const previousRequest = this.requestId, previousTask = this.taskId
     if (previousRequest || previousTask) void this.cleanup(previousRequest, previousTask).catch(() => {})
@@ -52,7 +54,18 @@ export class OfficeAssistantController<Input, Job> {
       onStart?.(job, signal)
       if (turn !== this.generation) return undefined
       while (this.transport.running(job)) {
-        job = await this.transport.status(this.taskId, signal)
+        try {
+          job = await this.transport.status(this.taskId, signal)
+        } catch (error) {
+          if (turn !== this.generation) return undefined
+          const recovered = recover?.(job, error, signal)
+          if (!recovered) throw error
+          recover = undefined
+          job = await recovered
+          if (turn !== this.generation) return undefined
+          if (this.transport.id(job) !== this.taskId) throw error
+          onStart?.(job, signal)
+        }
         if (turn !== this.generation) return undefined
       }
       this.terminalObserved = true

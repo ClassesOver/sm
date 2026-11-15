@@ -59,5 +59,5 @@ it('shares one extraction per document and rebuilds for a different actual previ
   cache.clear(); await cache.get(original); expect(extractions).toBe(2)
 })
 it('preserves both pinned source manifests and local adaptation identities', () => {
-  for (const file of source.files) expect(createHash('sha256').update(readFileSync(`${process.cwd()}/src/${file.localPath}`)).digest('hex')).toBe(file.localSha256)
+  for (const file of source.files) expect(createHash('sha256').update(readFileSync(`${process.cwd()}/src/${file.localPath}`, 'utf8').replaceAll('\r\n', '\n')).digest('hex')).toBe(file.localSha256)
 })

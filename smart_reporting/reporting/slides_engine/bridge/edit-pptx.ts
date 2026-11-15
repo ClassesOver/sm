@@ -1,5 +1,5 @@
 import {readModelSources,validateModels,applyModels,type ModelInsertion,type ModelViewEdit} from './pptx-model3d.ts'
-import { pictureInsertionName } from './pptx-images.ts'
+import { assetBytes, pictureInsertionName, type PictureAsset } from './pptx-images.ts'
 import {inspectCustomShows,prepareCustomShows,applyCustomShows,type CustomShow} from './pptx-custom-shows.ts'
 import { validateMediaInsertions, applyMediaInsertions, type MediaInsertion } from './pptx-media.ts'
 import { inspectMasterTextParts, validateMasterTextEdits, applyMasterTextEdits, type MasterTextEdit } from './pptx-master-text.ts'
@@ -26,15 +26,22 @@ import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addImageMediaAndRel, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAdvanceTime, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAdvanceTime, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import type { SlideElement } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
+
+function canEditPictureOutline(element: SlideElement) {
+  return element.type === 'picture' && !!element.mediaRef && !element.media &&
+    !element.model3d && /<p:spPr(?:\s|>)/.test(element.anchor.originalXml)
+}
 
 type TextEdit = {
   slideIndex: number
   elementId: string
   text?: string
   geometry?: { x: number; y: number; width: number; height: number }
+  pictureTransform?: { rot: number; flipH: boolean; flipV: boolean }
 } & { fontSizePt?: number; fontFamily?: string; color?: string; bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean }
 type Geometry = { x: number; y: number; width: number; height: number }
 type TextBox = {
@@ -134,6 +141,7 @@ type Input = {
   chartEdits?: NativeChartEdit[]
   hiddenSlides?: { slideIndex: number; hidden: boolean }[]
   transitions?: { slideIndex: number; kind: SlideTransitionKind }[]
+  advanceTimes?: { slideIndex: number; ms: number }[]
   animations?: {
     slideIndex: number
     elementId: string
@@ -164,7 +172,8 @@ type Input = {
   paragraphFormatting?: {
     slideIndex: number
     elementId: string
-    bullet?: 'char' | 'number' | 'none'
+    bullet?: 'char' | 'number' | 'none' | 'blip'
+    bulletImage?: PictureAsset
     bulletChar?: string
     bulletFont?: string
     numType?: string
@@ -371,6 +380,7 @@ if (request.action === 'inspect') {
       ...inspectBackgroundState(opened, slideIndex),
       ...opened.archive.resolveSlideChain(slide.path),
       transition: getSlideTransition(slide),
+      advanceMs: getSlideAdvanceTime(slide),
       ...transitionApplyAllState(slide),
       ...transitionEditAvailability(slide.bodySuffix),
       animations: getSlideAnimations(slide).map(({ spid, effect, trigger, durationMs, delayMs, direction, presetXml, preset, motionPath, paragraph }) => ({
@@ -391,10 +401,16 @@ if (request.action === 'inspect') {
         type: element.type,
         ...(element.type==='picture'&&element.model3d?{model3d:readModelSources(opened,slideIndex).find(item=>item.sourceId===element.id)}:{}),
         ...(element.type === 'picture' && element.media ? { mediaKind: element.media.kind } : {}),
+        ...(element.type === 'picture' ? { pictureOutlineEditable: canEditPictureOutline(element) } : {}),
         name: element.name ?? '',
         text: textOf(element),
         ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element), ...cellShadingState(element,slide.path) } : {}),
-        ...(element.type === 'picture' ? (() => { const image=pictureImages.find(item=>item.slideIndex===slideIndex&&item.elementId===element.id); return image ? {pictureReplaceable:image.replaceable,pictureReplaceReason:image.readOnlyReason,pictureSha256:image.sha256,pictureSize:image.size} : {} })() : {}),
+        ...(element.type === 'picture' ? (() => { const image=pictureImages.find(item=>item.slideIndex===slideIndex&&item.elementId===element.id); return image ? {pictureReplaceable:image.replaceable,pictureReplaceReason:image.readOnlyReason,pictureSha256:image.sha256,pictureSize:image.size,
+          ...(image.replaceable && !element.media && !element.model3d && /<a:xfrm(?:\s|>)/.test(element.anchor.originalXml) ? {
+            pictureTransform: { rot: ((element.transform.rot ?? 0) % 21600000 + 21600000) % 21600000,
+              flipH: element.transform.flipH === true, flipV: element.transform.flipV === true },
+          } : {}),
+        } : {} })() : {}),
         ...(element.type === 'picture' ? inspectPictureCrop(opened,slideIndex,element.id) : {}),
         ...(element.type === 'picture' ? inspectPictureOpacity(opened, slideIndex, element.id) : {}),
         ...inspectGroupCapabilities(opened, slideIndex, element.id),
@@ -552,7 +568,7 @@ if (request.action === 'inspect') {
   if (request.paragraphFormatting !== undefined && (!Array.isArray(request.paragraphFormatting) || request.paragraphFormatting.length > 500)) {
     throw new Error('paragraph_format_invalid')
   }
-  const paragraphFields = ['align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt', 'bullet', 'bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta']
+  const paragraphFields = ['align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt', 'bullet', 'bulletChar', 'bulletFont', 'bulletImage', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta']
   for (const format of request.paragraphFormatting ?? []) {
     if (!format || typeof format !== 'object' || Array.isArray(format) ||
       Object.keys(format).some(key => !['slideIndex', 'elementId', ...paragraphFields].includes(key)) ||
@@ -562,7 +578,9 @@ if (request.action === 'inspect') {
       (Object.hasOwn(format, 'lineSpacingPct') && ![100, 115, 150, 200, 250, 300].includes(format.lineSpacingPct!)) ||
       (['spaceBeforePt', 'spaceAfterPt'] as const).some(key => Object.hasOwn(format, key) &&
         (typeof format[key] !== 'number' || !Number.isFinite(format[key]) || format[key]! < 0 || format[key]! > 500)) ||
-      (Object.hasOwn(format, 'bullet') && !['char', 'number', 'none'].includes(format.bullet!)) ||
+      (Object.hasOwn(format, 'bullet') && !['char', 'number', 'none', 'blip'].includes(format.bullet!)) ||
+      ((format.bullet === 'blip') !== Object.hasOwn(format, 'bulletImage')) ||
+      (format.bullet === 'blip' && (Object.hasOwn(format, 'numType') || Object.hasOwn(format, 'startAt'))) ||
       (Object.hasOwn(format, 'bulletChar') && (typeof format.bulletChar !== 'string' || [...format.bulletChar].length !== 1 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff\ufffe\uffff]/u.test(format.bulletChar))) ||
       (Object.hasOwn(format, 'bulletFont') && (typeof format.bulletFont !== 'string' || !format.bulletFont.trim() || [...format.bulletFont].length > 200 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff\ufffe\uffff]/u.test(format.bulletFont))) ||
       (Object.hasOwn(format, 'numType') && !numberingTypes.includes(format.numType!)) ||
@@ -589,7 +607,7 @@ if (request.action === 'inspect') {
     hiddenTargets.add(item.slideIndex)
   }
   const removedSlides = new Set(deletedSlides)
-  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.mediaInsertions, request.modelInsertions, request.modelViews, request.pictureReplacements, request.pictureCrops, request.pictureOpacities, request.chartEdits, request.hiddenSlides, request.transitions, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
+  const slideRecords: ({ slideIndex: number }[] | undefined)[] = [request.linkEdits, request.clipboardPastes, request.groupEdits, request.elementOrders, request.edits, request.images, request.nativeImages, request.mediaInsertions, request.modelInsertions, request.modelViews, request.pictureReplacements, request.pictureCrops, request.pictureOpacities, request.chartEdits, request.hiddenSlides, request.transitions, request.advanceTimes, request.animations, request.animationSequences, request.slideLayouts, request.backgrounds, request.textBoxes, request.deletions, request.paragraphFormatting, request.shapes, request.tables, request.shapeStyles, request.shapeKinds, request.tableCells, request.tableStyles, request.tableStructures, request.charts, request.smartArts, (request.resetLayouts ?? []).map(slideIndex => ({ slideIndex }))]
   const zoomInsertions = request.zoomInsertions ?? []
   if (!Array.isArray(zoomInsertions) || zoomInsertions.length > 50) throw new Error('zoom_insertions_invalid')
   const identityIndex = new Map<string, number>()
@@ -791,7 +809,7 @@ if (request.action === 'inspect') {
   applyPictureOpacities(opened, pictureOpacities)
   applyPictureCrops(opened,pictureCrops)
   for (const edit of request.edits ?? []) {
-    if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
+    if (Object.keys(edit).some(key => !['slideIndex', 'elementId', 'text', 'geometry', 'pictureTransform', 'fontSizePt', 'fontFamily', 'color', 'bold', 'italic', 'underline', 'strike'].includes(key))) {
       throw new Error('element_edit_invalid')
     }
     if (edit.fontSizePt !== undefined && (!Number.isFinite(edit.fontSizePt) || edit.fontSizePt < 1 || edit.fontSizePt > 400)) throw new Error('text_format_font_invalid')
@@ -803,7 +821,7 @@ if (request.action === 'inspect') {
     }
     const element = opened.deck.slides[edit.slideIndex]!.elements.find((candidate) => candidate.id === edit.elementId)
     if (!element || !['text','shape','picture'].includes(element.type)) throw new Error('element_not_editable')
-    if (element.type === 'picture' && Object.keys(edit).some(key => !['slideIndex','elementId','geometry'].includes(key))) throw new Error('element_not_editable')
+    if (element.type === 'picture' && Object.keys(edit).some(key => !['slideIndex','elementId','geometry','pictureTransform'].includes(key))) throw new Error('element_not_editable')
     if (edit.text !== undefined) {
       if (element.type !== 'text' && element.type !== 'shape') throw new Error('element_not_editable')
       if (!element.text?.paragraphs.length) throw new Error('element_text_missing')
@@ -812,6 +830,19 @@ if (request.action === 'inspect') {
         edit.text.split(/\r?\n/).map((text) => ({ runs: [{ text }] })),
       )
       element.dirty = true
+    }
+    if (edit.pictureTransform !== undefined) {
+      const transform = edit.pictureTransform
+      if (element.type !== 'picture' || element.media || element.model3d || !element.mediaRef ||
+          !/<a:xfrm(?:\s|>)/.test(element.anchor.originalXml) ||
+          !transform || Object.keys(transform).sort().join() !== 'flipH,flipV,rot' ||
+          !Number.isInteger(transform.rot) || transform.rot < 0 || transform.rot >= 21600000 ||
+          typeof transform.flipH !== 'boolean' || typeof transform.flipV !== 'boolean')
+        throw new Error('picture_transform_invalid')
+      // GenOffice flips by updating the existing transform and writing its dirty slot.
+      // OOXML rotates the picture about the center of the preserved offset and extents.
+      element.transform = { ...element.transform, ...transform }
+      element.dirtyTransform = true
     }
     if (edit.geometry) {
       const { x, y, width, height } = edit.geometry
@@ -823,8 +854,8 @@ if (request.action === 'inspect') {
         cy: Math.round(height * 9525),
       }
       element.dirtyTransform = true
-      updateConnectorsForMoved(opened.deck.slides[edit.slideIndex]!,[element.id])
     }
+    if (edit.geometry || edit.pictureTransform) updateConnectorsForMoved(opened.deck.slides[edit.slideIndex]!, [element.id])
   }
   applyPictureReplacements(opened,pictureReplacements)
   for (const image of [...(request.images ?? []), ...(request.nativeImages ?? [])]) {
@@ -858,6 +889,16 @@ if (request.action === 'inspect') {
       setSlideTransition(slide, transition.kind)
       slide.bodySuffix = preserved
     }
+  }
+  const advanceTargets = new Set<number>()
+  for (const item of request.advanceTimes ?? []) {
+    if (!item || Object.keys(item).sort().join() !== 'ms,slideIndex' ||
+        !validSlideIndex(item.slideIndex, slideCount) || !Number.isInteger(item.ms) ||
+        item.ms < 1 || item.ms > 4294967295 || advanceTargets.has(item.slideIndex)) {
+      throw new Error('advance_time_invalid')
+    }
+    advanceTargets.add(item.slideIndex)
+    setSlideAdvanceTime(originalSlides[item.slideIndex]!, item.ms)
   }
   for (const animation of request.animations ?? []) {
     const durationMs = animation.durationMs ?? 500
@@ -927,11 +968,18 @@ if (request.action === 'inspect') {
   for (const style of request.shapeStyles ?? []) {
     const slide = originalSlides[style.slideIndex]!
     const element = slide.elements.find(candidate => candidate.id === style.elementId)
-    if (!element || (element.type !== 'text' && element.type !== 'shape')) throw new Error('shape_style_target_invalid')
+    if (!element || (element.type !== 'text' && element.type !== 'shape' &&
+        !(style.fill === undefined && canEditPictureOutline(element)))) {
+      throw new Error('shape_style_target_invalid')
+    }
     if (style.fill !== undefined && !setElementFill(opened, slide, style.elementId, style.fill)) throw new Error('shape_fill_failed')
     if (style.stroke !== undefined) {
       const target = element as typeof element & { stroke?: unknown; dirtyStroke?: boolean }
-      target.stroke = style.stroke ? strokePatchToModel({ color: style.stroke.color.toUpperCase(), widthEmu: Math.round(style.stroke.widthPt * 12700) }) : undefined
+      const patch = style.stroke ? strokePatchToModel({
+        color: style.stroke.color.toUpperCase(), widthEmu: Math.round(style.stroke.widthPt * 12700),
+        ...(element.type === 'picture' && element.stroke?.dash ? { dash: element.stroke.dash } : {}),
+      }) : undefined
+      target.stroke = patch
       target.dirtyStroke = true
     }
   }
@@ -993,12 +1041,28 @@ if (request.action === 'inspect') {
       })) throw new Error('text_format_target_invalid')
     }
   }
+  // GenOffice text-ops lands one media part and slide relationship per distinct picture bullet.
+  const paragraphImages = new Map<string, NonNullable<ReturnType<typeof addImageMediaAndRel>>>()
   for (const format of request.paragraphFormatting ?? []) {
-    const { slideIndex, elementId, ...patch } = format
+    const { slideIndex, elementId, bulletImage, ...patch } = format
     const slide = originalSlides[slideIndex]
     const element = slide?.elements.find(candidate => candidate.id === elementId)
-    if (!slide || !element || (element.type !== 'text' && element.type !== 'shape') || !element.text ||
-      !setElementParagraphFormat(slide, elementId, patch)) throw new Error('paragraph_format_target_invalid')
+    if (!slide || !element || (element.type !== 'text' && element.type !== 'shape') || !element.text) {
+      throw new Error('paragraph_format_target_invalid')
+    }
+    let bulletBlip
+    if (bulletImage !== undefined) {
+      if (!bulletImage || Object.keys(bulletImage).sort().join() !== 'bytesBase64,extension') throw new Error('picture_bullet_invalid')
+      const bytes = assetBytes(bulletImage)
+      if (bytes.length > 256 * 1024) throw new Error('picture_bullet_size_invalid')
+      const key = slide.path + '|' + bulletImage.extension + '|' + bulletImage.bytesBase64
+      const landed = paragraphImages.get(key) ?? addImageMediaAndRel(opened, slide, bytes, bulletImage.extension)
+      if (!landed) throw new Error('picture_bullet_invalid')
+      paragraphImages.set(key, landed)
+      bulletBlip = { mediaRef: landed.mediaPath, blipEmbedId: landed.rid }
+    }
+    if (!setElementParagraphFormat(slide, elementId, bulletBlip ? { ...patch, bulletBlip } : patch))
+      throw new Error('paragraph_format_target_invalid')
     // Validate every ordered command so a later opposite indent cannot hide overflow.
     if (element.text?.paragraphs.some(paragraph =>
         (paragraph.marL != null && (paragraph.marL < 0 || paragraph.marL > maxParagraphEmu)) ||

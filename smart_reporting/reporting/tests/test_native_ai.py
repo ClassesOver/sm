@@ -1168,3 +1168,139 @@ async def test_pdf_ai_routes_keep_cookie_csrf_and_return_preview_contract(pdf_sa
         assert accepted.json()["operations"][0]["expectedTextSha256"]
         assert await editor.read_file(context) == source
     await ai.aclose()
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("revoke_at_preview", [1, 2])
+async def test_docx_generation_rechecks_office_write_access(sample, revoke_at_preview):
+    await _check_generation_write_access(sample, revoke_at_preview)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("revoke_at_preview", [1, 2])
+async def test_pdf_generation_rechecks_office_write_access(pdf_sample, revoke_at_preview):
+    await _check_generation_write_access(pdf_sample, revoke_at_preview)
+
+
+async def _check_generation_write_access(sample_data, revoke_at_preview):
+    from dataclasses import replace
+
+    from smart_reporting.report_editor.native_ai import NativeAIService
+
+    editor, context, session, model, _ = sample_data
+    session = replace(session, capabilities={**session.capabilities, "office": True})
+    if context.format == "pdf":
+        selection = pdf_ai_selection(model)
+        candidate = pdf_ai_plan(selection, "调整金额七百")
+    else:
+        target = model["blocks"][0]
+        selection = {"blockId": target["blockId"]}
+        operation = replacement(target, "候选文字")
+        candidate = {"summary": "改写段落", "operations": [
+            {"kind": operation.pop("kind"), "arguments": operation},
+        ]}
+    can_write = True
+    previews = 0
+    original_preview = editor.preview
+
+    async def authorize(_session, *, write=False):
+        if write and not can_write:
+            raise ReportingError("native_permission_denied", "工作区写权限已撤销。")
+
+    async def preview(*args, **kwargs):
+        nonlocal previews, can_write
+        result = await original_preview(*args, **kwargs)
+        previews += 1
+        if (revoke_at_preview == 1 and previews == 1) or (revoke_at_preview == 2 and kwargs["operations"]):
+            can_write = False
+        return result
+
+    editor.office_authorize = authorize
+    editor.preview = preview
+    planner = AsyncMock(return_value=candidate)
+    ai = NativeAIService(editor, planner=planner, enabled=True)
+    try:
+        started = await ai.start_edit(
+            session, instruction="修改选区", expected_sha256=context.source_file.sha256,
+            operations=[], selection=[selection],
+        )
+        result = await ai.wait_edit_status(session, started["editId"])
+        assert result["status"] == "failed", result
+        assert result["error"]["code"] == "native_permission_denied"
+        assert "proposal" not in result
+        assert planner.await_count == revoke_at_preview - 1
+    finally:
+        await ai.aclose()
+
+
+@pytest.mark.anyio
+async def test_pdf_ai_freezes_selection_before_awaiting_source_preview(pdf_sample, monkeypatch):
+    from contextlib import aclosing
+
+    from smart_reporting.report_editor.native_ai import NativeAIService
+
+    editor, context, session, model, _ = pdf_sample
+    target = pdf_ai_selection(model)
+    selection = [dict(target)]
+    preview_started = asyncio.Event()
+    continue_preview = asyncio.Event()
+    preview = editor.preview
+
+    async def delayed_preview(*args, **kwargs):
+        preview_started.set()
+        await continue_preview.wait()
+        return await preview(*args, **kwargs)
+
+    async def planner(prompt, **_kwargs):
+        assert "UNSELECTED SECRET" not in prompt
+        return pdf_ai_plan(target, "Amount due 700")
+
+    monkeypatch.setattr(editor, "preview", delayed_preview)
+    async with aclosing(NativeAIService(editor, planner=planner, enabled=True)) as ai:
+        pending = asyncio.create_task(ai.start_edit(session, instruction="润色",
+            expected_sha256=context.source_file.sha256, operations=[], selection=selection))
+        await asyncio.wait_for(preview_started.wait(), timeout=5)
+        selection[0].update(pdf_ai_selection(model, index=1))
+        continue_preview.set()
+        started = await pending
+        ready = await ai.wait_edit_status(session, started["editId"])
+        assert ready["status"] == "succeeded", ready
+        assert ready["proposal"]["operations"][0]["objectId"] == target["objectId"]
+        assert ready["proposal"]["skippedOperations"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_pdf_candidate_commit_preserves_verified_preview_identity(pdf_sample, monkeypatch, commit_fails):
+    from contextlib import aclosing
+
+    from smart_reporting.report_editor.native_ai import NativeAIService
+
+    editor, context, session, model, _ = pdf_sample
+    selection = pdf_ai_selection(model)
+
+    async def planner(_prompt, **_kwargs):
+        return pdf_ai_plan(selection, "Amount due 700")
+
+    receipts = []
+    async with aclosing(NativeAIService(editor, planner=planner, enabled=True)) as ai:
+        run = ai._run_job
+
+        async def run_with_receipt(job, *args):
+            async def persist(proposal):
+                assert job.status == "running" and job.proposal is None
+                receipts.append(proposal)
+                if commit_fails:
+                    raise RuntimeError("receipt storage failed")
+            await run(job, *args, persist=persist)
+
+        monkeypatch.setattr(ai, "_run_job", run_with_receipt)
+        started = await ai.start_edit(session, instruction="Change selected amount", operations=[],
+            selection=[selection], expected_sha256=context.source_file.sha256)
+        ready = await ai.wait_edit_status(session, started["editId"])
+        assert len(receipts) == 1
+        assert receipts[0]["previewDigest"]
+        assert receipts[0]["skippedOperations"] == []
+        if commit_fails:
+            assert ready["status"] == "failed" and "proposal" not in ready
+        else:
+            assert ready["status"] == "succeeded" and ready["proposal"] == receipts[0]

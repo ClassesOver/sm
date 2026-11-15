@@ -1,10 +1,15 @@
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createEditorShell } from './shell'
 import { createSlidesEditorView } from './slides-main'
 import { NativeDraft } from './native-draft'
 
 vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
-afterEach(() => { document.body.innerHTML = ''; document.documentElement.lang = '' })
+beforeEach(() => vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }))
+afterEach(() => {
+  document.body.innerHTML = ''
+  document.documentElement.lang = ''
+  vi.unstubAllGlobals()
+})
 const geometry = (x: number, y: number, width = 80, height = 40) => ({ x, y, width, height })
 const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [
   { slideIndex: 0, elements: [
@@ -12,7 +17,7 @@ const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5
     { id: 'two', type: 'shape', name: '二', text: '二', editable: true, deletable: true, arrangeEditable: true, geometry: geometry(200, 90) },
     { id: 'three', type: 'shape', name: '三', text: '', editable: true, deletable: true, arrangeEditable: true, geometry: geometry(400, 150) },
     { id: 'picture', type: 'picture', name: '图片', text: '', editable: false, deletable: true, arrangeEditable: true, pictureCropEditable: true,
-      pictureReplaceable: true, pictureSha256: 'b'.repeat(64), pictureSize: 68, srcRect: null, geometry: geometry(40, 200, 200, 100) },
+      pictureOutlineEditable: true, pictureOpacityEditable: true, pictureTransform: { rot: 0, flipH: false, flipV: false }, pictureReplaceable: true, pictureSha256: 'b'.repeat(64), pictureSize: 68, srcRect: null, geometry: geometry(40, 200, 200, 100) },
   ] },
   { slideIndex: 1, elements: [{ id: 'other', type: 'text', name: '其他页', text: '其他页', editable: true, arrangeEditable: true, geometry: geometry(40, 40) }] },
 ] }
@@ -36,6 +41,39 @@ async function open(operations: Record<string, unknown>[] = []) {
   }
   return { view, shell, draft, request, command, choose }
 }
+
+it('stages and clears picture outlines from the Picture Format ribbon', async () => {
+  const app = await open()
+  try {
+    const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    object.value = 'picture'
+    object.dispatchEvent(new Event('change', { bubbles: true }))
+    app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-pictureFormat')!.click()
+    const menu = app.command('pictureOutlineMenu')
+    menu.click()
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
+    const color = app.shell.editor.querySelector<HTMLInputElement>('[data-command="pictureOutlineColor"]')!
+    expect(color.disabled).toBe(false)
+    color.value = '#123456'
+    color.dispatchEvent(new Event('change', { bubbles: true }))
+    const widths = [...app.shell.editor.querySelectorAll<HTMLButtonElement>('[data-outline-width]')]
+    expect(widths.map(button => button.dataset.outlineWidth)).toEqual(['0.5', '1', '1.5', '2.25', '3', '4.5', '6'])
+    widths.find(button => button.dataset.outlineWidth === '2.25')!.click()
+    expect(menu.getAttribute('aria-expanded')).toBe('false')
+    expect(app.draft.operations[0]?.shapeStyles).toEqual([
+      { slideIndex: 0, elementId: 'picture', stroke: { color: '#123456', widthPt: 2.25 } },
+    ])
+    menu.click()
+    app.command('pictureNoOutline').click()
+    expect(app.draft.operations[0]?.shapeStyles).toEqual([{ slideIndex: 0, elementId: 'picture', stroke: null }])
+    app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+    expect(app.draft.operations[0]?.shapeStyles).toEqual([
+      { slideIndex: 0, elementId: 'picture', stroke: { color: '#123456', widthPt: 2.25 } },
+    ])
+  } finally {
+    app.view.dispose()
+  }
+})
 
 it('多选排列保留文字与非目标编辑，一次撤销恢复整批并可保存', async () => {
   const app = await open([{ kind: 'editSlides', edits: [{ slideIndex: 0, elementId: 'one', text: '已改文字' }], order: [0, 1] }])
@@ -69,4 +107,84 @@ it('分布需至少三项，切换页面后不沿用上页选择', async () => {
   expect(app.shell.editor.querySelectorAll('[data-arrange-object]:checked')).toHaveLength(1)
   expect(app.draft.operations).toEqual([])
   app.view.dispose()
+})
+
+it('previews a shape picked from the gallery and undoes the same geometry change', async () => {
+  const app = await open()
+  try {
+    const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    object.value = 'two'
+    object.dispatchEvent(new Event('change', { bubbles: true }))
+    app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-shapeFormat')!.click()
+    app.command('changeShape').click()
+    app.shell.editor.querySelector<HTMLButtonElement>('[data-prst="hexagon"]')!.click()
+    const shapeKind = { slideIndex: 0, elementId: 'two', kind: 'hexagon' }
+    expect(app.draft.operations[0]?.shapeKinds).toEqual([shapeKind])
+    const preview = () => {
+      const call = app.request.mock.calls.filter(([path, init]) => path === 'render-tree' && init?.method === 'POST').at(-1)
+      return call && JSON.parse(call[1]!.body as string).operations[0].shapeKinds
+    }
+    await vi.waitFor(() => expect(preview()).toEqual([shapeKind]), { timeout: 5000 })
+    app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+    expect(app.draft.operations).toEqual([])
+    await vi.waitFor(() => expect(preview()).toEqual([]), { timeout: 5000 })
+  } finally {
+    app.view.dispose()
+  }
+})
+
+it('stages picture rotation and flips from the ribbon with one undo step per command', async () => {
+  const app = await open()
+  try {
+    const rotate = app.command('rotatePictureRight')
+    expect(rotate.disabled).toBe(true)
+    const select = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    select.value = 'picture'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(rotate.disabled).toBe(false)
+    rotate.click()
+    app.command('flipPictureH').click()
+    app.command('flipPictureV').click()
+    expect(app.draft.operations[0]?.edits).toEqual([
+      { slideIndex: 0, elementId: 'picture', pictureTransform: { rot: 5400000, flipH: true, flipV: true } },
+    ])
+    app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+    expect(app.draft.operations[0]?.edits).toEqual([
+      { slideIndex: 0, elementId: 'picture', pictureTransform: { rot: 5400000, flipH: true, flipV: false } },
+    ])
+  } finally {
+    app.view.dispose()
+  }
+})
+it('selects a GenOffice picture transparency preset and saves against the original picture identity', async () => {
+  const app = await open()
+  try {
+    const picker = app.command('pictureOpacity')
+    expect(picker.disabled).toBe(true)
+    const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    object.value = 'picture'
+    object.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(picker.disabled).toBe(false)
+    app.shell.editor.querySelector<HTMLButtonElement>('#slides-native-tab-pictureFormat')!.click()
+    picker.click()
+    expect(picker.getAttribute('aria-expanded')).toBe('true')
+    const choices = [...app.shell.editor.querySelectorAll<HTMLButtonElement>('[data-picture-transparency]')]
+    expect(choices.map(choice => choice.textContent)).toEqual(['0%', '15%', '30%', '50%', '65%', '80%', '95%'])
+    const chosen = choices.find(choice => choice.dataset.pictureTransparency === '65')!
+    chosen.click()
+    expect(picker.getAttribute('aria-expanded')).toBe('false')
+    picker.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    expect(chosen.getAttribute('aria-pressed')).toBe('true')
+    expect(document.activeElement).toBe(chosen)
+    chosen.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(document.activeElement).toBe(picker)
+    app.shell.save.click()
+    await vi.waitFor(() => expect(app.request.mock.calls.some(([path]) => path === 'save')).toBe(true))
+    const call = app.request.mock.calls.find(([path]) => path === 'save')!
+    expect(JSON.parse(call[1]!.body as string).operations[0].pictureOpacities).toEqual([
+      { slideIndex: 0, elementId: 'picture', expectedSha256: 'b'.repeat(64), expectedSize: 68, opacity: 0.35 },
+    ])
+  } finally {
+    app.view.dispose()
+  }
 })

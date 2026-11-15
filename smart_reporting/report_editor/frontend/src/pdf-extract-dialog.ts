@@ -1,6 +1,8 @@
 import type { NativeSaveResponse } from './native-api'
 import { installFocusTrap } from './focus-trap'
 
+type ExtractPdf = (payload: {requestId: string; expectedSha256: string; pages: number[]}) => Promise<NativeSaveResponse>
+
 /** 页码属于已保存来源；保持用户给出的顺序，不默默去重或丢弃越界项。 */
 export function parsePdfExtractPages(value: string, total: number): number[] {
   if (!Number.isSafeInteger(total) || total < 1 || total > 10000 || !value.trim()) throw new Error('请输入有效页码')
@@ -24,7 +26,8 @@ export function bindPdfExtractDialog(options: {
   pageCount: () => number
   currentPage: () => number
   unavailable: () => string | null
-  extract: (payload: {requestId: string; expectedSha256: string; pages: number[]}) => Promise<NativeSaveResponse>
+  extract: ExtractPdf
+  prepareSource?: () => Promise<{sha256: string; extract: ExtractPdf}>
 }) {
   const owner = options.root.ownerDocument
   const dialog = owner.createElement('dialog'); dialog.className = 'pdf-layout-dialog pdf-extract-dialog'; dialog.setAttribute('aria-label', '提取页面'); dialog.setAttribute('aria-busy', 'false')
@@ -33,7 +36,7 @@ export function bindPdfExtractDialog(options: {
   const title = owner.createElement('h3'); title.textContent = '提取页面为独立 PDF'
   const titleClose = owner.createElement('button'); titleClose.type = 'button'; titleClose.textContent = '×'; titleClose.setAttribute('aria-label', '关闭提取页面')
   header.append(title, titleClose)
-  const hint = owner.createElement('p'); hint.textContent = '从已保存版本提取，不改变当前文档。当前支持无表单、批注或保护信息的 PDF；按输入顺序生成新 PDF，书签与附件不保留。关闭窗口不会撤销服务器已生成的产物，可重新打开查看结果。'
+  const hint = owner.createElement('p'); hint.textContent = (options.prepareSource ? '有未保存修改时先保存，再按当前页序提取。' : '从已保存版本提取。') + '当前支持无表单、批注或保护信息的 PDF；按输入顺序生成新 PDF，书签与附件不保留。关闭窗口不会撤销服务器已生成的产物，可重新打开查看结果。'
   const label = owner.createElement('label'); label.textContent = '页码（例如 4,1-2）'
   const input = owner.createElement('input'); input.type = 'text'; input.setAttribute('aria-label', '提取页码'); label.append(input)
   const apply = owner.createElement('button'); apply.type = 'button'; apply.textContent = '生成独立 PDF'; apply.dataset.pdfExtractApply = ''
@@ -78,12 +81,14 @@ export function bindPdfExtractDialog(options: {
     let pages: number[]
     try { pages = parsePdfExtractPages(input.value, options.pageCount()) }
     catch (error) { setMessage(error instanceof Error ? error.message : String(error)); return }
-    const key = JSON.stringify(pages)
-    if (key !== requestKey) { requestKey = key; requestId = crypto.randomUUID(); cached = undefined }
     const token = generation
     busy = true; dialog.setAttribute('aria-busy', 'true'); apply.disabled = true; input.disabled = true; links.replaceChildren(); setMessage('正在生成独立 PDF…', 'loading')
     try {
-      const result = await options.extract({requestId, expectedSha256: options.sourceSha256, pages})
+      const source = options.prepareSource ? await options.prepareSource() : { sha256: options.sourceSha256, extract: options.extract }
+      if (disposed || !dialog.open || token !== generation) return
+      const key = JSON.stringify([source.sha256, pages])
+      if (key !== requestKey) { requestKey = key; requestId = crypto.randomUUID(); cached = undefined }
+      const result = await source.extract({requestId, expectedSha256: source.sha256, pages})
       cached = result
       if (!disposed && dialog.open && token === generation) show(result)
     } catch (error) {
@@ -93,16 +98,21 @@ export function bindPdfExtractDialog(options: {
       if (!disposed && dialog.open && token === generation) { dialog.setAttribute('aria-busy', 'false'); apply.disabled = false; input.disabled = false }
     }
   }
+  function showDialog(preferredPage?: number) {
+    if (disposed || busy || dialog.open || options.unavailable()) return false
+    generation++; dialog.setAttribute('aria-busy', 'false'); apply.disabled = false; input.disabled = false
+    if (preferredPage !== undefined || !input.value) input.value = String(preferredPage ?? options.currentPage())
+    if (cached) show(cached); else { setMessage(''); links.replaceChildren() }
+    opener = owner.activeElement instanceof HTMLElement ? owner.activeElement : null
+    dialog.showModal(); input.focus()
+    return true
+  }
   return {
-    open() {
-      if (disposed || busy || dialog.open) return
-      const reason = options.unavailable()
-      if (reason) return
-      generation++; dialog.setAttribute('aria-busy', 'false'); apply.disabled = false; input.disabled = false
-      if (!input.value) input.value = String(options.currentPage())
-      if (cached) show(cached); else { setMessage(''); links.replaceChildren() }
-      opener = owner.activeElement instanceof HTMLElement ? owner.activeElement : null
-      dialog.showModal(); input.focus()
+    open(preferredPage?: number) { showDialog(preferredPage) },
+    extractPage(page: number) {
+      if (!showDialog(page)) return
+      body.focus()
+      void submit()
     },
     dispose() { if (disposed) return; disposed = true; generation++; releaseFocusTrap(); dialog.remove() },
   }

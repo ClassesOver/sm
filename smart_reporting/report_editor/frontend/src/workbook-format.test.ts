@@ -1,13 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import {
-  selectedWorkbookFormat, validateNumberFormat, captureNumberFormatTarget, applyCapturedNumberFormat,
+  NUMBER_FORMAT_PRESETS, RIBBON_NUMBER_FORMAT_SHORTCUTS, numberFormatPresetPattern, selectedWorkbookFormat, validateNumberFormat, captureNumberFormatTarget, applyCapturedNumberFormat,
   validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook, type FormatRange,
 } from './workbook-format'
 import { mountWorkbookRibbon, applyWorkbookRibbonCommand, type RibbonWorkbook } from './workbook-ribbon'
 import { fromUniverStyle, styleDelta, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { readBackSnapshot } from './workbook-vendor/grid/sync'
 import { diffToEdits } from './workbook-vendor/core/session-core'
-import type { WorkbookModel } from '@sheets-web/xlsx-engine'
+import { getSystemShortDate, setSystemShortDate, type WorkbookModel } from '@sheets-web/xlsx-engine'
 
 afterEach(() => document.body.replaceChildren())
 function fixture(styles: UniverStyleData[] = [{ ff: 'Calibri', fs: 14, bl: 1, cl: { rgb: '#123456' }, bg: { rgb: '#abcdef' }, n: { pattern: '#,##0.00' } }]) {
@@ -59,6 +59,33 @@ it('uses the composed public single-cell API and marks missing source inheritanc
   expect(selectedWorkbookFormat(f.workbook, source).fontColor).toMatchObject({ kind: 'unavailable', reason: expect.stringContaining('继承样式') })
   f.select(null)
   expect(selectedWorkbookFormat(f.workbook).numberFormat).toMatchObject({ kind: 'unavailable' })
+})
+
+it('builds the GenOffice presets through the existing writable number-format path', () => {
+  const previous = getSystemShortDate()
+  const f = fixture(), target = captureNumberFormatTarget(f.workbook)
+  try {
+    setSystemShortDate('dd.mm.yyyy')
+    for (const { id } of NUMBER_FORMAT_PRESETS) {
+      applyCapturedNumberFormat(target, f.workbook, numberFormatPresetPattern(id), true)
+    }
+    expect(f.setNumberFormat.mock.calls.map(([pattern]) => pattern)).toEqual([
+      'General', '0.00', '$#,##0.00', '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)',
+      'dd.mm.yyyy', 'dddd, mmmm dd, yyyy', 'h:mm:ss AM/PM', '0.00%', '# ?/?', '0.00E+00', '@',
+    ])
+  } finally { setSystemShortDate(previous) }
+})
+
+it('writes the source accounting, percent and comma shortcut patterns unchanged', () => {
+  const f = fixture(), target = captureNumberFormatTarget(f.workbook)
+  for (const { pattern } of RIBBON_NUMBER_FORMAT_SHORTCUTS) {
+    applyCapturedNumberFormat(target, f.workbook, pattern, true)
+  }
+  const [accounting, percentage, comma] = f.setNumberFormat.mock.calls.map(([pattern]) => pattern)
+  expect(accounting).toContain('("$"* #,##0.00')
+  expect(accounting).toContain(String.fromCharCode(92) + '(#,##0.00' + String.fromCharCode(92) + ')')
+  expect(percentage).toBe('0%')
+  expect(comma).toBe(accounting.replaceAll('"$"', ''))
 })
 
 it('validates with the pinned number-format parser and preserves significant literal spaces', () => {
