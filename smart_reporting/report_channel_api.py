@@ -20,6 +20,7 @@ from .report_channel_acp import (
 )
 from .report_acp_client import ReportAcpError
 from .report_channel_repository import ReportChannelRepository
+from .document_candidate_gateway import DocumentCandidateDenied, DocumentCandidateGateway
 
 if TYPE_CHECKING:
     from .report_channel_acp import ReportChannelAcp, ReportAcpConversation
@@ -60,6 +61,14 @@ class DelegateRequest(BaseModel):
     prepare_with_acp: bool = False
 
 
+class DocumentTaskRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    instruction: str = Field(min_length=1, max_length=2000)
+    selection: list[dict] = Field(min_length=1, max_length=100)
+
+
 class AcpMessage(ChannelMessage):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -88,6 +97,7 @@ def create_report_channel_router(
     delegate_word: Callable[[str, ConnectorIdentity, DelegateRequest], Awaitable[dict]] | None = None,
     word_status: Callable[[str, ConnectorIdentity, str], Awaitable[dict]] | None = None,
     acp: "ReportChannelAcp | None" = None,
+    document_gateway: DocumentCandidateGateway | None = None,
 ) -> ReportChannelRouter:
     router = ReportChannelRouter(authenticate)
     router.acp_enabled = acp is not None
@@ -144,6 +154,35 @@ def create_report_channel_router(
         if not await repository.has_member(channel, identity):
             raise HTTPException(403, "report_channel_membership_required")
         return identity
+
+    if document_gateway is not None:
+        @router.post("/reports/v1/channels/{channel}/document-tasks", status_code=202)
+        async def create_document_task(request: Request, channel: str, payload: DocumentTaskRequest):
+            identity = await require_member(request, channel)
+            try:
+                task_id = await document_gateway.prepare(
+                    channel, identity, request_id=payload.request_id,
+                    instruction=payload.instruction, selection=tuple(payload.selection),
+                )
+            except DocumentCandidateDenied:
+                raise HTTPException(403, "document_channel_authorization_required") from None
+            except ValueError as error:
+                if str(error) == "document_adapter_unavailable":
+                    raise HTTPException(409, str(error)) from None
+                raise HTTPException(422, "document_task_invalid") from None
+            return {"taskId": task_id}
+
+        @router.get("/reports/v1/channels/{channel}/document-tasks/{task_id}")
+        async def get_document_task(request: Request, channel: str, task_id: str):
+            identity = await require_member(request, channel)
+            try:
+                return await document_gateway.status(channel, identity, task_id)
+            except DocumentCandidateDenied:
+                raise HTTPException(403, "document_channel_authorization_required") from None
+            except ValueError as error:
+                if str(error) == "document_adapter_unavailable":
+                    raise HTTPException(409, str(error)) from None
+                raise HTTPException(422, "document_task_invalid") from None
 
     if delegate_word is not None:
         @router.post("/reports/v1/channels/{channel}/word-tasks", status_code=202)
