@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from loguru import logger
 
+from ..office.native_access import check as check_office_access
+
 from .agent_event_streams import bind_agent_event_log, event_stream_response
 from .native_ai import NativeAIService, _copy_operations, _invalid, _NativeAIJob
 from .native_models import native_digest
@@ -169,6 +171,10 @@ class NativeWorkbookAIService(NativeAIService):
                     "先read_sheet_features核对唯一chartPath与所属表；多图时按用户明确目标匹配，禁止按顺序猜测，不明确时请求澄清而不提交。"
                     "使用load_guide(charts)读取协议；新增/换绑必须使用源add_chart/edit_chart DSL并先读取数据范围，由引擎读取当前草稿生成引用和缓存；禁止模型填series/seriesSet缓存、图片、保护、主题与外部请求。")
                 + "\n用户要求：" + instruction + "\n包含人工未保存修改的授权内容：" + encoded)
+            await job.event_log.emit("phase", label="正在生成工作簿候选")
+            await check_office_access(context.document_id, write=True)
+            if job.status != "running":
+                return
             workbook_planner = getattr(self.planner, "plan_workbook", None)
             plan = (workbook_planner(prompt, model=material, scope=scope, selection=selection,
                     preview=lambda candidate: self.editor.preview(context,
@@ -177,7 +183,6 @@ class NativeWorkbookAIService(NativeAIService):
                     session_id=f"native-workbook-ai:{job.edit_id}", user_id=job.user_id)
                     if callable(workbook_planner) else
                     self.planner(prompt, session_id=f"native-workbook-ai:{job.edit_id}", user_id=job.user_id))
-            await job.event_log.emit("phase", label="正在生成工作簿候选")
             async with bind_agent_event_log(job.event_log):
                 planned = await asyncio.wait_for(plan, timeout=self.timeout_seconds)
             if job.status != "running":
@@ -189,6 +194,9 @@ class NativeWorkbookAIService(NativeAIService):
             validate_chart_candidates(material, candidate)
             combined = self._combined_operations(context, base, candidate)
             preview = await self.editor.preview(context, expected_sha256=context.source_file.sha256, operations=combined)
+            if job.status != "running":
+                return
+            await check_office_access(context.document_id, write=True)
             if job.status != "running":
                 return
             job.proposal = {"summary": planned.summary, "operations": candidate, "previewSha256": preview["draftSha256"]}

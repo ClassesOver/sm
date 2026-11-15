@@ -175,3 +175,62 @@ async def test_regular_accept_rechecks_authority_after_preview(tmp_path, format,
             release.set()
             await asyncio.gather(task, return_exceptions=True)
             await ai.aclose()
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("format", ["xlsx", "pptx"])
+@pytest.mark.parametrize("revoke_at_preview", [1, 2])
+async def test_generation_rechecks_office_edit_access_before_model_and_receipt(format, revoke_at_preview):
+    from smart_reporting.office.native_access import bind
+    from smart_reporting.reporting.tests.test_slides_native_ai import Editor as SlidesEditor
+    from smart_reporting.reporting.tests.test_workbook_native_ai import Editor as WorkbookEditor, proposal
+
+    if format == "xlsx":
+        editor = WorkbookEditor()
+        service = NativeWorkbookAIService
+        selection = {"sheetName": "Sheet", "startRow": 0, "endRow": 0, "startColumn": 0, "endColumn": 0}
+        candidate = proposal()
+    else:
+        editor = SlidesEditor()
+        service = NativeSlidesAIService
+        selection = [{"slideIndex": 0, "elementId": "title"}]
+        candidate = {"summary": "更新标题", "order": [0, 1],
+                     "edits": [{"slideIndex": 0, "elementId": "title", "text": "新标题"}]}
+    can_write = True
+    original_preview = editor.preview
+    original_context = editor.context_for_session
+    session = SimpleNamespace(report_id=editor.context.document_id, capabilities={"office": True})
+
+    async def authorize(_session, *, write=False):
+        if write and not can_write:
+            raise ReportingError("native_permission_denied", "工作区写权限已撤销。")
+
+    async def context_for_session(session):
+        bind(session, authorize)
+        return await original_context(session)
+
+    async def preview(*args, **kwargs):
+        nonlocal can_write
+        result = await original_preview(*args, **kwargs)
+        if len(editor.previews) == revoke_at_preview:
+            can_write = False
+        return result
+
+    editor.context_for_session = context_for_session
+    editor.preview = preview
+    model = AsyncMock(return_value=candidate)
+
+    async def planner(prompt, **kwargs):
+        return await model(prompt, **kwargs)
+    ai = service(editor, planner=planner, enabled=True)
+    try:
+        started = await ai.start_edit(
+            session, client_request_id="draft", instruction="修改选区",
+            expected_sha256=editor.context.source_file.sha256, operations=[], selection=selection,
+        )
+        result = await ai.wait_edit_status(session, started["editId"])
+        assert result["status"] == "failed", result
+        assert result["error"]["code"] == "native_permission_denied"
+        assert "proposal" not in result
+        assert model.await_count == revoke_at_preview - 1
+    finally:
+        await ai.aclose()

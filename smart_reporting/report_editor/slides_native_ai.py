@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from loguru import logger
 
+from ..office.native_access import check as check_office_access
+
 from .agent_event_streams import bind_agent_event_log, event_stream_response
 from .native_ai import NativeAIService, _copy_operations, _invalid, _NativeAIJob
 from .native_models import native_digest
@@ -308,6 +310,9 @@ class NativeSlidesAIService(NativeAIService):
                 return await self.editor.preview(context, expected_sha256=context.source_file.sha256, operations=combined)
 
             await job.event_log.emit("phase", label="正在生成幻灯片候选")
+            await check_office_access(context.document_id, write=True)
+            if job.status != "running":
+                return
             async with bind_agent_event_log(job.event_log):
                 if callable(getattr(type(self.planner), "plan_slides", None)):
                     planning = self.planner.plan_slides(prompt, deck=deck, scope=scope,
@@ -327,6 +332,9 @@ class NativeSlidesAIService(NativeAIService):
             candidate = self._candidate_operations(proposal)
             combined = self._combined_operations(context, base, candidate)
             preview = await self.editor.preview(context, expected_sha256=context.source_file.sha256, operations=combined)
+            if job.status != "running":
+                return
+            await check_office_access(context.document_id, write=True)
             if job.status != "running":
                 return
             job.proposal = {"summary": proposal["summary"], "operations": candidate, "previewSha256": preview["draftSha256"]}
