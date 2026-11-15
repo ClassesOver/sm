@@ -337,4 +337,4 @@ async def test_blank_acp_message_returns_422_not_500():
         response = await http.post("/reports/v1/channels/report-a/acp/messages",
                                    json={"message_id": "blank", "text": "   "})
     assert response.status_code == 422
-    assert response.json()["detail"] == "report_channel_acp_message_invalid"
+    assert response.json()["detail"][0]["loc"] == ["body", "text"]
