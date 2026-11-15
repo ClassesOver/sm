@@ -34,3 +34,5 @@
 独立 reviewer 未发现 Critical/Important 问题。记录一个 Minor：sort_range/merge_cells 虽经过新的范围验证，仍将小写范围原文交给严格大写的实际引擎，预览会明确失败，不会产生虚假成功；完整结构 DSL 参数对齐留给后续批次。镜像会复制新增 .mjs 且已有 Node 运行时。
 
 同步远端 `bf555ffe`（保留源工具迷你图新增适配）后，六组原有受影响测试加 test_workbook_ai_charts.py 共147项通过（33.33s）。该复跑针对共享工具/图表源码变化；未执行重复完整项目测试。Node语法、目标Ruff、diff空白检查通过。唯一警告来自既有第三方 visions 的 imghdr 弃用，不影响本批断言。
+
+后续[结构与输入专项](NATIVE_XLSX_AI_STRUCTURE_ACCEPTANCE_20261115.md)补齐四个行列结构DSL，关闭上述trace直接地址、Unicode trim和排序/合并小写范围转发缺口；引擎越界检查、158项Python及39项引擎定向通过。其他剩余范围保持开放。

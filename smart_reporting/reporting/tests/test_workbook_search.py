@@ -118,3 +118,17 @@ async def test_real_agno_reader_executes_regex_and_sees_actual_tool_receipt():
     assert result['toolEvents'] == [{'tool': 'find_cells'}]
     assert result['coverage']['fullyReadBlockIds'] == []
     assert len(model.responses) == 2
+
+
+@pytest.mark.parametrize('regex', [False, True])
+def test_source_query_trim_removes_bom(regex):
+    assert addresses(tools().find_cells('\ufeffRevenue\ufeff', regex=regex)) == ['A1']
+
+
+def test_source_query_trim_keeps_non_ecmascript_nel():
+    assert addresses(tools().find_cells('\x85Revenue\x85')) == []
+
+
+def test_source_query_rejects_bom_only_input():
+    with pytest.raises(ValueError, match='workbook_ai_search_invalid'):
+        tools().find_cells('\ufeff')

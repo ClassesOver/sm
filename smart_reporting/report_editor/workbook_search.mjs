@@ -6,7 +6,12 @@
  */
 import { readFileSync } from 'node:fs'
 
-const { cells, query, regex, look_in, errors_only, max_results } = JSON.parse(readFileSync(0, 'utf8'))
+const { cells, query: rawQuery, regex, look_in, errors_only, max_results } = JSON.parse(readFileSync(0, 'utf8'))
+const query = rawQuery.trim()
+if (!query && !errors_only) {
+  process.stdout.write(JSON.stringify({ error: 'invalid_query' }))
+  process.exit(0)
+}
 const errorValue = /^#(?:REF!|DIV\/0!|VALUE!|NAME\?|N\/A|NUM!|NULL!|SPILL!|CALC!|FIELD!|CONNECT!|BLOCKED!|UNKNOWN!|GETTING_DATA)$/
 let matchText
 try {

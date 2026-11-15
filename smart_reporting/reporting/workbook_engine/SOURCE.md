@@ -774,3 +774,15 @@ freeze of thousands of rows/columns. `bridge/split-pane.ts` is a local adapter: 
 selections, same rule as `setFrozenPane`) only when the current pane equals `expected`, then reads back. The
 Python native whitelist and `delivery/xlsx.py` include it. Creating split panes is not implemented. Evidence:
 ../../report_editor/NATIVE_XLSX_SPLIT_PANE_ACCEPTANCE.md.
+
+## 2026-11-15 AI structural DSL grid checks
+
+Source `insert_rows/delete_rows/insert_cols/delete_cols` now reach the existing
+structural engine through the Agno workbook candidate adapter. Native shifts
+reject stored rows/cells or merge endpoints that would exceed Excel's grid,
+rather than return a successful preview of unreadable coordinates. Legal moves
+to the grid edge and edge deletions remain supported. Hashes of the patched
+structural source and corrected sheet-ops test are in UPSTREAM-PATCHES-SHA256;
+new grid boundary tests are in LOCAL-ADAPTATIONS-SHA256. This is a local guard,
+not complete reference-boundary equivalence: unstored formula references and
+other metadata can still have edge cases requiring a later source parity slice.

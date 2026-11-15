@@ -29,7 +29,7 @@ def find_cell_indexes(cells: list[dict[str, Any]], *, query: str, regex: bool,
         result = json.loads(completed.stdout)
     except (ValueError, TypeError) as error:
         raise ValueError('workbook_ai_search_failed') from error
-    if isinstance(result, dict) and result.get('error') == 'invalid_regex':
+    if isinstance(result, dict) and result.get('error') in {'invalid_regex', 'invalid_query'}:
         raise ValueError('workbook_ai_search_invalid')
     if (not isinstance(result, dict) or not isinstance(result.get('indexes'), list)
             or type(result.get('truncated')) is not bool

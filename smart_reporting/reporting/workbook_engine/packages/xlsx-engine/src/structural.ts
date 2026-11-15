@@ -26,6 +26,13 @@ export interface ShiftSpec {
 
 export class StructuralShiftError extends Error {}
 
+function assertCellInGrid(row: number, column: number): void {
+  if (!Number.isInteger(row) || row < 0 || row >= 1_048_576 ||
+      !Number.isInteger(column) || column < 0 || column >= 16_384) {
+    throw new StructuralShiftError('Structural shift exceeds worksheet bounds')
+  }
+}
+
 export function shiftSpecOf(op: StructuralOp): ShiftSpec {
   const delta = op.kind.startsWith('insert') ? op.count : -op.count
   return { axis: op.kind.endsWith('rows') ? 'row' : 'column', start: op.index, delta }
@@ -318,6 +325,7 @@ export function applyRowShift(worksheetXml: string, spec: ShiftSpec): string {
   for (const row of rows) {
     const shifted = shiftIndex(row.row - 1, spec)
     if (shifted === null) continue // row inside the deleted region
+    assertCellInGrid(shifted, 0)
     const newRow = shifted + 1
     const renumbered = rewriteRowNumber(row.xml, newRow)
     // cells inherit the row shift from the row element itself
@@ -363,6 +371,7 @@ export function applyColumnShift(worksheetXml: string, spec: ShiftSpec): string 
       }
       const shifted = shiftIndex(columnIndex(address[1]), spec)
       if (shifted === null) continue // cell inside the deleted region
+      assertCellInGrid(Number(address[2]) - 1, shifted)
       cells.push(
         cellXml.replace(/\br="[A-Z]{1,3}[0-9]+"/, () => `r="${columnLabel(shifted)}${address[2]}"`),
       )
@@ -406,6 +415,8 @@ export function shiftMerges(worksheetXml: string, spec: ShiftSpec): string {
       if (!sa && !sb) return '' // merge fully inside the deleted region
       const start = sa ?? clampRefPart(a, spec, 'start')
       const end = sb ?? clampRefPart(b, spec, 'end')
+      assertCellInGrid(start.row, start.col)
+      assertCellInGrid(end.row, end.col)
       return `<mergeCell ref="${formatRef(start)}:${formatRef(end)}"/>`
     },
   )

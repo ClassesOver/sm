@@ -19,6 +19,8 @@ from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_bounda
 
 from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
+
+from .workbook_ai_structure import ROW_COLUMN_SOURCE_OPS, translate_row_column_operation
 from .workbook_search import find_cell_indexes
 
 _CELL_SOURCE_OPS = {'set_cell', 'set_formula', 'clear_cell', 'set_range', 'clear_range'}
@@ -94,6 +96,12 @@ def clear_range_bounds(address: str) -> tuple[int, int, int, int]:
     if (r1 - r0 + 1) * (c1 - c0 + 1) > _MAX_CLEAR_RANGE_CELLS:
         raise ValueError('workbook_ai_range_too_large')
     return r0, r1, c0, c1
+
+def _range_address(address: str) -> str:
+    r0, r1, c0, c1 = _bounds(address)
+    first = f'{get_column_letter(c0 + 1)}{r0 + 1}'
+    last = f'{get_column_letter(c1 + 1)}{r1 + 1}'
+    return first if first == last else f'{first}:{last}'
 
 
 def _matches_expected_value(actual: Any, expected: Any) -> bool:
@@ -237,7 +245,6 @@ class WorkbookAIToolkit(Toolkit):
                 or type(max_results) is not int
                 or type(regex) is not bool or type(errors_only) is not bool):
             raise ValueError('workbook_ai_search_invalid')
-        query = query.strip()
         if not query and not errors_only:
             raise ValueError('workbook_ai_search_invalid')
         max_results = min(max_results, 200) if max_results >= 1 else 50
@@ -324,8 +331,10 @@ class WorkbookAIToolkit(Toolkit):
     def trace_precedents(self, address: str, sheetId: str | None = None) -> dict[str, Any]:
         """追踪冻结工作簿中一个公式的直接依赖；不展开命名范围或外部引用。"""
         sheet = self._sheet(sheetId)
-        if not isinstance(address, str) or ':' in address or not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]{0,6}', address):
-            raise ValueError('workbook_ai_trace_invalid')
+        try:
+            address = _cell_address(address)
+        except ValueError as error:
+            raise ValueError('workbook_ai_trace_invalid') from error
         target = self._trace_cell(sheet['name'], address)
         formula = target.get('formula')
         if not isinstance(formula, str) or not formula:
@@ -339,8 +348,10 @@ class WorkbookAIToolkit(Toolkit):
     def trace_dependents(self, address: str, sheetId: str | None = None) -> dict[str, Any]:
         """查找冻结工作簿中直接引用目标单元格的公式单元格。"""
         sheet = self._sheet(sheetId)
-        if not isinstance(address, str) or ':' in address or not re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]{0,6}', address):
-            raise ValueError('workbook_ai_trace_invalid')
+        try:
+            address = _cell_address(address)
+        except ValueError as error:
+            raise ValueError('workbook_ai_trace_invalid') from error
         self._trace_cell(sheet['name'], address)
         dependents = []
         unsupported = 0
@@ -367,7 +378,7 @@ class WorkbookAIToolkit(Toolkit):
             'layout': 'sort_range(sheetId,range,byColumn,order=asc|desc,hasHeader布尔)复用真实引擎排序；有公式或批注时引擎拒绝。merge_cells/unmerge_cells(sheetId,range)保留范围外既有合并。',
             'data': 'set_filter(sheetId,range)、clear_filter(sheetId)、add_defined_name(name,ref)、delete_defined_name(name)。需要复杂筛选可使用原生applySheetFilter。',
             'table': '原生applyTableAdditions/additions；applyTableEdits/edits每项worksheetSheetName,tableName，可含name,area,columnNames,style,totalsRow,bandedRows,headerRow,remove等；先read_sheet_features核对既有表格。',
-            'structure': '原生applySheetEdits/plan、applyRowColumnOps/sheetName/ops、applyCellShift/sheetName/range/shift，仅整簿授权。',
+            'structure': '仅整簿授权。源DSL insert_rows/delete_rows(sheetId,row,count)：row从1开始，count必填1–500；insert_cols/delete_cols(sheetId,column,count)：column为A到XFD大写列名，count必填1–100。结构DSL必须单独成批，不能与单元格、布局或原生操作混合；先预览、显式采纳并保存，再以新修订继续内容修改。原生applySheetEdits/plan、applyRowColumnOps/sheetName/ops、applyCellShift/sheetName/range/shift继续兼容。',
             'pivot': '原生addPivot/addition、refreshPivotCaches/空arguments、applyPivotLayoutExpansions/updates、expandPivotOutputs/expansions；复用引擎验证来源和输出。',
             'charts': '仅整簿授权；先read_sheet_features读取冻结草稿中charts的chartPath/title/kind/anchor/series引用。多图须按用户明确目标匹配，不能按数组顺序猜测，不明确时请求澄清而不提交。applyChartEdits.arguments.edits每项含真实唯一chartPath，可改title、chartType(column/bar/line/area/pie/doughnut)、legend、seriesColors、pointColors、dataLabels、dataLabelPosition、dataLabelFormat、axisTitles、grouping、gridlines、valueAxis、gapWidthPct、holeSizePct、explosionPct、pointExplosions；具体值由引擎预览核验。新增使用源DSL {op:add_chart,sheetId,chartType:column|bar|line|area|pie|doughnut|scatter|radar|combo,dataRange,title?,anchorCell?}，先read_range核对最多2000格真实数据。换绑使用{op:edit_chart,chartPath,seriesData:[{index,name?,valuesRange?,categoriesRange?,sheetId?}]}，范围须为单行或单列；支持已有格式字段。引擎从当前草稿生成引用与缓存，禁止传series/seriesSet/values/categories缓存；不与行列或工作表结构操作混批。applyChartDeletions.arguments.deletions每项含所属sheetName和chartPath。只生成候选，显式采纳后仍需保存。',
         }
@@ -456,6 +467,12 @@ class WorkbookAIToolkit(Toolkit):
                         address = f'{get_column_letter(column + 1)}{row + 1}'
                         cell_state[(sheet['name'], address)] = {'value': cell['value'], 'formula': formula}
             return {'kind': 'applyCellEdits', 'edits': edits}
+
+        if op in ROW_COLUMN_SOURCE_OPS:
+            sheet_id = operation.get('sheetId')
+            if not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError('workbook_ai_structure_invalid')
+            return translate_row_column_operation(operation, self._sheet(sheet_id)['name'])
         sheet = self._sheet(operation.get('sheetId'))
         name = sheet['name']
         if op in {'set_cell', 'set_formula', 'clear_cell'}:
@@ -492,13 +509,12 @@ class WorkbookAIToolkit(Toolkit):
         if op == 'sort_range':
             if operation.get('order') not in {'asc', 'desc'} or type(operation.get('hasHeader', False)) is not bool:
                 raise ValueError('workbook_ai_sort_invalid')
-            _bounds(operation['range'])
-            return {'kind': 'sortRange', 'sheetName': name, 'spec': {'range': operation['range'], 'byColumn': operation['byColumn'], 'ascending': operation['order'] == 'asc', 'hasHeader': operation.get('hasHeader', False)}}
+            return {'kind': 'sortRange', 'sheetName': name, 'spec': {'range': _range_address(operation['range']), 'byColumn': operation['byColumn'], 'ascending': operation['order'] == 'asc', 'hasHeader': operation.get('hasHeader', False)}}
         if op in {'merge_cells', 'unmerge_cells'}:
             area = _bounds(operation['range'])
             current = merges.setdefault(name, list(sheet.get('merges', [])))
             if op == 'merge_cells':
-                current.append(operation['range'])
+                current.append(_range_address(operation['range']))
             else:
                 current[:] = [ref for ref in current if not _overlaps(_bounds(ref), area)]
             return {'kind': 'applySheetMerges', 'sheetName': name, 'ranges': list(current)}
@@ -518,6 +534,10 @@ class WorkbookAIToolkit(Toolkit):
             raise ValueError('workbook_ai_operations_invalid')
         if self._scope == 'range' and any(operation.get('op') not in (_CELL_SOURCE_OPS | {None}) or operation.get('kind') not in {'applyCellEdits', 'clearCellRange', None} for operation in operations):
             raise ValueError('workbook_ai_selection_mismatch')
+        if any(operation.get('op') in ROW_COLUMN_SOURCE_OPS for operation in operations) and any(
+            operation.get('op') not in ROW_COLUMN_SOURCE_OPS or 'kind' in operation for operation in operations
+        ):
+            raise ValueError('workbook_ai_structure_batch_invalid')
         merges: dict[str, list[str]] = {}
         cell_state: dict[tuple[str, str], dict[str, Any]] | None = {}
         translated_operations = []

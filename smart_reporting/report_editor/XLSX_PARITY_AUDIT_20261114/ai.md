@@ -146,3 +146,5 @@ Additional source helper evidence inspected after base inventory: `ai/guides.ts:
 ## 2026-11-15 后续增量（覆盖上文对应历史缺口）
 
 [工具契约专项](../NATIVE_XLSX_AI_TOOL_CONTRACT_ACCEPTANCE_20261115.md)补齐 find_cells 的 regex、JS匹配/布尔值与现代错误语义、整数结果上限；共享范围解析及离散读取接受源 A1 变体，缺省工作表优先冻结选区。实际98项定向通过。上文 `regex parameter absent` 与严格大写范围描述不再适用于这些已修入口；trace 的直接地址校验、稳定 sheet ID、导航/新文件等剩余项仍开放。
+
+[结构与输入续批](../NATIVE_XLSX_AI_STRUCTURE_ACCEPTANCE_20261115.md)新增insert_rows/delete_rows/insert_cols/delete_cols源DSL映射至真实applyRowColumnOps，沿用源结构/内容分批规则；修复trace地址、JS trim和sort/merge范围转发。158项Python及39项引擎专项通过；其他DSL和宿主工具仍开放。

@@ -62,3 +62,43 @@ def test_alias_address_precondition_uses_actual_cell_before_preview():
     with pytest.raises(ValueError, match='precondition_mismatch'):
         asyncio.run(tools.propose_operations([{'op': 'set_cell', 'sheetId': 'Active',
             'address': '$a$1', 'value': 99, 'expectedValue': None}], 'replace'))
+
+
+@pytest.mark.parametrize('address', [' b1 ', '$b$1', '$B1'])
+def test_trace_precedents_normalizes_source_address_and_reads_actual_formula(address):
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet', 'cells': {
+        'A1': {'value': 7}, 'B1': {'formula': 'A1*2', 'value': 14},
+    }}]}, scope='workbook', selection={}, preview=None)
+    result = tools.trace_precedents(address)
+    assert result['address'] == 'B1'
+    assert result['precedents'][0]['address'] == 'A1'
+    assert result['precedents'][0]['value'] == 7
+
+
+@pytest.mark.parametrize('address', [' a1 ', '$a$1'])
+def test_trace_dependents_normalizes_source_address(address):
+    reader = NativeWorkbookReadTools({'sheets': [{'name': 'Sheet', 'cells': {
+        'A1': {'value': 7}, 'B1': {'formula': 'A1*2', 'value': 14},
+    }}]})
+    result = reader.trace_dependents(address)
+    assert result['address'] == 'A1'
+    assert [cell['address'] for cell in result['dependents']] == ['B1']
+    assert reader.coverage()['fullyReadBlockIds'] == []
+
+
+def test_trace_alias_cannot_read_outside_authorized_selection():
+    reader = NativeWorkbookReadTools({'sheets': [{'name': 'Sheet', 'cells': {
+        'A1': {'value': 7}, 'B1': {'formula': 'A1*2', 'value': 14},
+    }}]}, {'sheetName': 'Sheet', 'startRow': 0, 'endRow': 0,
+           'startColumn': 1, 'endColumn': 1})
+    with pytest.raises(ValueError, match='selection_mismatch'):
+        reader.trace_precedents('$b$1')
+    with pytest.raises(ValueError, match='selection_mismatch'):
+        reader.trace_dependents('$a$1')
+
+
+@pytest.mark.parametrize('method', ['trace_precedents', 'trace_dependents'])
+@pytest.mark.parametrize('address', ['A1:B2', 'XFE1', 'A1048577', ''])
+def test_trace_rejects_invalid_aliases(method, address):
+    with pytest.raises(ValueError, match='workbook_ai_trace_invalid'):
+        getattr(toolkit(), method)(address, 'Active')
