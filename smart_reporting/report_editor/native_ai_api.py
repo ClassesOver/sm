@@ -21,6 +21,7 @@ class _DraftPayload(BaseModel):
 
 
 class NativeAIStartPayload(_DraftPayload):
+    resume_edit_id: str | None = Field(default=None, alias="resumeEditId", pattern=r"^word-[0-9a-f]{64}$")
     client_request_id: str | None = Field(default=None, alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     instruction: str = Field(min_length=1, max_length=2000)
     selection: list[dict[str, str]] = Field(min_length=1, max_length=100)
@@ -268,6 +269,7 @@ def create_native_ai_router(
                 **({'server_session_reference': token_hash(request.cookies.get(NATIVE_SESSION_COOKIE, ''))}
                    if getattr(ai, 'word_task_dispatcher', None) is not None and ai.word_task_dispatcher.enabled else {}),
                 **({"client_request_id": payload.client_request_id} if payload.client_request_id is not None else {}),
+                **({"resume_edit_id": payload.resume_edit_id} if payload.resume_edit_id is not None else {}),
             )
         except ReportingError as error:
             raise _ai_error(error) from None

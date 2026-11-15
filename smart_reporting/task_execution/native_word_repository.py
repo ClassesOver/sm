@@ -50,6 +50,15 @@ class NativeWordTaskRepositoryMixin:
         return await self.create_task_with_initial_attempt(
             scope, initial_instruction, _native_word_input=payload)
 
+    async def has_native_word_task_input(self, scope: TaskExecutionScope, input_sha256: str) -> bool:
+        await self.initialize()
+        async with self.db.db_engine.connect() as connection:
+            result = await connection.execute(select(self.tasks.c.external_run_id).where(
+                *self._word_scope_conditions(self.tasks, scope),
+                self.tasks.c.native_word_input_sha256 == input_sha256,
+            ))
+            return result.scalar_one_or_none() is not None
+
     @staticmethod
     def _word_scope_conditions(tasks, scope: TaskExecutionScope):
         return (

@@ -1,4 +1,5 @@
 import { OfficeAssistantController } from './office-assistant-controller'
+import { NativeApiError } from './native-api'
 import type { createNativeApi, NativeAIJob, NativeAISelection, NativeAIReviewSelection, NativeAINoteSelection } from './native-api'
 import type { NativeDraft } from './native-draft'
 import { mountNativeAIProgress, type NativeAIProgressListener } from './native-ai-progress'
@@ -99,9 +100,16 @@ export function bindNativeAI(container: HTMLElement, options: {
     details.hidden = true
     status.textContent = '正在生成并核验建议'
     try {
-      const result = await tasks.run({clientRequestId:requestId, instruction, selection:selected, expectedSha256:options.draft.identity.sourceSha256, operations:options.draft.operations},requestId,(started,signal)=>{
+      const payload = {clientRequestId:requestId, instruction, selection:selected,
+        expectedSha256:options.draft.identity.sourceSha256, operations:structuredClone(options.draft.operations)}
+      const result = await tasks.run(payload,requestId,(started,signal)=>{
         progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, started.editId, signal, () => editable() && turn === generation)
         if(!disposed && turn===generation)show(started)
+      }, (started, error, signal) => {
+        if (options.format === 'docx' && /^word-[0-9a-f]{64}$/.test(started.editId)
+          && error instanceof NativeApiError && error.status === 404 && error.code === 'native_ai_job_missing') {
+          return options.api.aiStart({...payload,resumeEditId:started.editId},signal)
+        }
       })
       if(!result || disposed || turn!==generation)return
       if(options.format==='docx' && target!==currentWordTarget()) {clearCandidate();status.textContent='修改要求或选区已变化，请重新生成建议。';update();return}

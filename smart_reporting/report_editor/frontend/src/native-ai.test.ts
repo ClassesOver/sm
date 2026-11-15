@@ -181,3 +181,30 @@ it('注释使用显式身份授权、显示前后差异，普通正文选区不�
  expect(root.textContent).toContain('候选：新的引用说明');expect(root.querySelector('img')).toBeNull();expect(draft.operations).toEqual([])
  root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click();await vi.waitFor(()=>expect(draft.operations).toEqual([op]));binding.dispose()
 })
+
+it('重连时用原请求和 Word 持久任务 ID 恢复轮询，再等待显式采纳', async () => {
+  const { NativeApiError } = await import('./native-api')
+  const draft = new NativeDraft({documentId:'restart-word',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
+  const editId = 'word-' + 'b'.repeat(64)
+  const pending = {editId,status:'running'}
+  const api = {
+    aiStart: vi.fn().mockResolvedValue(pending),
+    aiStatus: vi.fn().mockRejectedValueOnce(new NativeApiError(404, 'native_ai_job_missing', '任务不存在'))
+      .mockResolvedValueOnce({editId,status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'恢复后的候选',operations:[]}}),
+    aiCancel: vi.fn().mockResolvedValue({}),
+    aiCancelRequest: vi.fn().mockResolvedValue({}),
+    aiAccept: vi.fn(),
+  }
+  const root = document.createElement('div')
+  const binding = bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+  binding.setSelection([{blockId:'p1'}])
+  root.querySelector('textarea')!.value = '修改'
+  root.querySelector<HTMLButtonElement>('[data-ai=start]')!.click()
+  await vi.waitFor(() => expect(root.textContent).toContain('恢复后的候选'))
+  expect(api.aiStart).toHaveBeenCalledTimes(2)
+  expect(api.aiStart.mock.calls[1][0]).toEqual({...api.aiStart.mock.calls[0][0],resumeEditId:editId})
+  expect(api.aiCancelRequest).not.toHaveBeenCalled()
+  expect(api.aiAccept).not.toHaveBeenCalled()
+  expect(draft.operations).toEqual([])
+  binding.dispose()
+})

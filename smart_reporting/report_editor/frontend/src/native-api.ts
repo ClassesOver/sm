@@ -265,7 +265,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     pdfAIStatus: async (id: string, signal?: AbortSignal): Promise<NativePDFReadTask> => (await request('ai/read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     pdfAIEvents: nativeAIProgressListener(`${base}/ai/read`),
     pdfAICancel: async (clientRequestId: string): Promise<NativePDFReadTask> => (await request('ai/read/cancel', {clientRequestId})).json(),
-    aiStart: async (payload: NativePreviewRequest & { instruction: string; selection: NativeAISelection[]; clientRequestId?: string }, signal?: AbortSignal): Promise<NativeAIJob> => (await request('ai/start', payload, signal)).json(),
+    aiStart: async (payload: NativePreviewRequest & { instruction: string; selection: NativeAISelection[]; clientRequestId?: string; resumeEditId?: string }, signal?: AbortSignal): Promise<NativeAIJob> => (await request('ai/start', payload, signal)).json(),
     aiCancelRequest: async (clientRequestId: string): Promise<NativeAIJob> => (await request('ai/cancel-request', {clientRequestId})).json(),
     aiStatus: async (id: string, signal?: AbortSignal): Promise<NativeAIJob> => (await request(`ai/${encodeURIComponent(id)}?waitMs=20000`, undefined, signal)).json(),
     aiEvents,

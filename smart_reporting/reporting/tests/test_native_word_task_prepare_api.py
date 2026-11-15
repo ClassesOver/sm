@@ -92,3 +92,34 @@ async def test_prepare_does_not_convert_unknown_or_authorization_errors(kind):
     assert caught.value is error
     repository.create_native_word_task.assert_not_called()
     transport.run.assert_not_called()
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("matches_existing_input", [False, True])
+async def test_retry_only_matches_existing_word_task_input(matches_existing_input):
+    from smart_reporting.reporting.models import ReportingError
+    from smart_reporting.task_execution.native_word_contracts import canonical_digest
+
+    data = inputs()
+    repository = AsyncMock(spec=['has_native_word_task_input', 'create_native_word_task'])
+    repository.has_native_word_task_input = AsyncMock(return_value=matches_existing_input)
+    transport = AsyncMock(spec=['run'])
+    dispatcher = WordTaskDispatcher(repository, data.grants, data.editor,
+        scope_factory=lambda context, task_id: TaskExecutionScope(task_id, 'user', 'thread', 'workspace', 'word'),
+        secret='s' * 32, transport=transport, enabled=True)
+    request_id = 'original'
+    edit_id = 'word-' + canonical_digest({'context': data.context.digest(), 'request': request_id})
+    prepare = dict(context=data.context, session_reference='c' * 64,
+        instruction='Edit', expected_sha256='a' * 64, operations=[],
+        selection=[{'blockId': 'p1'}], request_id=request_id, resume_edit_id=edit_id)
+
+    if matches_existing_input:
+        reference = await dispatcher.prepare(**prepare)
+        assert reference.scope.external_run_id == edit_id
+        repository.has_native_word_task_input.assert_awaited_once_with(reference.scope, reference.input_sha256)
+    else:
+        with pytest.raises(ReportingError) as caught:
+            await dispatcher.prepare(**prepare)
+        assert caught.value.code == 'native_ai_job_missing'
+
+    repository.create_native_word_task.assert_not_called()
+    transport.run.assert_not_called()

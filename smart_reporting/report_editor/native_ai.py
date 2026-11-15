@@ -162,11 +162,13 @@ class NativeAIService:
                 self._jobs.pop(key, None)
         self._requests = {key: value for key, value in self._requests.items() if value in self._jobs}
 
-    def _request_job(self, context, request_id, fingerprint):
+    def _request_job(self, context, request_id, fingerprint, resume_edit_id=None):
         self._prune()
         edit_id = self._requests.get((context.digest(), request_id))
         if edit_id is None:
             return None
+        if resume_edit_id is not None and edit_id != resume_edit_id:
+            raise _invalid("native_ai_job_missing", "原 Word 任务不存在或已过期。")
         job = self._jobs[edit_id]
         if job.request_sha256 is not None and job.request_sha256 != fingerprint:
             raise _invalid("native_ai_snapshot_changed", "相同 AI 请求的内容已变化，请重新发起。")
@@ -219,6 +221,7 @@ class NativeAIService:
         selection: list[dict[str, str]],
         client_request_id: str | None = None,
         server_session_reference: str | None = None,
+        resume_edit_id: str | None = None,
         authorization_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict[str, Any]:
         if self._closed:
@@ -232,10 +235,12 @@ class NativeAIService:
             raise _invalid("native_ai_snapshot_changed", "原生草稿来源已变化。")
         base = _copy_operations(operations)
         request_id = self._request_id(client_request_id) if client_request_id is not None else None
+        if resume_edit_id is not None and (request_id is None or not self._word_tasks_enabled(context)):
+            raise _invalid("native_ai_job_missing", "原 Word 任务不存在或已过期。")
         fingerprint = native_digest({"context": context.digest(), "instruction": instruction,
             "operations": base, "selection": selection}) if request_id else None
         if request_id:
-            previous = self._request_job(context, request_id, fingerprint)
+            previous = self._request_job(context, request_id, fingerprint, resume_edit_id)
             if previous:
                 return self._serialize(previous)
         # 原来源模型提供唯一允许的锚点；预览改后文件的 SHA 与 ID 不用于保存操作。
@@ -278,7 +283,7 @@ class NativeAIService:
         # 预览期间取消或重复启动可能已登记相同请求，必须在创建任务前再次核对。
         self._prune()
         if request_id:
-            previous = self._request_job(context, request_id, fingerprint)
+            previous = self._request_job(context, request_id, fingerprint, resume_edit_id)
             if previous:
                 return self._serialize(previous)
         if sum(job.status == "running" for job in self._jobs.values()) >= 32:
@@ -302,12 +307,15 @@ class NativeAIService:
             from .native_word_task_builder import supports_word_task_targets
 
             dispatch_word_task = all(set(item) == {"blockId"} for item in selection) and supports_word_task_targets(selected)
+        if resume_edit_id is not None and not dispatch_word_task:
+            raise _invalid("native_ai_job_missing", "原 Word 任务不存在或已过期。")
         if dispatch_word_task:
             word_reference = await self.word_task_dispatcher.prepare(context=context,
                 session_reference=server_session_reference, instruction=instruction,
                 expected_sha256=expected_sha256, operations=base, selection=selection,
-                request_id=request_id or uuid4().hex)
-            previous = self._request_job(context, request_id, fingerprint) if request_id else None
+                request_id=request_id or uuid4().hex,
+                **({"resume_edit_id": resume_edit_id} if resume_edit_id is not None else {}))
+            previous = self._request_job(context, request_id, fingerprint, resume_edit_id) if request_id else None
             if previous:
                 if previous.status == 'cancelled' or self._closed:
                     await self.word_task_dispatcher.cancel(word_reference)

@@ -54,11 +54,13 @@ class WordTaskDispatcher:
             raise _invalid('native_word_task_unavailable')
 
     async def prepare(self, *, context, session_reference, instruction, expected_sha256,
-                      operations, selection, request_id):
+                      operations, selection, request_id, resume_edit_id=None):
         self.require_available()
         if not session_reference:
             raise _invalid()
         task_id = 'word-' + canonical_digest({'context': context.digest(), 'request': request_id})
+        if resume_edit_id is not None and task_id != resume_edit_id:
+            raise _invalid('native_ai_job_missing')
         scope = self.scope_factory(context, task_id)
         if not isinstance(scope, TaskExecutionScope) or scope.external_run_id != task_id:
             raise _invalid()
@@ -70,13 +72,18 @@ class WordTaskDispatcher:
                 raise
             raise ReportingError('native_ai_selection_invalid',
                 '当前 Word 任务输入不受支持或授权已变化，请重新选择。') from None
+        input_sha256 = canonical_digest(value.model_dump(mode='json', by_alias=True))
+        if resume_edit_id is not None:
+            if not await self.repository.has_native_word_task_input(scope, input_sha256):
+                raise _invalid('native_ai_job_missing')
+            return WordTaskReference(scope, input_sha256, value)
         try:
             await self.repository.create_native_word_task(scope, instruction, value)
         except TaskExecutionRepositoryError as error:
             if error.code in {'native_word_input_conflict', 'task_initial_instruction_conflict'}:
                 raise _invalid('native_ai_snapshot_changed') from None
             raise
-        return WordTaskReference(scope, canonical_digest(value.model_dump(mode='json', by_alias=True)), value)
+        return WordTaskReference(scope, input_sha256, value)
 
     @staticmethod
     def _fence(ref, task_session, task):

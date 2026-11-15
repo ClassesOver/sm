@@ -166,8 +166,10 @@ retried the original HTTP start payload. PostgreSQL returned the same task and
 internal attempt IDs with a resume count of one. The second process completed the
 Agno/MCP run, explicitly accepted the candidate, saved revision 2 and downloaded a
 DOCX that retained the adjacent paragraph. The probe used a scripted model to
-control the interruption point. The browser still needs to retry the original
-start payload automatically after a worker loses its in-memory task state.
+control the interruption point. The open Word panel retries the original payload once when status returns a
+missing task. The server binds the retry to the existing task ID and exact input.
+Component tests cover the retry and explicit acceptance. The two-process HTTP
+probe rejects changed instructions and request IDs before resuming the original.
 
 The isolated run passed five selected cases on PostgreSQL with Node 24. It
 covered HTTP upload, start, explicit acceptance, save and independent DOCX
