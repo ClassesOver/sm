@@ -53,15 +53,15 @@ function render() {
   form.onsubmit = async event => {
     event.preventDefault(); if (busy || providerBusy || !dirty()) return
     busy = true; status.textContent = '正在保存…'
-    const locked = [...host.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input, button, select')]
-    for (const control of locked) control.disabled = true
+    const locked = [...host.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input, button, select')].map(control => ({control, disabled: control.disabled}))
+    for (const {control} of locked) control.disabled = true
     try {
       const { version, ...document } = settings
       const saved = await officeRequest<GlobalSettings>('/admin/settings', 'PUT', { ...document, expectedVersion: version })
       if (expired) return
       settings = saved
       baseline = JSON.stringify(settings); status.textContent = '已保存，对后续任务生效。'
-    } catch (e) { status.textContent = (e as Error).message } finally { busy = false; for (const control of locked) control.disabled = false }
+    } catch (e) { status.textContent = (e as Error).message } finally { busy = false; for (const {control, disabled} of locked) control.disabled = disabled }
   }
   content.append(form, status); layout.append(nav, content); host.append(layout)
 }

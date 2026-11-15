@@ -98,3 +98,37 @@ it('workspace ownership does not expose member data-source administration', asyn
   expect(host.textContent).not.toContain('成员表权限')
   expect(host.textContent).toContain('执行查询')
 })
+
+it.each([200, 503])('source draft freezes editable fields and retains immutable identity after HTTP %s', async status => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true, value(this: HTMLDialogElement) { this.open = true },
+  })
+  let finish!: (response: Response) => void
+  let body: Record<string, unknown> | undefined
+  vi.stubGlobal('fetch', async (url: string, request: RequestInit) => {
+    if (request.method === 'PUT') {
+      body = JSON.parse(String(request.body))
+      return await new Promise<Response>(resolve => {finish = resolve})
+    }
+    if (url.endsWith('/table-access')) return Response.json({draftTables: [], publishedTables: [], discoveryId: null})
+    if (url.endsWith('/sales')) return Response.json({draft: {source_id: 'sales', name: body?.name ?? 'Sales', database: 'db', version: 1, metadata_version_id: null}})
+    return Response.json({items: [{source_id: 'sales', name: 'Sales', database: 'db', publishedRevision: null}], nextCursor: null})
+  })
+  const host = document.body.appendChild(document.createElement('div'))
+  await showOfficeSources(host, {admin: true})
+  ;[...host.querySelectorAll('button')].find(x => x.textContent === '连接与表范围')!.click()
+  await vi.waitFor(() => expect(host.querySelector('dialog')!.getAttribute('aria-busy')).toBeNull())
+  const get = (label: string) => host.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!
+  const identity = get('数据源标识'), name = get('名称'), database = get('数据库'), dsn = get('更换连接地址（留空保留）')
+  name.value = 'Changed sales'; dsn.value = 'starrocks://user:test@db.example/db'
+  host.querySelector('form')!.dispatchEvent(new Event('submit', {bubbles: true, cancelable: true}))
+  expect([identity, name, database, dsn].every(input => input.disabled)).toBe(true)
+  expect(body).toMatchObject({name: 'Changed sales', dsn: 'starrocks://user:test@db.example/db'})
+  finish(Response.json(status === 200 ? {} : {message: '暂时不可用'}, {status}))
+  await vi.waitFor(() => expect(host.querySelector('dialog')!.getAttribute('aria-busy')).toBeNull())
+  expect(get('数据源标识').disabled).toBe(true)
+  expect(get('名称').disabled).toBe(false)
+  expect(get('名称').value).toBe('Changed sales')
+  expect(get('更换连接地址（留空保留）').value).toBe(status === 200 ? '' : 'starrocks://user:test@db.example/db')
+  if (status === 503) expect(host.textContent).toContain('暂时不可用')
+})

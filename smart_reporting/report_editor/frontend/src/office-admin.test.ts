@@ -12,6 +12,9 @@ it('保存期间冻结全局表单，防止在途编辑被服务器回执覆盖'
   }))
   await import('./office-admin')
   await vi.waitFor(() => expect(document.querySelector('input')).not.toBeNull())
+  await vi.waitFor(() => expect([...document.querySelectorAll('button')].some(x => x.textContent === '清除已存密钥')).toBe(true))
+  const clearKey = [...document.querySelectorAll('button')].find(x => x.textContent === '清除已存密钥')!
+  expect(clearKey.disabled).toBe(true)
   const input = document.querySelector<HTMLInputElement>('.office-admin-layout > section > form input')!
   input.value = 'new-model'; input.dispatchEvent(new Event('input', { bubbles: true }))
   document.querySelector('.office-admin-layout > section > form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
@@ -20,5 +23,6 @@ it('保存期间冻结全局表单，防止在途编辑被服务器回执覆盖'
   finish(new Response(JSON.stringify({ ...defaults, version: 1, modelId: 'new-model' })))
   await vi.waitFor(() => expect(input.disabled).toBe(false))
   expect(document.querySelector('.office-admin-layout > section > [role="status"]')!.textContent).toContain('已保存')
+  expect(clearKey.disabled).toBe(true)
   vi.unstubAllGlobals()
 })
