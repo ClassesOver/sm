@@ -26,3 +26,15 @@ def test_invalid_xlsx_sheet_names(sheet):
 def test_xlsx_rejects_unknown_selection_fields():
     with pytest.raises(ValueError, match="xlsx_target_invalid"):
         validate_xlsx_selection(({"sheet": "Sheet1", "range": "A1", "formula": "=1+1"},))
+
+
+@pytest.mark.parametrize("targets", [
+    ("B2", "$B$2"),
+    ("B2", "B2:B2"),
+    ("$B2", "B$2"),
+])
+def test_xlsx_rejects_duplicate_physical_targets_across_aliases(targets):
+    with pytest.raises(ValueError, match="xlsx_target_duplicate"):
+        validate_xlsx_selection(tuple(
+            {"sheet": "Sheet1", "range": address} for address in targets
+        ))
