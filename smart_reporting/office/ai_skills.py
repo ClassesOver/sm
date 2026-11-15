@@ -1,5 +1,6 @@
 """Fixed-source GenOffice skill packages loaded by Agno's native Skills support."""
 from pathlib import Path
+from typing import Literal, get_args
 
 from agno.skills import LocalSkills, Skills
 
@@ -62,5 +63,18 @@ def source_workbook_guide(name: str) -> str:
     if name not in WORKBOOK_GUIDES:
         raise ValueError('workbook_ai_guide_invalid')
     return (SOURCE_ROOT / 'apps/sheets/src/renderer/ai/prompts/guides' / f'{name}.md').read_text(
+        encoding='utf-8',
+    )
+
+
+SlidesGuideGroup = Literal['text', 'element', 'insert', 'table', 'slide', 'deck']
+SLIDES_GUIDES = get_args(SlidesGuideGroup)
+
+
+def source_slides_guide(group: str) -> str:
+    """Read the complete pinned opGuide markdown using fixed source group names."""
+    if group not in SLIDES_GUIDES:
+        raise ValueError('slides_ai_guide_invalid')
+    return (SOURCE_ROOT / 'packages/pptx-ops/src/prompts/ops' / f'{group}.md').read_text(
         encoding='utf-8',
     )

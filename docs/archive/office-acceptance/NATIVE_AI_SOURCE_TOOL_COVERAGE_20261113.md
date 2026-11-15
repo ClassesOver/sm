@@ -103,7 +103,8 @@ OCR 继续遵守此前用户排除范围，不因源其他代码存在而自动�
 | `web_search`、`image_search`、`generate_image`、`analyze_media`、`insert_web_image`、`replace_image` | 当前原生 planner 未注册完整工具链；手工插图及图片引擎能力不算 AI 接线。 |
 | `ask_clarification` | 尚无独立可恢复的澄清等待／继续任务协议；回答文字中的澄清不等同该生命周期。 |
 | `plan_deck`、`regenerate_slide`、`generate_deck` | 尚无源等效规划／生成／单页重生成闭环；已有报告 PPTX 生成不能外推为此工具完成。 |
-| `save_style_template`、`list_style_templates`、`load_guide` | 当前原生 toolkit 未注册这套源模板库／指南工具。 |
+| `load_guide` | 已注册源 groups 枚举，完整返回六组固定源指南，顺序去重；原文与原生权限／单位适配说明分别返回。见[PPTX 指南验收](NATIVE_PPTX_AI_GUIDES_ACCEPTANCE_20261115.md)。 |
+| `save_style_template`、`list_style_templates` | 当前原生 toolkit 未注册这套源模板库工具。 |
 | `read_attachment`（`files-skill.ts`） | 未在当前原生 PPTX toolkit 中接入附件阅读；后续必须复用受控工作区注册与授权输入，不暴露任意路径。 |
 
 ## 共用生命周期与后续顺序

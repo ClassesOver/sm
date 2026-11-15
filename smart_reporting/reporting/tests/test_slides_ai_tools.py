@@ -127,7 +127,8 @@ async def test_native_slides_service_runs_agno_tools_and_streams_actual_calls():
 
 
 @pytest.mark.anyio
-async def test_agno_slides_tools_preview_real_pptx_and_preserve_manual_draft():
+@pytest.mark.parametrize("use_guide", [False, True])
+async def test_agno_slides_tools_preview_real_pptx_and_preserve_manual_draft(use_guide):
     import asyncio
     import hashlib
     from copy import deepcopy
@@ -155,7 +156,9 @@ async def test_agno_slides_tools_preview_real_pptx_and_preserve_manual_draft():
         'fontSizePt': 24, 'color': '#123456',
         'geometry': {'x': 120, 'y': 100, 'width': 300, 'height': 100},
     }]}
-    model = ScriptedModel(id='real-engine-slides-tools', responses=[
+    model = ScriptedModel(id='real-engine-slides-tools', responses=([
+        call('load_guide', {'groups': ['text', 'element']}, 'guide'),
+    ] if use_guide else []) + [
         call('get_presentation_context', {}, 'context'),
         call('read_slide', {'slide_index': 0}, 'read'),
         call('propose_operations', {'proposal': candidate}, 'propose'),
@@ -203,6 +206,9 @@ async def test_agno_slides_tools_preview_real_pptx_and_preserve_manual_draft():
     assert str(reopened.slides[1].background.fill.fore_color.rgb) == 'ABCDEF'
     assert Presentation(BytesIO(content)).slides[0].shapes[0].text == '第一张'
     assert base == original_base
+    if use_guide:
+        assert any(m.role == 'tool' and m.tool_name == 'load_guide' and 'nativeAdapter' in str(m.content)
+                   for turn in model.seen for m in turn)
     assert editor.previews[-1] == accepted['operations']
     await ai.aclose()
 
