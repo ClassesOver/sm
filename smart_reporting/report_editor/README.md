@@ -48,6 +48,8 @@ GenOffice 网页入口为 `/office`。使用独立的组织域、公司、账号
 
 公司数据源管理复用既有管理数据表。首次部署或升级时，运行 `docker compose run --rm reporting-os /app/.venv/bin/python -m alembic -c /app/alembic-management.ini upgrade head`。继续使用现有数据源时保留原 `AGENT_MANAGEMENT_CREDENTIAL_KEYS`，使已保存的连接凭据能继续解密。
 
+将实例层的存量数据源分配给指定公司时，在 `reporting-os` 容器内运行 `python -m smart_reporting.office.source_migration --database <组织域> --company <公司> --user <公司管理员账号> --source <数据源ID> --dry-run`。核对预览后移除 `--dry-run` 执行复制。可重复传入 `--source` 指定多个数据源。实例原配置保留，目标公司已有同标识数据源时整批拒绝覆盖。
+
 原生 Word/PDF 编辑、四格式上传和灰度回滚见 [原生 Office 接入指南](NATIVE_EDITING.md)。
 
 发布前按 [`frontend/smoke/README.md`](frontend/smoke/README.md) 使用真实编辑会话执行桌面端、移动端和导出冒烟；Vite fixture 不替代真实后端链路。

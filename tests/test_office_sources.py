@@ -137,9 +137,7 @@ async def test_existing_source_service_uses_office_company_and_encrypted_vault()
         other = Identity('db', '2', '10')
         await office.bootstrap(other, 'Other admin')
         other_token = await office.create_session(other)
-        other_scope = await scopes.ensure_registered(other)
-        assert (await service.list(other_token, other_scope))['items'] == []
-        from smart_reporting.management.models import INSTANCE_SCOPE_ID
+        from smart_reporting.management.models import INSTANCE_SCOPE_ID, ManagementScope
         from smart_reporting.office.source_migration import adopt_instance_sources
         async with engine.begin() as connection:
             for table in (sources, source_drafts, source_credentials):
@@ -147,8 +145,10 @@ async def test_existing_source_service_uses_office_company_and_encrypted_vault()
                 await connection.execute(insert(table).values(dict(row, scope_id=INSTANCE_SCOPE_ID)))
         preview = await adopt_instance_sources(office, other, ['sales'], dry_run=True)
         assert preview['dryRun']
-        assert (await service.list(other_token, other_scope))['items'] == []
+        async with engine.connect() as connection:
+            assert await OfficeSourceScopes.scope_id(connection, other) is None
         await adopt_instance_sources(office, other, ['sales'])
+        other_scope = ManagementScope(other.database, other.company)
         assert (await service.list(other_token, other_scope))['items'][0]['source_id'] == 'sales'
         with pytest.raises(OfficeError, match='已有'):
             await adopt_instance_sources(office, other, ['sales'])

@@ -1,16 +1,15 @@
 """Copy explicitly assigned instance sources into a company's Office management scope."""
 import argparse
 import asyncio
-import os
-
+from loguru import logger
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from ..management.models import INSTANCE_SCOPE_ID, ManagementScope
-from ..management.data_sources.repository import SourceRepository
+from ..management.models import INSTANCE_SCOPE_ID
 from ..management.repository import (
     sources, source_drafts, source_versions, source_credentials, table_discoveries, catalog_versions,
 )
+from ..runtime.settings import database_url_from_environment
 from .repository import Identity, OfficeError, OfficeRepository
 from .source_management import OfficeSourceScopes
 
@@ -19,10 +18,9 @@ async def adopt_instance_sources(office, actor, source_ids: list[str], *, dry_ru
     """Deployment operation; no HTTP route or automatic company assignment."""
     if not source_ids or len(source_ids) != len(set(source_ids)):
         raise OfficeError("office_source_migration_invalid", "请指定不重复的数据源标识。", 422)
-    scope = await OfficeSourceScopes(office).ensure_registered(actor)
     async with office.transaction(actor) as connection:
         await office._user(connection, actor, admin=True)
-        target_scope = await SourceRepository.scope_id(connection, scope)
+        target_scope = await OfficeSourceScopes.scope_id(connection, actor)
         # Lock source heads so a publication cannot change halfway through copying.
         rows = (await connection.execute(select(sources).where(
             sources.c.scope_id == INSTANCE_SCOPE_ID, sources.c.source_id.in_(source_ids),
@@ -38,6 +36,8 @@ async def adopt_instance_sources(office, actor, source_ids: list[str], *, dry_ru
                    'company': actor.company, 'dryRun': dry_run}
         if dry_run:
             return summary
+        if target_scope is None:
+            target_scope = await OfficeSourceScopes.scope_id(connection, actor, create=True)
         for table in (sources, source_credentials, catalog_versions, table_discoveries,
                       source_drafts, source_versions):
             values = (await connection.execute(select(table).where(
@@ -50,14 +50,13 @@ async def adopt_instance_sources(office, actor, source_ids: list[str], *, dry_ru
 
 
 async def main(args):
-    url = os.environ['AGENT_DB_URL']
+    url = database_url_from_environment(load_env_file=True)
     if url.startswith('postgresql://'):
         url = url.replace('postgresql://', 'postgresql+psycopg://', 1)
     engine = create_async_engine(url)
     try:
         result = await adopt_instance_sources(OfficeRepository(engine),
             Identity(args.database, args.company, args.user), args.source, dry_run=args.dry_run)
-        from loguru import logger
         logger.info('Office source assignment: {}', result)
     finally:
         await engine.dispose()
