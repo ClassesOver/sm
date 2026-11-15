@@ -235,7 +235,7 @@ function ask() {
       </select>
       ${listed ? `<button data-action="kb-delete" ${pending || busy ? 'disabled' : ''}>删除会话</button>` : ''}
     </div>
-    <div class="kb-thread ${turns.length ? 'has-messages' : ''}">${turns.length ? turns.map(turn => `<article class="kb-turn">
+    <div class="kb-thread ${turns.length ? 'has-messages' : ''}" data-thread="${escape(draftKey(currentSpace))}" data-last-turn="${escape(turns.at(-1)?.id ?? '')}">${turns.length ? turns.map(turn => `<article class="kb-turn">
       <div class="kb-question">${escape(turn.question)}</div><div class="kb-answer">${formatOfficeAnswer?.(turn.answer) ?? escape(turn.answer)}</div>
       ${turn.citations.length && canWrite() ? `<div class="kb-citations"><button data-answer-docx="${escape(turn.id)}" ${busy ? 'disabled' : ''}>另存为 Word</button></div>` : ''}
       <div class="kb-citations">${turn.citations.map(citation => `<button data-citation="${escape(citation.fileId)}" data-revision="${citation.revision}">${icon('file', 14)} ${escape(citation.name)} · 修订 ${citation.revision}</button>`).join('')}</div>
@@ -496,6 +496,9 @@ function render() {
     return `<div class="file-tab ${selectedTab === path ? 'active' : ''}"><button data-tab="${escape(path)}">${badge(entry.format, 16)}${escape(entry.name)}</button><button data-close="${escape(path)}" aria-label="关闭 ${escape(entry.name)}">${icon('close', 12)}</button></div>`
   }).join('')}<button class="top-menu" data-action="home" aria-label="新建或打开文件">${icon('plus', 15)}</button>`
   const body = root.querySelector<HTMLElement>('.office-body')!
+  const priorThread = body.querySelector<HTMLElement>('.kb-thread')
+  const priorTop = priorThread?.scrollTop ?? 0
+  const wasAtBottom = priorThread && priorThread.scrollHeight - priorThread.clientHeight - priorTop <= 2
   body.hidden = Boolean(selectedTab)
   body.innerHTML = `<aside ${sidebarHidden ? 'hidden' : ''}>
     <img class="logo" src="${assets}genoffice-logo.svg" alt="GenOffice">
@@ -513,6 +516,12 @@ function render() {
     </div>
     <footer><span>?</span>${escape(currentUser?.name ?? '请登录 GenOffice')} ${currentUser ? '<button data-action="logout">退出</button>' : '<button data-action="login">登录</button>'}</footer></aside>
     <main>${view === 'ask' ? ask() : home()}</main>`
+  const thread = body.querySelector<HTMLElement>('.kb-thread.has-messages')
+  if (thread && !body.hidden) {
+    const sameTurn = priorThread?.dataset.thread === thread.dataset.thread &&
+      priorThread?.dataset.lastTurn === thread.dataset.lastTurn
+    thread.scrollTop = sameTurn && !wasAtBottom ? priorTop : thread.scrollHeight
+  }
   for (const [path, iframe] of tabs) iframe.hidden = selectedTab !== path
   root.querySelector('.notice')!.textContent = status
   renderEntries()
