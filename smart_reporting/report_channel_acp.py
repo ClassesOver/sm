@@ -81,6 +81,24 @@ class ReportAcpConversation:
         if grant != self._grant:
             raise ReportChannelAcpDenied("Report channel membership required")
 
+    async def _prompt_while_authorized(self, client, identity, text: str) -> str:
+        # A revoked grant must stop an in-flight local ACP subprocess, not just
+        # suppress its eventual reply. The final authorization check remains.
+        turn = asyncio.create_task(client.prompt(text))
+        try:
+            while True:
+                done, _ = await asyncio.wait({turn}, timeout=0.5)
+                await self._authorize(identity)
+                if done:
+                    return await turn
+        finally:
+            if not turn.done():
+                turn.cancel()
+                try:
+                    await turn
+                except asyncio.CancelledError:
+                    pass
+
     async def prompt(self, identity: ConnectorIdentity, text: str, *, message_id: str) -> str:
         if not text.strip() or len(text) > 8000:
             raise ValueError("Report message must contain between 1 and 8000 characters")
@@ -103,7 +121,7 @@ class ReportAcpConversation:
                 await self._authorize(identity)
                 # If delivery fails after submission, do not run the same turn again.
                 self._receipts[message_id] = (digest, None)
-                reply = await client.prompt(text)
+                reply = await self._prompt_while_authorized(client, identity, text)
             # Do not disclose a reply after revocation, including during process shutdown.
             await self._authorize(identity)
             self._receipts[message_id] = (digest, reply)
