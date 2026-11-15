@@ -483,15 +483,32 @@ function renderEntries() {
     `${count} 项${partial ? '（部分匹配）' : ''}${modelOrder.size && !sortByName ? ' · 已由 AI 重排' : result?.rerankUnavailable ? ' · AI 重排暂不可用' : ''}`
   const message = searching ? '正在搜索正文…' : failed ? '正文搜索失败，请重试。' : query || filter ? '找不到匹配的文件。' : view === 'folder' ? '这个文件夹还是空的。新建文件，或把文件拖到这里。' :
     view === 'starred' ? '暂无收藏文件。' : '暂无最近文件 — 新建或打开一个文件开始使用。'
+  const workspaceName = spaces.find(space => space.id === currentSpace)?.name ?? 'GenOffice'
+  const foldersById = new Map(library.folders.map(item => [item.id, item]))
+  const location = (id: string) => {
+    const ancestors: string[] = []
+    const visited = new Set<string>()
+    let item = foldersById.get(id)
+    while (item && !visited.has(item.id)) {
+      visited.add(item.id)
+      ancestors.push(item.name)
+      item = foldersById.get(item.parent)
+    }
+    return [workspaceName, ...ancestors.reverse()].join(' / ')
+  }
   list.innerHTML = count ? folderResults.map(item => `<div class="file-row folder-list-row" data-drop-folder="${escape(item.id)}">
     <button data-folder="${escape(item.id)}" ${canWrite() ? 'draggable="true"' : ''}>${icon('folder')} ${escape(item.name)}</button>
     ${canWrite() ? `<button data-folder-actions="${escape(item.id)}" aria-label="管理文件夹 ${escape(item.name)}">${icon('more')}</button>` : ''}
-  </div>`).join('') + entries.map(item => `<div class="file-row" ${canWrite() ? `draggable="true" data-drag-file="${escape(item.id)}"` : ''}>
+  </div>`).join('') + entries.map(item => {
+    const folderLabel = escape(location(item.folder))
+    return `<div class="file-row" ${canWrite() ? `draggable="true" data-drag-file="${escape(item.id)}"` : ''}>
     <input type="checkbox" data-select-file="${escape(item.id)}" aria-label="选择 ${escape(item.name)}" ${selectedFiles.has(item.id) ? 'checked' : ''}>
     <button data-open="${escape(item.path)}">${badge(item.format, 24)} <span>${escape(item.name)}${match(item)?.snippet ? `<small class="file-search-snippet">${escape(match(item)!.snippet)}</small>` : ''}</span></button>
+    <span class="file-location" title="${folderLabel}">${folderLabel}</span>
     <button data-star="${escape(item.path)}" aria-label="${item.starred ? '取消收藏' : '收藏'} ${escape(item.name)}" aria-pressed="${item.starred}">${icon('star')}</button>
     ${canWrite() ? `<button data-file-actions="${escape(item.id)}" aria-label="管理文件 ${escape(item.name)}">${icon('more')}</button>` : ''}
-  </div>`).join('') : `<div class="empty">${icon('file', 38)}<p>${message}</p></div>`
+  </div>`
+  }).join('') : `<div class="empty">${icon('file', 38)}<p>${message}</p></div>`
 }
 
 async function rerankSearch() {
