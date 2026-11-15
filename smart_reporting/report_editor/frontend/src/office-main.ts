@@ -1,4 +1,4 @@
-import {openInlineFolder, renameInlineFolder} from './office-inline-folder'
+import {openInlineFolder, renameInlineItem} from './office-inline-folder'
 import type { renderOfficeAnswer } from './office-answer'
 import { showOfficeAssistantPreferences } from './office-assistant-preferences'
 import { showOfficeReport } from './office-report'
@@ -729,6 +729,39 @@ async function revealOfficeFile(entry: Entry) {
   }
 }
 
+function updateRenamedOfficeTabs(renamed: Pick<Entry, 'id' | 'name' | 'version'>) {
+  for (const [path, tab] of tabEntries) {
+    if (tab.id !== renamed.id) continue
+    tabEntries.set(path, { ...tab, name: renamed.name, version: renamed.version })
+    const frame = tabs.get(path)
+    if (frame) frame.title = renamed.name
+  }
+}
+
+function renameOfficeFile(id: string) {
+  if (busy || !canWrite()) return
+  const entry = library.entries.find(item => item.id === id)
+  const action = root.querySelector<HTMLButtonElement>(`.file-list [data-file-actions="${CSS.escape(id)}"]`)
+  const button = action?.closest('.file-row')?.querySelector<HTMLButtonElement>('button[data-open]')
+  if (!entry || !button) return
+  const suffix = '.' + entry.format
+  const hasSuffix = entry.name.toLowerCase().endsWith(suffix)
+  const baseName = hasSuffix ? entry.name.slice(0, -suffix.length) : entry.name
+  const extension = hasSuffix ? entry.name.slice(-suffix.length) : suffix
+  renameInlineItem(button, baseName, '重命名文件', name => {
+    if (entry.space !== currentSpace || !canWrite()) return
+    void withImport(async () => {
+      await officeRequest(`/files/${encodeURIComponent(id)}`, 'PATCH', {
+        name: name + extension, expectedVersion: entry.version,
+      })
+      invalidateKnowledge(entry.space)
+      await refreshLibrary()
+      const renamed = library.entries.find(item => item.id === id)
+      if (renamed) updateRenamedOfficeTabs(renamed)
+    })
+  })
+}
+
 async function renameOfficeTab(entry: Entry) {
   const account = accountGeneration
   const libraryUrl = `/workspaces/${entry.space}/library`
@@ -744,12 +777,7 @@ async function renameOfficeTab(entry: Entry) {
       const { files: updated } = await officeRequest<OfficeLibrary>(libraryUrl)
       if (account !== accountGeneration) return
       const renamed = updated.find(item => item.id === entry.id)
-      if (renamed) for (const [path, tab] of tabEntries) {
-        if (tab.id !== renamed.id) continue
-        tabEntries.set(path, { ...tab, name: renamed.name, version: renamed.version })
-        const frame = tabs.get(path)
-        if (frame) frame.title = renamed.name
-      }
+      if (renamed) updateRenamedOfficeTabs(renamed)
       if (entry.space === currentSpace) await refreshLibrary()
       render()
     },
@@ -780,7 +808,7 @@ function renameOfficeFolder(id: string, inList: boolean) {
   const button = root.querySelector<HTMLButtonElement>(`${surface} button[data-folder="${CSS.escape(id)}"]`)
   if (!item || !button) return
   const space = currentSpace
-  renameInlineFolder(button, item.name, name => {
+  renameInlineItem(button, item.name, '重命名文件夹', name => {
     if (space !== currentSpace || !canWrite()) return
     void withImport(async () => {
       await officeRequest(`/workspaces/${space}/folders/${id}`, 'PATCH', {name})
@@ -853,7 +881,10 @@ root.addEventListener('contextmenu', event => {
       const inList = row?.classList.contains('folder-list-row') === true
       add(label, () => {
         if (mode === 'rename' && folderId) requestAnimationFrame(() => renameOfficeFolder(folderId, inList))
-        else manageOfficeItem(action.dataset, mode)
+        else if (mode === 'rename' && action.dataset.fileActions) {
+          const fileId = action.dataset.fileActions
+          requestAnimationFrame(() => renameOfficeFile(fileId))
+        } else manageOfficeItem(action.dataset, mode)
       })
     }
     const entry = library.entries.find(item => item.id === action.dataset.fileActions)

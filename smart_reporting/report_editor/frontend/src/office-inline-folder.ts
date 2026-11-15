@@ -38,11 +38,11 @@ export function openInlineFolder(parent: HTMLElement, create: (name: string) => 
   return input
 }
 
-export function renameInlineFolder(button: HTMLButtonElement, name: string, rename: (name: string) => void): HTMLInputElement {
+export function renameInlineItem(button: HTMLButtonElement, name: string, label: string, rename: (name: string) => void): HTMLInputElement {
   const input = document.createElement('input')
   input.type = 'text'
   input.className = 'folder-name-input'
-  input.setAttribute('aria-label', '重命名文件夹')
+  input.setAttribute('aria-label', label)
   input.value = name
   button.replaceWith(input)
   editFolderName(input, name, rename, restoreFocus => {

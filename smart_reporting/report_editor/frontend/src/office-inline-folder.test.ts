@@ -1,5 +1,5 @@
 import {afterEach, expect, it, vi} from 'vitest'
-import {openInlineFolder, renameInlineFolder} from './office-inline-folder'
+import {openInlineFolder, renameInlineItem} from './office-inline-folder'
 
 afterEach(() => document.body.replaceChildren())
 
@@ -45,7 +45,7 @@ it('renames in the existing row and restores the original control when cancelled
   const button = row.appendChild(document.createElement('button'))
   button.textContent = '草稿'
   const rename = vi.fn()
-  let input = renameInlineFolder(button, '草稿', rename)
+  let input = renameInlineItem(button, '草稿', '重命名文件夹', rename)
   expect(input.parentElement).toBe(row)
   expect(input.value).toBe('草稿')
   expect(document.activeElement).toBe(input)
@@ -54,7 +54,7 @@ it('renames in the existing row and restores the original control when cancelled
   expect(row.firstElementChild).toBe(button)
   expect(document.activeElement).toBe(button)
   expect(rename).not.toHaveBeenCalled()
-  input = renameInlineFolder(button, '草稿', rename)
+  input = renameInlineItem(button, '草稿', '重命名文件夹', rename)
   input.value = ' 定稿 '
   input.dispatchEvent(new FocusEvent('blur'))
   expect(rename).toHaveBeenCalledExactlyOnceWith('定稿')
@@ -63,7 +63,7 @@ it('renames in the existing row and restores the original control when cancelled
 it('does not submit a rename when the trimmed name is unchanged', () => {
   const button = document.body.appendChild(document.createElement('button'))
   const rename = vi.fn()
-  const input = renameInlineFolder(button, '草稿', rename)
+  const input = renameInlineItem(button, '草稿', '重命名文件夹', rename)
   input.value = ' 草稿 '
   input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter'}))
   expect(rename).not.toHaveBeenCalled()
