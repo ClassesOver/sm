@@ -164,7 +164,7 @@ def create_report_channel_router(
                     channel, identity, request_id=payload.request_id,
                     instruction=payload.instruction, selection=tuple(payload.selection),
                 )
-            except DocumentCandidateDenied:
+            except (DocumentCandidateDenied, PermissionError):
                 raise HTTPException(403, "document_channel_authorization_required") from None
             except ValueError as error:
                 if str(error) == "document_adapter_unavailable":
@@ -182,7 +182,7 @@ def create_report_channel_router(
             identity = await require_member(request, channel)
             try:
                 return await document_gateway.status(channel, identity, task_id)
-            except DocumentCandidateDenied:
+            except (DocumentCandidateDenied, PermissionError):
                 raise HTTPException(403, "document_channel_authorization_required") from None
             except ValueError as error:
                 if str(error) == "document_adapter_unavailable":
