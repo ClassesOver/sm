@@ -88,7 +88,7 @@ export default defineConfig({
         manualChunks(id) {
           // Shared preference widgets load only when personal document settings open.
           const antComponent = id.match(/\/node_modules\/antd\/es\/([^/]+)\//)
-          if (antComponent) return 'preferences-ant-' + antComponent[1]
+          if (antComponent) return 'preferences-ant'
           const rcComponent = id.match(/\/node_modules\/@rc-component\/([^/]+)\//)
           if (rcComponent) return 'preferences-rc-' + rcComponent[1]
 

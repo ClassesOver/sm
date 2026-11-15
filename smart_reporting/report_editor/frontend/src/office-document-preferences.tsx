@@ -12,7 +12,7 @@ import { TablePreferenceFields } from './management/features/configuration/table
 import { getPreferenceValue, setPreferenceValue, validateSignatureDraft } from './management/features/configuration/preference-draft'
 import './office-document-preferences.css'
 type Value = { version: number; document: Record<string, unknown> }
-const formats = [{ value: 'common', label: '通用' }, { value: 'word', label: '文字文档' }, { value: 'xlsx', label: '电子表格' }, { value: 'pptx', label: '演示文稿' }, { value: 'pdf', label: 'PDF' }]
+const formats = [{ value: 'common', label: '通用' }, { value: 'word', label: 'Word' }, { value: 'xlsx', label: 'Excel' }, { value: 'pptx', label: 'PPT' }, { value: 'pdf', label: 'PDF' }]
 export function DocumentPreferencesPanel({ initial, save, close }: { initial: Value; save(value: Value): Promise<Value>; close(): void }) {
   const [draft, setDraft] = useState(initial), [baseline, setBaseline] = useState(initial)
   const [format, setFormat] = useState('common'), [section, setSection] = useState('style')
@@ -33,16 +33,20 @@ export function DocumentPreferencesPanel({ initial, save, close }: { initial: Va
   const active = format === 'common' ? 'style' : section
   return <div className="office-document-preferences" onKeyDown={event => { event.stopPropagation(); if (event.key === 'Escape') { event.preventDefault(); requestClose() } }}>
     <header><h2>文档偏好</h2><button data-preferences-close disabled={busy} onClick={requestClose}>关闭</button></header>
-    <p>仅为当前账号保存。后续 AI 排版任务参考这些偏好；现有文档不会自动改写。</p>
-    <label>文档类型 <select aria-label="文档类型" value={format} disabled={busy} onChange={e => setFormat(e.target.value)}>{formats.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-    <nav aria-label="文档偏好分类">{(format === 'common' ? [['style', '字体与落款']] : [['style', '字体与落款'], ['page', '页面与排版'], ['headerFooter', '页眉页脚'], ['tables', '表格']]).map(([key, label]) => <button key={key} aria-current={active === key} onClick={() => setSection(key)}>{label}</button>)}</nav>
-    <div className="office-document-fields">
+    <p>仅对你的后续 AI 排版生效，不改写现有文档。</p>
+    <nav className="office-format-tabs" role="tablist" aria-label="文档类型" onKeyDown={event => {
+      const index = formats.findIndex(item => item.value === format)
+      const next = event.key === 'ArrowRight' ? (index + 1) % formats.length : event.key === 'ArrowLeft' ? (index + formats.length - 1) % formats.length : event.key === 'Home' ? 0 : event.key === 'End' ? formats.length - 1 : -1
+      if (next >= 0 && !busy) { event.preventDefault(); setFormat(formats[next].value); event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus() }
+    }}>{formats.map(item => <button key={item.value} id={'preference-tab-' + item.value} role="tab" aria-selected={format === item.value} aria-controls="office-document-panel" tabIndex={format === item.value ? 0 : -1} disabled={busy} onClick={() => setFormat(item.value)}>{item.label}</button>)}</nav>
+    <nav className="office-section-tabs" aria-label="文档偏好分类">{(format === 'common' ? [['style', '字体与落款']] : [['style', '字体与落款'], ['page', '页面与排版'], ['headerFooter', '页眉页脚'], ['tables', '表格']]).map(([key, label]) => <button key={key} aria-current={active === key} onClick={() => setSection(key)}>{label}</button>)}</nav>
+    <div className="office-document-fields" role="tabpanel" id="office-document-panel" aria-labelledby={'preference-tab-' + format} key={format + active}>
       {active === 'style' && <><Form layout="vertical" disabled={busy}><CommonStyleFields {...props} />
         <Form.Item label="署名"><Input aria-label="署名" maxLength={200} value={String(getPreferenceValue(draft.document, [...prefix, 'signer']) ?? '')} onChange={e => change([...prefix, 'signer'], e.target.value)} /></Form.Item>
         <Form.Item label="日期格式"><Select aria-label="日期格式" value={getPreferenceValue(draft.document, [...prefix, 'dateFormat']) as string} options={[{ value: 'chinese', label: '中文日期' }, { value: 'iso', label: 'YYYY-MM-DD' }, { value: 'slash', label: 'YYYY/MM/DD' }]} onChange={value => change([...prefix, 'dateFormat'], value)} /></Form.Item>
         {format !== 'common' && <><button type="button" disabled={busy} onClick={() => { change([...prefix, 'signer'], null); change([...prefix, 'dateFormat'], null) }}>署名和日期沿用通用偏好</button><Form.Item label="落款说明"><Input.TextArea aria-label="落款说明" maxLength={600} value={String(getPreferenceValue(draft.document, [format, 'signature', 'description']) ?? '')} onChange={e => change([format, 'signature', 'description'], e.target.value)} /></Form.Item></>}
       {format !== 'common' && <SignatureStyleFields {...props} />}</Form></>}
-      {active === 'page' && <><PagePreferenceFields {...props} /><TypographyFields {...props} />{format === 'xlsx' && <WorkbookLayoutFields {...props} />}</>}
+      {active === 'page' && <><PagePreferenceFields {...props} /><details className="office-preferences-details"><summary>文字排版</summary><TypographyFields {...props} /></details>{format === 'xlsx' && <details className="office-preferences-details"><summary>行列布局</summary><WorkbookLayoutFields {...props} /></details>}</>}
       {active === 'headerFooter' && <HeaderFooterFields {...props} />}
       {active === 'tables' && <TablePreferenceFields {...props} />}
     </div>
