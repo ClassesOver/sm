@@ -46,6 +46,8 @@ GenOffice 网页入口为 `/office`。使用独立的组织域、公司、账号
 
 初始化命令与应用使用相同的 PostgreSQL 配置，支持 `AGENT_DB_URL`、`DATABASE_URL` 或分开的 `AGENT_POSTGRES_*`。使用 Compose 部署时，在 `reporting-os` 容器中执行初始化命令即可使用容器已有的数据库配置。
 
+公司数据源管理复用既有管理数据表。首次部署或升级时，运行 `docker compose run --rm reporting-os /app/.venv/bin/python -m alembic -c /app/alembic-management.ini upgrade head`。继续使用现有数据源时保留原 `AGENT_MANAGEMENT_CREDENTIAL_KEYS`，使已保存的连接凭据能继续解密。
+
 原生 Word/PDF 编辑、四格式上传和灰度回滚见 [原生 Office 接入指南](NATIVE_EDITING.md)。
 
 发布前按 [`frontend/smoke/README.md`](frontend/smoke/README.md) 使用真实编辑会话执行桌面端、移动端和导出冒烟；Vite fixture 不替代真实后端链路。
