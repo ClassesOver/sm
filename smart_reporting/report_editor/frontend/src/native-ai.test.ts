@@ -18,7 +18,7 @@ it('在现有编辑面板接续频道任务并等待显式采纳', async () => {
   expect(api.aiStatus).toHaveBeenCalledTimes(2)
   expect(api.aiStart).not.toHaveBeenCalled()
   expect(api.aiAccept).not.toHaveBeenCalled()
-  expect(root.querySelector('details:has(pre)')?.open).toBe(true)
+  expect(root.querySelector<HTMLDetailsElement>('details:has(pre)')?.open).toBe(true)
   expect(root.textContent).toContain('频道候选')
   expect(draft.operations).toEqual([])
   root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click()
