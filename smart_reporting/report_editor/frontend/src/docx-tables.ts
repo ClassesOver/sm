@@ -160,7 +160,14 @@ export function extendDocxTable(source: DocxPmNode, anchor: DocxAnchor, live: Do
 export function projectDocxTable(source: DocxPmNode, anchor: DocxAnchor, value: unknown, schema?: Schema): DocxPmNode {
   return projectDocxTableSteps(source, anchor, [tableIntent(value)], schema, true)
 }
-export interface DocxTableCommands { active?: (action: string) => boolean; reason: (action: string) => string | null; run: (action: string) => void }
+export type DocxTableDimensionAction = 'table-row-height' | 'table-column-width'
+type DocxTableDimension = { key: string; value: number | null; max: number; commit: (twips: number | null) => void }
+export interface DocxTableCommands {
+  active?: (action: string) => boolean
+  reason: (action: string) => string | null
+  run: (action: string) => void
+  dimension?: (action: DocxTableDimensionAction) => DocxTableDimension | null
+}
 export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, anchors: DocxAnchor[], reportError: (error: unknown) => void, nestedInputActive: () => boolean = () => false): DocxTableCommands {
   const selectionTarget = () => {
     if (nestedInputActive()) throw new Error('嵌套表格输入中，请先在外层表格内定位')
@@ -322,7 +329,11 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (!equal(table.toJSON(), steps.length ? projectDocxColumnWidths(source, anchor, steps, editor.schema) : source)) throw new Error('列宽不能与同表文字、格式、合并拆分、标题行或其他结构修改混用，请先保存')
     return { table, tableStart, left, right, anchor, source, steps }
   }
-  const applyWidth = (widthTwips?: number, frozen?: { doc: DocxPmNode; selection: unknown }) => {
+  const currentColumnWidth = (target: ReturnType<typeof widthTarget>) => {
+    const map = TableMap.get(target.table), first = map.map[target.left]!, rect = map.findCell(first)
+    return Math.round((target.table.nodeAt(first)!.attrs.colwidth?.[target.left - rect.left] ?? target.anchor.columnWidthsTwips![target.left]! / 15) * 15)
+  }
+  const applyWidth = (widthTwips?: number, frozen?: { doc: DocxPmNode; selection: unknown }, focusEditor = true) => {
     const target = widthTarget()
     if (frozen && (!equal(frozen.doc, editor.getJSON()) || !equal(frozen.selection, editor.state.selection.toJSON()))) throw new Error('列宽对话框打开后文档或选区已改变，请重新选择')
     const { table, tableStart, left, right, anchor, source, steps } = target
@@ -331,7 +342,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     const tr = closeHistory(editor.state.tr).replaceWith(tableStart - 1, tableStart - 1 + table.nodeSize, projected)
     // 宽度不改节点大小；保留完整选区以便下一步按同一逻辑列继续操作。
     tr.setSelection(Selection.fromJSON(tr.doc, editor.state.selection.toJSON()))
-    editor.view.dispatch(tr); editor.view.dispatch(closeHistory(editor.state.tr)); editor.commands.focus()
+    editor.view.dispatch(tr); editor.view.dispatch(closeHistory(editor.state.tr)); if (focusEditor) editor.commands.focus()
   }
   const heightTarget = () => {
     if (!editor.isEditable) throw new Error('当前文档不可编辑或正在保存')
@@ -365,12 +376,12 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     if (!equal(table.toJSON(), steps.length ? projectDocxRowHeights(source, anchor, steps, editor.schema) : source)) throw new Error('行高不能与同表文字、格式、列宽或其他结构修改混用，请先保存')
     return { table, tableStart, top, bottom, anchor, source, steps }
   }
-  const commitHeight = (target: ReturnType<typeof heightTarget>, step: TableRowHeightStep) => {
+  const commitHeight = (target: ReturnType<typeof heightTarget>, step: TableRowHeightStep, focusEditor = true) => {
     const { table, tableStart, anchor, source, steps } = target
     const projected = editor.schema.nodeFromJSON(projectDocxRowHeights(source, anchor, [...steps, step], editor.schema))
     const tr = closeHistory(editor.state.tr).replaceWith(tableStart - 1, tableStart - 1 + table.nodeSize, projected)
     tr.setSelection(Selection.fromJSON(tr.doc, editor.state.selection.toJSON()))
-    editor.view.dispatch(tr); editor.view.dispatch(closeHistory(editor.state.tr)); editor.commands.focus()
+    editor.view.dispatch(tr); editor.view.dispatch(closeHistory(editor.state.tr)); if (focusEditor) editor.commands.focus()
   }
   const applyHeight = (heightTwips: number | null, frozen: { doc: DocxPmNode; selection: unknown }) => {
     const target = heightTarget()
@@ -791,6 +802,36 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     })
   }
   const isWidth = (action: string) => action === 'table-column-width' || action === 'table-distribute-columns'
+  const dimension = (action: DocxTableDimensionAction): DocxTableDimension | null => {
+    const { doc, selection } = editor.state
+    const stillSelected = () => !editor.isDestroyed && editor.state.doc === doc && editor.state.selection.eq(selection)
+    try {
+      if (action === 'table-row-height') {
+        const target = heightTarget()
+        return {
+          key: `${target.tableStart}:${target.top}:${target.bottom}`,
+          value: target.table.child(target.top).attrs.heightTwips ?? null,
+          max: target.anchor.rowHeightMaxTwips!,
+          commit(twips) {
+            if (!stillSelected()) return
+            try {
+              const current = heightTarget()
+              commitHeight(current, { top: current.top, bottom: current.bottom, heightTwips: twips || null }, false)
+            } catch (error) { reportError(error) }
+          },
+        }
+      }
+      const target = widthTarget()
+      return {
+        key: `${target.tableStart}:${target.left}:${target.right}`,
+        value: currentColumnWidth(target), max: Math.min(target.anchor.columnWidthMaxTwips!, 31680),
+        commit(twips) {
+          if (!twips || !stillSelected()) return
+          try { applyWidth(twips, undefined, false) } catch (error) { reportError(error) }
+        },
+      }
+    } catch { return null }
+  }
   const isShape = (action: string) => action === 'table-merge-cells' || action === 'table-split-cells'
   const styleCommands: DocxTableCommands = {
     active: action => docxTableStyleActive(editor, baseline, anchors, action),
@@ -808,6 +849,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
     },
   }
   const commands: DocxTableCommands = {
+    dimension,
     active(action) { if (isDocxTableStyleAction(action)) return styleCommands.active!(action); try { if (alignmentActions[action]) return alignmentActive(alignmentActions[action]); if (directionActions[action]) return directionActive(directionActions[action]); if (autoFitModes[action]) return (selectionTarget().table.attrs.tblAutoFit ?? 'fixed') === autoFitModes[action]; return action==='table-repeat-header-rows' && headerTarget().active } catch { return false } },
     reason(action) { if (isDocxTableStyleAction(action)) return styleCommands.reason(action); try { if(TABLE_SELECTION_ACTIONS[action])selectionTarget();else if(action==='table-properties'){const reason=propertiesReason();if(reason)throw new Error(reason)}else if(action==='table-alt-text')altTextTarget();else if(action==='table-cell-wrap')wrapTarget();else if(action==='table-row-breaks')rowBreakTarget();else if(action==='table-alignment')tableAlignmentTarget();else if(action==='table-cell-margins')marginsTarget();else if(alignmentActions[action])alignmentTarget();else if(directionActions[action])directionTarget();else if(autoFitModes[action])autoFitTarget();else if(action==='table-row-height'||action==='table-distribute-rows')heightTarget();else if(isWidth(action))widthTarget();else if(isShape(action))shapeTarget(action);else if(action==='table-repeat-header-rows')headerTarget();else target(action); return null } catch (error) { return error instanceof Error && !/No cell|Not in a table/.test(error.message) ? error.message : '请先在表格单元格内定位' } },
     run(action) {
@@ -835,9 +877,7 @@ export function createDocxTableCommands(editor: Editor, baseline: DocxPmNode, an
           if (action === 'table-distribute-columns') applyWidth()
           else {
             const frozen = { doc: editor.getJSON(), selection: editor.state.selection.toJSON() }
-            const first = TableMap.get(target.table).map[target.left]!, rect = TableMap.get(target.table).findCell(first)
-            const initial = Math.round((target.table.nodeAt(first)!.attrs.colwidth?.[target.left - rect.left] ?? target.anchor.columnWidthsTwips![target.left]! / 15) * 15)
-            openDocxColumnWidthDialog(editor.view.dom.ownerDocument.body, initial, width => applyWidth(width, frozen))
+            openDocxColumnWidthDialog(editor.view.dom.ownerDocument.body, currentColumnWidth(target), width => applyWidth(width, frozen))
           }
           return
         }

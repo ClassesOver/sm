@@ -163,7 +163,7 @@ import {
   type RibbonWorkbook,
   type WorkbookPageSetupState,
 } from './workbook-ribbon'
-import { selectedWorkbookFormat, captureNumberFormatTarget, applyCapturedNumberFormat, validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook } from './workbook-format'
+import { selectedWorkbookFormat, NUMBER_FORMAT_PRESETS, numberFormatPresetPattern, captureNumberFormatTarget, applyCapturedNumberFormat, validateNumberFormatBudget, createNumberFormatDialog, omitCalculatedNumberFormats, type FormatWorkbook } from './workbook-format'
 import {
   absoluteRangeRef, applyDefinedNameAction, createNameManagerDialog, definedNamesPlanOperation,
   liveDefinedNames, type DefinedNameWorkbook,
@@ -968,17 +968,19 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       return { message: report.message }
     },
   })
+  const applyNumberFormat = (target: ReturnType<typeof captureNumberFormatTarget>, pattern: string) => {
+    if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    if (!target) throw new Error('请先选择单元格或区域')
+    if (sheetProtected(target.sheetId)) throw new Error(PROTECTED_SHEET_REASON)
+    if (formatState().numberFormat.kind === 'unavailable') throw new Error('来源格式未完整投影，暂不能安全编辑数字格式')
+    validateNumberFormatBudget(runtime.univerAPI.getActiveWorkbook()!.getSnapshot(), currentModel, staged, structural.length, target, pattern)
+    applyCapturedNumberFormat(target, formatWorkbook(), pattern, editable())
+    markDirty(); ribbon.refreshState?.()
+    feedback.textContent = '数字格式已更新，值和公式保持不变；修改尚未保存。'
+  }
   const numberFormatDialog = createNumberFormatDialog(shell.editor, {
     initial: () => formatState().numberFormat,
-    apply: (target, pattern) => {
-      if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
-      if (!target) throw new Error('请先选择单元格或区域')
-      if (formatState().numberFormat.kind === 'unavailable') throw new Error('来源格式未完整投影，暂不能安全编辑数字格式')
-      validateNumberFormatBudget(runtime.univerAPI.getActiveWorkbook()!.getSnapshot(), currentModel, staged, structural.length, target, pattern)
-      applyCapturedNumberFormat(target, formatWorkbook(), pattern, editable())
-      markDirty(); ribbon.refreshState?.()
-      feedback.textContent = '数字格式已更新，值和公式保持不变；修改尚未保存。'
-    },
+    apply: applyNumberFormat,
   })
   // 固定源六页签：整批预校验后经现有文件重放与草稿历史保存。
   let formatCellsTarget: ReturnType<typeof captureNumberFormatTarget>
@@ -2593,6 +2595,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           const state = formatState().numberFormat
           if (state.kind === 'unavailable') throw new Error(state.reason)
           formatCellsDialog.open()
+          return
+        }
+        if (command.startsWith('number-format:')) {
+          const preset = NUMBER_FORMAT_PRESETS.find(({ id }) => command === `number-format:${id}`)
+          if (!preset) throw new Error('未知数字格式')
+          applyNumberFormat(captureNumberFormatTarget(formatWorkbook()), numberFormatPresetPattern(preset.id))
           return
         }
         if (command === 'format:custom-open') {

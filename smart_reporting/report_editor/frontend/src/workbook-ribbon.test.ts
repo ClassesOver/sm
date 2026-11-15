@@ -1,7 +1,39 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import { selectedWorkbookFormat, type FormatValue } from './workbook-format'
 import { applyWorkbookRibbonCommand, mountWorkbookRibbon, type WorkbookPageSetupState } from './workbook-ribbon'
 
 afterEach(() => { document.body.replaceChildren() })
+
+it('offers all GenOffice number format categories and echoes the current selection state', () => {
+  const command = vi.fn()
+  let numberFormat: FormatValue<string> = { kind: 'value', value: 'dddd, mmmm dd, yyyy' }
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0,
+    format: () => ({ ...selectedWorkbookFormat(null), numberFormat }),
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="number-format"]')!
+  expect(select.tagName).toBe('SELECT')
+  expect(Array.from(select.options, option => option.text)).toEqual([
+    '长日期', '常规', '数值', '货币', '会计专用', '短日期', '长日期', '时间', '百分比', '分数', '科学记数', '文本',
+  ])
+  expect(select.title).toBe('dddd, mmmm dd, yyyy')
+  select.value = 'percentage'
+  select.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenLastCalledWith('number-format:percentage')
+  expect(select.value).toBe('')
+  numberFormat = { kind: 'mixed' }; ribbon.refreshState()
+  expect(select.options[0]?.text).toBe('混合')
+  expect(select.disabled).toBe(false)
+  protectedSheet = true; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  protectedSheet = false
+  numberFormat = { kind: 'unavailable', reason: '来源格式未投影' }; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  expect(select.title).toBe('来源格式未投影')
+  ribbon.dispose()
+})
 
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()

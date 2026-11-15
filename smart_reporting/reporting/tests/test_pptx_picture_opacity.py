@@ -89,6 +89,23 @@ def test_native_picture_rotation_and_flip_preserve_center_and_media():
     ]
 
 
+def test_picture_crop_and_orientation_roundtrip_in_the_same_revision():
+    content, _ = _presentation()
+    target = _target(content)
+    transform = {'rot': 90 * 60000, 'flipH': True, 'flipV': False}
+    edited = patch_office('pptx', content, [{
+        'kind': 'editSlides',
+        'edits': [{'slideIndex': 0, 'elementId': target['id'], 'pictureTransform': transform}],
+        'pictureCrops': [_crop(target, rect={'l': .25, 't': 0, 'r': 0, 'b': 0})],
+    }])
+    result = _target(edited)
+    assert result['pictureTransform'] == transform
+    picture = next(shape for shape in Presentation(BytesIO(edited)).slides[0].shapes if shape.name == target['name'])
+    assert picture.crop_left == pytest.approx(.25)
+    assert picture.rotation == 90
+    assert picture.image.blob == _png()
+
+
 def test_native_picture_outline_preserves_existing_dash_and_media():
     content, _ = _presentation()
     target_name = _target(content)['name']

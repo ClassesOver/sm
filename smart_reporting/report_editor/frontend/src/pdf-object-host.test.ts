@@ -26,7 +26,7 @@ function operation(kind:string):NativeOperation{
 }
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
-async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
+async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
  pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??'';pdfMock.printed=[]
  const notes=options.savedThread?[
   { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
@@ -37,7 +37,7 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
  const root=document.createElement('div');document.body.append(root)
  const identity={documentId:'pdf-object-host',revision:1,sourceSha256,scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}
  const seed=new NativeDraft(identity,localStorage);if(options.restored)seed.setOperations([options.restored]);const draft=new NativeDraft(identity,localStorage)
- const model={sourceSha256,pages:Array.from({length:options.exportPages??1},(_,index)=>({pageId:'sha256:'+sourceSha256+':page:'+index,index,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes})),formFields:[{name:'existing',kind:'text',value:options.requiredField?'':'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)}],formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
+ const model={sourceSha256,pages:Array.from({length:options.exportPages??1},(_,index)=>({pageId:'sha256:'+sourceSha256+':page:'+index,index,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes})),formFields:[{name:'existing',kind:'text',value:options.requiredField?'':'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)},...(options.navigationFields?[{name:'locked',kind:'text',value:'Locked',editable:false,fieldId:'2'.repeat(64),expectedFieldSha256:'3'.repeat(64)},{name:'secondary',kind:'text',value:'Second',editable:true,fieldId:'4'.repeat(64),expectedFieldSha256:'5'.repeat(64)}]:[])],formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
  const staticModel=options.staticFills?{staticFormFills:[{id:'saved-fill',kind:'text',pageIndex:0,rect:[30,100,150,124],text:'已保存填写',fontSize:14,color:'#111111',align:'left',editable:true,expectedImageSha256:'9'.repeat(64)}]}:{}
  const attachmentModel=options.attachments?{attachmentsEditable:true,attachments:[{key:'stored',name:'keep.txt',description:'保留附件',size:3,contentSha256:'b'.repeat(64),attachmentId:'c'.repeat(64),expectedAttachmentSha256:'d'.repeat(64)}]}:{}
  const api={exportImages:vi.fn(async()=>{throw new Error('test request observed')}),file:async()=>new Uint8Array(options.sourceSize??2).buffer,preview:vi.fn(async()=>({sourceSha256,model:{...model,...attachmentModel,...staticModel,...(options.digitalSignatures?{digitalSignatures:[],signatureVerification:{scope:"basic-integrity-only",trustPolicy:"none",readable:true,issues:[],revocationChecked:false,timestampsVerified:false}}:{})}})),previewFile:vi.fn(async()=>new Uint8Array([3,4]).buffer)} as unknown as ReturnType<typeof createNativeApi>
@@ -778,6 +778,28 @@ it('编辑关闭时数字签名入口仍可只读加载，且不调用修改预�
  await act(async()=>{button.click();await vi.dynamicImportSettled()});await vi.waitFor(()=>expect(document.querySelector('.pdf-digital-signatures-dialog')).not.toBeNull())
  expect(readModel).toHaveBeenCalledOnce();expect(f.api.preview).not.toHaveBeenCalled();expect(f.draft.operations).toEqual([])
  await act(async()=>document.querySelector('dialog.pdf-digital-signatures-dialog')!.dispatchEvent(new Event('cancel',{cancelable:true})))
+})
+it('steps through editable PDF fields after navigation button focus and after a draft redraw', async () => {
+ const f=await fixture({navigationFields:true});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
+ const next=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-navigation="next"]')!
+ const previous=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-navigation="previous"]')!
+ function step(button:HTMLButtonElement,name:string){
+  button.focus();expect(document.activeElement).toBe(button);button.click()
+  expect(document.activeElement?.getAttribute('aria-label')).toBe(name)
+ }
+ const progress=f.root.querySelector('[aria-label="表单字段位置"]')!
+ expect(progress.textContent).toBe('0 / 2')
+ step(next,'existing');expect(progress.textContent).toBe('1 / 2')
+ step(next,'secondary');expect(progress.textContent).toBe('2 / 2')
+ const second=document.activeElement as HTMLInputElement
+ second.value='Changed';second.dispatchEvent(new Event('change'))
+ await vi.waitFor(()=>expect(f.root.querySelector('.pdf-form-controls input[aria-label="secondary"]')).not.toBe(second))
+ expect(progress.textContent).toBe('2 / 2')
+ step(next,'existing');expect(progress.textContent).toBe('1 / 2')
+ step(previous,'secondary')
+ step(previous,'existing')
+ expect(f.draft.operations).toEqual([expect.objectContaining({kind:'setFormValue',name:'secondary',value:'Changed'})])
 })
 it('checks required form fields, focuses the missing value and exits after a staged fill', async () => {
  const f=await fixture({requiredField:true});await f.create()

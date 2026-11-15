@@ -13,6 +13,7 @@ import { openDocxParagraphDialog, docxParagraphDialogUnavailable } from './docx-
 import { fillDocxCommandIcons } from './docx-command-icons'
 import { isDocxTableStyleAction } from './docx-table-style'
 import { createDocxTableLayoutMenu } from './docx-table-layout-menu'
+import { DocxTableSizeSource } from './docx-table-size-source'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { createDocxCellBorderUiState, createDocxCellBordersControls } from './docx-cell-borders-controls'
 import type { DocxTocControls } from './docx-toc'
@@ -185,6 +186,14 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeSpecialIndent: (() => void) | undefined
   const contextTabs = new Map<string, HTMLButtonElement>()
   const body = document.createElement('div')
+  const tableSize = document.createElement('div')
+  tableSize.className = 'table-size-inputs'
+  let tableSizeRoot: ReturnType<typeof createRoot> | undefined
+  const refreshTableSize = () => {
+    if (!tableCommands?.dimension || !body.contains(tableSize)) return
+    tableSizeRoot ??= createRoot(tableSize)
+    flushSync(() => tableSizeRoot!.render(createElement(DocxTableSizeSource, { commands:tableCommands, editable:editable && editor.isEditable })))
+  }
   const tableLayoutMenus: ReturnType<typeof createDocxTableLayoutMenu>[] = []
   const closeTableLayoutMenus = () => {
     for (const menu of tableLayoutMenus.splice(0)) menu.close()
@@ -549,6 +558,10 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       }
       for (const item of commands) {
         const { id: actionId, label } = item
+        if (id === 'tableLayout' && tableCommands?.dimension && (actionId === 'table-row-height' || actionId === 'table-column-width')) {
+          if (actionId === 'table-row-height') items.append(tableSize)
+          continue
+        }
         if (id === 'tableLayout' && (actionId === 'table-select-menu' || actionId === 'table-delete-menu' || actionId === 'table-autofit-menu' || actionId === 'table-text-direction-menu')) {
           const selecting = actionId === 'table-select-menu'
           const kind = selecting ? 'select' : actionId === 'table-delete-menu' ? 'delete' : actionId === 'table-autofit-menu' ? 'autofit' : 'text-direction'
@@ -1018,6 +1031,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     fillDocxCommandIcons(content)
     syncPictureFormatButtons(content)
     body.append(content)
+    refreshTableSize()
     if (id === 'view') refreshView()
     refreshPictureWrap()
     refreshPictureSize()
@@ -1467,7 +1481,10 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if (reason === null) button.removeAttribute('aria-description'); else button.setAttribute('aria-description', reason)
       }
     }
-    if (active === 'tableLayout') for (const menu of tableLayoutMenus) menu.refresh()
+    if (active === 'tableLayout') {
+      for (const menu of tableLayoutMenus) menu.refresh()
+      refreshTableSize()
+    }
     if (active === 'tableLayout' && tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action]')) {
       if (button.closest('[data-docx-table-layout-menu]')) continue
       const action = button.dataset.action!
@@ -1515,7 +1532,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     closeSpecialIndent?.()
     closeFontDialog?.()
     closeParagraphDialog?.()
-    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount(); pictureWrapRoot?.unmount()
+    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount(); pictureWrapRoot?.unmount(); tableSizeRoot?.unmount()
     editor.off('destroy', dispose)
   }
   editor.on('destroy', dispose)

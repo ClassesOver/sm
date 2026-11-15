@@ -1225,6 +1225,10 @@ function cropReason(): string | null {
   if(pictureReplacements.some(item=>item.slideIndex===selectedSlide&&item.elementId===element.id))return '此图片有待保存的替换，请先保存或撤回替换再裁切'
   return null
 }
+function finishPictureCrop() {
+  cropOverlay = undefined
+  nativeRibbon?.setValue('cropPicture', 'false')
+}
 function openPictureCrop() {
   try{
     const reason=cropReason();if(reason)throw new Error(reason)
@@ -1234,20 +1238,26 @@ function openPictureCrop() {
     const pending=pictureCrops.find(item=>item.slideIndex===slideIndex&&item.elementId===element.id)
     const box=edits.get(editKey(slideIndex,element.id))?.geometry??pending?.geometry??element.geometry
     if(!box)throw new Error('图片来源位置无法读取')
+    const previousCrop = pending ? pending.srcRect : element.srcRect ?? null
     cropOverlay?.dispose()
-    cropOverlay=openSlidesPictureCrop(canvasHost,{box,srcRect:pending?pending.srcRect:element.srcRect??null,imgSrc:picture.dataUrl,slideWidthPx:deck.size.cx/9525,
+    finishPictureCrop()
+    cropOverlay=openSlidesPictureCrop(canvasHost,{box,srcRect:previousCrop,imgSrc:picture.dataUrl,slideWidthPx:deck.size.cx/9525,
       onConfirm:({srcRect,geometry})=>{
         if(disposed||locked()||deck.sha256!==sourceSha||selectedSlide!==slideIndex||currentElement()?.id!==element.id||selectedObjects.size!==1||JSON.stringify(slideChanges())!==snapshot)throw new Error('页面、对象或草稿已变化，请取消后重新打开裁切')
+        if (!srcRect && !previousCrop) { finishPictureCrop(); return }
         const changes=slideChanges()
         changes.edits=(changes.edits??[]).flatMap(edit=>{
           if(edit.slideIndex!==slideIndex||edit.elementId!==element.id)return [edit]
-          const {geometry:_geometry,...rest}=edit
-          return rest.text===undefined?[]:[rest]
+          // Cropping owns the frame geometry; the picture's separately staged rotation and flips still apply.
+          const { geometry: _geometry, ...rest } = edit
+          return rest.pictureTransform ? [rest] : []
         })
         changes.pictureCrops=[...pictureCrops.filter(item=>item.slideIndex!==slideIndex||item.elementId!==element.id),{slideIndex,elementId:element.id,expectedSha256:element.pictureSha256!,expectedSize:element.pictureSize!,srcRect,geometry}]
-        commitNativeChanges(changes);cropOverlay=undefined
-      },onCancel:()=>{cropOverlay=undefined},
+        commitNativeChanges(changes)
+        finishPictureCrop()
+      },onCancel:finishPictureCrop,
     })
+    nativeRibbon?.setValue('cropPicture', 'true')
     canvasStatus.textContent='拖动裁切手柄；Enter 或点击外部确认，Esc 取消'
   }catch(error){statusMessage.textContent=error instanceof Error?error.message:'裁切未打开'}
 }
@@ -2386,7 +2396,7 @@ function renderInspector() {
   if(cutoutCurrent&&!cutoutCurrent()){++cutoutGeneration;cutoutDialog?.dispose();cutoutDialog=undefined;cutoutCurrent=undefined}
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   renderNotes()
-  if(selectionSlide!==selectedSlide){selectedObjects.clear();selectionSlide=selectedSlide;explicitEmptySelection=false;cropOverlay?.dispose();cropOverlay=undefined}
+  if(selectionSlide!==selectedSlide){selectedObjects.clear();selectionSlide=selectedSlide;explicitEmptySelection=false;cropOverlay?.dispose();finishPictureCrop()}
   renderComments()
   // 表格虽不能整体编辑/删除，但单元格可改字，因此也列入可选对象。
   const elements = slideAt(selectedSlide).elements.filter(item => (item.editable || item.deletable || !!item.tableCells || item.type === 'chart' || item.type === 'group' || item.model3d) && !deletions.has(editKey(selectedSlide, item.id)))

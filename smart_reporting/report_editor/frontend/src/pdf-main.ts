@@ -737,18 +737,22 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }, { passive: false, signal: abort.signal })
   const formGroup = ribbon.group('fillForm', '填写可填写域')
   const formControls = documentElement('div', 'pdf-form-controls')
-  let formControlsKey = ''
+  let formControlsKey = '', activeFormFieldId = ''
   formGroup.append(formControls)
   const formNavigation = documentElement('div', 'pdf-form-navigation')
   const previousField = documentElement('button', 'pdf-tool')
-  previousField.type = 'button'; previousField.textContent = pdfRibbonLabel('上一个字段'); previousField.dataset.pdfFormNavigation = 'previous'
+  previousField.type = 'button'; previousField.append(createPdfRibbonIcon('previousField', 18), window.document.createTextNode(pdfRibbonLabel('上一个字段'))); previousField.dataset.pdfFormNavigation = 'previous'
+  sourceCommand(previousField, 'fillForm.previousField')
   previousField.setAttribute('aria-label', '上一个可编辑表单字段')
   previousField.addEventListener('click', () => focusFormField(-1))
   const nextField = documentElement('button', 'pdf-tool')
-  nextField.type = 'button'; nextField.textContent = pdfRibbonLabel('下一个字段'); nextField.dataset.pdfFormNavigation = 'next'
+  nextField.type = 'button'; nextField.append(createPdfRibbonIcon('nextField', 18), window.document.createTextNode(pdfRibbonLabel('下一个字段'))); nextField.dataset.pdfFormNavigation = 'next'
+  sourceCommand(nextField, 'fillForm.nextField')
   nextField.setAttribute('aria-label', '下一个可编辑表单字段')
   nextField.addEventListener('click', () => focusFormField(1))
-  formNavigation.append(previousField, nextField)
+  const formProgress = documentElement('span', 'pdf-form-navigation-progress')
+  formProgress.setAttribute('role', 'status'); formProgress.setAttribute('aria-label', '表单字段位置')
+  formNavigation.append(previousField, nextField, formProgress)
   formGroup.append(formNavigation)
   commandGroup = formGroup
   const finishForm = button('完成填写', completeFormFill, false)
@@ -2575,6 +2579,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
       control.disabled = formDesignPreview || !field.editable || locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
       control.dataset.pdfEditable = String(field.editable)
+      control.dataset.pdfFormFieldId = field.fieldId
+      if (field.editable) control.addEventListener('focus', () => { activeFormFieldId = field.fieldId; syncFormProgress() })
       control.dataset.pdfInitialValue = control.value
       control.dataset.pdfInitialChecked = String(field.kind === 'checkbox' && (control as HTMLInputElement).checked)
       control.setAttribute('aria-label', field.name)
@@ -2588,6 +2594,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       })
       label.append(control); formControls.append(label)
     }
+    syncFormProgress()
     ribbon.setHasForms(fields.length > 0,model.capabilities?.createFormField===true,model.capabilities?.staticFill===true)
     if (!editableFields.length && fields.length) { const note = documentElement('p'); note.textContent = '检测到表单字段，但当前字段均为只读或暂不支持。'; formControls.append(note) }
   }
@@ -2619,11 +2626,19 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     home?.click()
     home?.focus()
   }
+  function formNavigationFields() {
+    return [...formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-pdf-editable="true"]')]
+  }
+  function syncFormProgress() {
+    const fields = formNavigationFields()
+    const current = fields.findIndex(field => field.dataset.pdfFormFieldId === activeFormFieldId)
+    formProgress.hidden = fields.length === 0
+    formProgress.textContent = String(current + 1) + ' / ' + fields.length
+  }
   function focusFormField(direction: -1 | 1) {
-    const fields = [...formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-pdf-editable="true"]')]
-      .filter(field => !field.disabled)
+    const fields = formNavigationFields().filter(field => !field.disabled)
     if (!fields.length) return
-    const current = fields.indexOf(window.document.activeElement as HTMLInputElement | HTMLSelectElement)
+    const current = fields.findIndex(field => field.dataset.pdfFormFieldId === activeFormFieldId)
     const next = current < 0 ? (direction > 0 ? 0 : fields.length - 1) : (current + direction + fields.length) % fields.length
     fields[next]?.focus()
   }

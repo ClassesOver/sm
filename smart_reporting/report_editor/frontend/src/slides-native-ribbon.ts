@@ -22,6 +22,7 @@ import { IconPrintLayout, IconArrangeAll, IconOutlineView, IconReadMode, IconZoo
 import { createNativeChartGallery, type NativeChartGalleryState } from './slides-native-chart-gallery'
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 import iconTransparency from './vendor/genoffice-slides/components/icon-transparency.png'
+import iconCrop from './vendor/genoffice-slides/components/icon-crop.png'
 import { IconPageBorders } from './vendor/genoffice-slides/components/icons'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 
@@ -252,12 +253,13 @@ const tabs: Tab[] = [
   ] },
   { id: 'tableDesign', label: 'Table Design', context: 'table', groups: [{ label: 'Table Styles', controls: [{ id: 'tableStructure', label: 'Rows and Columns', caption: '行列操作', sourceActionId: 'editTableStructure' }, { id: 'tableStyle', label: 'Table Style', caption: '表格样式', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...SLIDES_TABLE_PRESETS.map(item => item.name)], optionLabels: ['来源样式或未选择', ...SLIDES_TABLE_PRESETS.map(item => item.label)] }, { id: 'tableFirstRow', label: '标题行', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableBandRow', label: '斑马纹', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableRtl', label: '从右到左表格', kind: 'toggle', sourceActionId: 'onEditTableStyle' }, { id: 'tableShadingWholeTable', label: '底纹作用于整表', sourceActionId: 'onEditTableStyle' }, { id: 'tableShading', label: 'Shading', caption: '底纹', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...TABLE_SHADING_COLORS, 'none'], optionLabels: ['选择底纹', '白色', '浅灰', '浅青', '淡蓝', '灰蓝', '浅黄', '浅橙', '浅桃', '浅绿', '浅紫', '无填充'] }, { id: 'tableAllBorders', label: 'All Borders', caption: '所有边框', sourceActionId: 'onEditTableStyle' }, { id: 'tableNoBorders', label: 'No Borders', caption: '无边框', sourceActionId: 'onEditTableStyle' }] }] },
   { id: 'chartDesign', label: 'Chart Design', context: 'chart', groups: [{ label: 'Chart Elements', controls: [{ id: 'chartElements', label: 'Chart Elements', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Styles', controls: [{ id: 'chartDesignPresets', label: 'Chart Colors and Styles', sourceActionId: 'onEditChart', sourceIcon: IconChart }, { id: 'chartPointColors', label: 'Chart Point Colors', sourceActionId: 'onEditChart', sourceIcon: IconChart }] }, { label: 'Chart Data', controls: [{ id: 'chartSwitchRowCol', label: 'Switch Row/Column', sourceActionId: 'onEditChart', sourceIcon: IconSwitchRowCol }, { id: 'chartType', label: 'Change Chart Type', sourceActionId: 'onChartType' }, { id: 'chartData', label: 'Edit Data', sourceActionId: 'onChartData' }] }] },
-  { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id:'removeBackground',label:'去除背景',sourceActionId:'onPictureCutout' }, { id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'pictureOpacity', label: 'Transparency', sourceActionId: 'onPictureOpacity' }, { id: 'cropPicture', label: 'Crop', sourceActionId: 'onPictureCrop' }] },
+  { id: 'pictureFormat', label: 'Picture Format', context: 'picture', groups: [{ label: 'Adjust', controls: [{ id:'removeBackground',label:'去除背景',sourceActionId:'onPictureCutout' }, { id: 'replacePicture', label: 'Replace Picture', sourceActionId: 'onReplacePicture' }, { id: 'pictureOpacity', label: 'Transparency', sourceActionId: 'onPictureOpacity' }] },
     { label: 'Outline', controls: [
       { id: 'pictureOutlineColor', label: '轮廓颜色', caption: '颜色', kind: 'color', sourceActionId: 'onPictureStroke' },
       { id: 'pictureOutlineWidth', label: 'Outline Weight', caption: '粗细', kind: 'select', options: PICTURE_OUTLINE_WIDTHS, optionLabels: PICTURE_OUTLINE_WIDTHS.map(value => value + ' pt'), sourceActionId: 'onPictureStroke' },
       { id: 'pictureNoOutline', label: 'No Outline', sourceIcon: IconPageBorders, sourceActionId: 'onPictureStroke' },
     ] },
+    { label: 'Size', controls: [{ id: 'cropPicture', label: 'Crop', kind: 'toggle', sourceActionId: 'onPictureCrop' }] },
     { label: 'Arrange', controls: [
       { id: 'rotatePictureRight', label: 'Rotate Right 90°', sourceIcon: IconRotateRight, sourceActionId: 'onPictureRotate:90' },
       { id: 'rotatePictureLeft', label: 'Rotate Left 90°', sourceIcon: IconRotateLeft, sourceActionId: 'onPictureRotate:-90' },
@@ -582,7 +584,12 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           const buttonElement = document.createElement('button')
           buttonElement.type = 'button'
           buttonElement.setAttribute('aria-label', localizedLabel)
-          if (sourceIcon) buttonElement.insertAdjacentHTML('afterbegin', sourceIcon)
+          if (control.id === 'cropPicture') {
+            const icon = new Image(22, 22)
+            icon.src = iconCrop
+            icon.alt = ''
+            buttonElement.append(icon)
+          } else if (sourceIcon) buttonElement.insertAdjacentHTML('afterbegin', sourceIcon)
           else if (glyph) buttonElement.append(createElement(glyph, { width: 15, height: 15, 'aria-hidden': 'true' }))
           if (control.kind === 'toggle') {
             buttonElement.title = localizedLabel
@@ -723,7 +730,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (command === 'lineSpacingPct' && element instanceof HTMLSelectElement) element.options[0]!.textContent = hint
         }
         if (command === 'bold' && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
-        if (['commentsPane', 'italic', 'underline', 'strike', 'hideSlide', 'tableFirstRow', 'tableBandRow', 'tableRtl'].includes(command) && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
+        if (['commentsPane', 'italic', 'underline', 'strike', 'hideSlide', 'tableFirstRow', 'tableBandRow', 'tableRtl', 'cropPicture'].includes(command) && element instanceof HTMLButtonElement) element.setAttribute('aria-pressed', String(value === 'true'))
       }
       if (command === 'bulletKind') for (const [kind, id] of [['char', 'bulletChar'], ['number', 'bulletNumber'], ['none', 'bulletNone']]) {
         for (const element of controls.get(id!) ?? []) element.setAttribute('aria-pressed', String(kind === value))

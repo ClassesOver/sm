@@ -6,7 +6,7 @@ import { PROTECTED_SHEET_REASON, PROTECTED_SHEET_RIBBON } from './workbook-prote
 import { ROTATION_VALUES, univerRotationToOoxml, type RotationValue } from './workbook-rotation'
 import { BorderStyleTypes, BorderType } from '@univerjs/core'
 import { workbookCommandIcon } from './workbook-ribbon-command-icons'
-import { selectedWorkbookFormat, type WorkbookFormatState, type FormatValue, type NumberFormatTarget } from './workbook-format'
+import { selectedWorkbookFormat, NUMBER_FORMAT_PRESETS, numberFormatPresetLabel, type NumberFormatPreset, type WorkbookFormatState, type FormatValue, type NumberFormatTarget } from './workbook-format'
 import { applyWorkbookFontDecoration, type FontDecorationRange } from './workbook-font'
 import { indentToUniverPadding, univerPaddingToIndent, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { PASTE_SPECIAL_CHOICES, type PasteSpecialKind } from './workbook-clipboard'
@@ -91,6 +91,7 @@ type RibbonCommand =
   | 'format:0%'
   | 'format:#,##0.00'
   | 'format:custom-open'
+  | `number-format:${NumberFormatPreset}`
   | 'decimal-inc'
   | 'decimal-dec'
   | 'toggle-gridlines'
@@ -1333,8 +1334,17 @@ export function mountWorkbookRibbon(
       label.setAttribute('role', 'button')
       label.setAttribute('aria-disabled', String(!editable || state.kind === 'unavailable'))
     }
-    const number = body.querySelector<HTMLElement>('[data-ribbon-control="number-format"]')
-    if (number) { number.textContent = format.numberFormat.kind === 'value' && format.numberFormat.value === 'General' ? '常规' : stateText(format.numberFormat); number.dataset.formatState = format.numberFormat.kind; number.title = format.numberFormat.kind === 'unavailable' ? format.numberFormat.reason : number.textContent }
+    const number = body.querySelector<HTMLSelectElement>('[data-ribbon-control="number-format"]')
+    if (number) {
+      const state = format.numberFormat
+      const reason = !editable ? '当前工作簿不可编辑或正在保存'
+        : !selected ? '请先选择单元格或区域'
+        : view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : state.kind === 'unavailable' ? state.reason : undefined
+      number.options[0]!.text = state.kind === 'value' ? numberFormatPresetLabel(state.value) : stateText(state)
+      number.dataset.formatState = state.kind
+      number.disabled = !!reason
+      number.title = reason ?? (state.kind === 'value' ? state.value : '数字格式')
+    }
   }
   const render = () => {
     visibleTabs = view?.table?.() ? [...tabs, 'Table Design'] : tabs
@@ -1492,7 +1502,18 @@ export function mountWorkbookRibbon(
         section.append(select)
       }
       if (active === 'Home' && group.title === '数字') {
-        const number = document.createElement('span'); number.className = 'workbook-ribbon-number-format'; number.dataset.ribbonControl = 'number-format'; number.setAttribute('aria-label', '当前数字格式'); number.textContent = '不可判定'; section.append(number)
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select workbook-ribbon-number-format'
+        select.dataset.ribbonControl = 'number-format'
+        select.setAttribute('aria-label', '数字格式')
+        select.disabled = true
+        select.append(new Option('不可判定', ''), ...NUMBER_FORMAT_PRESETS.map(({ id, label }) => new Option(label, id)))
+        select.addEventListener('change', () => {
+          const preset = NUMBER_FORMAT_PRESETS.find(({ id }) => id === select.value)
+          select.value = ''
+          if (preset && !select.disabled) onCommand(`number-format:${preset.id}`)
+        })
+        section.append(select)
       }
       if (active === 'Page Layout' && group.title === '主题') {
         // 固定源 ExcelShell：Themes 大菜单 + Colors / Fonts MenuSelect，选中即应用，菜单回弹到标题。

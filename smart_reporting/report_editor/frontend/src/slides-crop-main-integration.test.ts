@@ -1,4 +1,4 @@
-import {afterEach,expect,it,vi} from 'vitest'
+import {afterEach,beforeEach,expect,it,vi} from 'vitest'
 import {createEditorShell} from './shell'
 import {createSlidesEditorView} from './slides-main'
 import {NativeDraft} from './native-draft'
@@ -9,11 +9,12 @@ const canvasStates=vi.hoisted(()=>[] as SlidesCanvasState[])
 vi.mock('./slides-canvas',()=>({mountSlidesCanvas:()=>({update:(state:SlidesCanvasState)=>canvasStates.push(state),destroy(){}})}))
 vi.mock('./slides-native-crop',()=>({openSlidesPictureCrop:vi.fn(()=>({dispose:vi.fn()}))}))
 vi.mock('./slides-native-images',()=>({pickSlideImage:vi.fn(),prepareSlideImage:vi.fn()}))
-afterEach(()=>{document.body.replaceChildren();document.documentElement.lang='';vi.clearAllMocks();canvasStates.length=0})
+beforeEach(()=>vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }))
+afterEach(()=>{document.body.replaceChildren();document.documentElement.lang='';vi.clearAllMocks();vi.unstubAllGlobals();canvasStates.length=0})
 const geometry={x:100,y:100,width:400,height:200}
 const cropped={srcRect:{l:.25,t:0,r:0,b:0},geometry:{x:200,y:100,width:300,height:200}}
 const source={revision:1,sha256:'a'.repeat(64),size:{cx:12192000,cy:6858000},slides:[{slideIndex:0,elements:[
- {id:'picture',type:'picture',name:'来源图',text:'',editable:false,arrangeEditable:true,deletable:true,pictureCropEditable:true,pictureSha256:'b'.repeat(64),pictureSize:68,pictureReplaceable:true,srcRect:null,geometry},
+ {id:'picture',type:'picture',name:'来源图',text:'',editable:false,arrangeEditable:true,deletable:true,pictureCropEditable:true,pictureSha256:'b'.repeat(64),pictureSize:68,pictureReplaceable:true,srcRect:null,geometry,pictureTransform:{rot:0,flipH:false,flipV:false}},
  {id:'title',type:'text',name:'标题',text:'原文',editable:true,geometry:{x:10,y:10,width:100,height:40}},
 ]}]}
 const tree={slides:[{slideIndex:0,widthPx:1280,heightPx:720,background:{type:'solid',color:'#ffffff'},nodes:[
@@ -33,6 +34,32 @@ async function open(draft:NativeDraft){
  const crop=()=>{expect(command('cropPicture').title).not.toContain('请选择');expect(command('cropPicture').disabled).toBe(false);command('cropPicture').click();return vi.mocked(openSlidesPictureCrop).mock.calls.at(-1)![1] as SlidesPictureCropOptions}
  return {shell,request,view,select,command,crop}
 }
+it('shows crop in Picture Format Size and preserves pending picture orientation',async()=>{
+ const draft=newDraft(),app=await open(draft)
+ try{
+  const button=app.command('cropPicture')
+  expect(button.closest('[data-ribbon-group="Size"]')).not.toBeNull()
+  expect(button.querySelector('img')).not.toBeNull()
+  expect(button.getAttribute('aria-pressed')).toBe('false')
+  app.command('rotatePictureRight').click()
+  app.command('flipPictureH').click()
+  const originalEdits=structuredClone(draft.operations[0]?.edits)
+  expect(originalEdits).toEqual([
+   {slideIndex:0,elementId:'picture',pictureTransform:{rot:5400000,flipH:true,flipV:false}},
+  ])
+  const unchanged=app.crop()
+  expect(button.getAttribute('aria-pressed')).toBe('true')
+  unchanged.onConfirm({srcRect:null,geometry})
+  expect(button.getAttribute('aria-pressed')).toBe('false')
+  expect(draft.operations[0]?.pictureCrops).toBeUndefined()
+  app.crop().onConfirm(cropped)
+  expect(draft.operations[0]?.edits).toEqual(originalEdits)
+  expect(draft.operations[0]?.pictureCrops).toHaveLength(1)
+  expect(button.getAttribute('aria-pressed')).toBe('false')
+  app.crop().onCancel()
+  expect(button.getAttribute('aria-pressed')).toBe('false')
+ }finally{app.view.dispose()}
+})
 it('裁切与frame一次撤销重做，刷新恢复并保持源SHA进入保存payload',async()=>{
  const draft=newDraft();let app=await open(draft)
  try{
