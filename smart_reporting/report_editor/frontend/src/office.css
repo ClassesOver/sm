@@ -141,11 +141,14 @@ h1 span { display: block; font-weight: 500; }
 
 
 .office-context-menu {
-  position: fixed; inset: auto; margin: 0; padding: 4px; min-width: 140px;
-  border: 1px solid var(--line); border-radius: 8px; background: white; box-shadow: 0 6px 30px #0001;
+  position: fixed; inset: auto; margin: 0; padding: 5px; min-width: 160px;
+  max-width: calc(100vw - 16px); max-height: calc(100dvh - 16px); overflow: auto;
+  border: 1px solid var(--line); border-radius: 9px; background: white; box-shadow: 0 4px 8px #00000006, 0 12px 32px #00000014;
 }
-.office-context-menu button { display: block; padding: 6px 10px; width: 100%; text-align: left; border-radius: 4px; }
-.office-context-menu button:hover, .office-context-menu button:focus-visible { background: #f2f2f2; }
+.office-context-menu button { display: block; min-height: 34px; padding: 7px 11px; width: 100%; text-align: left; border-radius: 5px; font-size: 13px; line-height: 20px; }
+.office-context-menu button:hover:not(:disabled), .office-context-menu button:focus-visible { background: #f2f2f2; }
+.office-context-menu button:focus-visible { outline-offset: -2px; }
+.office-context-menu button:disabled { color: #96999d; }
 
 .office-brand{display:flex;align-items:center;gap:9px;font-size:21px;font-weight:700;letter-spacing:-.5px}.office-brand-mark{display:flex;align-items:center;justify-content:center;width:28px;height:28px;background:#111;color:#fff;border-radius:7px}
 
@@ -172,6 +175,10 @@ h1 span { display: block; font-weight: 500; }
 .file-list .file-row{gap:4px;min-height:52px;padding:4px 8px}
 .file-list .file-row>input[type=checkbox]{width:14px;height:14px;margin:0 8px 0 0;flex:none;accent-color:#3478d4}
 .file-list .file-row>button[data-star],.file-list .file-row>button[data-file-actions],.file-list .file-row>button[data-folder-actions]{display:grid;place-items:center;flex:none;width:32px;height:32px;padding:0;border-radius:6px}
-.file-list .file-row>button[data-star]:hover,.file-list .file-row>button[data-file-actions]:hover{background:#eceef1}
+.file-list .file-row>button[data-star]:hover,.file-list .file-row>button[data-file-actions]:hover,.file-list .file-row>button[data-folder-actions]:hover{background:#eceef1}
+.workspace .file-row:has(>input[data-select-file]:checked){background:#eef4fc;border-bottom-color:#dce7f5}
+.office-body>aside .folder-actions{width:28px;height:28px;justify-content:center;border-radius:6px}
+.office-body>aside .folder-actions:hover{background:#e5e7eb}
+@media(hover:none){.office-body>aside .folder-actions{opacity:1}}
 @media(max-width:720px){.folders-head{flex-wrap:wrap;gap:4px}.folders-head>span{white-space:nowrap}.folders-head>div{display:flex;align-items:center}.office-account-entry{gap:6px;padding:6px}.office-account-entry .office-account-name{font-size:12px}.office-account-avatar{width:26px;height:26px}.quick-card{min-height:84px;flex-direction:row;align-items:center;padding:14px 12px;gap:12px}.quick-card>span:last-child{min-width:0}.quick-card small{overflow-wrap:anywhere}.file-location{display:none}}
 html[data-office-theme=dark] .office-body :is(.quick-card:active,.space-controls button:hover,.office-account-entry:hover){background:#333}
