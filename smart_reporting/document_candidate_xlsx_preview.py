@@ -30,6 +30,12 @@ class XlsxLiteralPreviewEngine:
         self._tasks: dict[str, tuple[DocumentScope, str, dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
+    async def _verified_source(self, scope: DocumentScope) -> bytes:
+        source = await self._load_source(scope)
+        if hashlib.sha256(source).hexdigest() != scope.source_sha256:
+            raise PermissionError("document_source_changed")
+        return source
+
     async def prepare(self, request: DocumentCandidateRequest) -> str:
         async with self._lock:
             return await self._prepare_locked(request)
@@ -46,10 +52,9 @@ class XlsxLiteralPreviewEngine:
         if existing is not None:
             if existing[0] != request.scope or existing[1] != fingerprint:
                 raise ValueError("document_request_id_conflict")
+            await self._verified_source(request.scope)
             return task_id
-        source = await self._load_source(request.scope)
-        if hashlib.sha256(source).hexdigest() != request.scope.source_sha256:
-            raise PermissionError("document_source_changed")
+        source = await self._verified_source(request.scope)
         operations = await self._propose(request)
         validate_xlsx_operations(request.selection, operations)
         workbook = load_workbook(io.BytesIO(source), read_only=False, data_only=False)
@@ -88,4 +93,5 @@ class XlsxLiteralPreviewEngine:
         entry = self._tasks.get(task_id)
         if entry is None or entry[0] != scope:
             raise PermissionError("document_task_not_accessible")
+        await self._verified_source(scope)
         return dict(entry[2], changes=[dict(item) for item in entry[2]["changes"]])
