@@ -80,6 +80,7 @@ async def test_channel_word_assistant_uses_server_draft_and_reports_private_stat
         authenticate.return_value = ConnectorIdentity("dsh", "account-a", "another-session")
         assert (await client.get(path + "/task-a")).status_code == 404
         repository.has_member.return_value = False
+        repository.member_grant.return_value = None
         assert (await client.get(path + "/task-a")).status_code == 403
 
 
