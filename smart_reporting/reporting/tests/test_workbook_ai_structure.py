@@ -88,6 +88,33 @@ async def test_source_move_sheet_rejects_invalid_position_or_unauthorized_scope(
 
 
 @pytest.mark.anyio
+async def test_source_sheet_lifecycle_updates_cross_sheet_formula_on_rename():
+    tools, previews = await real_tools(source_book())
+    await tools.propose_operations([
+        {'op': 'add_sheet', 'name': '新增'},
+        {'op': 'add_sheet', 'name': '临时'},
+        {'op': 'rename_sheet', 'sheetId': 'Source', 'name': '销售明细'},
+        {'op': 'move_sheet', 'sheetId': '新增', 'position': 1},
+        {'op': 'delete_sheet', 'sheetId': '临时'},
+    ], '整理工作表')
+    book = load_workbook(BytesIO(previews[0]))
+    assert book.sheetnames == ['新增', '销售明细', 'Other']
+    assert book['新增']['A1'].value is None
+    assert book['Other']['A1'].value == "='销售明细'!B3"
+    assert book['销售明细']['B3'].value == 30
+
+
+@pytest.mark.anyio
+async def test_source_delete_sheet_preserves_workbook_when_references_remain():
+    source = source_book()
+    tools, previews = await real_tools(source)
+    with pytest.raises(ValueError, match='native_office_operations_invalid'):
+        await tools.propose_operations([{'op': 'delete_sheet', 'sheetId': 'Source'}], '删除数据表')
+    assert previews == [] and tools.proposal is None
+    assert load_workbook(BytesIO(source))['Other']['A1'].value == '=Source!B3'
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(('op', 'position', 'value_address', 'value', 'formula', 'merge', 'same_address', 'same_formula'), [
     ('insert_rows', {'row': 2}, 'B3', 20, '=Source!B4', 'E6:F6', 'C1', '=B4+1'),
     ('delete_rows', {'row': 2}, 'B2', 30, '=Source!B2', 'E4:F4', 'C1', '=B2+1'),

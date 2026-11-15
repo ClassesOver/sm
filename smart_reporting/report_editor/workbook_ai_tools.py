@@ -20,7 +20,13 @@ from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_bounda
 from ..office.ai_skills import WORKBOOK_GUIDES, source_workbook_guide
 from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
-from .workbook_ai_structure import ROW_COLUMN_SOURCE_OPS, translate_row_column_operation
+from .workbook_ai_structure import (
+    ROW_COLUMN_SOURCE_OPS,
+    SHEET_LIFECYCLE_OPS,
+    SHEET_SOURCE_OPS,
+    translate_row_column_operation,
+    translate_sheet_operation,
+)
 from .workbook_search import find_cell_indexes
 
 _CELL_SOURCE_OPS = {'set_cell', 'set_formula', 'clear_cell', 'set_range', 'clear_range'}
@@ -405,6 +411,9 @@ class WorkbookAIToolkit(Toolkit):
             catalog['structure'] += (
                 '整簿授权下用 {op:move_sheet,sheetId,position} 移动工作表标签。'
                 'position 从 1 开始；同批多个移动按提交顺序执行。'
+                '支持 add_sheet(name)、rename_sheet(sheetId,name) 和 delete_sheet(sheetId)。'
+                '在工作表结构批次内按当前表名寻址；Excel 新建空白表无需指定 rows 或 columns。'
+                '仍被其他工作表引用的表由写入器拒绝删除。'
             )
         if 'charts' in guides:
             catalog['charts'] += (
@@ -484,19 +493,8 @@ class WorkbookAIToolkit(Toolkit):
             return {'kind': 'applyPageSetups', 'setups': [{
                 'sheetName': self._sheet(sheet_id)['name'], 'frozenRows': rows, 'frozenColumns': columns,
             }]}
-        if op == 'move_sheet':
-            if set(operation) != {'op', 'sheetId', 'position'}:
-                raise ValueError('workbook_ai_sheet_order_invalid')
-            sheet_id, position = operation['sheetId'], operation['position']
-            if (not isinstance(sheet_id, str) or not sheet_id
-                    or type(position) is not int or not 1 <= position <= min(len(sheet_order), 1000)):
-                raise ValueError('workbook_ai_sheet_order_invalid')
-            name = self._sheet(sheet_id)['name']
-            sheet_order.remove(name)
-            sheet_order.insert(position - 1, name)
-            return {'kind': 'applySheetEdits', 'plan': {
-                'additions': [], 'renames': [], 'removals': [], 'order': list(sheet_order),
-            }}
+        if op in SHEET_SOURCE_OPS:
+            return translate_sheet_operation(operation, sheet_order)
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}
@@ -608,6 +606,10 @@ class WorkbookAIToolkit(Toolkit):
             raise ValueError('workbook_ai_selection_mismatch')
         if any(operation.get('op') in ROW_COLUMN_SOURCE_OPS for operation in operations) and any(
             operation.get('op') not in ROW_COLUMN_SOURCE_OPS or 'kind' in operation for operation in operations
+        ):
+            raise ValueError('workbook_ai_structure_batch_invalid')
+        if any(operation.get('op') in SHEET_LIFECYCLE_OPS for operation in operations) and any(
+            operation.get('op') not in SHEET_SOURCE_OPS or 'kind' in operation for operation in operations
         ):
             raise ValueError('workbook_ai_structure_batch_invalid')
         if any(operation.get('op') == 'move_sheet' for operation in operations) and any(

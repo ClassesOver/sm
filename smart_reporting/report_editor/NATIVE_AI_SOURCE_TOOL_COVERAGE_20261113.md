@@ -52,6 +52,8 @@ XLSX `set_freeze` 在整簿授权下复用原生工作表视图写入器。行�
 
 XLSX `move_sheet` 接到原生工作表顺序写入器，标签位置从 1 开始。同一候选的多个移动依次应用。回读验证活动工作表、局部名称及跨表公式仍指向原工作表，所有工作表部件保持字节一致。
 
+XLSX `add_sheet`、`rename_sheet` 和 `delete_sheet` 接到原生结构写入器，可与 `move_sheet` 在同一工作表结构候选中顺序执行。按当前工作表名寻址；重命名更新跨表引用，仍被引用的表由引擎拒绝删除。新建使用 Excel 空白工作表，桌面临时网格的 rows／columns 参数未接入。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。
