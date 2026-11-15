@@ -185,19 +185,38 @@ export function bindNativeAI(container: HTMLElement, options: {
     open() { if(disposed)return;panelView?.beforeOpen();panel.hidden=false;panel.scrollIntoView?.({block:'nearest'}); input.focus({preventScroll:true}) },
     async followWordTask(taskId: string) {
       if (options.format !== 'docx' || !editable() || busy || accepting || job) return
+      try {
+        options.view.flushPendingEdits?.()
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : '未保存输入同步失败'
+        return
+      }
+      if (!editable() || busy || accepting || job) return
+      // The server owns the channel task scope. Any local preset belongs to a
+      // separate editor request and must not control adoption of this task.
+      presetScope = undefined
+      presetStale = false
       const turn = ++generation
-      wordTarget = currentWordTarget()
+      const target = currentWordTarget()
+      wordTarget = target
       busy = true
       status.textContent = '正在读取频道编辑任务'
       update()
       try {
         const result = await tasks.follow(taskId, (started, signal) => {
-          if (turn !== generation || disposed) return
+          if (turn !== generation || !editable() || target !== currentWordTarget()) return
           progress.start(options.api.aiEvents as NativeAIProgressListener | undefined, started.editId, signal,
             () => editable() && turn === generation)
           show(started)
         })
         if (result && turn === generation && !disposed) {
+          if (!editable() || target !== currentWordTarget()) {
+            tasks.release()
+            clearCandidate()
+            status.textContent = '草稿或选区已变化，请重新打开频道候选。'
+            update()
+            return
+          }
           show(result)
           details.open = !!result.proposal
         }

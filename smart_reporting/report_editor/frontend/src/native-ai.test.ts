@@ -26,6 +26,37 @@ it('在现有编辑面板接续频道任务并等待显式采纳', async () => {
   binding.dispose()
 })
 
+it('频道任务返回前草稿变化时不显示旧候选或取消已完成的频道任务', async () => {
+  const draft = new NativeDraft({
+    documentId:'channel-word-stale',revision:1,sourceSha256:'a'.repeat(64),
+    scope:{database:'d',companyId:'c',userId:'u',threadId:'t'},
+  }, sessionStorage)
+  const manual = [{kind:'replaceParagraph',blockId:'p2',text:'人工草稿'}]
+  const wait = Promise.withResolvers<{
+    editId:string;status:string;snapshotSha256:string;proposal:{summary:string;operations:typeof manual}
+  }>()
+  const api = {
+    aiStart:vi.fn(), aiStatus:vi.fn().mockReturnValue(wait.promise), aiCancel:vi.fn(), aiAccept:vi.fn(),
+  }
+  const root = document.createElement('div')
+  const flushPendingEdits = vi.fn()
+  const binding = bindNativeAI(root,{api:api as never,draft,format:'docx',
+    view:{refresh:vi.fn(),flushPendingEdits},onDraftChange:vi.fn()})
+  const following = binding.followWordTask('channel-task')
+  expect(flushPendingEdits).toHaveBeenCalledBefore(api.aiStatus)
+  draft.setOperations(manual)
+  wait.resolve({editId:'channel-task',status:'succeeded',snapshotSha256:'snapshot',
+    proposal:{summary:'旧候选',operations:[]}})
+  await following
+  expect(root.textContent).toContain('草稿或选区已变化')
+  expect(root.textContent).not.toContain('旧候选')
+  expect(root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.disabled).toBe(true)
+  expect(api.aiAccept).not.toHaveBeenCalled()
+  expect(api.aiCancel).not.toHaveBeenCalled()
+  expect(draft.operations).toEqual(manual)
+  binding.dispose()
+})
+
 it.each(['cancel', 'selection', 'dispose'])('启动回执未返回时通过请求身份取消：%s', async action => {
   const draft = new NativeDraft({documentId:'early-cancel-'+action,revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
   const api = {aiStart:vi.fn((_payload, signal: AbortSignal) => new Promise((_resolve, reject) => {
