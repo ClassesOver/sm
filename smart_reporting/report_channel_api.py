@@ -173,6 +173,22 @@ def create_report_channel_router(
                     "document_request_id_invalid", "document_instruction_invalid",
                     "document_selection_invalid", "document_selection_mismatch",
                     "document_task_id_invalid",
+                    "xlsx_selection_required", "xlsx_target_invalid",
+                    "xlsx_target_out_of_bounds", "xlsx_sheet_invalid",
+                    "xlsx_range_reversed", "xlsx_operations_invalid",
+                    "xlsx_operation_invalid", "xlsx_operation_target_unapproved",
+                    "xlsx_formula_or_value_unsafe", "xlsx_value_too_long",
+                    "xlsx_value_non_finite", "xlsx_preview_target_invalid",
+                    "xlsx_preview_formula_or_merged_cell", "xlsx_preview_protected_sheet",
+                    "pptx_selection_invalid", "pptx_target_invalid",
+                    "pptx_target_duplicate", "pptx_operations_invalid",
+                    "pptx_operation_invalid", "pptx_operation_target_unapproved",
+                    "pptx_text_invalid", "pptx_preview_target_unsupported",
+                    "pdf_selection_invalid", "pdf_target_invalid",
+                    "pdf_page_invalid", "pdf_rect_invalid",
+                    "pdf_annotations_invalid", "pdf_annotation_invalid",
+                    "pdf_annotation_target_unapproved", "pdf_annotation_note_invalid",
+                    "pdf_password_required", "pdf_page_out_of_bounds",
                 }:
                     raise HTTPException(422, "document_task_invalid") from None
                 raise
