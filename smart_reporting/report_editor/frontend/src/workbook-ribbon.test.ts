@@ -722,7 +722,7 @@ it('offers GenOffice Notes commands in source order and dispatches only enabled 
   const onCommand = vi.fn()
   mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
     editable: () => false, rotation: () => undefined, hasSelection: () => true,
-    noteReason: id => id === 'note-insert-picture' ? '当前工作簿不可编辑' : undefined,
+    noteReason: id => ['note-insert-picture', 'notes-convert'].includes(id) ? '当前工作簿不可编辑' : undefined,
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
   const notes = document.querySelector<HTMLSelectElement>('select[aria-label="注释"]')!

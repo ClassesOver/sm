@@ -150,6 +150,7 @@ type RibbonCommand =
   | 'note-show-all'
   | 'note-insert-picture'
   | 'note-pictures-pane-toggle'
+  | 'notes-convert'
   | 'freeze-panes'
   | 'zoom-in'
   | 'zoom-out'
@@ -1095,8 +1096,7 @@ export function mountWorkbookRibbon(
     }
     const notes = body.querySelector<HTMLSelectElement>('[data-ribbon-control="notes"]')
     if (notes) for (const option of Array.from(notes.options).slice(1)) {
-      const reason = option.value === 'notes-convert' ? '当前不支持转换线程批注'
-        : view.noteReason?.(option.value) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
+      const reason = view.noteReason?.(option.value) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
       option.disabled = !!reason
       option.title = reason ?? ''
     }
@@ -1194,7 +1194,7 @@ export function mountWorkbookRibbon(
         select.addEventListener('change', () => {
           const choice = select.selectedOptions[0]
           select.value = ''
-          if (choice?.value && !choice.disabled && choice.value !== 'notes-convert') onCommand(choice.value as RibbonCommand)
+          if (choice?.value && !choice.disabled) onCommand(choice.value as RibbonCommand)
         })
         wrapper.append(icon, select); section.append(wrapper)
       }

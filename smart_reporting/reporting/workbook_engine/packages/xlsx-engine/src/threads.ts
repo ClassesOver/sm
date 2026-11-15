@@ -10,7 +10,7 @@ const text = z.string().min(1).max(32767).refine(v => !/[\x00-\x08\x0b\x0c\x0e-\
 const id = z.string().regex(/^\{[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}$/)
 const entry = {id,personId:id,author:z.string().min(1).max(256),dT:z.string().regex(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?Z?$/),text}
 const row = z.number().int().min(0).max(1048575), column = z.number().int().min(0).max(16383)
-export const patchThreadedCommentsSchema = z.object({kind:z.literal('patchThreadedComments'),sheetName:z.string().min(1).max(31),sourceIdentity:z.string().regex(/^[a-f0-9]{64}$/),changes:z.array(z.object({row,column,expectedThreadId:id.nullable(),thread:z.object({...entry,row,column,done:z.boolean(),replies:z.array(z.object(entry).strict()).max(999)}).strict().nullable()}).strict()).max(1000)}).strict()
+export const patchThreadedCommentsSchema = z.object({kind:z.literal('patchThreadedComments'),sheetName:z.string().min(1).max(31),sourceIdentity:z.string().regex(/^[a-f0-9]{64}$/),convertToNotes:z.literal(true).optional(),changes:z.array(z.object({row,column,expectedThreadId:id.nullable(),thread:z.object({...entry,row,column,done:z.boolean(),replies:z.array(z.object(entry).strict()).max(999)}).strict().nullable()}).strict()).max(1000)}).strict()
 export async function patchThreadedComments(bytes: Uint8Array, input: unknown): Promise<Uint8Array> {
   const op = patchThreadedCommentsSchema.parse(input)
   let source = await createBufferEntrySource(bytes)
@@ -25,6 +25,7 @@ export async function patchThreadedComments(bytes: Uint8Array, input: unknown): 
   for (const c of op.changes) {
     const key = noteKey(c.row,c.column), existing = old.get(key)
     if (touched.has(key) || (existing?.id ?? null) !== c.expectedThreadId) throw new Error('线程批注目标重复或身份已变化')
+    if (op.convertToNotes && (!existing || c.thread !== null)) throw new Error('转换为注释须指定现有线程身份')
     touched.add(key)
     if (c.thread === null) next.delete(key)
     else {
@@ -55,8 +56,21 @@ export async function patchThreadedComments(bytes: Uint8Array, input: unknown): 
   if (legacy.readOnlyReason) throw new Error(legacy.readOnlyReason)
   for (const c of op.changes) if (!old.has(noteKey(c.row,c.column)) && legacy.notes.some(n => n.row === c.row && n.column === c.column)) throw new Error('此单元格已有旧式批注，请保留原批注')
   const mirrors = new Map<string,string>()
+  const legacyNotes = new Map(legacy.notes.map(note => [noteKey(note.row, note.column), note]))
   const mirrorChanges = op.changes.map(c => {
-    if(c.thread) mirrors.set(noteKey(c.row,c.column),`tc=${c.thread.id}`)
+    const key = noteKey(c.row, c.column)
+    if (op.convertToNotes) {
+      const thread = old.get(key)!
+      const legacyNote = legacyNotes.get(key)
+      if (legacyNote && legacyNote.author.toLowerCase() !== `tc=${thread.id}`.toLowerCase()
+          || /<(?:\w+:)?(?:imagedata|image)\b/i.test(legacy.shapeXml.get(key) ?? '')) {
+        throw new Error('转换位置包含无法安全替换的旧式注释或图片')
+      }
+      mirrors.set(key, thread.author)
+      // Match the GenOffice conversion order. OOXML stores the author separately.
+      return { row: c.row, column: c.column, text: [thread.text, ...thread.replies.map(reply => reply.text)].join('\n\n') }
+    }
+    if(c.thread) mirrors.set(key,`tc=${c.thread.id}`)
     return {row:c.row,column:c.column,text:c.thread ? threadMirrorText(c.thread.text,c.thread.replies) : null}
   })
   bytes = await patchSheetNotes(bytes,op.sheetName,legacy.sourceIdentity,mirrorChanges,{allowPictures:true,allowThreads:true,mirrorAuthors:mirrors})

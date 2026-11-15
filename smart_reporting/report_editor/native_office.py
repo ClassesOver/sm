@@ -796,6 +796,9 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], 
                 elif kind == 'applySheetFilter':
                     if not {'kind', 'sheetName', 'filter'} <= set(operation) <= allowed:
                         raise ValueError('native_office_operations_invalid')
+                elif kind == 'patchThreadedComments' and 'convertToNotes' in operation:
+                    if set(operation) != allowed | {'convertToNotes'} or operation['convertToNotes'] is not True:
+                        raise ValueError('native_office_operations_invalid')
                 elif set(operation) != allowed:
                     raise ValueError('native_office_operations_invalid')
             from .native_xlsx_pictures import validate_xlsx_pictures

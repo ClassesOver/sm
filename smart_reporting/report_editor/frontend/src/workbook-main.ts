@@ -2236,6 +2236,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           void Promise.resolve(result).catch(error => { feedback.textContent = (error as Error).message })
           return
         }
+        if (command === 'notes-convert') {
+          void convertThreadsToNotes().catch(error => { feedback.textContent = (error as Error).message })
+          return
+        }
         if (command === 'note-show-all') {
           const activeSheet = noteWorkbook()?.getActiveSheet()
           const notes = activeSheet?.getNotes() ?? []
@@ -2639,6 +2643,14 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       },
       noteReason: command => {
         try {
+          if (command === 'notes-convert') {
+            if (!editable()) return '当前工作簿不可编辑'
+            const activeSheet = noteWorkbook()?.getActiveSheet()
+            if (!activeSheet) return '当前工作表尚未就绪'
+            if (sheetProtected(activeSheet.getSheetId())) return PROTECTED_SHEET_REASON
+            const state = currentModel.sheets.find(sheet => sheet.name === activeSheet.getSheetName())?.threads
+            return state?.readOnlyReason ?? (state?.threads.length ? undefined : '当前工作表没有线程批注')
+          }
           if (command === 'note-pictures-pane-toggle') {
             return notePictures && !loading && !saving && !disposed ? undefined : '批注图片尚未就绪'
           }
@@ -3633,6 +3645,33 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     })
     await captureNotes()
     ribbon.refreshState?.(); nativeAI?.refresh()
+  }
+  const convertThreadsToNotes = async () => {
+    const active = noteWorkbook()?.getActiveSheet()
+    if (!active) throw new Error('当前工作表尚未就绪')
+    const sheetId = active.getSheetId(), sheetName = active.getSheetName(), epoch = noteEpoch
+    const guard = () => {
+      if (!editable() || sheetProtected(sheetId) || epoch !== noteEpoch ||
+          noteWorkbook()?.getActiveSheet()?.getSheetId() !== sheetId) {
+        throw new Error('工作表或草稿已变化，请重新选择后转换')
+      }
+    }
+    guard()
+    const before = await currentOperations()
+    guard()
+    const bytes = before.length ? await applyWorkbookOperations(original, before) : original
+    const model = await readWorkbook(bytes)
+    guard()
+    const state = model.sheets.find(sheet => sheet.name === sheetName)?.threads
+    if (state?.readOnlyReason) throw new Error(state.readOnlyReason)
+    if (!state?.threads.length) throw new Error('当前工作表没有线程批注')
+    await commitNotePicture(before, [...before, {
+      kind: 'patchThreadedComments', sheetName, sourceIdentity: state.sourceIdentity, convertToNotes: true,
+      changes: state.threads.map(thread => ({
+        row: thread.row, column: thread.column, expectedThreadId: thread.id, thread: null,
+      })),
+    }])
+    feedback.textContent = `已将 ${state.threads.length} 条线程批注转换为注释。`
   }
   threadsView = mountWorkbookThreads(threadsHost, {
     runtime, actor: options.threadActor, model: currentModel,

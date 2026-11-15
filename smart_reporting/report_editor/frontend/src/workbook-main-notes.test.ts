@@ -121,6 +121,35 @@ it('toggles the shared note pictures pane from the Review ribbon', async () => {
     expect(draft.operations).toEqual([])
   } finally { view.dispose() }
 })
+
+it('converts the active sheet threads through the Review command and saves a single draft patch', async () => {
+  const original = await fixture()
+  const state = (await readWorkbook(original)).sheets[0]!.threads!
+  const thread = { id: '{11111111-1111-4111-8111-111111111111}', personId: '{22222222-2222-4222-8222-222222222222}',
+    author: '原作者', row: 1, column: 1, dT: '2026-11-13T01:02:03.00', done: false, text: '原线程', replies: [] }
+  const source = await applyWorkbookOperations(original, [{
+    kind: 'patchThreadedComments', sheetName: 'Sheet1', sourceIdentity: state.sourceIdentity,
+    changes: [{ row: 1, column: 1, expectedThreadId: null, thread }],
+  }])
+  const draft = new NativeDraft(identity, store())
+  let rewritten: Uint8Array | undefined
+  const save = vi.fn(async (request: NativeSaveRequest) => {
+    rewritten = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/notes.xlsx' } }, validation: { issues: [] } }
+  })
+  const { shell, view } = await open(source, draft, save)
+  try {
+    grid.ribbon('notes-convert')
+    await vi.waitFor(() => expect(draft.operations).toMatchObject([{ kind: 'patchThreadedComments', convertToNotes: true }]))
+    expect(save).not.toHaveBeenCalled()
+    expect(sheet().getRange(1, 1).getNote()?.note).toBe('原线程')
+    shell.save.click()
+    await vi.waitFor(() => expect(shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const output = (await readWorkbook(rewritten!)).sheets[0]!
+    expect(output.threads!.threads).toEqual([])
+    expect(output.notes!.notes).toContainEqual({ row: 1, column: 1, author: '原作者', text: '原线程' })
+  } finally { view.dispose() }
+})
 afterEach(() => {
   for (const instance of grid.instances.splice(0)) instance.dispose()
   grid.apply.mockClear()
