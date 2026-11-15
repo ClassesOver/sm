@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { NativeDraft } from './native-draft'
 import { createPdfEditorView, type PdfEditorHandle } from './pdf-main'
 import type { EditorShell } from './shell'
-import type { createNativeApi, NativeContextResponse } from './native-api'
+import type { createNativeApi, NativeContextResponse, NativePDFReadTask } from './native-api'
 
 vi.mock('./source-validation', () => ({ bytesSha256: async () => 'a'.repeat(64) }))
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => {
@@ -31,17 +31,17 @@ beforeEach(() => {
 })
 afterEach(() => { views.splice(0).forEach(view => view.dispose()); document.body.replaceChildren(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-async function createHost() {
+async function createHost(readTask?: Promise<NativePDFReadTask>) {
   const root = document.createElement('div'); document.body.append(root)
   const sourceSha256 = 'a'.repeat(64), pageId = `sha256:${sourceSha256}:page:0`
   const identity = { documentId: 'print-dialog', revision: 1, sourceSha256, scope: { database: 'db', companyId: 'c', userId: 'u', threadId: 't' } }
   const draft = new NativeDraft(identity, localStorage)
-  const api = { file: async () => new Uint8Array([1, 2]).buffer, previewFile: async () => new Uint8Array([3, 4]).buffer,
+  const api = { pdfAIStart: async () => await readTask, pdfAICancel: async () => ({}), file: async () => new Uint8Array([1, 2]).buffer, previewFile: async () => new Uint8Array([3, 4]).buffer,
     preview: async () => ({ sourceSha256, previewDigest: 'b'.repeat(64), appliedOperationIndices: [], skippedOperations: [], model: { sourceSha256, pages: [{ pageId, markupReadSafe: true }], capabilities: {} } }) } as unknown as ReturnType<typeof createNativeApi>
   const context: NativeContextResponse = {
     context: { documentId: 'print-dialog', revision: 1, format: 'pdf', parentRevision: null, origin: 'upload', scope: identity.scope,
       sourceFile: { sha256: sourceSha256, path: '/workspace/source.pdf', size: 2, mediaType: 'application/pdf' } },
-    capabilities: {}, csrfToken: 'fixture-csrf', editingEnabled: true, pdfTextEnabled: false,
+    pdfReadAIEnabled: !!readTask, capabilities: {}, csrfToken: 'fixture-csrf', editingEnabled: true, pdfTextEnabled: false,
   }
   const view = await createPdfEditorView({ editor: root, save: document.createElement('button') } as unknown as EditorShell, { api, context, draft })
   views.push(view)
@@ -118,4 +118,20 @@ it('opens the print range dialog from the Ribbon and prints the selected visible
   await vi.waitFor(() => expect(root.querySelectorAll('.pdf-print-page')).toHaveLength(1))
   expect(window.print).toHaveBeenCalledOnce()
   expect(root.querySelector('.pdf-print-page')?.getAttribute('aria-label')).toBe('第 1 页')
+})
+
+it('pending PDF reading navigation cannot interrupt a newly entered annotation mode', async () => {
+  let finish!: (task: NativePDFReadTask) => void
+  const root=await createHost(new Promise(resolve=>{finish=resolve}))
+  vi.spyOn(HTMLElement.prototype,'getBoundingClientRect').mockImplementation(()=>({left:0,right:500,top:0,bottom:400,width:500,height:400} as DOMRect))
+  root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.home.ai.openAssistant"]')!.click()
+  const panel=root.querySelector<HTMLElement>('.native-pdf-assistant')!
+  const input=panel.querySelector('textarea')!;input.value='跳到第1页';input.dispatchEvent(new Event('input'))
+  panel.querySelector<HTMLButtonElement>('[data-pdf-ai=start]')!.click()
+  root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.annotate.drawTools.note"]')!.click()
+  await vi.waitFor(()=>expect(root.dataset.pdfMode).toBe('note'))
+  finish({taskId:'nav',clientRequestId:'navigation',status:'completed',result:{answer:'已请求定位',navigation:{page:1,pageId:`sha256:${'a'.repeat(64)}:page:0`}}})
+  await vi.waitFor(()=>expect(panel.querySelector('[role=status]')!.textContent).toContain('任务或文档状态已变化'))
+  expect(panel.querySelector('[role=status]')!.textContent).not.toContain('已定位到')
+  expect(panel.textContent).toContain('已请求定位')
 })

@@ -547,6 +547,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     unavailable: printUnavailable,
     print: pages => { void printPdf(pages).catch(showError) } })
   sourceCommand(printButton, 'home.print.print')
+  commandGroup.append(printButton)
   let searchOpen = false
   const findBar = documentElement('div', 'pdf-find-bar')
   findBar.hidden = true
@@ -3562,6 +3563,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     pdfAssistant = bindNativePDFAssistant(root, { api, draft,
       selection: () => textSelectionPage && selectedTextId ? [{ pageId: textSelectionPage, objectId: selectedTextId }] : [],
       onNavigate: pageId => jumpToPageForIdentity(pageId),
+      viewPageId: () => activeId || undefined,
+      onReadNavigate: async (target,current) => {
+        const before=activeId,epoch=generation
+        const {navigatePDFReadTarget}=await import('./pdf-ai-navigation')
+        if(before!==activeId || epoch!==generation)throw new Error('当前页面或文档已变化')
+        await navigatePDFReadTarget(target,{viewport,pages:state,currentPage:()=>activeId,pageNode:id=>pageNodes.get(id),current,
+          available:()=>!disposed && !!document && readingReady && mode==='select' && !searchRendering && epoch===generation && !locked && !previewing && !printing
+            && !previewDocument && !draft.closed && !draft.saving && pendingMutations===0 && !mutationBlocked?.()
+            && !staticText?.incompleteReason() && !hasUnstagedText(),
+          navigate:id=>jumpToPageForIdentity(id,'instant')})
+      },
     })
   }
   if(response.pdfFormAIEnabled&&response.editingEnabled){

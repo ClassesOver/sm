@@ -55,6 +55,18 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
     event.preventDefault();body.scrollTop=event.key==='Home'?0:body.scrollHeight
   }
   body.addEventListener('keydown',readKeys)
+  // GenOffice AiPanel.tsx (f8c17004): follow replies within 48px of the end;
+  // preserve the reader's position when they scroll up. Model picker omitted.
+  let stickToBottom = true, panelDisposed = false
+  let followFrame: number | undefined
+  const onBodyScroll = () => { stickToBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48 }
+  const resetFollowing = () => { stickToBottom = true }
+  const contentObserver = new MutationObserver(() => {
+    if (stickToBottom) body.scrollTop = body.scrollHeight
+  })
+  contentObserver.observe(body, {childList:true,subtree:true,characterData:true})
+  body.addEventListener('scroll',onBodyScroll,{passive:true})
+  parts.headerAction?.addEventListener('click',resetFollowing)
   for (const node of [...panel.childNodes]) if (node !== header) body.append(node)
   panel.append(toolbar,body,composer)
   // 部分控制器在绑定外壳后才挂载工具进度，仍归入中间滚动区。
@@ -92,10 +104,13 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   }
   close.addEventListener('click',closePanel);panel.addEventListener('keydown',onKeyDown)
   return {
+    beforeTask() { resetFollowing() },
     beforeOpen() {
       const active = document.activeElement
       if (active instanceof HTMLElement && active !== document.body && !panel.contains(active)) trigger = active
+      if (followFrame !== undefined) cancelAnimationFrame(followFrame)
+      followFrame = requestAnimationFrame(() => { followFrame=undefined; if (!panelDisposed && !panel.hidden && stickToBottom) body.scrollTop = body.scrollHeight })
     },
-    dispose() {observer.disconnect();close.removeEventListener('click',closePanel);panel.removeEventListener('keydown',onKeyDown);input.removeEventListener('keydown',onInputKey);body.removeEventListener('keydown',readKeys)},
+    dispose() {panelDisposed=true;if(followFrame!==undefined)cancelAnimationFrame(followFrame);contentObserver.disconnect();body.removeEventListener('scroll',onBodyScroll);parts.headerAction?.removeEventListener('click',resetFollowing);observer.disconnect();close.removeEventListener('click',closePanel);panel.removeEventListener('keydown',onKeyDown);input.removeEventListener('keydown',onInputKey);body.removeEventListener('keydown',readKeys)},
   }
 }

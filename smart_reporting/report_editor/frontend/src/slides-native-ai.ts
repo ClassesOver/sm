@@ -101,6 +101,7 @@ export function mountSlidesNativeAI(host: HTMLElement, options: { api: SlidesNat
   form.addEventListener('submit', async event => {
     event.preventDefault()
     if (disposed || busy || accepting || options.locked() || !instruction.value.trim()) return
+    panelView.beforeTask()
     if (activeRequestId) void tasks.cancel().catch(() => {})
     const turn = ++generation
     activeRequestId = crypto.randomUUID()

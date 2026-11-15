@@ -56,6 +56,7 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   }
   async function run() {
     if(disposed || busy || action==='ask' && !input.value.trim())return
+    panelView.beforeTask()
     const instruction = input.value.trim()
     const question = action === 'ask' ? instruction : [(actions[action][0]), instruction].filter(Boolean).join(' · ')
     const turn=++generation

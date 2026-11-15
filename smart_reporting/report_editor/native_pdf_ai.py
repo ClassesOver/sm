@@ -11,7 +11,7 @@ from io import BytesIO
 from typing import Any, Literal
 
 from agno.agent import Agent
-from pydantic import Field
+from pydantic import Field, StrictInt
 from pypdf import PdfReader
 
 from ..office.contract import StrictModel
@@ -50,6 +50,9 @@ class NativePDFTaskReader:
         self._original_pages = self.pages
         self._operations: list[dict[str, Any]] = []
         self._operations_sha256 = native_digest([])
+        self._view_page_ids = [page["pageId"] for page in self.pages]
+        self.navigation_enabled = False
+        self._navigation: dict[str, Any] | None = None
 
     @classmethod
     async def from_bytes(
@@ -164,6 +167,7 @@ class NativePDFTaskReader:
             raise _invalid(
                 "native_pdf_ai_projection_invalid", "PDF 草稿页面数量无法核验。"
             )
+        self._view_page_ids = list(order)
         self.projection = {
             "originalSourceSha256": self.context.source_file.sha256,
             "effectiveSha256": receipt["sha256"],
@@ -314,6 +318,28 @@ class NativePDFTaskReader:
         return "\n".join(
             obj["text"] for obj in objects if isinstance(obj.get("text"), str)
         )
+
+    @property
+    def navigation(self) -> dict[str, Any] | None:
+        return deepcopy(self._navigation)
+
+    def enable_navigation(self, view_page_id: str) -> None:
+        if not isinstance(view_page_id, str) or view_page_id not in self._view_page_ids:
+            raise _invalid("native_pdf_ai_navigation_invalid", "当前页面不属于已核验的 PDF 草稿。")
+        self.navigation_enabled = True
+
+    def goto_page(self, page: StrictInt) -> dict[str, Any]:
+        """Request scrolling to a 1-based tool page; navigation_requested is not browser confirmation.
+
+        With a draft projection, use its effective page numbers. This changes no
+        document data, grants no reading coverage and is only for requested navigation.
+        """
+        if not self.navigation_enabled:
+            raise _invalid("native_pdf_ai_navigation_unavailable", "当前客户端不支持 PDF 定位。")
+        self._range(page, 1)
+        self._navigation = {"page": page, "pageId": self._view_page_ids[page - 1]}
+        self.tool_events.append({"tool": "goto_page"})
+        return {**self.navigation, "status": "navigation_requested", "mutated": False}
 
     def _range(self, start_page: int, page_count: int) -> range:
         if (
@@ -654,6 +680,7 @@ class AgnoNativePDFTaskPlanner:
         session_id: str,
         user_id: str,
         draft_projection: NativePDFTaskReader | None = None,
+        view_page_id: str | None = None,
     ) -> dict[str, Any]:
         if (
             action not in {"ask", "summarize", "keyPoints", "reviewSummary"}
@@ -672,15 +699,16 @@ class AgnoNativePDFTaskPlanner:
         else:
             reader = await NativePDFTaskReader.from_bytes(context, content, operations=operations)
         reader.bind_selection(selection)
+        if view_page_id is not None:
+            reader.enable_navigation(view_page_id)
+        # Agno Model.__deepcopy__ 清除客户端连接及工具/schema 状态；每任务独立副本。
+        from ..office.settings import native_model
         from ..reporting.structured_output.policy import (
             REPORTING_STRUCTURED_MODES_MODEL_ATTR,
             REPORTING_STRUCTURED_REQUEST_MODEL_ATTR,
             StructuredOutputMode,
             VerifiedModelCapabilityResolver,
         )
-
-        # Agno Model.__deepcopy__ 清除客户端连接及工具/schema 状态；每任务独立副本。
-        from ..office.settings import native_model
         model = await native_model(self.model)
         configured_modes = getattr(model, REPORTING_STRUCTURED_MODES_MODEL_ATTR, None)
         capabilities = VerifiedModelCapabilityResolver().resolve(
@@ -706,7 +734,7 @@ class AgnoNativePDFTaskPlanner:
                 reader.search_text,
                 reader.read_annotations,
                 reader.get_outline,
-            ],
+            ] + ([reader.goto_page] if reader.navigation_enabled else []),
             output_schema=NativePDFReadAnswer,
             structured_outputs=capabilities.primary is StructuredOutputMode.JSON_SCHEMA,
             use_json_mode=capabilities.primary is StructuredOutputMode.JSON_OBJECT,
@@ -725,11 +753,11 @@ class AgnoNativePDFTaskPlanner:
                 "作者、日期和状态 unknown 就明确未知，不能推测谁提出、已解决或待处理。",
                 "返回结构化 answer 和 citations（实际引用的工具页号整数列表）；能力不足或未读完必须在回答中明确说明。",
                 "只回答或澄清，不生成编辑操作，不声称已修改、保存或生成新文件。",
+                "仅当用户要求跳页时使用已注册的goto_page。navigation_requested仅代表请求，不能声称浏览器已跳转；导航不算读取证据。",
             ],
         )
-        from ..reporting.agent_events import run_owned_agent_with_events
-
         from ..office.settings import configure_office_agent
+        from ..reporting.agent_events import run_owned_agent_with_events
         await configure_office_agent(agent)
         output = await run_owned_agent_with_events(
             agent,
@@ -788,7 +816,8 @@ class AgnoNativePDFTaskPlanner:
                     "message": "本次实际读取未覆盖完整任务范围，不能作为全文或全部批注总结。",
                 }
             )
-        if not reader.tool_events:
+        if not any(event["tool"] in {"read_pages", "search_text", "read_annotations", "get_outline"}
+                   for event in reader.tool_events):
             issues.append(
                 {
                     "code": "native_pdf_ai_no_evidence",
@@ -803,6 +832,7 @@ class AgnoNativePDFTaskPlanner:
             "citations": citations,
             "issues": issues,
             "toolEvents": reader.tool_events,
+            **({"navigation": reader.navigation} if reader.navigation is not None else {}),
             **({"projection": reader.projection} if reader.projection is not None else {}),
         }
 

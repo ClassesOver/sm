@@ -91,6 +91,7 @@ export function bindNativeAI(container: HTMLElement, options: {
     if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) return
     try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
     if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) {update();return}
+    panelView?.beforeTask()
     const turn = ++generation
     const instruction=input.value.trim(), selected=structuredClone(selection)
     if(options.format==='docx')wordTarget=JSON.stringify({instruction,selection:selected,operations:options.draft.operations})

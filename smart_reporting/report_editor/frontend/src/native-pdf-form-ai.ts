@@ -42,6 +42,7 @@ export function bindNativePDFFormAI(root:HTMLElement,options:{api:PDFFormAIClien
   if(busy||accepting||!editable()||!input.value.trim())return
   if(request)stop('开始新的填写建议')
   try{snapshot=capture()}catch(error){status.textContent=(error as Error).message;return}
+  panelView.beforeTask()
   const turn=++generation;base=structuredClone(options.draft.operations);const selection=[...selected].map(fieldId=>({fieldId}));request=crypto.randomUUID();busy=true;job=undefined;output.textContent='';details.replaceChildren();status.textContent='正在读取授权字段并核验填写建议';update()
   try{
    const result=await tasks.run({clientRequestId:request,expectedSha256:options.draft.identity.sourceSha256,operations:base,selection,instruction:input.value.trim()},request,(started,signal)=>progress.start(options.api.pdfFormAIEvents,started.editId,signal,()=>turn===generation&&editable()))

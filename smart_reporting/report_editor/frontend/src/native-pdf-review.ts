@@ -53,6 +53,7 @@ export function bindNativePDFReview(root: HTMLElement, options: {
   }
   async function run() {
     if(busy || accepting || !editable()) return
+    panelView.beforeTask()
     if(activeRequest) stop('开始新的处理建议')
     const turn=++generation,operations=structuredClone(options.draft.operations),snapshot=JSON.stringify(operations)
     const request=crypto.randomUUID();activeRequest=request
