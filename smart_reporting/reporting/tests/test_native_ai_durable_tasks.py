@@ -193,3 +193,46 @@ async def test_workbook_task_registration_is_atomic_and_keeps_digest_private(dur
     with pytest.raises(TaskExecutionRepositoryError) as generic_retry:
         await repository.create_task_with_initial_attempt(scope, 'Change selected range')
     assert generic_retry.value.code == 'native_workbook_input_conflict'
+
+async def test_workbook_candidate_finish_is_fenced_and_recoverable(durable):
+    from dataclasses import replace
+    from smart_reporting.task_execution.models import TaskExecutionScope
+    from smart_reporting.task_execution.repository import TaskExecutionRepositoryError
+
+    repository = durable['repository']
+    context = durable['context']
+    task_id = 'native-workbook-ai:' + uuid4().hex
+    scope = TaskExecutionScope(task_id, context.scope.user_id, context.scope.thread_id,
+                               'native-workspace-candidate', 'native-workbook-ai')
+    request_sha256 = 'a' * 64
+    task = await repository.create_native_workbook_task(scope, 'Change selected range', request_sha256)
+    lease = await repository.claim_lease(task_id, 'candidate-worker')
+    task, _ = await repository.open_initial(task_id, lease, task.state_version)
+    receipt = {'contextSha256': context.digest(), 'snapshotSha256': 'b' * 64,
+               'clientRequestId': 'original-request',
+               'proposal': {'summary': 'Private workbook candidate', 'operations': proposal().engine_operations(),
+                            'previewSha256': 'c' * 64}}
+
+    with pytest.raises(TaskExecutionRepositoryError):
+        await repository.request_native_workbook_finish(
+            scope, replace(lease, epoch=lease.epoch + 1), task.state_version, request_sha256, receipt,
+        )
+    with pytest.raises(TaskExecutionRepositoryError):
+        await repository.request_native_workbook_finish(scope, lease, task.state_version, 'd' * 64, receipt)
+    with pytest.raises(TaskExecutionRepositoryError):
+        await repository.request_finish(task_id, lease, task.state_version, {'invalid': True},
+                                        result_text='control', retained_execution_ids=[])
+    task = await repository.request_native_workbook_finish(scope, lease, task.state_version, request_sha256, receipt)
+    assert task.state is TaskState.FINISHING
+    assert 'Private workbook candidate' not in repr(task)
+    assert await repository.get_completed_native_workbook_candidate(scope, context.digest()) is None
+
+    await repository.release_lease(task_id, lease.owner)
+    recovered_lease = await repository.claim_lease(task_id, 'recovery-worker')
+    completed = await repository.finalize_finish(task_id, recovered_lease, task.state_version, agno_status='recovered')
+    assert completed.state is TaskState.COMPLETED
+    assert await repository.get_completed_native_workbook_candidate(scope, context.digest()) == receipt
+    assert await repository.get_completed_native_workbook_candidate(scope, 'f' * 64) is None
+    assert await repository.get_completed_native_workbook_candidate(
+        replace(scope, owner_user_id='foreign'), context.digest(),
+    ) is None
