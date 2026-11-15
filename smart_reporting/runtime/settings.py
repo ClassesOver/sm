@@ -123,10 +123,25 @@ def _database_url(values: MutableMapping[str, str]) -> str:
     return f"postgresql+psycopg://{credentials}@{host}:{port}/{database}"
 
 
+def _environment_file(values: MutableMapping[str, str]) -> str:
+    return (values.get("AGENT_ENV_FILE") or DEFAULT_ENV_FILE).strip() or DEFAULT_ENV_FILE
+
+
+def _load_environment_file(values: MutableMapping[str, str], env_file: str) -> None:
+    for key, value in dotenv_values(env_file).items():
+        if value is not None:
+            values.setdefault(key, value)
+
+
 def database_url_from_environment(
     environ: MutableMapping[str, str] | None = None,
+    *,
+    load_env_file: bool = False,
 ) -> str:
     values = os.environ if environ is None else environ
+    if load_env_file:
+        values = dict(values)
+        _load_environment_file(values, _environment_file(values))
     return _database_url(values)
 
 
@@ -280,11 +295,9 @@ class AgentSettings:
         load_env_file: bool = True,
     ) -> "AgentSettings":
         values = os.environ if environ is None else environ
-        env_file = (values.get("AGENT_ENV_FILE") or DEFAULT_ENV_FILE).strip() or DEFAULT_ENV_FILE
+        env_file = _environment_file(values)
         if load_env_file:
-            for key, value in dotenv_values(env_file).items():
-                if value is not None and key not in values:
-                    values[key] = value
+            _load_environment_file(values, env_file)
         from ..management.configuration_catalog import CONFIGURATION_CATALOG
 
         deployment_keys = frozenset(key for item in CONFIGURATION_CATALOG
