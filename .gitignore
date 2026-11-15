@@ -11,6 +11,7 @@ lerna-debug.log*
 
 # Local generated artifacts
 *.pdf
+!/smart_reporting/report_editor/frontend/public/office/blank.pdf
 .local-artifacts/
 /.local/
 /.tmp/
