@@ -66,9 +66,10 @@ export async function createNativeOfficeView(shell: EditorShell, options: {
     if (reader) reader.open()
     else assistantRequested = true
   } : options.context.aiEnabled ? () => openEditAssistant() : undefined
-  const attach = async (view: {dispose(): void; officeEditAssistant?: {panel:HTMLElement;open():void;close():void}; officeReadContext?: (scope: 'document' | 'selection') => Promise<import('./native-api').NativeOfficeReadContext>}) => {
+  const attach = async (view: {dispose(): void; officeEditAssistant?: {panel:HTMLElement;open():void;close():void}; officeReadNavigate?: (target: import('./native-api').NativeWorkbookNavigation, current: () => boolean) => Promise<void>; officeReadContext?: (scope: 'document' | 'selection') => Promise<import('./native-api').NativeOfficeReadContext>}) => {
     reader = options.context.officeReadAIEnabled ? bindNativeOfficeAssistant(shell.editor.parentElement ?? shell.editor, {
       api: options.api, draft: options.draft, format,
+      navigate: view.officeReadNavigate,
       context: async scope => {
         if (!options.context.editingEnabled) {
           if (scope === 'selection') throw new Error('当前为原件阅读模式，请使用整篇阅读')
@@ -78,7 +79,6 @@ export async function createNativeOfficeView(shell: EditorShell, options: {
         return await view.officeReadContext(scope)
       },
     }) : undefined
-    if (assistantRequested) { assistantRequested = false; reader?.open() }
     const entry = reader && !options.context.editingEnabled ? createOfficeAIEntry(onAssistant) : undefined
     if (entry) {
       entry.type='button';entry.dataset.action='office-read-ai'
@@ -92,6 +92,7 @@ export async function createNativeOfficeView(shell: EditorShell, options: {
     const main=shell.editor.querySelector<HTMLElement>(format==='xlsx'?'.workbook-grid-frame':'.slides-workspace')??shell.editor
     const dock=panels.length?mountOfficeTaskDock(main,panels,{label:(format==='xlsx'?'XLSX':'PPTX')+' AI 助手侧栏',officeWorkspace:Boolean(options.context.capabilities.office)}):undefined
     dock?.openInitially()
+    if (assistantRequested) { assistantRequested = false; reader?.open() }
     openEditAssistant = () => dock?.open('edit')
     const editEntry=view.officeEditAssistant?createOfficeAIEntry(()=>dock?.open('edit')):undefined
     if(editEntry){editEntry.dataset.action='office-edit-ai';editEntry.setAttribute('aria-label','AI 编辑');editEntry.title='AI 编辑';const caption=editEntry.querySelector('span');if(caption)caption.textContent='AI 编辑';else editEntry.append('AI 编辑');(shell.editor.closest('#app')?.querySelector('.toolbar-group-output')??shell.editor.parentElement??shell.editor).append(editEntry)}

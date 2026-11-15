@@ -27,7 +27,7 @@
 | --- | --- |
 | `get_workbook_context`、`read_range`、`aggregate_range`、`load_guide`、`read_formats`、`read_sheet_features`、`read_cells`、`find_cells`、`trace_precedents`、`trace_dependents` | 已注册冻结草稿的范围受控工具；各参数、错误与动态引用语义仍须逐源核对，不能仅按名称关闭。 |
 | `propose_operations` | 已注册真实引擎预览；支持单元格 DSL 与部分原生格式／表格／筛选／透视操作。**必须按 DSL 操作逐项对照**。 |
-| `select_range` | 尚无独立 AI 导航回执与前端采纳导航协议。 |
+| `select_range` | XLSX 阅读助手已支持可信 navigation_requested 回执及真实网格定位；候选编辑、静态只读视图与来源立即回执仍待对齐。见[导航专项验收](NATIVE_XLSX_AI_NAVIGATION_ACCEPTANCE_20261115.md)。 |
 | `create_document` | 未接源新文档任务；现有保存新修订不等同新文档创建。 |
 
 图表来源子链已交付：源 `add_chart(dataRange, anchorCell?)`、`edit_chart(seriesData)` 经 `applyChartSource` 按重放时实际工作表生成引用及缓存，拒绝模型自填缓存；限整簿授权、2000 格与可信目标，不与结构操作混批。此前纯数值分类引用及环形图多系列两项失败已修，25 项引擎／5 项手工入口／15 项 Python 专项通过；final8 ScriptedModel 浏览器拒绝／采纳、UndoRedo、草稿恢复与两次保存下载重开通过，172 份资产身份匹配。真实 provider 新增与换绑均通过标题／引用／缓存独立回读，与浏览器证据分别登记。原失败日志保留，完整图表视觉及生产真实模型浏览器同链仍开放，见[来源图表专项](NATIVE_XLSX_AI_CHART_SOURCES_ACCEPTANCE_20261113.md)。新增 shape、image 等语义仍未接全。现有推荐图表、限定对象几何属于手工交付，不重列全缺，也不外推为全部 AI 已交付。
@@ -59,6 +59,16 @@ XLSX `set_page_setup` 接到原生打印设置写入器，支持纸张、方向�
 XLSX `set_note` 在整簿授权下更新 Excel 旧式单元格备注，`null` 删除。每步从当前重放文件核对备注身份，替换文字时保留原作者，模型参数只提供地址和文字。沿用写入器对线程批注与带图备注的限制。
 
 XLSX `refresh_pivot` 接到按工作表限定的原生刷新。透视表从操作重放时的源数据更新，其他工作表的独立缓存和输出保留。跨表共享缓存会拒绝单表刷新。现有全簿刷新继续可用；无法在编辑器内重建输出的外部透视表仍沿用 Excel 打开时重算的缓存路径。
+
+XLSX `set_row_height` 和 `set_col_width` 在整簿授权下复用原生尺寸写入器。行号从 1 开始，列号使用字母，省略 `count` 时只调整一行或一列。尺寸按源执行器取整到像素。网页版 XLSX 写入器最多保存 255 字符列宽，对应 1790 像素，源 DSL 接受的超限值会明确拒绝。
+
+XLSX `find_replace` 在授权范围内按顺序重放，支持区分大小写和整格匹配。原生引擎扫描最多 200,000 格的范围，仅改写匹配的已有文本，保留单元格样式，并跳过公式、数字、布尔值和 Excel 错误值。富文本匹配后写回纯文本，沿用源操作语义。
+
+XLSX `set_sheet_hidden` 接到原生工作表结构写入器。隐藏当前工作表时，活动标签转到可见工作表。独立回读验证跨表公式和工作表部件保留，并覆盖拒绝隐藏最后一张可见表、显示 `veryHidden` 表、修改受保护结构和从选区授权修改整表。
+
+XLSX `set_rows_hidden` 和 `set_cols_hidden` 复用原生分组写入器，仅更新指定跨度内的可见性。独立回读覆盖按列拆分已有分组、保留行高和列宽、保留折叠状态及同批隐藏和显示操作。
+
+XLSX `set_data_validation` 支持内联列表、同表范围列表、数值区间、日期区间、复选框、自定义公式和清除。每项操作从当前草稿包读取规则，裁去目标区域，并按新的首格平移剩余规则的相对引用。无法以 Excel 内联格式表示的列表应使用同表范围，既有规则无法完整读取时拒绝覆盖。
 
 ## PDF
 

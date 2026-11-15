@@ -757,6 +757,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   formNavigation.append(previousField, nextField, formProgress)
   formGroup.append(formNavigation)
   commandGroup = formGroup
+  const signInForm = button('签名', openFillFormSignature)
+  sourceCommand(signInForm, 'fillForm.sign')
+  const imageInsertTitle = '选择图片后单击页面等比放置，或拖出自定义区域。再次点击取消放置。'
+  const fillFormImage = button('插入图像', openOrCancelImagePicker)
+  sourceCommand(fillFormImage, 'fillForm.insertImage')
+  fillFormImage.title = imageInsertTitle
+  fillFormImage.setAttribute('aria-pressed', 'false')
   const finishForm = button('完成填写', completeFormFill, false)
   sourceCommand(finishForm, 'fillForm.complete')
   const fillFormAI=documentElement('button','pdf-tool');fillFormAI.type='button';fillFormAI.dataset.pdfFormAiEntry='true'
@@ -926,17 +933,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   let pendingSignature: { paths: number[][]; width: number; height: number } | undefined
   const signatures = bindPdfSignatureDialog({owner:root.ownerDocument,scope:draft.identity.scope,
     snapshot:()=>JSON.stringify([draft.identity,draft.operations]),
-    unavailable:()=>disposed||!document||locked||previewing||printing||previewDocument||!response.editingEnabled||draft.closed||draft.saving||mutationBlocked?.()?'当前 PDF 正在读取、预览或保存，请稍后签名':null,
+    unavailable:signatureUnavailable,
     color:()=>[...SIGN_COLOR],status:message=>{status.textContent=message},
-    onConfirm(data){
-      // 固定源 openSignatureDialog(target)/placeSignatureInField：有未签署、草稿中未用过的签名字段时，先选放入位置；
-      // 选字段则按字段框缩放居中并写入字段关联（可视签名，不是证书签名）；选“拖出位置”或无字段时保持上游拖放流程不变。
-      const order=state(),used=new Set(draft.operations.flatMap(op=>op.kind==='addDrawing'&&op.signatureField?[(op.signatureField as {fieldId:string}).fieldId]:[]))
-      const fields=(model.signatureFields??[]).filter(field=>field.bindable&&field.widgets[0]&&!used.has(field.fieldId)&&order.some(page=>page.index===field.widgets[0]!.pageIndex&&!page.blank))
-      void choosePdfSignatureFieldTarget(root.ownerDocument,fields.map(field=>({fieldId:field.fieldId,label:`签名字段：${field.name}（第 ${order.findIndex(page=>page.index===field.widgets[0]!.pageIndex)+1} 页）`}))).then(target=>{
-        if(disposed)return
-        if(target===undefined){status.textContent='已取消放入签名';return}
-        const field=fields.find(item=>item.fieldId===target)
+    onConfirm(data, requestedFieldId){
+      const { order, fields } = availableSignatureFields()
+      const placement = requestedFieldId !== undefined ? Promise.resolve(requestedFieldId)
+        : choosePdfSignatureFieldTarget(root.ownerDocument, fields.map(field => ({fieldId:field.fieldId,label:'签名字段：' + field.name + '（第 ' + (order.findIndex(page => page.index === field.widgets[0]!.pageIndex) + 1) + ' 页）'})))
+      void placement.then(target => {
+        if (disposed) return
+        if (target === undefined) { status.textContent = '已取消放入签名'; return }
+        const field = availableSignatureFields().fields.find(item => item.fieldId === target)
+        if (target && !field) throw new Error('签名字段已变化，请重新选择')
         if(field){
           const page=model.pages.find(item=>item.index===field.widgets[0]!.pageIndex)
           if(!page)throw new Error('签名字段所在页面不存在')
@@ -953,7 +960,36 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
     }
   })
-  function openSignature(){void signatures.open()}
+  function signatureUnavailable() {
+    return disposed || !document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || draft.saving || mutationBlocked?.()
+      ? '当前 PDF 正在读取、预览或保存，请稍后签名' : null
+  }
+  function availableSignatureFields() {
+    const order = state()
+    const positions = new Map(order.flatMap((page,index) => page.blank ? [] : [[page.index,index] as const]))
+    const used = new Set(draft.operations.flatMap(op => op.kind === 'addDrawing' && op.signatureField ? [(op.signatureField as {fieldId:string}).fieldId] : []))
+    const fields = (model.signatureFields ?? []).filter(field => field.bindable && field.widgets[0] && !used.has(field.fieldId) && positions.has(field.widgets[0].pageIndex))
+    fields.sort((left,right) => positions.get(left.widgets[0]!.pageIndex)! - positions.get(right.widgets[0]!.pageIndex)!
+      || right.widgets[0]!.rect[3] - left.widgets[0]!.rect[3] || left.widgets[0]!.rect[0] - right.widgets[0]!.rect[0])
+    return { order, fields }
+  }
+  function openSignature(fieldId?: string) {
+    const blocked = signatureUnavailable()
+    if (blocked) { status.textContent = blocked; return }
+    if (fieldId !== undefined) {
+      const { order, fields } = availableSignatureFields()
+      const field = fields.find(item => item.fieldId === fieldId)
+      if (!field) { status.textContent = '签名字段已变化，请重新选择'; return }
+      const page = order.find(item => item.index === field.widgets[0]!.pageIndex)
+      if (page && activeId !== page.pageId) jumpToPageForIdentity(page.pageId)
+    }
+    void signatures.open(fieldId)
+  }
+  function openFillFormSignature() {
+    if (signatureUnavailable()) return
+    const { fields } = availableSignatureFields()
+    openSignature((fields.find(field => field.fieldId === activeFormFieldId) ?? fields[0])?.fieldId)
+  }
   const digitalSignatures=bindPdfDigitalSignatures({owner:root.ownerDocument,sourceSha256:context.sourceFile.sha256,model:()=>model,
     load:async()=>{const result=await api.readModel<PdfModel>(abort.signal);if(result.sourceSha256!==context.sourceFile.sha256||result.model.sourceSha256!==context.sourceFile.sha256)throw Error('数字签名只读来源身份不匹配');return result.model},
     unavailable:()=>disposed||!document?'正在读取 PDF 数字签名，请稍后重试':previewDocument?'请先返回已保存原稿；预览不能沿用原稿的数字签名结论':null,
@@ -1330,25 +1366,52 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   // 固定源 ImageDialogs ▸ 插入图像：选择 PNG/JPEG/WebP/GIF/BMP，浏览器转为 PNG 后在页面上拖出位置，保存为 Stamp 批注。
   let pendingImage = ''
   let pendingImageSize: { width: number; height: number } | undefined
-  let pendingImageIsSignature = false
+  let pendingImageIsSignature = false, imagePickGeneration = 0
   const imageFile = documentElement('input'); imageFile.type = 'file'; imageFile.accept = 'image/png,image/jpeg,image/webp,image/gif,image/bmp'; imageFile.hidden = true; imageFile.setAttribute('aria-label', '选择要插入的图像')
   root.append(imageFile)
-  const insertImage = button('插入图像', () => { if (!document || locked || previewing || previewDocument || !response.editingEnabled || draft.closed) return; imageFile.value = ''; imageFile.click() }, true)
+  const insertImage = button('插入图像', openOrCancelImagePicker)
   sourceCommand(insertImage, 'edit.objects.insertImage'); insertImage.dataset.pdfDrawShape = 'image'
-  insertImage.title = '插入图像：选择图片后单击页面按原始比例放置，或拖出自定义区域；保存后写入 PDF'
+  insertImage.title = imageInsertTitle
   drawButtons.set('image', insertImage)
+  function canPickImage() {
+    return !!document && !disposed && !locked && !previewing && !printing && !previewDocument
+      && response.editingEnabled && !draft.closed && !draft.saving && !mutationBlocked?.()
+  }
+  function ordinaryImagePlacement() {
+    return mode === 'draw' && drawShape === 'image' && !!pendingImage && !pendingImageIsSignature
+  }
+  function openOrCancelImagePicker() {
+    if (!canPickImage()) return
+    imagePickGeneration++
+    if (ordinaryImagePlacement()) {
+      pendingImage = ''; pendingImageSize = undefined
+      setMode('select'); status.textContent = '已取消放置图像'
+      return
+    }
+    imageFile.value = ''
+    imageFile.click()
+  }
   imageFile.addEventListener('change', () => { void (async () => {
-    const file = imageFile.files?.[0]
-    if (!file) return
+    const file = imageFile.files?.[0], source = document
+    if (!file || !canPickImage()) return
+    const version = ++imagePickGeneration
+    const snapshot = JSON.stringify(draft.operations), pickedMode = mode, pickedShape = drawShape
+    const current = () => version === imagePickGeneration && source === document && canPickImage()
+      && snapshot === JSON.stringify(draft.operations) && pickedMode === mode && pickedShape === drawShape
     if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp'].includes(file.type) || file.size > 10 * 1024 * 1024) throw new Error('请选择不超过 10MB 的 PNG、JPEG、WebP、GIF 或 BMP 图像')
-    const bitmap = await createImageBitmap(file)
-    const ratio = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height))
-    const canvas = documentElement('canvas'); canvas.width = Math.max(1, Math.round(bitmap.width * ratio)); canvas.height = Math.max(1, Math.round(bitmap.height * ratio))
-    canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close()
-    const encoded = canvas.toDataURL('image/png').split(',')[1] ?? ''
-    if (!encoded.startsWith('iVBORw0KGgo') || encoded.length > 6_000_000) throw new Error('图像转换后过大，请换一张较小的图像')
-    pendingImage = encoded; pendingImageSize = { width: canvas.width, height: canvas.height }; pendingImageIsSignature = false; drawShape = 'image'; setMode('draw')
-    status.textContent = `已选择图像 ${file.name}（${canvas.width}×${canvas.height}）；单击页面按原始比例放置，或拖出自定义区域`
+    const bitmap = await createImageBitmap(file).catch(error => { if (current()) throw error; return null })
+    if (!bitmap) return
+    try {
+      if (!current()) return
+      const ratio = Math.min(1, 2400 / Math.max(bitmap.width, bitmap.height))
+      const canvas = documentElement('canvas'); canvas.width = Math.max(1, Math.round(bitmap.width * ratio)); canvas.height = Math.max(1, Math.round(bitmap.height * ratio))
+      canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height)
+      const encoded = canvas.toDataURL('image/png').split(',')[1] ?? ''
+      if (!encoded.startsWith('iVBORw0KGgo') || encoded.length > 6_000_000) throw new Error('图像转换后过大，请换一张较小的图像')
+      pendingImage = encoded; pendingImageSize = { width: canvas.width, height: canvas.height }
+      pendingImageIsSignature = false; drawShape = 'image'; setMode('draw')
+      status.textContent = '已选择图像 ' + file.name + '（' + canvas.width + '×' + canvas.height + '）。单击页面等比放置，或拖出自定义区域。'
+    } finally { bitmap.close() }
   })().catch(showError) })
   const editExistingImage=button('编辑图像',()=>existingImagePanel?.open());sourceCommand(editExistingImage,'edit.objects.editImage')
   // 固定源 editLink：在页面上拖出链接区域，再选择外部地址或文档内页码。
@@ -1842,7 +1905,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); syncDrawingCanvases(); syncLinkLayers() }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); fillFormImage.setAttribute('aria-pressed', String(ordinaryImagePlacement())); syncDrawingCanvases(); syncLinkLayers() }
   function canChangePendingDrawings() {
     return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
   }
@@ -2077,6 +2140,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     textMove?.update()
     replacementStyle.setDisabled(stageText.disabled||!textEnabled||!response.editingEnabled)
     for (const control of formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input, select')) control.disabled = formDesignPreview || exclusiveDraft || control.dataset.pdfEditable !== 'true' || locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
+    const signatureControls = [...formControls.querySelectorAll<HTMLButtonElement>('[data-pdf-form-signature-target]')]
+    if (signatureControls.length) {
+      const available = new Set(availableSignatureFields().fields.map(field => field.fieldId))
+      for (const control of signatureControls) control.disabled = !!signatureUnavailable() || !available.has(control.dataset.pdfFormSignatureTarget!)
+    }
     syncFormProgress()
     homeTextEdit.disabled ||= !textEnabled || !textLoaded
     if (!textEnabled) homeTextEdit.title = '当前服务未启用 PDF 原位改字。'
@@ -2557,16 +2625,30 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     textMove?.update()
   }
   function renderFormControls(fields: PdfFormField[]) {
-    const key = JSON.stringify([fields,model.capabilities?.createFormField,draft.operations.filter(operation => operation.kind === 'setFormValue')])
+    const key = JSON.stringify([fields,model.capabilities?.createFormField,draft.operations.filter(operation => operation.kind === 'setFormValue' || operation.kind === 'deletePage' || operation.kind === 'reorderPages' || (operation.kind === 'addDrawing' && operation.signatureField))])
     if (key === formControlsKey) return
     formControlsKey = key
     formControls.replaceChildren()
     const editableFields = fields.filter(field => field.editable && ['text', 'checkbox', 'radio', 'choice'].includes(field.kind))
     previousField.disabled = nextField.disabled = editableFields.length === 0
     finishForm.hidden = fields.length === 0
+    const availableSignatures = fields.some(field => field.kind === 'signature') ? new Set(availableSignatureFields().fields.map(field => field.fieldId)) : new Set<string>()
     for (const field of fields) {
       const label = documentElement('label', 'pdf-form-field')
       const title = documentElement('span'); title.textContent = field.name; label.append(title)
+      const signature = field.kind === 'signature' ? model.signatureFields?.find(item => item.fieldId === field.fieldId) : undefined
+      if (signature) {
+        const control = documentElement('button', 'pdf-tool ' + buttonClasses('secondary'))
+        control.type = 'button'; control.textContent = pdfRibbonLabel('签名')
+        control.setAttribute('aria-label', field.name)
+        control.dataset.pdfFormSignatureTarget = field.fieldId
+        control.disabled = !!signatureUnavailable() || !availableSignatures.has(field.fieldId)
+        control.title = signature.reason ?? '放入可视签名'
+        control.addEventListener('focus', () => rememberFormField(field.fieldId))
+        control.addEventListener('click', () => openSignature(field.fieldId))
+        label.append(control); formControls.append(label)
+        continue
+      }
       const staged = draft.operations.find(op => op.kind === 'setFormValue' && op.name === field.name)
       const value = staged ? staged.value : field.value
       let control: HTMLInputElement | HTMLSelectElement
@@ -2583,11 +2665,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       control.disabled = formDesignPreview || !field.editable || locked || previewing || !!previewDocument || !response.editingEnabled || draft.closed
       control.dataset.pdfEditable = String(field.editable)
       control.dataset.pdfFormFieldId = field.fieldId
-      if (field.editable) control.addEventListener('focus', () => {
-        if (activeFormFieldId !== field.fieldId) activeFormWidgetKey = ''
-        activeFormFieldId = field.fieldId
-        syncFormProgress()
-      })
+      if (field.editable) control.addEventListener('focus', () => rememberFormField(field.fieldId))
       control.dataset.pdfInitialValue = control.value
       control.dataset.pdfInitialChecked = String(field.kind === 'checkbox' && (control as HTMLInputElement).checked)
       control.setAttribute('aria-label', field.name)
@@ -2606,6 +2684,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     ribbon.setHasForms(fields.length > 0,model.capabilities?.createFormField===true,model.capabilities?.staticFill===true)
     if (!editableFields.length && fields.length) { const note = documentElement('p'); note.textContent = '检测到表单字段，但当前字段均为只读或暂不支持。'; formControls.append(note) }
   }
+  function rememberFormField(fieldId: string) {
+    if (activeFormFieldId !== fieldId) activeFormWidgetKey = ''
+    activeFormFieldId = fieldId
+    syncFormProgress()
+  }
   async function completeFormFill() {
     const source = document
     if (!source || disposed || locked || previewing || printing || previewDocument || !model.formFields?.length) return
@@ -2623,10 +2706,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (missing.length) {
       status.textContent = '还有 ' + missing.length + ' 个必填字段未填写'
       const first = missing[0]
-      const control = [...formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input,select')]
+      const control = [...formControls.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>('input,select,[data-pdf-form-signature-target]')]
         .find(field => field.getAttribute('aria-label') === first.name && !field.disabled)
-      if (control) control.focus()
-      else jumpToPageForIdentity(first.pageId)
+      const target = formNavigationTargets().find(item => item.pageId === first.pageId && item.control === control)
+      if (target) focusFormNavigationTarget(target)
+      else {
+        if (first.pageId !== activeId) jumpToPageForIdentity(first.pageId)
+        control?.focus()
+      }
       return
     }
     status.textContent = '表单填写检查完成'
@@ -2684,7 +2771,9 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (!targets.length) return
     const current = focusedFormIndex(targets)
     const next = current < 0 ? (direction > 0 ? 0 : targets.length - 1) : (current + direction + targets.length) % targets.length
-    const target = targets[next]
+    focusFormNavigationTarget(targets[next])
+  }
+  function focusFormNavigationTarget(target: ReturnType<typeof formNavigationTargets>[number]) {
     activeFormFieldId = target.control.dataset.pdfFormFieldId ?? ''
     activeFormWidgetKey = target.key
     if (target.pageId && target.pageId !== activeId) jumpToPageForIdentity(target.pageId)

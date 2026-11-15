@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from 'vitest'
+import { flushSync } from 'react-dom'
 import { Editor, Node, Extension } from '@tiptap/core'
 import { UndoRedo } from '@tiptap/extensions'
 import { CellSelection, TableMap } from '@tiptap/pm/tables'
@@ -84,13 +85,33 @@ import { createDocxCellBorderUiState, createDocxCellBordersControls } from './do
 it('keeps pen state without mutating document until a source gallery command is applied',()=>{
  const f=setup();f.select(0);const state=createDocxCellBorderUiState(),controls=createDocxCellBordersControls(f.editor,f.anchors,state)
  document.body.append(controls.element)
- const style=controls.element.querySelector<HTMLSelectElement>('[data-action="table-border-style"]')!,width=controls.element.querySelector<HTMLSelectElement>('[data-action="table-border-width"]')!,color=controls.element.querySelector<HTMLInputElement>('[data-action="table-border-color"]')!
- expect(style.options).toHaveLength(8);expect(width.options).toHaveLength(5)
- style.value='dashed';style.dispatchEvent(new Event('change'));width.value='18';width.dispatchEvent(new Event('change'));color.value='#00b050';color.dispatchEvent(new Event('input'))
+ const click=(query:string)=>flushSync(()=>controls.element.querySelector<HTMLButtonElement>(query)!.click())
+ click('[data-action="table-border-style"] [aria-haspopup="listbox"]')
+ expect(controls.element.querySelectorAll('[data-action="table-border-style"] [role="option"]')).toHaveLength(8)
+ click('[data-action="table-border-style"] [role="option"][aria-label="╌╌╌╌╌"]')
+ click('[data-action="table-border-width"] [aria-haspopup="listbox"]')
+ expect(controls.element.querySelectorAll('[data-action="table-border-width"] [role="option"]')).toHaveLength(5)
+ click('[data-action="table-border-width"] [role="option"][aria-label="2.25 磅"]')
+ click('[data-action="table-border-color"]')
+ click('.gcp-standard-row [aria-label="绿色"]')
  expect(f.editor.getJSON()).toEqual(f.baseline)
+ const trigger=controls.element.querySelector<HTMLButtonElement>('[data-action="table-border-menu"]')!
+ const last=controls.element.querySelector<HTMLButtonElement>('[data-action="table-border-apply-last"]')!
+ const initialIcon=last.querySelector('svg')!.outerHTML
+ trigger.click()
+ expect(trigger.getAttribute('aria-expanded')).toBe('true')
+ expect(document.activeElement).toBe(controls.element.querySelector('[data-action="table-border-bottom"]'))
+ document.activeElement!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+ expect(document.activeElement).toBe(trigger)
+ expect(trigger.getAttribute('aria-expanded')).toBe('false')
+ trigger.click()
  controls.element.querySelector<HTMLButtonElement>('[data-action="table-border-outer"]')!.click()
  expect(normalizeDocxCellBorders(f.baseline,f.editor.getJSON() as DocxPmNode,f.anchors).operations[0]!.steps[0]!.pen).toEqual({style:'dashed',szEighths:18,color:'00B050'})
  expect(state.lastMode).toBe('outer')
+ expect(trigger.getAttribute('aria-expanded')).toBe('false')
+ expect(last.querySelector('svg')!.outerHTML).not.toBe(initialIcon)
+ expect(last.title).toContain('外侧框线')
+ controls.dispose()
 })
 import { docxOperations, replayDocxOperations, type DocxAnchor } from './docx-operations'
 it('integrates strict ordinary diff and draft replay without enabling rich-cell text rewrite',()=>{

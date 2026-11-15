@@ -25,7 +25,8 @@ import type { CaseMode } from './vendor/genoffice-docs/apps/docs/src/renderer/ed
 import { applyParagraphBorders, paragraphBorders, paragraphBordersTarget } from './docx-borders'
 import { applyParagraphHighlight, highlightTarget, selectedHighlight, textFormattingRange } from './docx-highlight'
 import { applyParagraphShading, paragraphShading, paragraphShadingTarget, DOCX_SHADING_COLORS } from './docx-shading'
-import { applyDocxCellShading, docxCellShadingUnavailable } from './docx-cell-shading'
+import { applyDocxCellShading, docxCellShadingUnavailable, selectedDocxCellFill } from './docx-cell-shading'
+import { DocxTableShadingSource } from './docx-table-shading-source'
 import { createParagraphStyleControl } from './docx-styles'
 import { createDocxListGallery } from './docx-list-gallery'
 import { applyDocxHomeList, applyDocxCustomList, changeDocxCustomListLevel, clearDocxCustomList, docxCustomListReason } from './docx-custom-list'
@@ -186,6 +187,22 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeSpecialIndent: (() => void) | undefined
   const contextTabs = new Map<string, HTMLButtonElement>()
   const body = document.createElement('div')
+  const tableShading = document.createElement('div')
+  let tableShadingRoot: ReturnType<typeof createRoot> | undefined
+  const tableShadingReason = () => !editable || !editor.isEditable
+    ? '当前文档不可编辑或正在保存' : docxCellShadingUnavailable(editor, anchors)
+  const refreshTableShading = () => {
+    if (!body.contains(tableShading)) return
+    tableShadingRoot ??= createRoot(tableShading)
+    flushSync(() => tableShadingRoot!.render(createElement(DocxTableShadingSource, {
+      current: selectedDocxCellFill(editor), reason: tableShadingReason(),
+      onPick: fill => {
+        const reason = tableShadingReason()
+        if (reason) return
+        try { applyDocxCellShading(editor, fill, anchors) } catch (error) { reportError?.(error) }
+      },
+    })))
+  }
   const tableSize = document.createElement('div')
   tableSize.className = 'table-size-inputs'
   let tableSizeRoot: ReturnType<typeof createRoot> | undefined
@@ -541,7 +558,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       const group = document.createElement('section')
       group.className = 'ribbon-group docx-ribbon-group'
       const cellAlignGroup = id === 'tableLayout' && groupLabel === '对齐方式'
-      if (cellAlignGroup || (id === 'tableLayout' && groupLabel === '单元格大小')) group.classList.add('table-tool-group')
+      if (cellAlignGroup || (id === 'tableLayout' && groupLabel === '单元格大小') || (id === 'tableDesign' && groupLabel === '底纹')) group.classList.add('table-tool-group')
       group.setAttribute('aria-label', groupLabel)
       const items = document.createElement('div')
       items.className = 'ribbon-group-items'
@@ -600,9 +617,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if (id === 'layout' && label === '段后') { items.append(spacingField('space-after-value', label)); continue }
         if (actionId.startsWith('table-border-')) {
           if (actionId === 'table-border-apply-last') {
-            cellBorderControls = createDocxCellBordersControls(editor, anchors, cellBorderState, reportError)
+            cellBorderControls = createDocxCellBordersControls(editor, anchors, cellBorderState, reportError, editable)
             items.append(cellBorderControls.element)
-            if (!editable) for (const control of cellBorderControls.element.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button,input,select')) control.disabled = true
           }
           continue
         }
@@ -723,27 +739,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           continue
         }
         if (actionId === 'table-cell-shading') {
-          const wrap = document.createElement('div'), trigger = document.createElement('button'), palette = document.createElement('div')
-          wrap.className = 'rb-split-wrap'
-          trigger.type = 'button'; trigger.className = 'rb-icon docx-ribbon-command'; trigger.textContent = label
-          trigger.dataset.action = actionId; trigger.setAttribute('aria-label', label); trigger.setAttribute('aria-expanded', 'false')
-          palette.className = 'color-palette docx-ribbon-shading-palette'; palette.hidden = true; palette.dataset.rbPanel = ''
-          wrap.addEventListener('mousedown', event => event.preventDefault())
-          trigger.addEventListener('click', () => { palette.hidden = !palette.hidden; trigger.setAttribute('aria-expanded', String(!palette.hidden)) })
-          for (const fill of [...DOCX_SHADING_COLORS, null]) {
-            const swatch = document.createElement('button')
-            swatch.type = 'button'; swatch.className = fill ? 'color-swatch color-highlight-swatch' : 'color-none color-highlight-none'
-            swatch.dataset.action = `${actionId}-${fill ?? 'none'}`; swatch.setAttribute('aria-label', fill ?? '无颜色')
-            if (fill) swatch.style.background = `#${fill}`; else swatch.textContent = '无颜色'
-            swatch.addEventListener('click', () => {
-              try { applyDocxCellShading(editor, fill, anchors) } catch (error) { reportError?.(error) }
-              palette.hidden = true; trigger.setAttribute('aria-expanded', 'false')
-            })
-            palette.append(swatch)
-          }
-          wrap.append(trigger, palette); items.append(wrap)
-          const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : docxCellShadingUnavailable(editor, anchors)
-          trigger.disabled = reason !== null; trigger.title = reason ?? label
+          items.append(tableShading)
           continue
         }
         const command = document.createElement('button')
@@ -1031,6 +1027,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     fillDocxCommandIcons(content)
     syncPictureFormatButtons(content)
     body.append(content)
+    refreshTableShading()
     refreshTableSize()
     if (id === 'view') refreshView()
     refreshPictureWrap()
@@ -1038,6 +1035,12 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
+    cellBorderControls?.dispose()
+    cellBorderControls = undefined
+    if (id !== 'tableDesign' && tableShadingRoot) {
+      tableShadingRoot.unmount()
+      tableShadingRoot = undefined
+    }
     closeTableLayoutMenus()
     tools?.pictureFormat?.closeArrangeMenu()
     if (id !== 'pictureFormat' && pictureWrapRoot) {
@@ -1464,12 +1467,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (active === 'tableDesign') {
       tools?.tableStyles?.refresh()
       cellBorderControls?.sync()
-      if (!editable && cellBorderControls) for (const control of cellBorderControls.element.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>('button,input,select')) control.disabled = true
-      const trigger = body.querySelector<HTMLButtonElement>('[data-action="table-cell-shading"]')
-      if (trigger) {
-        const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : docxCellShadingUnavailable(editor, anchors)
-        trigger.disabled = reason !== null; trigger.title = reason ?? '单元格底纹'
-      }
+      refreshTableShading()
       if (tableCommands) for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action^="table-style-"],[data-action^="table-look-"]')) {
         const action = button.dataset.action!
         if (!isDocxTableStyleAction(action)) continue
@@ -1518,7 +1516,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
-    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); numberingValueControl.destroy()
+    disposed = true; closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); cellBorderControls?.dispose(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)
     editor.off('transaction', refreshSelection)
@@ -1532,7 +1530,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     closeSpecialIndent?.()
     closeFontDialog?.()
     closeParagraphDialog?.()
-    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount(); pictureWrapRoot?.unmount(); tableSizeRoot?.unmount()
+    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount(); pictureWrapRoot?.unmount(); tableSizeRoot?.unmount(); tableShadingRoot?.unmount()
     editor.off('destroy', dispose)
   }
   editor.on('destroy', dispose)

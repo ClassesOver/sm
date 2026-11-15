@@ -111,6 +111,7 @@ def selection_and_change(context, model):
 @pytest.mark.anyio
 async def test_live_office_edits_only_authorized_sheet_or_slide_objects(office_sample):
     from openpyxl import load_workbook
+
     from smart_reporting.report_editor.native_office import patch_office
     from smart_reporting.report_editor.slides_native_ai import create_native_slides_ai_service
     from smart_reporting.report_editor.workbook_native_ai import create_native_workbook_ai_service
@@ -383,5 +384,32 @@ async def test_file_naming_uses_verified_pptx_draft_and_has_no_read_history(offi
         assert '73' in suggest.await_args.args[0]
         assert '42' not in suggest.await_args.args[0]
         assert await editor.read_file(context) == original
+    finally:
+        await service.aclose()
+
+
+@pytest.mark.anyio
+async def test_read_navigation_binds_view_separately_from_read_authority(office_sample):
+    from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
+    editor, context, session, _, _ = office_sample
+    view = {'sheetName': '经营', 'startRow': 0, 'endRow': 0, 'startColumn': 0, 'endColumn': 0}
+    async def planner(*, reader, **_kwargs):
+        assert reader.scope == 'document' and reader.navigation_enabled
+        reader.select_range('B1')
+        return reader.result('已请求定位', [])
+    service = NativeOfficeReadService(editor, planners={context.format: planner}, enabled=True)
+    try:
+        args = request_for(context, action='ask', instruction='定位到B1', view_selection=view)
+        if context.format == 'pptx':
+            with pytest.raises(ReportingError, match='视图定位'):
+                await service.start(session, **args)
+            return
+        job = await service.start(session, **args)
+        result = await service.status(session, job['taskId'])
+        assert result['status'] == 'completed', result
+        assert result['result']['navigation']['range'] == 'B1'
+        assert result['result']['coverage']['fullyReadBlockIds'] == []
+        with pytest.raises(ReportingError, match='相同 AI 请求'):
+            await service.start(session, **{**args, 'view_selection': {**view, 'startColumn': 1, 'endColumn': 1}})
     finally:
         await service.aclose()

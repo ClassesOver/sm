@@ -46,6 +46,95 @@ async def real_tools(source, *, scope='workbook'):
 
 
 @pytest.mark.anyio
+async def test_source_axis_visibility_preserves_outline_and_dimensions():
+    book = load_workbook(BytesIO(source_book()))
+    sheet = book['Source']
+    sheet['A2'] = '$&'
+    sheet.row_dimensions[2].height = 31
+    sheet.row_dimensions[2].outlineLevel = 2
+    sheet.row_dimensions[2].collapsed = True
+    sheet.column_dimensions.group('B', 'D', outline_level=2, hidden=True)
+    sheet.column_dimensions['B'].width = 19
+    stream = BytesIO()
+    book.save(stream)
+    tools, previews = await real_tools(stream.getvalue())
+    await tools.propose_operations([
+        {'op': 'set_rows_hidden', 'sheetId': 'Source', 'row': 2, 'count': 2, 'hidden': True},
+        {'op': 'set_rows_hidden', 'sheetId': 'Source', 'row': 3, 'hidden': False},
+        {'op': 'set_cols_hidden', 'sheetId': 'Source', 'column': 'C', 'hidden': False},
+        {'op': 'set_cols_hidden', 'sheetId': 'Source', 'column': 'H', 'hidden': True},
+    ], '调整行列可见性')
+    sheet = load_workbook(BytesIO(previews[0]))['Source']
+    row = sheet.row_dimensions[2]
+    assert (row.hidden, row.height, row.outlineLevel, row.collapsed) == (True, 31, 2, True)
+    assert not sheet.row_dimensions[3].hidden and sheet['A2'].value == '$&'
+    columns = [sheet.column_dimensions[column] for column in 'BCD']
+    assert [column.hidden for column in columns] == [True, False, True]
+    assert all(column.width == 19 and column.outlineLevel == 2 for column in columns)
+    assert sheet.column_dimensions['H'].hidden and sheet['C1'].value == '=B3+1'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'fields', 'error'), [
+    ('workbook', {'row': 1048576, 'count': 2, 'hidden': True}, 'axis_visibility_invalid'),
+    ('workbook', {'column': 'XFD', 'count': 2, 'hidden': False}, 'axis_visibility_invalid'),
+    ('workbook', {'row': 2, 'hidden': 1}, 'axis_visibility_invalid'),
+    ('range', {'column': 'A', 'hidden': True}, 'selection_mismatch'),
+])
+async def test_source_axis_visibility_rejects_invalid_span_or_scope(scope, fields, error):
+    preview = AsyncMock()
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Source'}]}, scope=scope, preview=preview,
+                              selection={'sheetName': 'Source'})
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([{
+            'op': 'set_rows_hidden' if 'row' in fields else 'set_cols_hidden',
+            'sheetId': 'Source', **fields,
+        }], '调整行列可见性')
+    preview.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_source_sheet_visibility_replays_in_order_and_moves_active_tab():
+    book = load_workbook(BytesIO(source_book()))
+    book.create_sheet('Secret').sheet_state = 'veryHidden'
+    stream = BytesIO()
+    book.save(stream)
+    source = stream.getvalue()
+    tools, previews = await real_tools(source)
+    await tools.propose_operations([
+        {'op': 'set_sheet_hidden', 'sheetId': 'Other', 'hidden': True},
+        {'op': 'set_sheet_hidden', 'sheetId': 'Other', 'hidden': False},
+        {'op': 'set_sheet_hidden', 'sheetId': 'Source', 'hidden': True},
+    ], '隐藏来源工作表')
+    edited = load_workbook(BytesIO(previews[0]))
+    assert edited.sheetnames == ['Source', 'Other', 'Secret']
+    assert [sheet.sheet_state for sheet in edited.worksheets] == ['hidden', 'visible', 'veryHidden']
+    assert edited.active.title == 'Other'
+    assert edited['Other']['A1'].value == '=Source!B3'
+    with ZipFile(BytesIO(source)) as original, ZipFile(BytesIO(previews[0])) as result:
+        for part in original.namelist():
+            if part != 'xl/workbook.xml':
+                assert original.read(part) == result.read(part)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('scenario', ['last_visible', 'very_hidden', 'locked', 'range'])
+async def test_source_sheet_visibility_respects_workbook_guards(scenario):
+    book = load_workbook(BytesIO(source_book()))
+    book['Other'].sheet_state = 'veryHidden'
+    book.security.lockStructure = scenario == 'locked'
+    stream = BytesIO()
+    book.save(stream)
+    tools, previews = await real_tools(stream.getvalue(), scope='range' if scenario == 'range' else 'workbook')
+    name = 'Other' if scenario in {'very_hidden', 'locked'} else 'Source'
+    with pytest.raises(ValueError, match='selection_mismatch' if scenario == 'range' else 'native_office_operations_invalid'):
+        await tools.propose_operations([
+            {'op': 'set_sheet_hidden', 'sheetId': name, 'hidden': scenario != 'very_hidden'},
+        ], '调整工作表可见性')
+    assert not previews
+
+
+@pytest.mark.anyio
 async def test_source_move_sheet_keeps_active_sheet_formulas_and_local_names():
     book = load_workbook(BytesIO(source_book()))
     book.create_sheet('Third')['A1'] = '保留'

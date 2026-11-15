@@ -78,7 +78,7 @@ async def create_app(directory: Path, static: Path, port: int):
     origin = f'http://127.0.0.1:{port}'
     publication = NativePublicationService(repository, workspace, download_grants, grants, artifact_persistence=ReportArtifactPersistenceService(artifacts, workspace), public_base_url=origin)
     downloads = ReportDownloadHttpService(download_grants, artifacts, workspace_service=workspace)
-    editor = NativeEditorService(workspace, repository, grants, report_editor=None, publication=publication, docx_enabled=True)
+    editor = NativeEditorService(workspace, repository, grants, publication=publication, docx_enabled=True)
     calls = []
     class Planner:
         async def plan_word(self, prompt, *, selected, session_id, user_id):

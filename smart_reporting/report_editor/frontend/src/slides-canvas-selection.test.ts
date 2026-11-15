@@ -16,6 +16,7 @@ vi.mock('react-konva', async () => {
       return container(props)
     }),
     Rect: () => null,
+    Line: () => null,
     Transformer: React.forwardRef((_props, ref) => {
       React.useImperativeHandle(ref, () => ({ nodes: rendered.transformerNodes, getLayer: () => ({ batchDraw() {} }) }))
       return null
@@ -44,6 +45,23 @@ beforeEach(() => {
   canvas = mountSlidesCanvas(document.body.appendChild(document.createElement('div')))
 })
 afterEach(async () => { await act(async () => canvas.destroy()); document.body.replaceChildren(); vi.unstubAllGlobals() })
+
+it('uses shape placement gestures instead of object selection until the draw commits', async () => {
+  const commit = vi.fn()
+  await act(async () => canvas.update({ ...state(), shapeDrawing: { kind: 'lineArrow', commit } }))
+  expect(rendered.stage.style.cursor).toBe('crosshair')
+  expect(group(10).listening).toBe(false)
+  expect(rendered.transformerNodes).toHaveBeenLastCalledWith([])
+  let point = { x: 200, y: 100 }
+  const stage = { getPointerPosition: () => point }
+  const event = { target: { getStage: () => stage }, evt: { button: 0, shiftKey: true } }
+  rendered.stage.onMouseDown(event)
+  point = { x: 120, y: 80 }
+  await act(async () => rendered.stage.onMouseMove(event))
+  await act(async () => rendered.stage.onMouseUp(event))
+  expect(commit).toHaveBeenCalledWith({ x: 118, y: 100, w: 82, h: 0, flipH: true })
+  expect(select).not.toHaveBeenCalled()
+})
 
 it('selects pictures without making them editable, forwards toggle modifiers and ignores decoration', async () => {
   await act(async () => canvas.update(state()))

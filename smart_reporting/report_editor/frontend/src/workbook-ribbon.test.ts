@@ -51,6 +51,96 @@ it('dispatches the three GenOffice Number shortcuts in their source order', () =
   ribbon.dispose()
 })
 
+it('offers the source Chart Grouping menu after chart types only for stackable charts', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const selection = { isPie: false, canLabel: true, canGroup: true, categoryCount: 2, seriesCount: 1, design: { grouping: 'stacked' as const } }
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0, chart: () => selection,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Chart Design"]')!.click()
+  const menu = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="chart-grouping"]')!
+  expect(menu).not.toBeNull()
+  expect(menu.parentElement?.previousElementSibling?.getAttribute('data-ribbon-command')).toBe('chart-type-doughnut')
+  expect(Array.from(menu.options, option => option.text)).toEqual(['堆积', '簇状（并列）', '堆积 ✓', '百分比堆积'])
+  menu.value = 'chart-grouping:percentStacked'
+  menu.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledExactlyOnceWith('chart-grouping:percentStacked')
+  expect(menu.value).toBe('')
+  protectedSheet = true; ribbon.refreshState()
+  expect(menu.disabled).toBe(true)
+  expect(menu.parentElement?.style.display).toBe('none')
+  protectedSheet = false; selection.canGroup = false; ribbon.refreshState()
+  expect(menu.parentElement?.style.display).toBe('none')
+  ribbon.dispose()
+})
+
+it('offers the source Chart Elements operations and checks the current legend and label modes', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const selection = { isPie: true, canLabel: true, hasAxes: false, categoryCount: 2, seriesCount: 1, design: { legend: 'left' as const, dataLabels: 'percent' as const } }
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0, chart: () => selection,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Chart Design"]')!.click()
+  const menu = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="chart-elements"]')!
+  expect(menu).not.toBeNull()
+  expect(Array.from(menu.options, option => [option.value, option.text])).toEqual([
+    ['', '添加图表元素'], ['chart-title', '图表标题…'],
+    ['chart-labels:category-percent', '数据标签：名称 + %'], ['chart-labels:percent', '数据标签：% ✓'],
+    ['chart-labels:none', '数据标签：无'], ['chart-legend:right', '图例：右'], ['chart-legend:top', '图例：上'],
+    ['chart-legend:bottom', '图例：下'], ['chart-legend:left', '图例：左 ✓'], ['chart-legend:none', '图例：无'],
+  ])
+  for (const id of ['chart-title', 'chart-labels:category-percent', 'chart-legend:left']) {
+    menu.value = id
+    menu.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(id)
+    expect(menu.value).toBe('')
+  }
+  selection.isPie = false; selection.hasAxes = true; ribbon.refreshState()
+  expect(Array.from(menu.options, option => option.value).slice(1, 4)).toEqual(['chart-title', 'chart-axis-cat', 'chart-axis-val'])
+  expect(Array.from(menu.options, option => option.value)).toContain('chart-labels:value')
+  protectedSheet = true; ribbon.refreshState()
+  expect(menu.disabled).toBe(true)
+  ribbon.dispose()
+})
+
+it('uses the GenOffice border presets and the chosen color without writing on color pick', () => {
+  const command = vi.fn()
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => true, rotation: () => 0,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const border = document.querySelector<HTMLSelectElement>('[data-ribbon-control="borders"]')!
+  const color = document.querySelector<HTMLInputElement>('[data-ribbon-control="border-color"]')!
+  expect(border).not.toBeNull()
+  expect(Array.from(border.options, option => option.text)).toEqual([
+    '边框', '所有框线', '外侧框线', '粗外侧框线', '上框线', '下框线', '左框线', '右框线', '无框线',
+  ])
+  expect(color.value).toBe('#000000')
+  color.value = '#123abc'; color.dispatchEvent(new Event('input'))
+  expect(command).not.toHaveBeenCalled()
+  const setBorder = vi.fn()
+  const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => ({ setBorder }) }) }) } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
+  for (const option of Array.from(border.options).slice(1)) {
+    border.value = option.value
+    border.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith('border:' + option.value + ':#123abc')
+    expect(applyWorkbookRibbonCommand(command.mock.lastCall![0], workbook)).toBe(true)
+    expect(border.value).toBe('')
+  }
+  expect(setBorder.mock.calls.map(([type, style, hex]) => [type, style, hex])).toEqual([
+    ['all', 1, '#123abc'], ['outside', 1, '#123abc'], ['outside', 8, '#123abc'], ['top', 1, '#123abc'],
+    ['bottom', 1, '#123abc'], ['left', 1, '#123abc'], ['right', 1, '#123abc'], ['none', 1, '#123abc'],
+  ])
+  protectedSheet = true; ribbon.refreshState()
+  expect(border.disabled).toBe(true); expect(color.disabled).toBe(true)
+  ribbon.dispose()
+})
+
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()
   const open = (editable: boolean) => {

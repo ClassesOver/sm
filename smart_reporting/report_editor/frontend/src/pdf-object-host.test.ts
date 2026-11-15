@@ -26,7 +26,7 @@ function operation(kind:string):NativeOperation{
 }
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
-async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
+async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;signatureTargets?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
  pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??'';pdfMock.printed=[]
  const notes=options.savedThread?[
   { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
@@ -39,7 +39,11 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
  const root=document.createElement('div');document.body.append(root)
  const identity={documentId:'pdf-object-host',revision:1,sourceSha256,scope:{database:'db',companyId:'c',userId:'u',threadId:'t'}}
  const seed=new NativeDraft(identity,localStorage);if(options.restored)seed.setOperations([options.restored]);const draft=new NativeDraft(identity,localStorage)
- const model={sourceSha256,pages:Array.from({length:options.exportPages??1},(_,index)=>({pageId:'sha256:'+sourceSha256+':page:'+index,index,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes})),formFields:[{name:'existing',kind:'text',value:options.requiredField?'':'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)},...(options.navigationFields?[{name:'locked',kind:'text',value:'Locked',editable:false,fieldId:'2'.repeat(64),expectedFieldSha256:'3'.repeat(64)},{name:'secondary',kind:'text',value:'Second',editable:true,fieldId:'4'.repeat(64),expectedFieldSha256:'5'.repeat(64)}]:[])],formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
+ const signatureFields=options.signatureTargets?['First signature','Second signature'].map((name,pageIndex)=>({
+  fieldId:(pageIndex?'7':'6').repeat(64),expectedFieldSha256:(pageIndex?'9':'8').repeat(64),name,signed:false,visuallySigned:false,bindable:true,reason:null,
+  widgets:[{pageIndex,rect:[30,200,150,230]}],
+ })): []
+ const model={sourceSha256,pages:Array.from({length:options.exportPages??1},(_,index)=>({pageId:'sha256:'+sourceSha256+':page:'+index,index,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes})),formFields:[{name:'existing',kind:'text',value:options.requiredField?'':'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)},...(options.navigationFields?[{name:'locked',kind:'text',value:'Locked',editable:false,fieldId:'2'.repeat(64),expectedFieldSha256:'3'.repeat(64)},{name:'secondary',kind:'text',value:'Second',editable:true,fieldId:'4'.repeat(64),expectedFieldSha256:'5'.repeat(64)}]:[]),...signatureFields.map(field=>({...field,kind:'signature',value:null,editable:false}))],signatureFields,formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
  const staticModel=options.staticFills?{staticFormFills:[{id:'saved-fill',kind:'text',pageIndex:0,rect:[30,100,150,124],text:'已保存填写',fontSize:14,color:'#111111',align:'left',editable:true,expectedImageSha256:'9'.repeat(64)}]}:{}
  const attachmentModel=options.attachments?{attachmentsEditable:true,attachments:[{key:'stored',name:'keep.txt',description:'保留附件',size:3,contentSha256:'b'.repeat(64),attachmentId:'c'.repeat(64),expectedAttachmentSha256:'d'.repeat(64)}]}:{}
  const api={exportImages:vi.fn(async()=>{throw new Error('test request observed')}),file:async()=>new Uint8Array(options.sourceSize??2).buffer,preview:vi.fn(async()=>({sourceSha256,model:{...model,...attachmentModel,...staticModel,...(options.digitalSignatures?{digitalSignatures:[],signatureVerification:{scope:"basic-integrity-only",trustPolicy:"none",readable:true,issues:[],revocationChecked:false,timestampsVerified:false}}:{})}})),previewFile:vi.fn(async()=>new Uint8Array([3,4]).buffer)} as unknown as ReturnType<typeof createNativeApi>
@@ -523,6 +527,91 @@ it('extracts the thumbnail page without a second click and retains the result li
  expect(extractPages).toHaveBeenCalledWith(expect.objectContaining({expectedSha256:sourceSha256,pages:[2]}))
  expect(dialog.textContent).toContain('待复核')
 })
+it('picks, cancels, and places an image from the Fill Form ribbon using the shared image tool', async () => {
+ const observers:Array<{targets:Element[];callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void}>=[]
+ vi.stubGlobal('IntersectionObserver',class{
+  targets:Element[]=[]
+  constructor(readonly callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void){observers.push(this)}
+  observe(target:Element){this.targets.push(target)}disconnect(){}unobserve(){}
+ })
+ const f=await fixture();await f.create()
+ vi.stubGlobal('createImageBitmap',vi.fn(async()=>({width:200,height:100,close:vi.fn()})))
+ vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({drawImage:vi.fn()} as unknown as CanvasRenderingContext2D)
+ vi.spyOn(HTMLCanvasElement.prototype,'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgoAAA==')
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
+ const insert=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.fillForm.insertImage"]')!
+ const edit=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.edit.objects.insertImage"]')!
+ expect(insert).toBeTruthy()
+ const fileInput=f.root.querySelector<HTMLInputElement>('[aria-label="选择要插入的图像"]')!
+ const pick=vi.spyOn(fileInput,'click').mockImplementation(()=>{})
+ const selectImage=async()=>{
+  const count=pick.mock.calls.length
+  insert.click()
+  await vi.waitFor(()=>expect(pick).toHaveBeenCalledTimes(count+1))
+  Object.defineProperty(fileInput,'files',{configurable:true,value:[new File(['data'],'form.png',{type:'image/png'})]})
+  fileInput.dispatchEvent(new Event('change'))
+  await vi.waitFor(()=>expect(insert.getAttribute('aria-pressed')).toBe('true'))
+ }
+ await selectImage();expect(edit.getAttribute('aria-pressed')).toBe('true')
+ insert.click()
+ await vi.waitFor(()=>expect(insert.getAttribute('aria-pressed')).toBe('false'))
+ expect(edit.getAttribute('aria-pressed')).toBe('false');expect(pick).toHaveBeenCalledOnce();expect(f.draft.operations).toEqual([])
+ await selectImage()
+ const card=f.root.querySelector<HTMLElement>('.pdf-page')!,page=card.querySelector<HTMLElement>('.pdf-page-content')!
+ page.getBoundingClientRect=()=>new DOMRect(0,0,300,400)
+ observers.find(observer=>observer.targets.includes(card))!.callback([{target:card,isIntersecting:true}])
+ await vi.waitFor(()=>expect(typeof page.onpointerdown).toBe('function'))
+ page.onpointerdown!(new MouseEvent('pointerdown',{clientX:150,clientY:200}) as PointerEvent)
+ page.onpointerup!(new MouseEvent('pointerup',{clientX:150,clientY:200}) as PointerEvent)
+ await vi.waitFor(()=>expect(f.draft.operations).toEqual([expect.objectContaining({kind:'addDrawing',shape:'image',pageId,rect:[75,162.5,225,237.5]})]))
+ expect(insert.getAttribute('aria-pressed')).toBe('false')
+})
+it('ignores an older image decode after a newer selection has armed placement',async()=>{
+ const f=await fixture();await f.create()
+ const closeOlder=vi.fn(),closeNewer=vi.fn()
+ let resolveOlder!: (value:{width:number;height:number;close:()=>void})=>void
+ vi.stubGlobal('createImageBitmap',vi.fn((file:File)=>file.name==='older.png'
+  ?new Promise(resolve=>{resolveOlder=resolve})
+  :Promise.resolve({width:180,height:90,close:closeNewer})))
+ vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({drawImage:vi.fn()} as unknown as CanvasRenderingContext2D)
+ vi.spyOn(HTMLCanvasElement.prototype,'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgoAAA==')
+ const input=f.root.querySelector<HTMLInputElement>('[aria-label="选择要插入的图像"]')!
+ for(const name of ['older.png','newer.png']){
+  Object.defineProperty(input,'files',{configurable:true,value:[new File(['png'],name,{type:'image/png'})]})
+  input.dispatchEvent(new Event('change'))
+ }
+ await vi.waitFor(()=>expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('newer.png（180×90）'))
+ resolveOlder({width:100,height:100,close:closeOlder})
+ await vi.waitFor(()=>expect(closeOlder).toHaveBeenCalledOnce())
+ expect(closeNewer).toHaveBeenCalledOnce()
+ expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('newer.png（180×90）')
+})
+it('signs the active visible form signature field without asking for a placement again', async () => {
+ const f=await fixture({exportPages:2,signatureTargets:true});await f.create()
+ const targetPage=pageId.replace(/:0$/,':1')
+ f.root.querySelector<HTMLElement>('.pdf-page[data-page-id="'+targetPage+'"]')!.scrollIntoView=vi.fn()
+ vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({clearRect:vi.fn(),measureText:()=>({actualBoundingBoxLeft:0,actualBoundingBoxRight:100,actualBoundingBoxAscent:80,actualBoundingBoxDescent:20}),fillText:vi.fn()} as unknown as CanvasRenderingContext2D)
+ vi.spyOn(HTMLCanvasElement.prototype,'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgoAAA==')
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
+ const field=f.root.querySelector<HTMLButtonElement>('[data-pdf-form-signature-target="'+('7'.repeat(64))+'"]')!
+ expect(field).toBeTruthy();field.focus()
+ const sign=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.fillForm.sign"]')!
+ expect(sign.disabled).toBe(false);sign.click()
+ const dialog=()=>document.querySelector<HTMLDialogElement>('.pdf-signature-source-dialog')!
+ await vi.waitFor(()=>expect(dialog()?.querySelector('.pdf-sign-tab')).toBeTruthy())
+ await act(async()=>[...dialog().querySelectorAll<HTMLButtonElement>('.pdf-sign-tab')].find(button=>button.textContent==='输入')!.click())
+ const input=dialog().querySelector<HTMLInputElement>('.pdf-modal-input')!
+ await act(async()=>{
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,'Sample')
+  input.dispatchEvent(new Event('input',{bubbles:true}))
+ })
+ await act(async()=>dialog().querySelector<HTMLButtonElement>('.pdf-modal-btn.primary')!.click())
+ await vi.waitFor(()=>expect(f.draft.operations).toContainEqual(expect.objectContaining({
+  kind:'addDrawing',pageId:targetPage,shape:'image',signatureField:{fieldId:'7'.repeat(64),expectedFieldSha256:'9'.repeat(64)},
+ })))
+ expect(document.querySelector('.pdf-sign-target-dialog')).toBeNull()
+ expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('Second signature')
+})
 it('signature dialog imports a normalized image and starts image placement',async()=>{
  const close=vi.fn(),drawImage=vi.fn(),f=await fixture();await f.create()
  vi.stubGlobal('createImageBitmap',vi.fn(async()=>({width:3200,height:800,close})))
@@ -843,6 +932,26 @@ it('checks required form fields, focuses the missing value and exits after a sta
  await vi.waitFor(()=>expect(home.getAttribute('aria-selected')).toBe('true'))
  expect(f.root.textContent).toContain('表单填写检查完成')
  expect(f.draft.operations).toHaveLength(1)
+})
+it('locates the first missing field on its visible page and keeps navigation on that widget', async () => {
+ const f=await fixture({exportPages:3,navigationFields:true,widgetNavigation:true})
+ const [first,deleted,last]=[0,1,2].map(page=>pageId.replace(/:0$/,':'+page))
+ for(const annotations of pdfMock.widgetPages!.slice(1))for(const field of annotations){
+  field.fieldName='secondary';field.required=true;field.fieldValue=''
+ }
+ f.draft.setOperations([{kind:'deletePage',pageId:deleted}])
+ await f.create()
+ const card=(id:string)=>f.root.querySelector<HTMLElement>('.pdf-page[data-page-id="'+id+'"]')!
+ const scroll=vi.fn();card(last).scrollIntoView=scroll
+ expect(card(first).classList.contains('is-active')).toBe(true)
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="fillForm"]')!.click()
+ f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.fillForm.complete"]')!.click()
+ await vi.waitFor(()=>expect(f.root.textContent).toContain('还有 1 个必填字段未填写'))
+ expect(scroll).toHaveBeenCalled()
+ expect(card(last).classList.contains('is-active')).toBe(true)
+ expect(document.activeElement?.getAttribute('aria-label')).toBe('secondary')
+ expect(f.root.querySelector('[aria-label="表单字段位置"]')?.textContent).toBe('2 / 2')
+ expect(f.draft.operations).toEqual([{kind:'deletePage',pageId:deleted}])
 })
 it('keeps the form placement tool armed across multiple clicks until Keep adding is turned off',async()=>{
  const observers:Array<{targets:Element[];callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void}>=[]

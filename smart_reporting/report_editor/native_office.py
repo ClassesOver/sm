@@ -34,6 +34,7 @@ _XLSX_FIELDS = {
     'applyHyperlinkSource': {'sheetName', 'ref', 'target'},
     'applyTableSource': {'sheetName', 'range', 'name', 'style', 'bandedRows'},
     'clearCellRange': {'sheetName', 'range'},
+    'replaceRangeText': {'sheetName', 'range', 'find', 'replace', 'matchCase', 'wholeCell'},
     'insertPicture': {'sheetName', 'sourceIdentity', 'imageId', 'row', 'column', 'widthPx', 'heightPx', 'picture'},
     'editPicture': {'sheetName', 'sourceIdentity', 'drawingPart', 'pictureId', 'mediaSha256', 'before', 'geometry'},
     'retargetExternalLink': {'index', 'expectedTarget', 'target'},
@@ -51,6 +52,7 @@ _XLSX_FIELDS = {
     'applySheetFilter': {'sheetName', 'filter', 'hiddenRows', 'visibilityRange'},
     'appendSheetSparklines': {'sheetName', 'groups'},
     'replaceSheetDataValidations': {'sheetName', 'rules'},
+    'applyDataValidationSource': {'sheetName', 'range', 'validation'},
     'replaceSheetConditionalFormats': {'sheetName', 'rules'},
     'addPivot': {'addition'}, 'applyColumnWidths': {'sheetName', 'entries'},
     'applySheetOutline': {'sheetName', 'rows', 'columns', 'summaryBelow', 'summaryRight'},
@@ -557,13 +559,22 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
                or (not _slide_index(next(iter(item.values()))) if 'withLayout' not in item else not _layout_path(item['withLayout'])) for item in new_slides)
         or (new_slides and order is None)):
         raise ValueError('native_office_operations_invalid')
-    shapes = _records(operation, 'shapes', {'slideIndex', 'kind', 'geometry'})
+    shapes = _records(operation, 'shapes', {'slideIndex', 'kind', 'geometry'}, {'flipH', 'flipV', 'draftKey'})
+    shape_keys = set()
     for item in shapes:
         geometry = item['geometry']
         if (not isinstance(item['kind'], str) or item['kind'] not in _SHAPE_PRESETS or not isinstance(geometry, dict)
             or set(geometry) != {'x', 'y', 'width', 'height'} or any(not _number(geometry[key], -100_000, 100_000) for key in ('x', 'y'))
-            or any(not _number(geometry[key], 1, 100_000) for key in ('width', 'height'))):
+            or any(not _number(geometry[key], 0 if item['kind'] in _LINE_PRESETS else 1, 100_000) for key in ('width', 'height'))
+            or not (geometry['width'] or geometry['height'])
+            or any(key in item and (item['kind'] not in _LINE_PRESETS or not isinstance(item[key], bool))
+                   for key in ('flipH', 'flipV'))):
             raise ValueError('native_office_operations_invalid')
+        if 'draftKey' in item:
+            key = item['draftKey']
+            if not isinstance(key, str) or not re.fullmatch(r'[0-9a-f-]{36}', key) or key in shape_keys:
+                raise ValueError('native_office_operations_invalid')
+            shape_keys.add(key)
     tables = _records(operation, 'tables', {'slideIndex', 'rows', 'cols'})
     if len(tables) > 100 or any(not isinstance(item[key], int) or isinstance(item[key], bool) or not 1 <= item[key] <= 75 for item in tables for key in ('rows', 'cols')):
         raise ValueError('native_office_operations_invalid')
@@ -798,7 +809,8 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
         'element_orders': _native_element_orders(operation), 'group_edits': _native_group_edits(operation), 'notes_edits': _native_notes_edits(operation), 'link_edits': _native_link_edits(operation), 'clipboard_pastes': _native_clipboard_pastes(operation), 'zoom_insertions': _native_zoom_insertions(operation)}
 
 
-def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], *, thread_actor: dict[str, str] | None = None) -> bytes:
+def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], *,
+                 thread_actor: dict[str, str] | None = None, pptx_receipt: dict[str, Any] | None = None) -> bytes:
     _content(format, content)
     try:
         if (not isinstance(operations, list) or len(operations) > 500
@@ -842,7 +854,10 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], 
             if len(operations) != 1:
                 raise ValueError('native_office_operations_invalid')
             arguments = _pptx_arguments(operations[0])
-            result = PptxEngine._run_engine(content, 'edit', **arguments)['bytes']
+            edited = PptxEngine._run_engine(content, 'edit', **arguments)
+            if pptx_receipt is not None:
+                pptx_receipt['draftShapes'] = edited.get('draftShapes', [])
+            result = edited['bytes']
         return result
     except Exception:
         raise ValueError('native_office_operations_invalid') from None

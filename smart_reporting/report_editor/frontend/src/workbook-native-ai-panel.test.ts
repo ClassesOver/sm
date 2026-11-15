@@ -50,6 +50,20 @@ it('identifies the target sheet and rectangle before accepting a large clear', a
  expect(apply).not.toHaveBeenCalled()
  view.dispose()
 })
+it('previews the exact target span before accepting row and column visibility changes', async () => {
+ const {view,api,host,apply,submit} = setup()
+ const operations = [
+  {kind:'applySheetOutline', sheetName:'Sheet', rows:[{index:1, hidden:true},{index:2, hidden:true}]},
+  {kind:'applySheetOutline', sheetName:'Sheet', columns:[{index:26, hidden:false}]},
+ ]
+ api.start.mockResolvedValueOnce({...await api.status(), proposal:{summary:'调整可见性', operations}})
+ view.open()
+ await submit()
+ expect([...host.querySelectorAll('.native-ai-preview li')].map(item => item.textContent))
+  .toEqual(['Sheet · 隐藏行 2–3', 'Sheet · 显示列 AA'])
+ expect(apply).not.toHaveBeenCalled()
+ view.dispose()
+})
 it('默认隐藏，打开聚焦，中文关闭按钮取消任务且面板可重新打开',async()=>{
  const {host,view,api,input,submit}=setup()
  expect(view.panel.hidden).toBe(true);view.open();expect(view.panel.hidden).toBe(false);expect(document.activeElement).toBe(input)

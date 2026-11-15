@@ -22,15 +22,20 @@ from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
 from .workbook_ai_page_setup import page_setup_patch
 from .workbook_ai_structure import (
+    AXIS_SIZE_SOURCE_OPS,
+    AXIS_VISIBILITY_SOURCE_OPS,
     ROW_COLUMN_SOURCE_OPS,
     SHEET_LIFECYCLE_OPS,
     SHEET_SOURCE_OPS,
+    translate_axis_size,
+    translate_axis_visibility,
     translate_row_column_operation,
     translate_sheet_operation,
 )
 from .workbook_search import find_cell_indexes
 
 _CELL_SOURCE_OPS = {'set_cell', 'set_formula', 'clear_cell', 'set_range', 'clear_range'}
+_RANGE_VALUE_KINDS = {'clearCellRange', 'replaceRangeText'}
 _MAX_EXPANDED_CELL_EDITS = 2000
 _MAX_CLEAR_RANGE_CELLS = 200000
 
@@ -400,6 +405,7 @@ class WorkbookAIToolkit(Toolkit):
                 '批量写入用 {op:set_range,sheetId,start?,range?,values}，提供左上起点或与矩阵等大的范围。'
                 'values 必须是矩形，等号开头为公式，null 清空内容。'
                 '用 {op:clear_range,sheetId,range} 清空值和公式，保留格式。'
+                '用 {op:find_replace,sheetId,range,find,replace,matchCase?,wholeCell?} 在范围内替换文字，跳过公式和非文本单元格。'
                 '大范围清空每项最多 200000 格；其余单元格操作每批最多展开 2000 格。'
             )
         if 'layout' in guides:
@@ -407,17 +413,29 @@ class WorkbookAIToolkit(Toolkit):
                 '整簿授权下用 {op:set_hyperlink,sheetId,address,target} 设置链接。'
                 'target 是网址或同工作簿工作表引用；传 null 移除。'
                 '用 {op:set_note,sheetId,address,text} 设置单元格旧式备注，传 null 删除。'
+                '用 {op:set_row_height,sheetId,row,count,heightPoints} 调整行高（磅），'
+                '用 {op:set_col_width,sheetId,column,count,widthPx} 调整列宽（像素，上限 1790）。'
+                '起始行号从 1 开始，列使用字母，count 缺省为 1，需要工作簿权限。'
+                '整簿授权可用 set_rows_hidden(sheetId,row,count?,hidden) 和 set_cols_hidden(sheetId,column,count?,hidden) 隐藏或显示连续行列。'
                 '用 {op:set_freeze,sheetId,rows,columns} 从工作表左上角冻结行列，'
                 '行数和列数均为 0–100 的整数；同时传 0 取消冻结。'
                 '用 set_page_setup(sheetId,orientation?,paperSize?,scale?,fitToWidth?,fitToHeight?,margins?,'
                 'printGridlines?,printHeadings?,printArea?,printTitles?,header?,footer?,rowBreaks?,colBreaks?)。'
                 '缩放百分比与按页适配互斥，printTitles 可写 "1:2,A:B"，null 清除打印范围、标题或页眉页脚。'
             )
+        if 'data' in guides:
+            catalog['data'] += (
+                '用 set_data_validation(sheetId,range,validation) 增设或替换范围内验证，null 清除。'
+                'validation 支持 list(values)、listRef(range)、numberBetween(min,max)、'
+                'dateBetween(start,end)，日期为 YYYY-MM-DD，以及 checkbox 和 formula(formula，以等号开头)。'
+                '列表过长或包含逗号时请引用同表单元格区域。仅整簿授权可修改数据验证。'
+            )
         if 'structure' in guides:
             catalog['structure'] += (
                 '整簿授权下用 {op:move_sheet,sheetId,position} 移动工作表标签。'
                 'position 从 1 开始；同批多个移动按提交顺序执行。'
                 '支持 add_sheet(name)、rename_sheet(sheetId,name) 和 delete_sheet(sheetId)。'
+                '用 set_sheet_hidden(sheetId,hidden) 隐藏或显示工作表；始终保留至少一个可见工作表。'
                 '在工作表结构批次内按当前表名寻址；Excel 新建空白表无需指定 rows 或 columns。'
                 '仍被其他工作表引用的表由写入器拒绝删除。'
             )
@@ -500,6 +518,16 @@ class WorkbookAIToolkit(Toolkit):
             row, _, column, _ = _bounds(_cell_address(operation['address']))
             return {'kind': 'applyNoteSource', 'sheetName': self._sheet(sheet_id)['name'],
                     'row': row, 'column': column, 'text': text}
+        if op in AXIS_SIZE_SOURCE_OPS:
+            sheet_id = operation.get('sheetId')
+            if not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError('workbook_ai_axis_size_invalid')
+            return translate_axis_size(operation, self._sheet(sheet_id)['name'])
+        if op in AXIS_VISIBILITY_SOURCE_OPS:
+            sheet_id = operation.get('sheetId')
+            if not isinstance(sheet_id, str) or not sheet_id:
+                raise ValueError('workbook_ai_axis_visibility_invalid')
+            return translate_axis_visibility(operation, self._sheet(sheet_id)['name'])
         if op == 'refresh_pivot':
             sheet_id = operation.get('sheetId')
             if set(operation) != {'op', 'sheetId'} or not isinstance(sheet_id, str) or not sheet_id:
@@ -533,6 +561,27 @@ class WorkbookAIToolkit(Toolkit):
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}
+        if op == 'set_data_validation':
+            if (set(operation) != {'op', 'sheetId', 'range', 'validation'}
+                    or not isinstance(operation['sheetId'], str) or not operation['sheetId']
+                    or (operation['validation'] is not None and not isinstance(operation['validation'], dict))):
+                raise ValueError('workbook_ai_data_validation_invalid')
+            return {'kind': 'applyDataValidationSource', 'sheetName': self._sheet(operation['sheetId'])['name'],
+                    'range': _range_address(operation['range']), 'validation': operation['validation']}
+        if op == 'find_replace':
+            required = {'op', 'sheetId', 'range', 'find', 'replace'}
+            if (set(operation) - {'matchCase', 'wholeCell'} != required
+                    or not isinstance(operation['sheetId'], str) or not operation['sheetId']
+                    or not isinstance(operation['find'], str) or not 1 <= len(operation['find']) <= 32767
+                    or not isinstance(operation['replace'], str) or len(operation['replace']) > 255
+                    or any(type(operation.get(key, False)) is not bool for key in ('matchCase', 'wholeCell'))):
+                raise ValueError('workbook_ai_find_replace_invalid')
+            sheet = self._sheet(operation['sheetId'])
+            self._authorized(sheet, clear_range_bounds(operation['range']))
+            return {'kind': 'replaceRangeText', 'sheetName': sheet['name'],
+                    'range': _range_address(operation['range']), 'find': operation['find'],
+                    'replace': operation['replace'], 'matchCase': operation.get('matchCase', False),
+                    'wholeCell': operation.get('wholeCell', False)}
         if op == 'clear_range':
             r0, r1, c0, c1 = clear_range_bounds(operation.get('range'))
             if (r1 - r0 + 1) * (c1 - c0 + 1) > _MAX_EXPANDED_CELL_EDITS:
@@ -637,7 +686,7 @@ class WorkbookAIToolkit(Toolkit):
             raise ValueError('workbook_ai_proposal_already_submitted')
         if not 1 <= len(operations) <= 100:
             raise ValueError('workbook_ai_operations_invalid')
-        if self._scope == 'range' and any(operation.get('op') not in (_CELL_SOURCE_OPS | {None}) or operation.get('kind') not in {'applyCellEdits', 'clearCellRange', None} for operation in operations):
+        if self._scope == 'range' and any(operation.get('op') not in (_CELL_SOURCE_OPS | {'find_replace', None}) or operation.get('kind') not in (_RANGE_VALUE_KINDS | {'applyCellEdits', None}) for operation in operations):
             raise ValueError('workbook_ai_selection_mismatch')
         if any(operation.get('op') in ROW_COLUMN_SOURCE_OPS for operation in operations) and any(
             operation.get('op') not in ROW_COLUMN_SOURCE_OPS or 'kind' in operation for operation in operations
@@ -647,7 +696,7 @@ class WorkbookAIToolkit(Toolkit):
             operation.get('op') not in SHEET_SOURCE_OPS or 'kind' in operation for operation in operations
         ):
             raise ValueError('workbook_ai_structure_batch_invalid')
-        if any(operation.get('op') == 'move_sheet' for operation in operations) and any(
+        if any(operation.get('op') in {'move_sheet', 'set_sheet_hidden'} for operation in operations) and any(
             operation.get('kind') == 'applySheetEdits' for operation in operations
         ):
             raise ValueError('workbook_ai_structure_batch_invalid')
@@ -679,7 +728,7 @@ class WorkbookAIToolkit(Toolkit):
         validate_chart_candidates(self._model, candidate)
         if self._scope == 'range':
             for operation in candidate:
-                if operation['kind'] == 'clearCellRange':
+                if operation['kind'] in _RANGE_VALUE_KINDS:
                     self._authorized(self._sheet(operation.get('sheetName')), clear_range_bounds(operation.get('range')))
                     continue
                 if operation['kind'] != 'applyCellEdits' or not operation.get('edits'):

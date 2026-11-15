@@ -591,6 +591,9 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       // 组合图的首个 bar/line plot 可写标签；scatter/radar 没有可标注 plot。
       canLabel: !['scatter', 'radar'].includes(target.chart.kind),
       seriesCount: target.chart.series.length, categoryCount,
+      hasAxes: ['column', 'bar', 'line', 'area', 'scatter'].includes(target.chart.kind),
+      canGroup: ['column', 'bar', 'line', 'area'].includes(target.chart.kind),
+      design: target.chart.design,
     }
   }
   const validateChartTarget = (target: ReturnType<typeof chartTarget>) => {
@@ -2244,7 +2247,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           })().catch(error => { if (!disposed) feedback.textContent = (error as Error).message })
           return
         }
-        if (command.startsWith('chart-layout:') || command.startsWith('chart-colors:')) {
+        if (/^chart-(layout|colors|legend|labels|grouping):/.test(command)) {
           const target = chartTarget(), patch = chartPresetEdit(command, chartPresetSource(target))
           if (!patch) throw new Error('当前图表无法应用此预设')
           void applyChartOperation(target, { kind: 'applyChartEdits', edits: [{ chartPath: target.chart.chartPath, ...patch }] }, '图表预设已应用，修改尚未保存。')
@@ -4081,7 +4084,17 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (dirty) { event.preventDefault(); event.returnValue = '' }
   }
   window.addEventListener('beforeunload', beforeLeave)
-  return { officeEditAssistant: nativeAI, async officeReadContext(scope: 'document' | 'selection') {
+  return { officeEditAssistant: nativeAI,
+    async officeReadNavigate(target: import('./native-api').NativeWorkbookNavigation, current: () => boolean) {
+      const epoch=mergeGeneration
+      const viewIdentity=()=>JSON.stringify({book:runtime.univerAPI.getActiveWorkbook()?.getId(),sheet:runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId(),range:runtime.univerAPI.getActiveWorkbook()?.getActiveRange()?.getRange()})
+      const before=viewIdentity()
+      const {navigateWorkbookReadTarget}=await import('./workbook-ai-navigation')
+      if(before!==viewIdentity() || epoch!==mergeGeneration)throw new Error('草稿或当前视图已变化，定位未执行')
+      await navigateWorkbookReadTarget(runtime,target,{current,closed:()=>loading || disposed || epoch!==mergeGeneration || Boolean(nativeDraft?.closed || nativeDraft?.saving),
+        cancel:()=>{goToGeneration++;goToReveal.cancel()},reveal:(...args)=>goToReveal.reveal(...args)})
+      ribbon.refreshState?.()
+    }, async officeReadContext(scope: 'document' | 'selection') {
     const { captureWorkbookReadContext } = await import('./workbook-ai-read-context')
     return captureWorkbookReadContext(scope, { runtime, closed: () => disposed || Boolean(nativeDraft?.closed || nativeDraft?.saving),
       epoch: () => mergeGeneration, persisted: () => persistence, operations: async () => await currentOperations() as NativeOperation[],

@@ -873,10 +873,11 @@ it('keeps source Table Design and Layout commands unavailable when source capabi
   const reason = 'DOCX 表格操作尚未接入严格写回协议'
   const assertDisabled = (actions: string[]) => {
     for (const action of actions) {
-      const command = ribbon.querySelector<HTMLButtonElement>(`[data-action="${action}"]`)
+      const control = ribbon.querySelector<HTMLElement>(`[data-action="${action}"]`)
+      const command = control instanceof HTMLButtonElement ? control : control?.querySelector('button')
       expect(command?.disabled, action).toBe(true)
       const expectedReason = action.startsWith('table-border-') ? '当前来源表格暂不能修改单元格边框' : action === 'table-cell-shading' ? '此单元格包含合并、嵌套、修订或不明确的来源' : reason
-      expect(command?.title, action).toContain(expectedReason)
+      expect(command?.title || control?.title, action).toContain(expectedReason)
       if (action !== 'table-cell-shading') expect(command?.getAttribute('aria-label'), action).toContain(expectedReason)
     }
   }

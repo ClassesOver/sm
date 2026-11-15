@@ -19,6 +19,7 @@ from pwdlib import PasswordHash
 from ..http.request_limits import install_streaming_body_limit, RequestBodyLimitError
 from ..reporting.models import ReportingError
 from .repository import Identity, OfficeError, OfficeRepository
+from .provider_catalog import Capability, ProviderInput, ProviderTestInput
 
 COOKIE = "genoffice_session"
 
@@ -41,7 +42,7 @@ class OfficeRoute(APIRoute):
         async def handler(request):
             try:
                 if request.method not in {'GET', 'HEAD', 'OPTIONS'} and not request.headers.get('content-type', '').startswith('multipart/form-data'):
-                    install_streaming_body_limit(request, 512 * 1024)
+                    install_streaming_body_limit(request, 29 * 1024 * 1024 if self.path == "/office/api/admin/providers/{capability}/test" else 512 * 1024)
                 response = await original(request)
             except RequestValidationError as error:
                 # FastAPI's default response echoes the invalid input, including
@@ -191,6 +192,21 @@ def create_office_router(
 
     from .settings import OfficeSettings
     settings_service = OfficeSettings(office)
+    from .provider_settings import OfficeProviders
+    office.providers = OfficeProviders(office, source_vault)
+
+    @router.get('/admin/providers')
+    async def provider_settings(identity: Identity = Depends(actor)):
+        return await office.providers.catalog(identity)
+
+    @router.put('/admin/providers/{capability}')
+    async def save_provider(capability: Capability, body: ProviderInput, identity: Identity = Depends(actor)):
+        return await office.providers.save(identity, capability, body.model_dump())
+
+    @router.post('/admin/providers/{capability}/test')
+    async def test_provider(capability: Capability, body: ProviderTestInput, identity: Identity = Depends(actor)):
+        return await office.providers.test(identity, capability, body.model_dump(exclude={'media'}), body.media)
+
 
     @router.get('/settings')
     async def personal_settings(identity: Identity = Depends(actor)):

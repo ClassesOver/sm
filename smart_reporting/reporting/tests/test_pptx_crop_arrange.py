@@ -16,6 +16,7 @@ from smart_reporting.report_editor.native_office import (
     inspect_office,
     patch_office,
 )
+from smart_reporting.report_editor.slides_render import render_pptx_tree
 
 
 def _png(color='red'):
@@ -84,6 +85,61 @@ def test_change_shape_gallery_preset_preserves_text_and_frame():
     assert result.text == shape.text
     assert (result.left, result.top, result.width, result.height) == (shape.left, shape.top, shape.width, shape.height)
     assert next(item for item in reopened.slides[0].shapes if item.name == '右形状').auto_shape_type == MSO_SHAPE.RECTANGLE
+
+
+def test_drawn_connector_preserves_reverse_direction_at_the_placed_geometry():
+    content, _ = _presentation()
+    shape = {'slideIndex': 0, 'kind': 'lineArrow', 'geometry': {'x': 96, 'y': 192, 'width': 144, 'height': 48},
+             'flipH': True, 'flipV': True}
+    horizontal = {'slideIndex': 0, 'kind': 'line', 'geometry': {'x': 96, 'y': 48, 'width': 96, 'height': 0}}
+    modified = patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [shape, horizontal]}])
+    shapes = Presentation(BytesIO(modified)).slides[0].shapes
+    connector = shapes[-2]
+    transform = connector._element.xpath('./p:spPr/a:xfrm')[0]
+    assert (transform.get('flipH'), transform.get('flipV')) == ('1', '1')
+    assert (connector.left, connector.top, connector.width, connector.height) == (
+        Inches(1), Inches(2), Inches(1.5), Inches(.5),
+    )
+    assert connector._element.xpath('./p:spPr/a:ln/a:tailEnd[@type="triangle"]')
+    assert (shapes[-1].width, shapes[-1].height) == (Inches(1), 0)
+    for malformed in ({**shape, 'flipH': 'true'}, {**shape, 'kind': 'rect'}):
+        with pytest.raises(ValueError):
+            patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [malformed]}])
+
+
+def test_drawn_shape_preview_identity_uses_the_written_shape_without_storing_draft_key():
+    content, _ = _presentation()
+    key = '12345678-1234-4321-8765-123456789abc'
+    shape = {'slideIndex': 0, 'kind': 'rect', 'geometry': {'x': 96, 'y': 192, 'width': 144, 'height': 48},
+             'draftKey': key}
+    receipt = {}
+    updated = patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [shape]}], pptx_receipt=receipt)
+    tree = render_pptx_tree(updated, draft_shapes=receipt['draftShapes'])
+    slide = tree['slides'][0]
+    [target] = slide['draftShapeSources']
+    assert target['draftKey'] == key
+    node = next(item for item in slide['nodes'] if item['sourceId'] == target['sourceId'])
+    assert (node['box']['x'], node['box']['y'], node['box']['w'], node['box']['h']) == (96, 192, 144, 48)
+    with ZipFile(BytesIO(updated)) as archive:
+        assert key.encode() not in archive.read('ppt/slides/slide1.xml')
+    with pytest.raises(ValueError):
+        patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [shape, shape]}])
+
+
+def test_unsaved_shape_kind_change_writes_only_the_final_inserted_geometry():
+    content, _ = _presentation()
+    key = '12345678-1234-4321-8765-123456789abc'
+    geometry = {'x': 12, 'y': 24, 'width': 80, 'height': 40}
+    updated = patch_office('pptx', content, [{'kind': 'editSlides', 'shapes': [
+        {'slideIndex': 0, 'kind': 'hexagon', 'geometry': geometry, 'draftKey': key},
+    ]}])
+    source = Presentation(BytesIO(content)).slides[0].shapes
+    reopened = Presentation(BytesIO(updated)).slides[0].shapes
+    assert len(reopened) == len(source) + 1
+    assert reopened[-1].auto_shape_type == MSO_SHAPE.HEXAGON
+    assert (reopened[-1].left, reopened[-1].top, reopened[-1].width, reopened[-1].height) == tuple(
+        dimensions * 9525 for dimensions in geometry.values()
+    )
 
 
 def _patch(content, **operation):

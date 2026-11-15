@@ -70,12 +70,13 @@ forbidden_modules =
     smart_reporting.reporting.workflow
     smart_reporting.management
 allow_indirect_imports = False
-# GenOffice 工作区数据源与知识库复用管理端数据源、表授权和数据源查询；这些边由下一条契约单独约束。
+# GenOffice 工作区数据源、知识库与提供商密钥复用管理端数据源、表授权、凭据库和数据源查询；这些边由下一条契约单独约束。
 ignore_imports =
     smart_reporting.office.source_api -> smart_reporting.management.**
     smart_reporting.office.source_management -> smart_reporting.management.**
     smart_reporting.office.source_migration -> smart_reporting.management.**
     smart_reporting.office.source_runtime -> smart_reporting.management.**
+    smart_reporting.office.provider_settings -> smart_reporting.management.**
     smart_reporting.office.source_runtime -> smart_reporting.reporting.contract
     smart_reporting.office.source_runtime -> smart_reporting.reporting.data_source.**
     smart_reporting.office.knowledge -> smart_reporting.reporting.business_knowledge.**
@@ -84,10 +85,11 @@ ignore_imports =
     smart_reporting.office.source_migration -> smart_reporting.runtime.settings
 
 [importlinter:contract:genoffice-integrations-independent-of-report-workflow]
-name = GenOffice 数据源与知识库集成（含间接依赖）不得依赖报告工作流
+name = GenOffice 数据源、知识库与提供商集成（含间接依赖）不得依赖报告工作流
 type = forbidden
 source_modules =
     smart_reporting.office.knowledge
+    smart_reporting.office.provider_settings
     smart_reporting.office.source_api
     smart_reporting.office.source_management
     smart_reporting.office.source_migration

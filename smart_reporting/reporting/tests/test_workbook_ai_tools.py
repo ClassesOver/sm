@@ -12,6 +12,8 @@ from agno.models.response import ModelResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Font
+from openpyxl.utils.datetime import CALENDAR_MAC_1904
+from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table
 
 from smart_reporting.report_editor.native_models import NativeEditorContext
@@ -21,6 +23,161 @@ from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('date1904', 'dates'), [
+    (False, ('46023', '46053')), (True, ('44561', '44591')),
+])
+async def test_source_data_validation_keeps_other_cells_and_rebases_remaining_formula(date1904, dates):
+    book = Workbook()
+    if date1904:
+        book.epoch = CALENDAR_MAC_1904
+    sheet = book.active
+    existing = DataValidation(type='custom', formula1='A1>$H$1', showErrorMessage=True)
+    existing.add('B1:B5')
+    sheet.add_data_validation(existing)
+    sheet['B1'] = '原值'
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_data_validation', 'sheetId': 'Sheet', 'range': target, 'validation': rule}
+        for target, rule in [
+            ('B1:B2', {'kind': 'list', 'values': ['通过', '待复核']}),
+            ('B4', None),
+            ('C1:C2', {'kind': 'listRef', 'range': 'G1:G3'}),
+            ('D1', {'kind': 'numberBetween', 'min': 0.5, 'max': 9}),
+            ('E1', {'kind': 'dateBetween', 'start': '2026-01-01', 'end': '2026-01-31'}),
+            ('F1', {'kind': 'checkbox'}),
+            ('I1', {'kind': 'formula', 'formula': '=ISNUMBER(I1)'}),
+        ]
+    ], '设置输入限制')
+    sheet = load_workbook(BytesIO(written)).active
+    rules = {str(rule.sqref): rule for rule in sheet.data_validations.dataValidation}
+    assert rules['B1:B2'].formula1 == '"通过,待复核"'
+    assert rules['B3 B5'].formula1 == 'A3>$H$1' and rules['B3 B5'].showErrorMessage
+    assert rules['C1:C2'].formula1 == '$G$1:$G$3'
+    assert (rules['D1'].type, rules['D1'].formula1, rules['D1'].formula2) == ('decimal', '0.5', '9')
+    assert rules['E1'].type == 'date'
+    assert (rules['E1'].formula1, rules['E1'].formula2) == dates
+    assert rules['I1'].formula1 == 'ISNUMBER(I1)'
+    model = inspect_office('xlsx', written)
+    assert any(item['rule']['type'] == 'checkbox' for item in model['sheets'][0]['dataValidations']['rules'])
+    assert sheet['B1'].value == '原值'
+
+
+@pytest.mark.anyio
+async def test_source_data_validation_rejects_range_scope():
+    async def preview(_):
+        pytest.fail('Unapproved data validation reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range',
+                              selection={'sheetName': 'Sheet'}, preview=preview)
+    with pytest.raises(ValueError, match='selection_mismatch'):
+        await tools.propose_operations([{
+            'op': 'set_data_validation', 'sheetId': 'Sheet', 'range': 'A1', 'validation': None,
+        }], '清除输入限制')
+
+
+@pytest.mark.anyio
+async def test_source_find_replace_uses_replayed_text_and_preserves_other_cell_types():
+    book = Workbook()
+    book.active.append(['OLD.old.', '= "old."', 42, '#N/A', ' old. ', 'OLDz', 'outside old.'])
+    book.active['A1'].font = Font(bold=True)
+    book.active['C1'].number_format = '"old."0'
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_cell', 'sheetId': 'Sheet', 'address': 'A2', 'value': 'old.'},
+        {'op': 'find_replace', 'sheetId': 'Sheet', 'range': 'A1:F2', 'find': '#N/A', 'replace': 'error'},
+        {'op': 'find_replace', 'sheetId': 'Sheet', 'range': 'A1:F2', 'find': 'OLD.',
+         'replace': '$&', 'wholeCell': True},
+        {'op': 'find_replace', 'sheetId': 'Sheet', 'range': 'A1:F33333', 'find': 'old.', 'replace': 'new'},
+    ], '替换文本')
+    sheet = load_workbook(BytesIO(written)).active
+    assert [cell.value for cell in sheet[1]] == ['newnew', '= "old."', 42, '#N/A', '$&', 'OLDz', 'outside old.']
+    assert sheet['A2'].value == '$&' and sheet['A1'].font.bold and sheet['D1'].data_type == 'e'
+
+
+@pytest.mark.anyio
+async def test_source_find_replace_rejects_a_range_outside_the_authorized_selection():
+    async def preview(_):
+        pytest.fail('Out-of-scope replacement reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range', preview=preview,
+                              selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1,
+                                         'startColumn': 0, 'endColumn': 0})
+    with pytest.raises(ValueError, match='selection_mismatch'):
+        await tools.propose_operations([
+            {'op': 'find_replace', 'sheetId': 'Sheet', 'range': 'A1:B2', 'find': 'old', 'replace': 'new'},
+        ], '替换选区文本')
+
+
+@pytest.mark.anyio
+async def test_source_axis_dimensions_round_trip_through_xlsx():
+    book = Workbook()
+    book.active['A1'] = '=2+3'
+    book.create_sheet('Other').row_dimensions[3].height = 12
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}, {'name': 'Other'}]},
+                              scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_row_height', 'sheetId': 'Sheet', 'row': 3, 'count': 2, 'heightPoints': 30.3},
+        {'op': 'set_col_width', 'sheetId': 'Sheet', 'column': 'B', 'widthPx': 124.5},
+    ], '调整表格尺寸')
+    saved = load_workbook(BytesIO(written))
+    sheet = saved['Sheet']
+    assert [sheet.row_dimensions[row].height for row in (3, 4)] == [30, 30]
+    assert 'A' not in sheet.column_dimensions and 'C' not in sheet.column_dimensions
+    assert round(sheet.column_dimensions['B'].width * 7 + 5) == 125
+    assert sheet['A1'].value == '=2+3' and saved['Other'].row_dimensions[3].height == 12
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('scope', 'fields', 'error'), [
+    ('workbook', {'row': 1048576, 'count': 2, 'heightPoints': 20}, 'axis_size_invalid'),
+    ('workbook', {'column': 'XFD', 'count': 2, 'widthPx': 100}, 'axis_size_invalid'),
+    ('workbook', {'column': 'A', 'widthPx': True}, 'axis_size_invalid'),
+    ('workbook', {'column': 'A', 'widthPx': 2000}, 'column_width_exceeds_xlsx_limit'),
+    ('range', {'row': 1, 'heightPoints': 20}, 'selection_mismatch'),
+])
+async def test_source_axis_dimensions_reject_invalid_arguments_or_scope(scope, fields, error):
+    async def preview(_):
+        pytest.fail('Invalid axis size proposal reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope=scope,
+                              selection={'sheetName': 'Sheet'}, preview=preview)
+    with pytest.raises(ValueError, match=error):
+        await tools.propose_operations([{
+            'op': 'set_row_height' if 'row' in fields else 'set_col_width',
+            'sheetId': 'Sheet', **fields,
+        }], '调整表格尺寸')
 
 
 @pytest.mark.anyio

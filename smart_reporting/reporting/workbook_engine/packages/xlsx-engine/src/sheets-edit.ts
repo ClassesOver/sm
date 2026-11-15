@@ -6,6 +6,7 @@
 
 import { decodeXmlText, escapeXmlAttribute, escapeXmlText, readXmlAttribute } from './xml'
 import { SaxesParser } from 'saxes'
+import { readWorkbookProtection } from './protection-read'
 
 /// '>' is legal inside XML attribute values (sheet names can carry it), so
 /// element scans consume quoted runs atomically instead of using [^>]*.
@@ -22,6 +23,8 @@ export interface SheetEditPlan {
   readonly removals: readonly string[]
   /// the complete final tab order, as final names
   readonly order: readonly string[]
+  /// visibility changes addressed by final tab name
+  readonly visibility?: readonly { readonly sheetName: string; readonly hidden: boolean }[]
 }
 
 export interface SheetAllocation {
@@ -293,7 +296,7 @@ export function applySheetPlanToWorkbookXml(
       newName === undefined
         ? element.xml
         : element.xml.replace(/\bname="[^"]*"/, () => `name="${escapeXmlAttribute(newName)}"`)
-    finalElements.set(newName ?? element.name, { xml, hidden: element.hidden })
+    finalElements.set(newName ?? element.name, { xml, hidden: element.state === 'hidden' || element.state === 'veryHidden' })
   }
   for (const addition of additions) {
     finalElements.set(addition.name, {
@@ -311,6 +314,31 @@ export function applySheetPlanToWorkbookXml(
     plan.order.some((name) => !finalElements.has(name))
   ) {
     throw new SheetEditError('The sheet order does not match the final sheet set.')
+  }
+  if (plan.visibility !== undefined) {
+    if (!Array.isArray(plan.visibility) || plan.visibility.length > finalElements.size) {
+      throw new SheetEditError('Invalid sheet visibility plan.')
+    }
+    if (plan.visibility.length && readWorkbookProtection(workbookXml)?.lockStructure) {
+      throw new SheetEditError('Workbook structure is locked.')
+    }
+    const seen = new Set<string>()
+    for (const change of plan.visibility) {
+      const element = finalElements.get(change?.sheetName)
+      if (!element || typeof change.hidden !== 'boolean' || seen.has(change.sheetName)) {
+        throw new SheetEditError('Invalid sheet visibility plan.')
+      }
+      seen.add(change.sheetName)
+      if (change.hidden === element.hidden) continue
+      if (readXmlAttribute(element.xml, 'state') === 'veryHidden') {
+        throw new SheetEditError('A veryHidden sheet cannot be unhidden.')
+      }
+      const state = change.hidden ? ' state="hidden"' : ''
+      element.xml = element.xml.replace(new RegExp(`^<sheet\\b${TAG_ATTRIBUTES}(?:/>|>)`), tag =>
+        tag.replace(/\sstate="[^"]*"/, '').replace(/(\/?\s*>)$/, (_, close: string) => state + close),
+      )
+      element.hidden = change.hidden
+    }
   }
   if (plan.order.every((name) => finalElements.get(name)?.hidden)) {
     throw new SheetEditError('A workbook needs at least one visible sheet.')
@@ -339,16 +367,15 @@ export function applySheetPlanToWorkbookXml(
   )
   result = result.replace(/<definedNames>\s*<\/definedNames>/, '')
 
-  result = result.replace(
-    /(<workbookView\b[^>]*?\bactiveTab=")([0-9]+)(")/,
-    (full, prefix: string, activeTab: string, suffix: string) => {
-      const mapped = oldIndexToNew(Number(activeTab))
-      const fallback = plan.order.findIndex((name) => !finalElements.get(name)?.hidden)
-      return mapped === null || mapped === undefined
-        ? `${prefix}${Math.max(fallback, 0)}${suffix}`
-        : `${prefix}${mapped}${suffix}`
-    },
-  )
+  const fallback = plan.order.findIndex((name) => !finalElements.get(name)?.hidden)
+  result = result.replace(/<workbookView\b[^>]*>/g, (tag) => {
+    const active = readXmlAttribute(tag, 'activeTab')
+    const mapped = oldIndexToNew(Number(active ?? 0))
+    const index = mapped === null || mapped < 0 || finalElements.get(plan.order[mapped]!)?.hidden
+      ? fallback : mapped
+    if (active !== undefined) return tag.replace(/\bactiveTab="[0-9]+"/, `activeTab="${index}"`)
+    return index === 0 ? tag : tag.replace(/(\/?>)$/, ` activeTab="${index}"$1`)
+  })
 
   return result
 }
@@ -356,7 +383,7 @@ export function applySheetPlanToWorkbookXml(
 interface RawSheetElement {
   readonly xml: string
   readonly name: string
-  readonly hidden: boolean
+  readonly state: string | undefined
 }
 
 function sheetElementsOf(workbookXml: string): RawSheetElement[] {
@@ -371,7 +398,7 @@ function sheetElementsOf(workbookXml: string): RawSheetElement[] {
     elements.push({
       xml,
       name: decodeXmlText(name),
-      hidden: state === 'hidden' || state === 'veryHidden',
+      state,
     })
   }
   return elements

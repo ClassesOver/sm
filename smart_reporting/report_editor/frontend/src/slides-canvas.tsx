@@ -1,13 +1,14 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import Konva from 'konva'
-import { Group, Layer, Rect, Stage, Transformer } from 'react-konva'
+import { Group, Layer, Line, Rect, Stage, Transformer } from 'react-konva'
 import type { RenderNode, RenderSlide } from '@genoffice/pptx-render'
 import { StaticNode } from './vendor/genoffice/renderer/NodeBody'
 import { boxPivotProps, fillToKonva } from './vendor/genoffice/renderer/konva-adapter'
 import { applyCanvasEdits, canvasEditable, canvasGeometryEdit, type CanvasEdit, type CanvasGeometry } from './slides-canvas-model'
 import { clampZoom, ZOOM_MIN } from './slides-view-zoom'
 import { slidesMarqueeIds, slidesMarqueeRect, type MarqueePoint } from './slides-marquee'
+import { defaultDrawSize, isLineDrawKind, resolveDrawRect, type DrawRect } from './vendor/genoffice-slides/draw-shape'
 
 /** Konva 不能解析 CSS 变量：从统一视觉 token（office-theme.css）读取当前强调色。 */
 export function officeSelectionStroke(root: Element = document.documentElement): string {
@@ -21,6 +22,7 @@ export type SlidesCanvasState = {
   editableIds: Set<string>
   selectableIds?: Set<string>
   edits: CanvasEdit[]
+  shapeDrawing?: { kind: string; commit: (rect: DrawRect) => void }
   onMediaPlayback?: (id:string) => void
   onSelect: (id: string, additive?: boolean) => void
   onSelectMany?: (ids: string[], additive?: boolean) => void
@@ -41,6 +43,9 @@ function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; wid
   const layer = useRef<Konva.Layer>(null)
   const marquee = useRef<{ start: MarqueePoint; end: MarqueePoint; additive: boolean } | null>(null)
   const [marqueeBox, setMarqueeBox] = useState<ReturnType<typeof slidesMarqueeRect> | null>(null)
+  const drawStart = useRef<MarqueePoint | null>(null)
+  const [drawPreview, setDrawPreview] = useState<DrawRect | null>(null)
+  const drawing = state.shapeDrawing
   const suppressClick = useRef(false)
   const slide = applyCanvasEdits(state.slide, state.edits)
   const scale = width / slide.widthPx
@@ -50,12 +55,15 @@ function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; wid
   const multiple = selectedIds.length > 1
   useLayoutEffect(onLayout)
   const cancelMarquee = () => { marquee.current = null; setMarqueeBox(null) }
+  const clearDrawing = () => { drawStart.current = null; setDrawPreview(null) }
   // 切页、更新几何或缩放时丢弃拖动，避免旧画布坐标提交到新状态。
   useLayoutEffect(cancelMarquee, [state.slide, state.edits, state.selectableIds, width])
+  useLayoutEffect(clearDrawing, [drawing, width])
   useEffect(() => {
-    window.addEventListener('blur', cancelMarquee)
-    window.addEventListener('pointercancel', cancelMarquee)
-    return () => { window.removeEventListener('blur', cancelMarquee); window.removeEventListener('pointercancel', cancelMarquee) }
+    const cancelGesture = () => { cancelMarquee(); clearDrawing() }
+    window.addEventListener('blur', cancelGesture)
+    window.addEventListener('pointercancel', cancelGesture)
+    return () => { window.removeEventListener('blur', cancelGesture); window.removeEventListener('pointercancel', cancelGesture) }
   }, [])
   useEffect(() => {
     let disposed = false
@@ -67,10 +75,10 @@ function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; wid
     return () => { disposed = true }
   }, [state.slide])
   useLayoutEffect(() => {
-    const node = !multiple && selectedIds[0] ? nodes.current.get(selectedIds[0]) : undefined
+    const node = !drawing && !multiple && selectedIds[0] ? nodes.current.get(selectedIds[0]) : undefined
     transformer.current?.nodes(node ? [node] : [])
     transformer.current?.getLayer()?.batchDraw()
-  }, [state.selectedId, state.selectedIds, state.editableIds, state.slide, state.edits])
+  }, [drawing, state.selectedId, state.selectedIds, state.editableIds, state.slide, state.edits])
   const commit = (node: RenderNode, target: Konva.Group) => {
     if (multiple || node.background || !canvasEditable(node, state.editableIds)) return
     const geometry = canvasGeometryEdit(node, { x: target.x(), y: target.y(), scaleX: target.scaleX(), scaleY: target.scaleY() })
@@ -81,9 +89,13 @@ function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; wid
     const point = event.target.getStage()?.getPointerPosition()
     return point ? { x: point.x / scale, y: point.y / scale } : null
   }
-  return <Stage width={width} height={slide.heightPx * scale}
+  return <Stage width={width} height={slide.heightPx * scale} style={{ cursor: drawing ? 'crosshair' : undefined }}
     onMouseDown={event => {
       suppressClick.current = false
+      if (drawing) {
+        if (event.evt.button === 0) drawStart.current = pointer(event)
+        return
+      }
       if (event.target !== event.target.getStage() || event.evt?.button !== 0) {
         // 未接入框选的旧调用方保留空白按下即清空的约定。
         if (!state.onSelectMany && event.target === event.target.getStage() && event.evt?.button !== 2) state.onSelect('')
@@ -94,12 +106,30 @@ function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; wid
       if (start) marquee.current = { start, end: start, additive: !!(event.evt.ctrlKey || event.evt.metaKey || event.evt.shiftKey) }
     }}
     onMouseMove={event => {
+      if (drawing) {
+        const start = drawStart.current, end = pointer(event)
+        if (start && end) {
+          const dragged = Math.hypot(end.x - start.x, end.y - start.y) * scale > 3
+          setDrawPreview(dragged ? resolveDrawRect(drawing.kind, start.x, start.y, end.x, end.y, event.evt.shiftKey) : null)
+        }
+        return
+      }
       const active = marquee.current, end = pointer(event)
       if (!active || !end) return
       active.end = end
       setMarqueeBox(Math.hypot(end.x - active.start.x, end.y - active.start.y) * scale >= 4 ? slidesMarqueeRect(active.start, end) : null)
     }}
     onMouseUp={event => {
+      if (drawing) {
+        const start = drawStart.current, end = pointer(event)
+        clearDrawing()
+        if (!start || !end || event.evt.button !== 0) return
+        const clicked = Math.hypot(end.x - start.x, end.y - start.y) * scale <= 3
+        drawing.commit(clicked
+          ? { ...start, ...defaultDrawSize(drawing.kind), click: true }
+          : resolveDrawRect(drawing.kind, start.x, start.y, end.x, end.y, event.evt.shiftKey))
+        return
+      }
       const active = marquee.current
       if (!active) return
       const end = pointer(event) ?? active.end
@@ -109,8 +139,8 @@ function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; wid
       if (ids === null) state.onSelect('')
       else { suppressClick.current = true; state.onSelectMany?.(ids, active.additive) }
     }}
-    onMouseLeave={cancelMarquee}
-    onTouchStart={event => { cancelMarquee(); if (event.target === event.target.getStage()) state.onSelect('') }}>
+    onMouseLeave={() => { cancelMarquee(); clearDrawing() }}
+    onTouchStart={event => { cancelMarquee(); if (!drawing && event.target === event.target.getStage()) state.onSelect('') }}>
     <Layer ref={layer} scaleX={scale} scaleY={scale}>
       <Rect width={slide.widthPx} height={slide.heightPx} {...fillToKonva(slide.background, slide.widthPx, slide.heightPx, images)} listening={false} />
       {slide.nodes.map(node => {
@@ -120,7 +150,7 @@ function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; wid
           if (value && editable && !node.background) nodes.current.set(node.sourceId, value); else nodes.current.delete(node.sourceId)
           if (value && selectable) selectableNodes.current.set(node.sourceId, value); else selectableNodes.current.delete(node.sourceId)
         }}
-          name={editable ? 'editable-slide-object' : 'readonly-slide-object'} draggable={editable && !node.background && !multiple} listening={selectable || (node.type==='picture' && !!node.media && !!state.onMediaPlayback)}
+          name={editable ? 'editable-slide-object' : 'readonly-slide-object'} draggable={!drawing && editable && !node.background && !multiple} listening={!drawing && (selectable || (node.type==='picture' && !!node.media && !!state.onMediaPlayback))}
           onDblClick={() => {if(node.type==='picture'&&node.media)state.onMediaPlayback?.(node.sourceId)}}
           onDblTap={() => {if(node.type==='picture'&&node.media)state.onMediaPlayback?.(node.sourceId)}}
           onClick={event => { if (!suppressClick.current && event.evt.button === 0) state.onSelect(node.sourceId, !!(event.evt.ctrlKey || event.evt.metaKey || event.evt.shiftKey)) }} onTap={() => state.onSelect(node.sourceId)}
@@ -133,6 +163,13 @@ function SlideCanvas({ state, width, onLayout }: { state: SlidesCanvasState; wid
         </Group>
       })}
       {marqueeBox && <Rect {...marqueeBox} fill="rgba(11,79,138,0.08)" stroke={selectionStroke} strokeWidth={1 / scale} listening={false} />}
+      {drawing && drawPreview && (isLineDrawKind(drawing.kind)
+        ? <Line points={[
+          drawPreview.x + (drawPreview.flipH ? drawPreview.w : 0), drawPreview.y + (drawPreview.flipV ? drawPreview.h : 0),
+          drawPreview.x + (drawPreview.flipH ? 0 : drawPreview.w), drawPreview.y + (drawPreview.flipV ? 0 : drawPreview.h),
+        ]} stroke={selectionStroke} strokeWidth={1 / scale} listening={false} />
+        : <Rect x={drawPreview.x} y={drawPreview.y} width={drawPreview.w} height={drawPreview.h}
+          fill="rgba(11,79,138,0.08)" stroke={selectionStroke} strokeWidth={1 / scale} listening={false} />)}
       <Transformer ref={transformer} rotateEnabled={false} flipEnabled={false} keepRatio={false} enabledAnchors={['top-left', 'top-right', 'bottom-left', 'bottom-right']} anchorSize={12} borderStroke={selectionStroke} anchorStroke={selectionStroke} boundBoxFunc={(oldBox, newBox) => newBox.width < 8 || newBox.height < 8 ? oldBox : newBox} />
     </Layer>
   </Stage>

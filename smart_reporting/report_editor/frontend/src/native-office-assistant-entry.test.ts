@@ -11,7 +11,7 @@ it('保留 XLSX 加载期间点击，助手挂载后打开并聚焦，且不发�
   const api = { officeAIStart: vi.fn(), officeAICancel: vi.fn() }
   const { createNativeOfficeView } = await import('./native-office-view')
   try {
-    const creating = createNativeOfficeView({ editor:host } as never, { api:api as never, draft, context:{ editingEnabled:true, officeReadAIEnabled:true, context:{format:'xlsx',sourceFile:{sha256:'a'.repeat(64)}} } as never })
+    const creating = createNativeOfficeView({ editor:host } as never, { api:api as never, draft, context:{ capabilities:{}, editingEnabled:true, officeReadAIEnabled:true, context:{format:'xlsx',sourceFile:{sha256:'a'.repeat(64)}} } as never })
     await vi.waitFor(() => expect(open).toBeTypeOf('function'))
     open!()
     const dispose = vi.fn(); ready({dispose})

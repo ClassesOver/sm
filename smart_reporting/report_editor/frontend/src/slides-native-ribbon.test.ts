@@ -463,7 +463,8 @@ it('keeps Home slide layout changes connected and unsupported slide actions expl
 it('preserves Insert table, image, shape and chart source actions while disabling unsupported writes', () => {
   const host = document.createElement('div')
   document.body.append(host)
-  const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
+  const onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
   const expected = [
     ['Tables', ['onInsertTable']],
     ['Illustrations', ['onPickShape', 'onInsertSmartArt', 'onInsertChart']],
@@ -483,11 +484,19 @@ it('preserves Insert table, image, shape and chart source actions while disablin
   // Table 已接通（行列对话框）
   expect(host.querySelector<HTMLButtonElement>('[data-source-action="onInsertTable"]')!.disabled).toBe(false)
   // Shapes 已接通：固定源形状库 7 组 109 个预设
-  const shapes = host.querySelector<HTMLSelectElement>('select[data-command="insertShape"]')!
+  const shapes = host.querySelector<HTMLButtonElement>('button[data-command="insertShape"]')!
   expect(shapes.closest('[data-source-action]')?.getAttribute('data-source-action') ?? shapes.dataset.sourceAction).toBe('onPickShape')
   expect(shapes.disabled).toBe(false)
-  expect(shapes.querySelectorAll('optgroup')).toHaveLength(7)
-  expect(shapes.querySelectorAll('optgroup option')).toHaveLength(109)
+  host.querySelector<HTMLButtonElement>('#slides-native-tab-insert')!.click()
+  shapes.click()
+  const gallery = host.querySelector<HTMLElement>('.slides-shape-gallery:not([hidden])')!
+  expect(gallery.querySelectorAll('.slides-shape-gallery-grid')).toHaveLength(7)
+  expect(gallery.querySelectorAll('[data-prst]')).toHaveLength(109)
+  const line = gallery.querySelector<HTMLButtonElement>('[data-prst="lineArrow"]')!
+  expect(line.querySelector('svg')).not.toBeNull()
+  line.click()
+  expect(onAction).toHaveBeenCalledWith('insertShape', 'lineArrow')
+  expect(shapes.getAttribute('aria-expanded')).toBe('false')
   const images = host.querySelector<HTMLElement>('[aria-label="Images"]')!
   const picture = images.querySelector<HTMLButtonElement>('[data-source-action="onInsertImage"]')!
   expect(picture.disabled).toBe(false)

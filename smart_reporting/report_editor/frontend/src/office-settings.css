@@ -21,3 +21,23 @@ html[data-office-theme=dark] .report-app{background:#191919}
 .office-admin-layout input:not([type=checkbox]){padding:8px;border:1px solid #ddd;border-radius:6px;max-width:65%}
 .office-admin-layout button[type=submit]{padding:8px 18px;background:#222;color:white;border-radius:6px;justify-self:end}
 @media(max-width:600px){.office-admin-page{padding:16px}.office-admin-layout{grid-template-columns:110px 1fr;gap:12px}.office-admin-layout label{align-items:start;flex-direction:column}.office-admin-layout input:not([type=checkbox]){max-width:100%;width:100%}}
+
+.office-provider-settings { display: grid; gap: 24px; min-width: 0; }
+.office-provider-card { border: 1px solid #e4e4e7; border-radius: 12px; padding: 24px; min-width: 0; background: #fff; }
+.office-provider-card h3 { margin: 0 0 20px; font-size: 16px; }
+.office-provider-card form { max-width: none; gap: 12px; }
+.office-provider-card .office-provider-field { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 2fr); align-items: center; gap: 20px; margin: 4px 0; }
+.office-provider-field input, .office-provider-field select { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px 10px; border: 1px solid #d4d4d8; border-radius: 6px; font: inherit; }
+.office-provider-field input[type=checkbox] { width: 18px; justify-self: end; }
+.office-provider-note { color: #666; line-height: 1.6; font-size: 13px; }
+.office-provider-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+.office-provider-card button { padding: 8px 12px; border-radius: 6px; }
+.office-provider-card button[type=submit] { color: #fff; background: #252525; }
+.office-provider-card [role=status] { overflow-wrap: anywhere; font-size: 13px; }
+@media (max-width: 600px) {
+  .office-provider-card { padding: 16px; }
+  .office-provider-card .office-provider-field { grid-template-columns: 1fr; gap: 6px; }
+  .office-provider-field input[type=checkbox] { justify-self: start; }
+}
+
+.office-provider-card .office-provider-field input:not([type=checkbox]) { max-width: 100%; }

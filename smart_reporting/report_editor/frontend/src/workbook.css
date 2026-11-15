@@ -20,6 +20,8 @@
 .workbook-ribbon-group button:disabled { opacity:var(--office-disabled-opacity); cursor:not-allowed; }
 .workbook-ribbon-select { width:136px; height:var(--office-control-height); box-sizing:border-box; padding:4px 8px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); color:var(--color-ink); font:inherit; }
 .workbook-ribbon-size { width:64px; }
+.workbook-ribbon-group > [data-ribbon-control="borders"] { grid-area:3 / 5 / 4 / 7; min-width:0; width:100%; padding-inline:2px; }
+.workbook-ribbon-group > [data-ribbon-control="border-color"] { grid-area:3 / 7 / 4 / 8; width:100%; min-width:0; height:var(--office-control-height); box-sizing:border-box; padding:2px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); }
 .workbook-ribbon-select:disabled { opacity:var(--office-disabled-opacity); border-color:var(--office-border-soft); cursor:not-allowed; }
 .workbook-ribbon-color { display:inline-flex; justify-self:start; align-items:center; justify-content:center; gap:4px; min-width:32px; height:var(--office-control-height); box-sizing:border-box; padding:2px; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); background:var(--color-surface); }
 .workbook-ribbon-color input { width:20px; height:20px; min-height:0; flex:none; padding:0; border:0; background:transparent; cursor:pointer; }

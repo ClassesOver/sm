@@ -6,8 +6,22 @@ import { bindOfficeAssistantPanel } from './office-assistant-panel'
 import { NativeApiError } from './native-api'
 import { missingNativeAITask, reconnectNativeAITask, temporaryConnectionFailure } from './native-ai-recovery'
 import { requireWorkbookTranslation, workbookTranslationPrompt, type WorkbookTranslationLanguage } from './workbook-ai-translation'
+import { formatAddress } from '../../../reporting/workbook_engine/packages/xlsx-engine/src/cell-address'
 
 type Scope = 'range' | 'workbook'
+
+function visibilityDescription(operation: NativeOperation): string | undefined {
+  if (operation.kind !== 'applySheetOutline' || operation.summaryBelow !== undefined || operation.summaryRight !== undefined) return
+  const rows = Array.isArray(operation.rows) && operation.columns === undefined
+  const entries = rows ? operation.rows : operation.rows === undefined ? operation.columns : undefined
+  if (!Array.isArray(entries) || !entries.length) return
+  const { index, hidden } = entries[0]
+  if (typeof hidden !== 'boolean' || !Number.isInteger(index) ||
+      entries.some((entry, offset) => entry.level !== undefined || entry.hidden !== hidden || entry.index !== index + offset)) return
+  const label = (value: number) => rows ? String(value + 1) : formatAddress(0, value).slice(0, -1)
+  const range = entries.length === 1 ? label(index) : `${label(index)}–${label(index + entries.length - 1)}`
+  return `${operation.sheetName} · ${hidden ? '隐藏' : '显示'}${rows ? '行' : '列'} ${range}`
+}
 export type WorkbookAISelection = { sheetName: string; startRow: number; endRow: number; startColumn: number; endColumn: number }
 type Context = { expectedSha256: string; operations: NativeOperation[]; selection: WorkbookAISelection; scope: Scope; label: string; cells: Record<string, { value?: unknown; formula?: string }> }
 type Job = { editId: string; status: string; snapshotSha256: string; proposal?: { summary: string; operations: NativeOperation[] }; error?: { message: string } }
@@ -75,6 +89,7 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
     preview.querySelector('strong')!.textContent = job.proposal!.summary
     const list = preview.querySelector('ul')!; list.replaceChildren()
     for (const operation of job.proposal!.operations) {
+      const visibility = visibilityDescription(operation)
       const edits = operation.edits as { sheetName: string; row: number; column: number; writeValue?: boolean; cell?: { value?: unknown; formula?: string }; style?: unknown }[] | undefined
       if (operation.kind === 'applyCellEdits' && edits) for (const edit of edits) {
         let column = edit.column + 1, letters = ''
@@ -86,6 +101,16 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
       } else if (operation.kind === 'clearCellRange') {
         const item = document.createElement('li')
         item.textContent = `${operation.sheetName}!${operation.range} · 清空值和公式，保留格式`
+        list.append(item)
+      } else if (operation.kind === 'replaceRangeText') {
+        const item = document.createElement('li')
+        const mode = operation.wholeCell ? '整格匹配' : '部分匹配'
+        const casing = operation.matchCase ? '区分大小写' : '忽略大小写'
+        item.textContent = `${operation.sheetName}!${operation.range} · ${JSON.stringify(operation.find)} → ${JSON.stringify(operation.replace)}（${mode}，${casing}）`
+        list.append(item)
+      } else if (visibility) {
+        const item = document.createElement('li')
+        item.textContent = visibility
         list.append(item)
       } else {
         const item = document.createElement('li'); item.textContent = '结构化候选：' + operation.kind + ' · ' + JSON.stringify(operation); list.append(item)

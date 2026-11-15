@@ -18,7 +18,7 @@ import { applyChartSource } from './chart-sources'
 import { applyTableSource } from './table-source'
 import { applyNoteSource } from '../packages/xlsx-engine/src/notes'
 import { pivotTablePathsOnSheet } from '../packages/xlsx-engine/src/pivot-refresh'
-import { clearCellRange } from '../packages/xlsx-engine/src/workbook-write'
+import { clearCellRange, replaceRangeText } from '../packages/xlsx-engine/src/workbook-write'
 import { parseAddress } from '../packages/xlsx-engine/src/cell-address'
 import { normalizeLinkTarget } from '../packages/xlsx-engine/src/hyperlink-target'
 import { cellHyperlinkState, readPackageSheetHyperlinks } from '../packages/xlsx-engine/src/hyperlink-write'
@@ -30,7 +30,7 @@ import { upsertPivotControl, upsertPivotControlRequestSchema, syncOwnedPivotCont
 import { appendSheetSparklines, appendSheetSparklinesOperationSchema, assertSheetSparklinesShiftable, renameSparklineSheetReferences, removeSheetSparklines, removeSheetSparklinesOperationSchema, editSheetSparklineGroup, editSheetSparklineGroupOperationSchema } from '../packages/xlsx-engine/src/sparkline-additions'
 import { applySheetMerges } from './merges'
 import { removeSheetSplitPane } from './split-pane'
-import { replaceSheetDataValidations } from '../packages/xlsx-engine/src/data-validation-write'
+import { applyDataValidationSource, replaceSheetDataValidations } from '../packages/xlsx-engine/src/data-validation-write'
 import { replaceConditionalFormattingSnapshots } from '../packages/xlsx-engine/src/conditional-formatting-snapshot'
 import { replaceSheetConditionalFormatsOperationSchema } from '../packages/xlsx-engine/src/conditional-formatting-schema'
 import { applyNotePictureOperation, notePictureOperationSchema } from '../packages/xlsx-engine/src/note-pictures'
@@ -118,6 +118,15 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await clearCellRange(bytes, parsed.sheetName, parsed.range)
         break
       }
+      case 'replaceRangeText': {
+        const { sheetName, range, ...search } = z.object({
+          kind: z.literal('replaceRangeText'), sheetName: z.string().min(1).max(31),
+          range: z.string().max(24), find: z.string().min(1).max(32767), replace: z.string().max(255),
+          matchCase: z.boolean(), wholeCell: z.boolean(),
+        }).strict().parse(op)
+        bytes = await replaceRangeText(bytes, sheetName, range, search)
+        break
+      }
       case 'applySheetMerges': bytes = await applySheetMerges(bytes, op.sheetName, op.ranges); break
       case 'applySheetEdits':
         bytes = await renameSparklineSheetReferences(bytes, op.plan.renames)
@@ -148,6 +157,7 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await applyCellShift(bytes, parsed.sheetName, { range: parsed.range, shift: parsed.shift }); break
       }
       case 'applyDvRules': bytes = await applyDvRules(bytes, op.rules); break
+      case 'applyDataValidationSource': bytes = await applyDataValidationSource(bytes, op); break
       case 'replaceSheetDataValidations': {
         const parsed = z.object({
           kind: z.literal('replaceSheetDataValidations'), sheetName: z.string().min(1).max(31),
@@ -193,7 +203,10 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
       case 'addPivot': bytes = await addPivotTable(bytes, op.addition); break
       case 'applyColumnWidths': bytes = await applyColumnWidths(bytes, op.sheetName, op.entries); break
       case 'applySheetOutline': {
-        const entry = (max: number) => z.object({ index: z.number().int().min(0).max(max), level: z.number().int().min(0).max(7), collapsed: z.boolean(), hidden: z.boolean().optional() }).strict()
+        const entry = (max: number) => z.union([
+          z.object({ index: z.number().int().min(0).max(max), level: z.number().int().min(0).max(7), collapsed: z.boolean(), hidden: z.boolean().optional() }).strict(),
+          z.object({ index: z.number().int().min(0).max(max), hidden: z.boolean() }).strict(),
+        ])
         const parsed = z.object({ kind: z.literal('applySheetOutline'), sheetName: z.string().min(1).max(31), summaryBelow: z.boolean().optional(), summaryRight: z.boolean().optional(), rows: z.array(entry(1048575)).max(1048576).optional(), columns: z.array(entry(16383)).max(16384).optional() }).strict().parse(op)
         const normalize = (entries: NonNullable<typeof parsed.rows>) => entries.map(({ hidden, ...entry }) => ({ ...entry, ...(hidden !== undefined ? { hidden } : {}) }))
         bytes = await applySheetOutline(bytes, parsed.sheetName, {

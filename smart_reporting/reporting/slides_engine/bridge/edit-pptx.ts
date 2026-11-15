@@ -91,7 +91,7 @@ type Input = {
   /** 固定源 onAddSlide → addBlankSlide：每项新建一张空白页，沿用 layoutFrom 来源页的版式；新页索引为 来源页数 + k。 */
   newSlides?: ({ layoutFrom: number } | { duplicateOf: number } | { withLayout: string })[]
   /** 固定源 Insert ▸ Shapes（onPickShape）：预设形状，几何为 96dpi 像素；线条为 1pt 黑色连接符，其他为出厂填充色。 */
-  shapes?: { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number } }[]
+  shapes?: { slideIndex: number; kind: string; geometry: Geometry; flipH?: boolean; flipV?: boolean; draftKey?: string }[]
   /** 固定源 Insert ▸ Table（insertTable + table-insert.ts）：行列数；位置按固定源规格由幻灯片尺寸计算。 */
   tables?: { slideIndex: number; rows: number; cols: number }[]
   /** 固定源 Shape Format ▸ Shape Fill / Shape Outline（setFill / setStroke）：纯色或无填充；描边颜色与线宽（pt）或无轮廓。 */
@@ -196,9 +196,9 @@ const colorPattern = /^#[0-9a-fA-F]{6}$/
 const deletableTypes = new Set(['text', 'shape', 'picture'])
 const validSlideIndex = (value: unknown, count: number): value is number =>
   Number.isInteger(value) && (value as number) >= 0 && (value as number) < count
-const validGeometry = (value: Geometry | undefined) => !!value &&
+const validGeometry = (value: Geometry | undefined, line = false) => !!value &&
   [value.x, value.y, value.width, value.height].every((item) => Number.isFinite(item) && item >= 0 && item <= 100000) &&
-  value.width > 0 && value.height > 0
+  (line ? value.width > 0 || value.height > 0 : value.width > 0 && value.height > 0)
 
 const themes: Record<NonNullable<Input['theme']>, ThemeSpec> = {
   executive: { name: 'Executive', colors: { dk1: '#183247', lt1: '#F4F6F8', dk2: '#566773', lt2: '#D5DEDF', accent1: '#147D75', accent2: '#307C8A', accent3: '#718B49', accent4: '#C45A3C', accent5: '#6C7180', accent6: '#8A6D3B', hlink: '#0563C1', folHlink: '#954F72' } },
@@ -790,8 +790,17 @@ if (request.action === 'inspect') {
     if (typeof background.color !== 'string' || !colorPattern.test(background.color)) throw new Error('background_color_invalid')
   }
   if ((request.shapes ?? []).length > 500) throw new Error('shapes_invalid')
+  const shapeKeys = new Set<string>()
   for (const shape of request.shapes ?? []) {
-    if (!shape || typeof shape !== 'object' || Object.keys(shape).some(key => !['slideIndex', 'kind', 'geometry'].includes(key)) || !validSlideIndex(shape.slideIndex, slideCount) || typeof shape.kind !== 'string' || !shapePresets.presets.includes(shape.kind) || !validGeometry(shape.geometry)) throw new Error('shape_invalid')
+    if (!shape || typeof shape !== 'object' || Object.keys(shape).some(key => !['slideIndex', 'kind', 'geometry', 'flipH', 'flipV', 'draftKey'].includes(key)) ||
+        !validSlideIndex(shape.slideIndex, slideCount) || typeof shape.kind !== 'string' || !shapePresets.presets.includes(shape.kind) || !validGeometry(shape.geometry, shapePresets.lines.includes(shape.kind)) ||
+        (['flipH', 'flipV'] as const).some(key => shape[key] !== undefined && (!shapePresets.lines.includes(shape.kind) || typeof shape[key] !== 'boolean'))) {
+      throw new Error('shape_invalid')
+    }
+    if (shape.draftKey !== undefined) {
+      if (typeof shape.draftKey !== 'string' || !/^[0-9a-f-]{36}$/.test(shape.draftKey) || shapeKeys.has(shape.draftKey)) throw new Error('shape_invalid')
+      shapeKeys.add(shape.draftKey)
+    }
   }
   for (const box of request.textBoxes ?? []) {
     if (!validSlideIndex(box.slideIndex, slideCount)) throw new Error('textbox_slide_index_invalid')
@@ -1074,14 +1083,20 @@ if (request.action === 'inspect') {
   applyBackgroundImages(opened, originalSlides, backgroundImages)
   applyBackgroundImageReuses(opened, originalSlides, backgroundReuses)
   applyBackgroundOps(opened, originalSlides, backgroundOps)
+  const draftShapes: { path: string; draftKey: string; spid: number }[] = []
   for (const shape of request.shapes ?? []) {
     const { x, y, width, height } = shape.geometry
     const line = shapePresets.lines.includes(shape.kind)
-    addElement(originalSlides[shape.slideIndex]!, {
+    const slide = originalSlides[shape.slideIndex]!
+    const inserted = addElement(slide, {
       kind: shape.kind,
       offset: { x: Math.round(x * 9525), y: Math.round(y * 9525), cx: Math.round(width * 9525), cy: Math.round(height * 9525) },
+      flipH: shape.flipH,
+      flipV: shape.flipV,
       ...(line ? { stroke: { color: '#000000', widthEmu: 12700 } } : { fillColor: '#C43E1C' }),
     })
+    const spid = elementSpid(inserted)
+    if (shape.draftKey && spid !== null) draftShapes.push({ path: slide.path, draftKey: shape.draftKey, spid })
   }
   for (const box of request.textBoxes ?? []) {
     const { x, y, width, height } = box.geometry
@@ -1210,6 +1225,7 @@ if (request.action === 'inspect') {
   }
   process.stdout.write(JSON.stringify({
     slideCount: opened.deck.slides.length,
+    draftShapes,
     issues,
   }))
 }

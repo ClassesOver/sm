@@ -183,3 +183,12 @@ def initialize_schema(connection):
             answer="历史回答缺少完整来源记录，请重新提问。", citations=[], sources=[],
         ))
         operations.alter_column(knowledge_turns.name, "sources", nullable=False, schema=schema)
+
+# Separate capability versions keep a media update from overwriting web-search credentials.
+provider_settings = Table(
+    'office_provider_settings', metadata,
+    Column('company', ForeignKey('office_companies.id'), primary_key=True),
+    Column('capability', String(32), primary_key=True),
+    Column('version', Integer, nullable=False),
+    Column('document', JSON, nullable=False),
+)
