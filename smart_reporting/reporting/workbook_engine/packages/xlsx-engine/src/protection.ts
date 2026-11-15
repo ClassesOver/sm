@@ -6,19 +6,14 @@
 
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { assemblePackage, createBufferEntrySource } from './zip'
-import { normalizeEditableRangeRef, readProtectedRanges, readSheetProtection } from './protection-read'
+import {
+  DEFAULT_SHEET_SELECTION_PERMISSIONS, normalizeEditableRangeRef, readProtectedRanges, readSheetProtection,
+  SHEET_PASSWORD_ATTRIBUTES, SHEET_PROTECTION_DEFAULT_ALLOWED, SHEET_PROTECTION_PERMISSIONS,
+} from './protection-read'
 
 export class SheetProtectionError extends Error {}
 
 const ELEMENT_PATTERN = /<sheetProtection\b[^>]*\/>|<sheetProtection\b[^>]*>\s*<\/sheetProtection>/
-const PERMISSIONS = [
-  'selectLockedCells', 'selectUnlockedCells', 'formatCells', 'formatColumns', 'formatRows',
-  'insertColumns', 'insertRows', 'insertHyperlinks', 'deleteColumns', 'deleteRows',
-  'sort', 'autoFilter', 'pivotTables', 'objects', 'scenarios',
-]
-const DEFAULT_ALLOWED = new Set(['selectLockedCells', 'selectUnlockedCells'])
-const OPEN_XML_ALLOWED_WHEN_OMITTED = new Set([...DEFAULT_ALLOWED, 'objects', 'scenarios'])
-const PASSWORD_ATTRIBUTES = /\s(?:password|hashValue|algorithmName|saltValue|spinCount)\s*=/
 
 export function applySheetProtection(worksheetXml: string, protect: boolean, allow?: Record<string, boolean>): string {
   const existing = worksheetXml.match(ELEMENT_PATTERN)
@@ -26,10 +21,10 @@ export function applySheetProtection(worksheetXml: string, protect: boolean, all
     throw new SheetProtectionError('Worksheet protection uses an unsupported XML layout.')
   }
   if (allow !== undefined &&
-      (!protect || Object.entries(allow).some(([key, value]) => !PERMISSIONS.includes(key) || typeof value !== 'boolean'))) {
+      (!protect || Object.entries(allow).some(([key, value]) => !SHEET_PROTECTION_PERMISSIONS.includes(key) || typeof value !== 'boolean'))) {
     throw new SheetProtectionError('Invalid worksheet protection permissions.')
   }
-  if (existing && (!protect || allow !== undefined) && PASSWORD_ATTRIBUTES.test(existing[0])) {
+  if (existing && (!protect || allow !== undefined) && SHEET_PASSWORD_ATTRIBUTES.test(existing[0])) {
     throw new SheetProtectionError('This sheet is protected with a password — changing its protection is not supported.')
   }
   if (!protect) {
@@ -38,15 +33,15 @@ export function applySheetProtection(worksheetXml: string, protect: boolean, all
   }
   let element = '<sheetProtection sheet="1" objects="1" scenarios="1"/>'
   if (allow !== undefined) {
-    const flags = PERMISSIONS.flatMap((permission) => {
-      const permitted = allow[permission] ?? DEFAULT_ALLOWED.has(permission)
-      return permitted === OPEN_XML_ALLOWED_WHEN_OMITTED.has(permission) ? []
+    const flags = SHEET_PROTECTION_PERMISSIONS.flatMap((permission) => {
+      const permitted = allow[permission] ?? DEFAULT_SHEET_SELECTION_PERMISSIONS.has(permission)
+      return permitted === SHEET_PROTECTION_DEFAULT_ALLOWED.has(permission) ? []
         : [` ${permission}="${permitted ? '0' : '1'}"`]
     })
     element = `<sheetProtection sheet="1"${flags.join('')}/>`
     if (existing) {
       const updated = existing[0]
-        .replace(new RegExp(`\\s(?:sheet|${PERMISSIONS.join('|')})\\s*=\\s*(?:"[^"]*"|'[^']*')`, 'g'), '')
+        .replace(new RegExp(`\\s(?:sheet|${SHEET_PROTECTION_PERMISSIONS.join('|')})\\s*=\\s*(?:"[^"]*"|'[^']*')`, 'g'), '')
         .replace('<sheetProtection', () => `<sheetProtection sheet="1"${flags.join('')}`)
       return worksheetXml.replace(existing[0], () => updated)
     }

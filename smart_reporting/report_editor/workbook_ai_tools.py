@@ -464,7 +464,7 @@ class WorkbookAIToolkit(Toolkit):
                 'rule.kind 支持 number、text、blank、duplicate、top10、formula、colorScale、dataBar。'
                 '前六种规则使用 format(fillColor?,fontColor?,bold?,italic?)。'
                 '用 clear_conditional_formats(sheetId) 清除指定工作表的全部条件格式。'
-                '用 protect_sheet(sheetId,protected,allow?) 设置无密码工作表保护。'
+                '用 read_sheet_features 读取 protection.allow，再用 protect_sheet(sheetId,protected,allow?) 设置无密码工作表保护。'
                 'allow 可指定 selectLockedCells、selectUnlockedCells、formatCells、formatColumns、formatRows、'
                 'insertColumns、insertRows、insertHyperlinks、deleteColumns、deleteRows、sort、autoFilter、'
                 'pivotTables、objects、scenarios 等允许操作。仅整簿授权可修改，禁止提交密码。'

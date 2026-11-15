@@ -54,6 +54,14 @@ async def test_source_sheet_protection_round_trips_excel_permission_flags():
     assert protection.sheet and protection.selectLockedCells
     assert not protection.sort and not protection.autoFilter and protection.insertRows
     assert workbook['Sheet']['A1'].value == '=2+3' and workbook['Other'].protection.sheet
+    inspected = await asyncio.to_thread(inspect_office, 'xlsx', written)
+    reader = WorkbookAIToolkit(model=inspected, scope='workbook', selection={}, preview=preview)
+    protection = reader.read_sheet_features('Sheet')['features']['protection']
+    assert protection['protected'] and not protection['hasPassword']
+    assert protection['allow']['autoFilter'] and protection['allow']['sort']
+    assert not protection['allow']['selectLockedCells'] and not protection['allow']['insertRows']
+    scoped = WorkbookAIToolkit(model=inspected, scope='range', selection={'sheetName': 'Sheet'}, preview=preview)
+    assert scoped.read_sheet_features('Sheet')['features'] == {}
 
     source = written
     tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)

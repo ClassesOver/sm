@@ -44,6 +44,7 @@ export function readProtectedRanges(worksheetXml: string): EditableRange[] {
 export interface SheetProtectionModel {
   readonly protected: boolean
   readonly hasPassword: boolean
+  readonly allow: Readonly<Record<string, boolean>>
 }
 
 export interface WorkbookProtectionModel {
@@ -53,12 +54,28 @@ export interface WorkbookProtectionModel {
 
 const truthy = (value: string | undefined) => value === '1' || value === 'true'
 
+export const SHEET_PROTECTION_PERMISSIONS: readonly string[] = [
+  'selectLockedCells', 'selectUnlockedCells', 'formatCells', 'formatColumns', 'formatRows',
+  'insertColumns', 'insertRows', 'insertHyperlinks', 'deleteColumns', 'deleteRows',
+  'sort', 'autoFilter', 'pivotTables', 'objects', 'scenarios',
+]
+export const DEFAULT_SHEET_SELECTION_PERMISSIONS = new Set(['selectLockedCells', 'selectUnlockedCells'])
+export const SHEET_PROTECTION_DEFAULT_ALLOWED = new Set([...DEFAULT_SHEET_SELECTION_PERMISSIONS, 'objects', 'scenarios'])
+export const SHEET_PASSWORD_ATTRIBUTES = /\s(?:password|hashValue|algorithmName|saltValue|spinCount)\s*=/
+
 export function readSheetProtection(worksheetXml: string): SheetProtectionModel | undefined {
   const element = worksheetXml.match(/<(?:\w+:)?sheetProtection\b[^>]*>/)?.[0]
   if (!element) return undefined
+  const attributes = new Map([...element.matchAll(/\s([\w.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g)]
+    .map(([, key, double, single]) => [key, double ?? single]))
   return {
-    protected: truthy(readXmlAttribute(element, 'sheet')),
-    hasPassword: /\b(?:password|hashValue)="/.test(element),
+    protected: truthy(attributes.get('sheet')),
+    hasPassword: SHEET_PASSWORD_ATTRIBUTES.test(element),
+    allow: Object.fromEntries(SHEET_PROTECTION_PERMISSIONS.map((permission) => {
+      const value = attributes.get(permission)
+      return [permission, value === undefined ? SHEET_PROTECTION_DEFAULT_ALLOWED.has(permission)
+        : value === '0' || value === 'false']
+    })),
   }
 }
 
