@@ -13,7 +13,7 @@ from openpyxl.utils.cell import get_column_letter
 from pydantic import Field
 
 from ..reporting.contract import StrictModel
-from .workbook_ai_tools import WorkbookAIToolkit, _bounds
+from .workbook_ai_tools import WorkbookAIToolkit, _bounds, _cell_address
 
 
 class NativeWorkbookReadAnswer(StrictModel):
@@ -124,8 +124,10 @@ class NativeWorkbookReadTools:
                    offset: int = 0) -> dict[str, Any]:
         """按JSON字符分页读取明确授权的离散格；沿nextOffset读完才登记覆盖。"""
         if (not isinstance(addresses, list) or not addresses or
-                any(not isinstance(address, str) or ':' in address for address in addresses) or
-                len(set(addresses)) != len(addresses)):
+                any(not isinstance(address, str) or ':' in address for address in addresses)):
+            raise ValueError('native_workbook_ai_addresses_invalid')
+        addresses = [_cell_address(address) for address in addresses]
+        if len(set(addresses)) != len(addresses):
             raise ValueError('native_workbook_ai_addresses_invalid')
         sheet = self._tools._sheet(sheetId)
         for address in addresses:

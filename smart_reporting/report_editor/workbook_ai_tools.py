@@ -22,12 +22,27 @@ from .workbook_ai_charts import validate_chart_candidates
 
 
 def _bounds(address: str) -> tuple[int, int, int, int]:
-    if not isinstance(address, str) or re.fullmatch(r'[A-Z]{1,3}[1-9][0-9]{0,6}(?::[A-Z]{1,3}[1-9][0-9]{0,6})?', address) is None:
+    if not isinstance(address, str):
         raise ValueError('workbook_ai_range_invalid')
-    c0, r0, c1, r1 = range_boundaries(address)
+    parts = [part.strip().upper() for part in address.strip().split(':')]
+    if not 1 <= len(parts) <= 2 or any(
+        re.fullmatch(r'\$?[A-Z]{1,3}\$?[1-9][0-9]{0,6}', part) is None for part in parts
+    ):
+        raise ValueError('workbook_ai_range_invalid')
+    c0, r0, _, _ = range_boundaries(parts[0])
+    c1, r1, _, _ = range_boundaries(parts[-1])
+    r0, r1 = min(r0, r1), max(r0, r1)
+    c0, c1 = min(c0, c1), max(c0, c1)
     if not (1 <= r0 <= r1 <= 1048576 and 1 <= c0 <= c1 <= 16384):
         raise ValueError('workbook_ai_range_invalid')
     return r0 - 1, r1 - 1, c0 - 1, c1 - 1
+
+
+def _cell_address(address: str) -> str:
+    if not isinstance(address, str) or ':' in address:
+        raise ValueError('workbook_ai_range_invalid')
+    row, _, column, _ = _bounds(address)
+    return f'{get_column_letter(column + 1)}{row + 1}'
 
 
 def _matches_expected_value(actual: Any, expected: Any) -> bool:
@@ -90,7 +105,9 @@ class WorkbookAIToolkit(Toolkit):
         ])
 
     def _sheet(self, sheetId: str | None) -> dict[str, Any]:
-        identity = sheetId or next(iter(self._sheets))
+        identity = sheetId if sheetId is not None else (
+            self._selection.get('sheetName') or next(iter(self._sheets))
+        )
         if identity not in self._sheets:
             raise ValueError('workbook_ai_selection_mismatch')
         return self._sheets[identity]
@@ -139,8 +156,9 @@ class WorkbookAIToolkit(Toolkit):
 
     def read_cells(self, addresses: list[str], sheetId: str | None = None) -> dict[str, Any]:
         """读取最多100个离散单元格，包含真实值、公式和现有格式。"""
-        if not 1 <= len(addresses) <= 100 or any(':' in address for address in addresses):
+        if not isinstance(addresses, list) or not 1 <= len(addresses) <= 100:
             raise ValueError('workbook_ai_read_limit')
+        addresses = [_cell_address(address) for address in addresses]
         sheet = self._sheet(sheetId)
         for address in addresses:
             self._authorized(sheet, _bounds(address))
@@ -339,17 +357,18 @@ class WorkbookAIToolkit(Toolkit):
         sheet = self._sheet(operation.get('sheetId'))
         name = sheet['name']
         if op in {'set_cell', 'set_formula', 'clear_cell'}:
-            bounds = _bounds(operation['address'])
+            address = _cell_address(operation['address'])
+            bounds = _bounds(address)
             row, _, column, _ = bounds
             if ':' in operation['address']:
                 raise ValueError('workbook_ai_range_invalid')
             self._authorized(sheet, bounds)
-            key = (name, operation['address'])
+            key = (name, address)
             expected_key = 'expectedValue' if op == 'set_cell' else 'expectedFormula' if op == 'set_formula' else None
             if expected_key is not None and expected_key in operation:
                 if cell_state is None:
                     raise ValueError('workbook_ai_precondition_requires_cell_batch')
-                before = cell_state.get(key, sheet.get('cells', {}).get(operation['address'], {'value': None}))
+                before = cell_state.get(key, sheet.get('cells', {}).get(address, {'value': None}))
                 if expected_key == 'expectedValue':
                     matches = _matches_expected_value(before.get('value'), operation[expected_key])
                 else:
