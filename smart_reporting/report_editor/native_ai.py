@@ -593,9 +593,13 @@ class NativeAIService:
             if job.status != "running":
                 return
             if job.word_task_reference is not None:
+                dispatch_options = {}
+                if job.authorization_check is not None:
+                    dispatch_options['authorization_check'] = job.authorization_check
                 planned = await asyncio.wait_for(
                     self.word_task_dispatcher.execute(
                         job.word_task_reference, shutdown_requested=lambda: self._closed,
+                        **dispatch_options,
                     ),
                     timeout=self.timeout_seconds,
                 )

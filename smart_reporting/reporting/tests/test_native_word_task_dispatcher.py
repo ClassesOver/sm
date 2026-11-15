@@ -1,5 +1,7 @@
 """Fail-closed opt-in Word task dispatch seam."""
 from importlib import import_module, util
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,6 +19,22 @@ def test_explicit_word_dispatch_without_transport_never_falls_back():
     with pytest.raises(Exception) as error:
         dispatcher.require_available()
     assert error.value.code == 'native_word_task_unavailable'
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(('checks', 'read_count'), [([False], 0), ([True, False], 1)])
+async def test_word_dispatch_checks_grant_around_completed_receipt(checks, read_count):
+    module = adapter()
+    scope = SimpleNamespace(external_run_id='word-receipt')
+    task = SimpleNamespace(scope=scope, state=module.TaskState.COMPLETED)
+    repository = SimpleNamespace(get_task_snapshot=AsyncMock(return_value=task))
+    dispatcher = module.WordTaskDispatcher(repository, None, None, scope_factory=object(),
+                                           secret='s' * 32, transport=object(), enabled=True)
+    dispatcher._completed_proposal = AsyncMock(return_value=object())
+    with pytest.raises(module.ReportingError) as error:
+        await dispatcher.execute(SimpleNamespace(scope=scope), authorization_check=AsyncMock(side_effect=checks))
+    assert error.value.code == 'native_permission_denied'
+    assert dispatcher._completed_proposal.await_count == read_count
 
 
 @pytest.mark.anyio
