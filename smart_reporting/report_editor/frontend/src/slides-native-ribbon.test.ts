@@ -580,9 +580,29 @@ it('explains why unavailable upstream commands cannot run and prevents dispatch'
   const unavailable = host.querySelector<HTMLButtonElement>('[data-command="exportImages"]')!
 
   expect(unavailable.disabled).toBe(true)
-  expect(unavailable.title).toMatch(/写回操作/)
+  expect(unavailable.title).toBe('当前会话未开放图片导出。')
   unavailable.click()
   expect(onAction).not.toHaveBeenCalled()
+  ribbon.dispose()
+})
+
+it('dispatches the GenOffice PNG and JPG commands independently', () => {
+  const host = document.createElement('div')
+  const onAction = vi.fn()
+  document.documentElement.lang = 'zh-CN'
+  const ribbon = createSlidesNativeRibbon(host, { onAction, imageExportAvailable: true })
+  document.documentElement.lang = ''
+  for (const [id, source, label] of [
+    ['exportImages', 'onExportImages', '导出为 PNG…'],
+    ['exportImagesJpg', 'onExportImagesJpg', '导出为 JPG…'],
+  ]) {
+    const button = host.querySelector<HTMLButtonElement>('[data-command="' + id + '"]')!
+    expect(button.disabled).toBe(false)
+    expect(button.textContent).toBe(label)
+    expect(button.dataset.sourceAction).toBe(source)
+    button.click()
+    expect(onAction.mock.lastCall?.[0]).toBe(id)
+  }
   ribbon.dispose()
 })
 

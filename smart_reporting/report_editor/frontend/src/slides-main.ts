@@ -1312,19 +1312,24 @@ function changeGroup(ungroup: boolean) {
 }
 /** 固定源 File ▸ Export Images：当前草稿渲染树中的可见页 → PNG/JPG → ZIP 下载（浏览器宿主等效于写入文件夹）。 */
 let exportingImages = false
-function openExportImagesDialog() {
-  if (!nativeDraft || disposed || saving || mutationPending || exportingImages) return
-  const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-export-images-dialog'; dialog.setAttribute('aria-label', '导出图片')
-  dialog.innerHTML = '<h3>导出图片</h3><label>格式 <select name="format" aria-label="图片格式"><option value="png">PNG</option><option value="jpg">JPG</option></select></label><p>导出全部可见页面（跳过隐藏页），包含尚未保存的修改，打包为一个 ZIP 下载。</p><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">导出</button></div>'
+function openExportImagesDialog(format: 'png' | 'jpg') {
+  if (!nativeDraft || loading || disposed || locked() || mutationPending || exportingImages) return
+  const draft = nativeDraft
+  const title = `导出为 ${format.toUpperCase()}`
+  const dialog = document.createElement('dialog'); dialog.className = 'slides-table-dialog slides-export-images-dialog'; dialog.setAttribute('aria-label', title)
+  dialog.innerHTML = `<h3>${title}</h3><p>导出全部可见页面（跳过隐藏页），包含尚未保存的修改，打包为一个 ZIP 下载。</p><p role="alert"></p><div class="slides-table-actions"><button type="button" value="cancel">取消</button><button type="button" value="ok">导出</button></div>`
   host.append(dialog)
   dialog.addEventListener('close', () => dialog.remove())
   dialog.querySelector<HTMLButtonElement>('button[value=cancel]')!.addEventListener('click', () => dialog.close())
   dialog.querySelector<HTMLButtonElement>('button[value=ok]')!.addEventListener('click', async () => {
     const alert = dialog.querySelector('[role=alert]')!, ok = dialog.querySelector<HTMLButtonElement>('button[value=ok]')!
-    const format = dialog.querySelector<HTMLSelectElement>('select[name=format]')!.value === 'jpg' ? 'jpg' : 'png'
+    if (exportingImages || !flushSlideOutputInputs('请先确认或取消当前编辑，再导出图片')) {
+      alert.textContent = '请先确认或取消当前编辑，再导出图片'
+      return
+    }
     exportingImages = true; ok.disabled = true; alert.textContent = '正在渲染页面…'
     try {
-      const tree = await request<{slides:(RenderSlide & {slideIndex:number;hidden?:boolean})[]}>('render-tree', { method: 'POST', body: JSON.stringify({ expectedSha256: deck.sha256, operations: nativeDraft!.operations }) })
+      const tree = await request<{slides:(RenderSlide & {slideIndex:number;hidden?:boolean})[]}>('render-tree', { method: 'POST', body: JSON.stringify({ expectedSha256: deck.sha256, operations: draft.operations }) })
       if (!Array.isArray(tree.slides) || !tree.slides.every(slide => Array.isArray(slide.nodes) && Number.isFinite(slide.widthPx) && slide.widthPx > 0 && Number.isFinite(slide.heightPx) && slide.heightPx > 0)) throw new Error('渲染快照无效')
       const visible = tree.slides.filter(slide => !slide.hidden)
       if (!visible.length) throw new Error('没有可导出的可见页面')
@@ -2458,6 +2463,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   pdfExportAvailable: !!pdfExport,
   saveAsAvailable: !!saveAsActions,
   openFileAvailable: !!openFileDialog,
+  imageExportAvailable: !!nativeDraft,
   onAssistant: sharedShell?.onAssistant ?? (sharedShell?.nativeAI ? () => nativeAIHost?.open() : undefined),
   onAction(command, value) {
     if (command === 'openFile') {
@@ -2482,7 +2488,10 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     if(command==='paste'){pasteObjects();return}
     if(command==='formatBrush'){startBrush(value==='continuous');return}
     if(command==='insertLink'){openLinkDialog();return}
-    if (command === 'exportImages') { openExportImagesDialog(); return }
+    if (command === 'exportImages' || command === 'exportImagesJpg') {
+      openExportImagesDialog(command === 'exportImages' ? 'png' : 'jpg')
+      return
+    }
     if (command === 'startShow' || command === 'startShowCurrent') { stopBrush(); void startSlidesShow(command === 'startShowCurrent'); return }
     if (command === 'animationPreview') { stopBrush(); void startAnimationPreview(); return }
     if (command === 'groupObjects' || command === 'ungroupObjects') { changeGroup(command === 'ungroupObjects'); return }

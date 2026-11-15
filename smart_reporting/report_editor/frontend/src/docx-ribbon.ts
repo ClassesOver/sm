@@ -702,7 +702,24 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         }
         if(id==='review'&&label==='保护文档'&&tools?.protect){command.textContent=label;command.dataset.action='review-protect';command.addEventListener('click',tools.protect);items.append(command);continue}
         if(id==='review' && label==='比较' && reviewCommands?.compare){command.textContent=label;command.dataset.action='review-compare';command.addEventListener('click',reviewCommands.compare);items.append(command);continue}
-        if(id==='pictureFormat'&&tools?.pictureFormat){const mapping={'位置':'position','环绕文字':'wrap','对齐':'align','旋转':'rotateRight','向左旋转':'rotateLeft','水平翻转':'flipH','垂直翻转':'flipV','高度':'size','宽度':'size','重置大小':'resetSize'} as const;const action=mapping[label as keyof typeof mapping];if(action){command.textContent=label;command.dataset.pictureFormatAction=action;command.dataset.action='picture-format-'+action;const reason=tools.pictureFormat.reason();command.disabled=reason!==null;command.title=reason??label;command.onmousedown=event=>event.preventDefault();command.onclick=()=>tools.pictureFormat?.open(action);items.append(command);continue}}
+        const pictureFormat = tools?.pictureFormat
+        const arrangeAction = label === '位置' ? 'position' : label === '环绕文字' ? 'wrap' : undefined
+        const pictureActions = { '对齐': 'align', '旋转': 'rotateRight', '向左旋转': 'rotateLeft', '水平翻转': 'flipH', '垂直翻转': 'flipV', '高度': 'size', '宽度': 'size', '重置大小': 'resetSize' } as const
+        const pictureAction = id === 'pictureFormat'
+          ? arrangeAction ?? pictureActions[label as keyof typeof pictureActions]
+          : id === 'layout' && groupLabel === '排列' ? arrangeAction : undefined
+        if (pictureFormat && pictureAction) {
+          command.textContent = label
+          command.dataset.pictureFormatAction = pictureAction
+          command.dataset.action = 'picture-format-' + pictureAction
+          const reason = pictureFormat.reason()
+          command.disabled = reason !== null
+          command.title = reason ?? label
+          command.onmousedown = event => event.preventDefault()
+          command.onclick = () => pictureFormat.open(pictureAction)
+          items.append(command)
+          continue
+        }
         if (id === 'pictureFormat' && pictures && ['替换图片', '删除背景', '裁剪'].includes(label)) {
           const action = label === '替换图片' ? 'replace' : label === '裁剪' ? 'crop' : 'cutout'
           const unavailable = pictures.reason()

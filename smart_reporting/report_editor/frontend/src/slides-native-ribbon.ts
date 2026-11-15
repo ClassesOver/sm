@@ -69,7 +69,8 @@ const tabs: Tab[] = [
     { label: 'Export', controls: [
       { id: 'print', label: 'Print' },
       { id: 'exportPdf', label: 'Export PDF', icon: Download, sourceActionId: 'onExportPdf' },
-      { id: 'exportImages', label: 'Export Images', sourceActionId: 'onExportImages' },
+      { id: 'exportImages', label: 'Export as PNG', sourceActionId: 'onExportImages' },
+      { id: 'exportImagesJpg', label: 'Export as JPG', sourceActionId: 'onExportImagesJpg' },
     ] },
     { label: 'Save', controls: [
       { id: 'saveRevision', label: 'Save Revision', sourceIcon: IconSave },
@@ -253,6 +254,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   pdfExportAvailable?: boolean
   saveAsAvailable?: boolean
   openFileAvailable?: boolean
+  imageExportAvailable?: boolean
   layouts?: NativeSlidesLayout[]
   locked?: boolean
 }): NativeSlidesRibbon {
@@ -372,6 +374,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           : localize(control.label)
         const unavailable = control.id === 'exportPdf' && !options.pdfExportAvailable ? '当前会话未开放 PDF 导出。'
           : control.id === 'saveAs' && !options.saveAsAvailable ? '当前会话未开放另存为。'
+          : (control.id === 'exportImages' || control.id === 'exportImagesJpg') && !options.imageExportAvailable ? '当前会话未开放图片导出。'
           : control.id === 'openFile' && !options.openFileAvailable ? '当前会话未开放文件导入。' : control.unavailable
         const controlId = `slides-native-command-${tab.id}-${control.id}`
         const sourceGlyph = control.sourceIcon ?? slidesRibbonSourceIcons[control.id]

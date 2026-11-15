@@ -189,55 +189,75 @@ it('dispatches source cell style presets and prevents edits on a protected sheet
   ribbon.dispose()
 })
 
-it('opens the data table command from Data and respects read-only state', () => {
+it('dispatches What-If Analysis choices and respects workbook editing state', () => {
   const command = vi.fn()
-  let editable = true
-  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0 })
+  let editable = true, protectedSheet = false, selected = true
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => editable, protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+    hasSelection: () => selected, rotation: () => 0,
+  })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="data-table-open"]')!
-  expect(button).not.toBeNull()
-  button.click()
-  expect(command).toHaveBeenCalledWith('data-table-open')
-  editable = false; ribbon.refreshState()
-  expect(button.disabled).toBe(true)
-  ribbon.dispose()
-})
-
-it('dispatches outline grouping and detail commands and disables them in read-only mode', () => {
-  const command = vi.fn()
-  let editable = true
-  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0 })
-  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  const ids = ['outline-group:rows', 'outline-group:cols', 'outline-ungroup:rows', 'outline-ungroup:cols', 'outline-hide-detail', 'outline-show-detail']
-  for (const id of ids) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
-    expect(button.disabled).toBe(false)
-    button.click()
+  const select = document.querySelector<HTMLSelectElement>('[data-ribbon-control="what-if-analysis"]')!
+  expect(select).not.toBeNull()
+  expect(Array.from(select.options, option => [option.value, option.text])).toEqual([
+    ['', '模拟分析'], ['goal-seek-open', '单变量求解'], ['data-table-open', '数据表'],
+  ])
+  for (const id of ['goal-seek-open', 'data-table-open']) {
+    select.value = id
+    select.dispatchEvent(new Event('change'))
     expect(command).toHaveBeenLastCalledWith(id)
+    expect(select.value).toBe('')
   }
   editable = false; ribbon.refreshState()
-  for (const id of ids) expect(document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!.disabled).toBe(true)
+  expect(select.disabled).toBe(true)
+  select.value = 'goal-seek-open'
+  select.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledTimes(2)
+  editable = true; protectedSheet = true; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  protectedSheet = false; selected = false; ribbon.refreshState()
+  expect(select.disabled).toBe(true)
+  selected = true; ribbon.refreshState()
+  expect(select.disabled).toBe(false)
   ribbon.dispose()
 })
 
-it('dispatches explicit outline detail, clear and summary controls with current summary state', () => {
+it('dispatches GenOffice outline menu choices and shows current summary placement', () => {
   const command = vi.fn()
-  let below = true, right = false
-  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => true, rotation: () => 0,
+  let editable = true, below = true, right = false
+  const ribbon = mountWorkbookRibbon(document.body, command, { editable: () => editable, rotation: () => 0,
     outlineSummary: () => ({ below, right }) })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Data"]')!.click()
-  for (const id of ['outline-hide-detail:rows', 'outline-hide-detail:cols', 'outline-show-detail:rows', 'outline-show-detail:cols', 'outline-clear', 'outline-summary-below', 'outline-summary-right']) {
-    const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)
-    expect(button, id).not.toBeNull()
-    expect(button!.disabled).toBe(false); button!.click()
-    expect(command).toHaveBeenLastCalledWith(id)
+  const group = document.querySelector<HTMLSelectElement>('[data-ribbon-control="outline-group"]')!
+  const ungroup = document.querySelector<HTMLSelectElement>('[data-ribbon-control="outline-ungroup"]')!
+  expect(group).not.toBeNull()
+  expect(ungroup).not.toBeNull()
+  expect(Array.from(group.options, option => [option.value, option.text])).toEqual([
+    ['', '组合'], ['outline-group:rows', '组合行'], ['outline-group:cols', '组合列'],
+    ['outline-hide-detail:rows', '隐藏明细（行）'], ['outline-hide-detail:cols', '隐藏明细（列）'],
+    ['outline-summary-below', '✓ 汇总行在明细数据下方'], ['outline-summary-right', '汇总列在明细数据右侧'],
+  ])
+  expect(Array.from(ungroup.options, option => [option.value, option.text])).toEqual([
+    ['', '取消组合'], ['outline-ungroup:rows', '取消组合行'], ['outline-ungroup:cols', '取消组合列'],
+    ['outline-show-detail:rows', '显示明细（行）'], ['outline-show-detail:cols', '显示明细（列）'],
+    ['outline-clear', '清除分级显示'],
+  ])
+  expect(document.querySelector('[data-ribbon-command="subtotal-open"]')).not.toBeNull()
+  for (const select of [group, ungroup]) {
+    expect(select.disabled).toBe(false)
+    for (const option of Array.from(select.options).slice(1)) {
+      select.value = option.value
+      select.dispatchEvent(new Event('change'))
+      expect(command).toHaveBeenLastCalledWith(option.value)
+      expect(select.value).toBe('')
+    }
   }
-  const summary = (axis: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="outline-summary-${axis}"]`)!
-  expect(summary('below').getAttribute('aria-pressed')).toBe('true')
-  expect(summary('right').getAttribute('aria-pressed')).toBe('false')
   below = false; right = true; ribbon.refreshState()
-  expect(summary('below').getAttribute('aria-pressed')).toBe('false')
-  expect(summary('right').getAttribute('aria-pressed')).toBe('true')
+  expect(group.querySelector('[value="outline-summary-below"]')!.textContent).toBe('汇总行在明细数据下方')
+  expect(group.querySelector('[value="outline-summary-right"]')!.textContent).toBe('✓ 汇总列在明细数据右侧')
+  editable = false; ribbon.refreshState()
+  expect(group.disabled).toBe(true)
+  expect(ungroup.disabled).toBe(true)
   ribbon.dispose()
 })
 

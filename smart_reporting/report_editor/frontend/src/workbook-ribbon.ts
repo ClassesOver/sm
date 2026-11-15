@@ -371,21 +371,7 @@ const commandLabels: Record<string, string> = {
   "merge-workbooks": "合并工作簿",
   "refresh-all": "全部刷新",
   "queries-open": "查询",
-  "forecast-sheet": "预测工作表",
   "what-if-analysis": "模拟分析",
-  "outline-group:rows": "组合行",
-  "outline-group:cols": "组合列",
-  "outline-ungroup:rows": "取消行组合",
-  "outline-ungroup:cols": "取消列组合",
-  "outline-hide-detail": "隐藏明细",
-  "outline-show-detail": "显示明细",
-  "outline-hide-detail:rows": "隐藏行明细",
-  "outline-hide-detail:cols": "隐藏列明细",
-  "outline-show-detail:rows": "显示行明细",
-  "outline-show-detail:cols": "显示列明细",
-  "outline-summary-below": "汇总行在明细下方",
-  "outline-summary-right": "汇总列在明细右侧",
-  "outline-clear": "清除分级显示",
   "chart-title": "图表标题",
   "chart-axis-cat": "分类轴",
   "chart-axis-val": "数值轴",
@@ -550,11 +536,8 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('快速填充', 'flash-fill', 'flash-fill'), action('删除重复值', 'remove-duplicates-open', 'remove-duplicates-open'),
       action('数据验证', 'dv-open', 'dv-open'), action('合并计算', 'consolidate-open', 'consolidate-open'),
     ] },
-    { title: '预测', actions: [action('forecast-sheet', 'forecast-sheet'), action('单变量求解', 'goal-seek-open', 'goal-seek-open'), action('模拟运算表', 'data-table-open', 'data-table-open')] },
-    { title: '分级显示', actions: [
-      ...['outline-group:rows', 'outline-group:cols', 'outline-ungroup:rows', 'outline-ungroup:cols', 'outline-hide-detail', 'outline-show-detail', 'outline-hide-detail:rows', 'outline-hide-detail:cols', 'outline-show-detail:rows', 'outline-show-detail:cols', 'outline-summary-below', 'outline-summary-right', 'outline-clear'].map(id => action(id, id, id as RibbonCommand)),
-      action('分类汇总', 'subtotal-open', 'subtotal-open'),
-    ] },
+    { title: '预测', actions: [] },
+    { title: '分级显示', actions: [action('分类汇总', 'subtotal-open', 'subtotal-open')] },
   ],
   Review: [
     { title: '校对', actions: [
@@ -617,6 +600,44 @@ const COMMAND_GLYPHS: Record<string, string> = {
   'insert-row-here': '⊞', 'delete-row-here': '⊟', 'insert-col-here': '⊞', 'delete-col-here': '⊟',
   find: '🔍', replace: '⇄', 'pivot-open': '▥', 'pivot-edit': '▦', 'format-as-table': '▦', 'insert-chart:column': '📊',
 }
+
+const DATA_COMMAND_MENUS: ReadonlyArray<{
+  id: string
+  label: string
+  group: string
+  icon: string
+  detail: string
+  choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
+}> = [
+  {
+    id: 'what-if-analysis', label: '模拟分析', group: '预测', icon: '❔', detail: '对目标值反解输入',
+    choices: [
+      { command: 'goal-seek-open', label: '单变量求解' },
+      { command: 'data-table-open', label: '数据表' },
+    ],
+  },
+  {
+    id: 'outline-group', label: '组合', group: '分级显示', icon: '⊟', detail: '将所选行或列组合为分级显示',
+    choices: [
+      { command: 'outline-group:rows', label: '组合行' },
+      { command: 'outline-group:cols', label: '组合列' },
+      { command: 'outline-hide-detail:rows', label: '隐藏明细（行）' },
+      { command: 'outline-hide-detail:cols', label: '隐藏明细（列）' },
+      { command: 'outline-summary-below', label: '汇总行在明细数据下方', summary: 'below' },
+      { command: 'outline-summary-right', label: '汇总列在明细数据右侧', summary: 'right' },
+    ],
+  },
+  {
+    id: 'outline-ungroup', label: '取消组合', group: '分级显示', icon: '⊞', detail: '从选区移除一个分级层级',
+    choices: [
+      { command: 'outline-ungroup:rows', label: '取消组合行' },
+      { command: 'outline-ungroup:cols', label: '取消组合列' },
+      { command: 'outline-show-detail:rows', label: '显示明细（行）' },
+      { command: 'outline-show-detail:cols', label: '显示明细（列）' },
+      { command: 'outline-clear', label: '清除分级显示' },
+    ],
+  },
+]
 
 const FREEZE_CHOICES = [
   ['freeze-here', '在所选位置冻结窗格'],
@@ -918,6 +939,21 @@ export function mountWorkbookRibbon(
     }
     const rotation = view.rotation(), editable = view.editable(), reason = view.unavailableReason?.()
     const format = view.format?.(), selected = view.hasSelection?.() ?? rotation !== undefined
+    for (const menu of DATA_COMMAND_MENUS) {
+      const select = body.querySelector<HTMLSelectElement>('[data-ribbon-control="' + menu.id + '"]')
+      if (!select) continue
+      const disabledReason = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : undefined
+      select.disabled = !!disabledReason
+      select.title = disabledReason ?? menu.detail
+      if (disabledReason) select.setAttribute('aria-description', disabledReason)
+      else select.removeAttribute('aria-description')
+      const summary = view.outlineSummary?.()
+      for (const choice of menu.choices) {
+        if (!choice.summary) continue
+        const option = select.querySelector<HTMLOptionElement>('[value="' + choice.command + '"]')
+        if (option) option.text = (summary?.[choice.summary] ?? true ? '✓ ' : '') + choice.label
+      }
+    }
     const cellStyle = body.querySelector<HTMLSelectElement>('[data-ribbon-control="cell-style"]')
     if (cellStyle) cellStyle.disabled = !editable || !selected || !!view.protection?.().sheet.protected
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')) {
@@ -990,7 +1026,6 @@ export function mountWorkbookRibbon(
         button.title = button.disabled ? '工作簿正在加载或保存' : button.textContent ?? ''
       }
       if ((id === 'zoom-to-selection' || id === 'zoom-open') && view.zoomSelectionAvailable?.() === false) { button.disabled = true; button.title = '工作表视图尚未就绪' }
-      if (id === 'outline-summary-below' || id === 'outline-summary-right') button.setAttribute('aria-pressed', String(view.outlineSummary?.()[id === 'outline-summary-below' ? 'below' : 'right'] ?? true))
       if (id === 'sheet-protect' || id === 'workbook-protect') {
         const state = id === 'sheet-protect' ? { on: !!protection?.sheet.protected, reason: protection?.sheet.reason } : { on: !!protection?.workbook.locked, reason: protection?.workbook.reason }
         const label = id === 'sheet-protect' ? (state.on ? '撤销工作表保护' : '保护工作表') : (state.on ? '撤销工作簿保护' : '保护工作簿')
@@ -1430,6 +1465,30 @@ export function mountWorkbookRibbon(
           if (name && !select.disabled) onCommand(`use-in-formula:${name}` as RibbonCommand)
         })
         section.append(select)
+      }
+      if (active === 'Data') {
+        for (const menu of DATA_COMMAND_MENUS) {
+          if (menu.group !== group.title) continue
+          const wrapper = document.createElement('label')
+          wrapper.className = 'workbook-ribbon-chart-menu'
+          const icon = document.createElement('span')
+          icon.className = 'workbook-ribbon-icon'
+          icon.setAttribute('aria-hidden', 'true')
+          icon.innerHTML = workbookCommandIcon('', menu.icon) ?? ''
+          const select = document.createElement('select')
+          select.className = 'workbook-ribbon-select'
+          select.dataset.ribbonControl = menu.id
+          select.setAttribute('aria-label', menu.label)
+          select.title = menu.detail
+          select.append(new Option(menu.label, ''), ...menu.choices.map(({ command, label }) => new Option(label, command)))
+          select.addEventListener('change', () => {
+            const choice = menu.choices.find(({ command }) => command === select.value)
+            select.value = ''
+            if (choice && !select.disabled) onCommand(choice.command)
+          })
+          wrapper.append(icon, select)
+          section.append(wrapper)
+        }
       }
       if (active === 'View' && group.title === '窗口') {
         const wrapper = document.createElement('label')

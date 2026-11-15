@@ -16,7 +16,7 @@ test('exact duplicate-looking parent, repeated flat replies, actual IRT and dete
  const reply=op(model,1),result=await patchPdfWithReceipt(source,[reply],model.sourceSha256),again=await patchPdfWithReceipt(source,[reply],model.sourceSha256);assert.equal(result.sha256,again.sha256);assert.equal(result.previewDigest,again.previewDigest)
  const doc=await PDFDocument.load(result.bytes),annots=doc.getPage(0).node.lookup(PDFName.of('Annots'),PDFArray);assert.equal(annots.size(),3)
  const child=annots.lookup(2,PDFDict);assert.equal(String(child.get(PDFName.of('IRT'))),String(annots.get(1)));assert.equal(String(child.get(PDFName.of('RT'))),'/R');assert.equal(child.lookup(PDFName.of('CreationDate')).decodeText(),'D:20261106130000Z')
- const updated=await inspectPdf(result.bytes);assert.equal(updated.pages[0].notes[1].replyable,true);assert.equal(updated.pages[0].notes[1].editable,false);assert.equal(updated.pages[0].notes[2].replyable,false)
+ const updated=await inspectPdf(result.bytes);assert.equal(updated.pages[0].notes[1].replyable,true);assert.equal(updated.pages[0].notes[1].editable,true);assert.equal(updated.pages[0].notes[1].removable,false);assert.equal(updated.pages[0].notes[2].replyable,false)
  const more=await patchPdfWithReceipt(result.bytes,[op(updated,1)],updated.sourceSha256);assert.equal((await inspectPdf(more.bytes)).pages[0].notes.length,4)
  await writeFile(join(artifacts, 'source.pdf'),source);await writeFile(join(artifacts, 'output.pdf'),result.bytes)
 })

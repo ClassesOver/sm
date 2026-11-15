@@ -1544,6 +1544,21 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const root of shown) {
       const item = documentElement('div'); item.setAttribute('role', 'listitem'); item.append(row(root))
       const replies = flattenComments(root).slice(1)
+      if (model.capabilities?.notes === true && replies.length && root.cardId && root.replyAnnotationId === root.cardId && !root.readonly) {
+        const snapshot = commentsSnapshot, doc = commentsDocument, epoch = commentsGeneration, annotationId = root.cardId
+        const current = () => sidebar === 'comments' && doc === document && epoch === commentsGeneration && snapshot === JSON.stringify(draft.operations)
+        const edit = documentElement('button', buttonClasses('secondary'))
+        edit.type = 'button'; edit.textContent = '编辑便签'; edit.dataset.pdfNoteEditable = 'true'
+        edit.disabled = !response.editingEnabled || draft.closed || locked || printing || previewing || !!previewDocument
+        edit.addEventListener('click', () => {
+          if (!current()) return
+          void editNoteContents(root.contents, async contents => {
+            if (!current()) throw Error('批注列表已变化，请重新选择便签')
+            await changeSavedNote(root.pageId, annotationId, contents)
+          }).catch(showError)
+        })
+        item.append(edit)
+      }
       if (replies.length) {
         const details = documentElement('details'), summary = documentElement('summary'); summary.textContent = `${replies.length} 条回复`; details.append(summary)
         for (const { node, depth } of replies) {
@@ -2715,10 +2730,13 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
           const text = documentElement('p'); text.textContent = comment.contents; article.append(text)
           const actions = documentElement('div', 'pdf-object-actions'); article.append(actions)
           const pendingReply = draft.operations.some(op => op.kind === 'replyNote' && op.annotationId === comment.annotationId)
-          const canEdit = response.editingEnabled && !draft.closed && !locked && !previewing && !previewDocument && model.capabilities?.notes === true && page.notesReadSafe && comment.editable && !pendingReply && (comment.parentAnnotationId === undefined || model.capabilities?.savedReplyEdits === true)
+          const noteActionsAvailable = model.capabilities?.notes === true && page.notesReadSafe === true && !pendingReply && (comment.parentAnnotationId === undefined || model.capabilities?.savedReplyEdits === true)
           for (const [label, action] of [['编辑便签', () => editSavedNote(page.pageId, comment)], ['删除便签', () => changeSavedNote(page.pageId, comment.annotationId, null)]] as const) {
-            const control = documentElement('button', 'pdf-tool ' + buttonClasses(label === '删除便签' ? 'danger' : 'secondary')); control.type = 'button'; control.textContent = label; control.disabled = !canEdit; control.dataset.pdfNoteEditable = String(model.capabilities?.notes === true && page.notesReadSafe === true && comment.editable && !pendingReply && (comment.parentAnnotationId === undefined || model.capabilities?.savedReplyEdits === true))
-            control.title = canEdit ? label : pendingReply ? '请先保存或取消此便签的回复' : comment.removalReason || '当前修订、预览或引擎不支持编辑已有便签'
+            const removing = label === '删除便签'
+            const supported = noteActionsAvailable && (removing ? comment.removable : comment.editable)
+            const control = documentElement('button', 'pdf-tool ' + buttonClasses(removing ? 'danger' : 'secondary'))
+            control.type = 'button'; control.textContent = label; control.disabled = !supported || !response.editingEnabled || draft.closed || locked || printing || previewing || !!previewDocument; control.dataset.pdfNoteEditable = String(supported)
+            control.title = !control.disabled ? label : pendingReply ? '请先保存或取消此便签的回复' : comment.removalReason || '当前修订、预览或引擎不支持编辑已有便签'
             control.addEventListener('click', () => { void Promise.resolve().then(action).catch(showError) }); actions.append(control)
           }
           details.append(article)

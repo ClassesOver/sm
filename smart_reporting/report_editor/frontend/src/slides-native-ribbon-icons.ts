@@ -26,8 +26,9 @@ export const slidesRibbonSourceIcons: Record<string, ComponentType<{ size?: numb
 
 export const slidesRibbonIcons: Record<string, Parameters<typeof createElement>[0]> = {
   groupObjects: Group, ungroupObjects: Ungroup,
+  slideZoom: Search, sectionZoom: PanelTop, summaryZoom: LayoutGrid,
   bringToFront: BringToFront, bringForward: ArrowUp, sendBackward: ArrowDown, sendToBack: SendToBack,
-  findReplace: Search, print: Printer, exportImages: Images, saveAs: Save, bulletNone: ListX, normalView: PanelTop, slideSorter: LayoutGrid,
+  findReplace: Search, print: Printer, exportImages: Images, exportImagesJpg: Images, saveAs: Save, bulletNone: ListX, normalView: PanelTop, slideSorter: LayoutGrid,
   tableStructure: TableProperties, tableFirstRow: PanelTop, tableBandRow: Rows3,
   tableShadingWholeTable: PaintBucket, tableAllBorders: Table, tableNoBorders: SquareDashed,
   pictureOpacity: Blend, shapeNoOutline: SquareDashed, guides: Crosshair,

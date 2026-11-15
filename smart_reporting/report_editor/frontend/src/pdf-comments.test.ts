@@ -18,6 +18,16 @@ it('builds nested replies, preserves orphan/cyclic/duplicate notes and never mat
   expect(roots.filter(node => node.contents === 'same').every(node => node.readonly && !node.cardId)).toBe(true)
   expect(roots.find(node => node.contents === 'orphan')?.issue).toMatch(/缺失/)
 })
+it('shows verified threaded roots as editable until a new reply is staged', () => {
+  const raw = [a('10R', 'root'), a('11R', 'child', { inReplyTo: '10R' })]
+  const threaded = { ...page, notes: [{ ...page.notes[0], replyable: true, removable: false }] }
+  const edit = { kind: 'editNote', pageId: page.pageId, annotationId: 'native0', contents: 'updated' }
+  const [root] = projectPageComments(raw, threaded, 1, [edit], false)
+  expect(root).toMatchObject({ contents: 'updated', readonly: false, cardId: 'native0' })
+  expect(root.replies).toHaveLength(1)
+  const reply = { kind: 'replyNote', pageId: page.pageId, annotationId: 'native0', contents: 'pending' }
+  expect(projectPageComments(raw, threaded, 1, [reply], false)[0].readonly).toBe(true)
+})
 it('filters reply bodies/authors and sorts display-page then source time with unknown dates last', () => {
   const first = projectPageComments([a('11R', 'late', { creationDate: 'D:20260102000000Z' }), a('12R', 'unknown'), a('13R', 'early', { modificationDate: 'D:20260101000000Z' }), a('14R', 'needle', { inReplyTo: '11R', titleObj: { str: 'Alice' } })], page, 2, [], false)
   const second = projectPageComments([a('20R', 'page one')], { ...page, pageId: 'source:1' }, 1, [], false)

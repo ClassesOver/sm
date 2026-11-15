@@ -210,7 +210,8 @@ export async function inspectPdf(content: Uint8Array, includeText = false) {
             || (flags !== undefined && (!(flags instanceof PDFNumber) || !Number.isInteger(flags.asNumber()) || flags.asNumber() < 0 || (flags.asNumber() & 704) !== 0))
           const leafReply = threads.replies.get(identity.annotationId)
           const reason = leafReply ? null : identity.removalReason ?? (unsafe ? '此便签含共享引用、锁定、富文本或状态信息，暂不支持编辑/删除' : null)
-          return [{ ...identity, ...(leafReply?{parentAnnotationId:leafReply.parentAnnotationId}:{}), replyable: replyTargets.has(identity.annotationId), sourceRef: raw instanceof PDFRef ? `${raw.objectNumber}R${raw.generationNumber || ''}` : null, contents, editable: reason === null, removable: reason === null, removalReason: reason }]
+          const replyable = replyTargets.has(identity.annotationId)
+          return [{ ...identity, ...(leafReply?{parentAnnotationId:leafReply.parentAnnotationId}:{}), replyable, sourceRef: raw instanceof PDFRef ? `${raw.objectNumber}R${raw.generationNumber || ''}` : null, contents, editable: reason === null || replyable, removable: reason === null, removalReason: reason }]
         }) : []
         return { notes, notesReadSafe: true }
       } catch { return { notes: [], notesReadSafe: false } }
@@ -574,7 +575,7 @@ export async function patchPdfWithReceipt(content: Uint8Array, rawOperations: un
     }
     if (op.kind === 'editNote' || op.kind === 'removeNote') {
       const note = target.notes.find(note => note.annotationId === op.annotationId)
-      if (!target.notesReadSafe || !note?.editable || !note.removable || note.expectedAnnotationSha256 !== op.expectedAnnotationSha256 || removedIds.has(op.annotationId)) throw new Error('pdf_note_identity_invalid_or_readonly')
+      if (!target.notesReadSafe || !note || !(op.kind === 'editNote' ? note.editable : note.removable) || note.expectedAnnotationSha256 !== op.expectedAnnotationSha256 || removedIds.has(op.annotationId)) throw new Error('pdf_note_identity_invalid_or_readonly')
       removedIds.add(op.annotationId)
       const plan = { pageIndex: target.index, annotationId: op.annotationId, expectedAnnotationSha256: op.expectedAnnotationSha256, subtype: 'Text' as const, ...(note.parentAnnotationId?{unlinkObject:true}:{}) }
       if (op.kind === 'editNote') noteEdits.push({ ...plan, contents: op.contents, modifiedAt: op.modifiedAt })

@@ -25,15 +25,34 @@ const TextStyle = Mark.create({
 
 afterEach(() => { document.body.replaceChildren() })
 
-function setupTabNavigation() {
+function setupTabNavigation(tools?: Parameters<typeof createDocxRibbon>[25]) {
   const host = document.body.appendChild(document.createElement('div'))
   const editor = new Editor({ element: host, extensions: [Doc, Paragraph, Protected, Text], content: { type: 'doc', content: [
     { type: 'docParagraph', content: [{ type: 'text', text: 'body' }] }, { type: 'docProtected', attrs: { blockType: 'image' } },
   ] } })
-  const ribbon = createDocxRibbon(editor, true); document.body.append(ribbon)
+  const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, tools); document.body.append(ribbon)
   const tab = (id: string) => ribbon.querySelector<HTMLButtonElement>(`[data-tab-id="${id}"]`)!
   return { editor, ribbon, tab }
 }
+
+it('routes Layout Arrange position and wrap to the existing picture format controls', () => {
+  const open = vi.fn()
+  let unavailable: string | null = '请选择图片'
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, dispose: vi.fn() } })
+  try {
+    f.tab('layout').click()
+    const arrange = () => f.ribbon.querySelector('section[aria-label="排列"]')!
+    const action = (name: string) => arrange().querySelector<HTMLButtonElement>(`[data-action="picture-format-${name}"]`)!
+    expect(action('position').disabled).toBe(true)
+    expect(action('wrap').title).toBe(unavailable)
+    unavailable = null
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    expect(action('position').disabled).toBe(false)
+    action('position').click()
+    action('wrap').click()
+    expect(open.mock.calls).toEqual([['position'], ['wrap']])
+  } finally { f.editor.destroy() }
+})
 
 it.each(['ArrowLeft', 'ArrowRight', 'Home', 'End'].flatMap(key => ['composition', 'legacy', 'consumed'].map(protection => [key, protection])))('preserves Word tab state for protected %s/%s navigation', (key, protection) => {
   const f = setupTabNavigation()
