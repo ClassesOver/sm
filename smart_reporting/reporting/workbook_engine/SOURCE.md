@@ -172,7 +172,7 @@ and x14 rule targets, formula references, counts and empty DV extensions;
 tests are pinned in UPSTREAM-PATCHES-SHA256.json. The bridge and Python native
 operation whitelist expose replaceSheetDataValidations; the old append API is
 unchanged. Full frontend evidence and limitations are in
-../../report_editor/NATIVE_XLSX_DATA_VALIDATION_ACCEPTANCE.md.
+../../../docs/archive/office-acceptance/NATIVE_XLSX_DATA_VALIDATION_ACCEPTANCE.md.
 
 ## 2026-11-09 table context adapter
 
@@ -552,7 +552,7 @@ existing cell callers keep their former behavior. chart-read resolves plain
 schemeClr at plot/series/point label levels through existing style-color helpers.
 Transforms and unresolved/ambiguous sources remain unsupported. Chart edits and
 theme replay preserve original scheme tokens; no color math or writer added.
-See report_editor/NATIVE_XLSX_DATA_LABEL_THEME_ACCEPTANCE.md for actual UI,
+See docs/archive/office-acceptance/NATIVE_XLSX_DATA_LABEL_THEME_ACCEPTANCE.md for actual UI,
 downloaded OOXML and independent pixel evidence and remaining limitations.
 
 2026-11-12 chart label luminance: chart-label-color.ts uses existing SaxesParser
@@ -562,7 +562,7 @@ cell tint keeps its old truncation. Unknown/repeated/nested/reordered or mixed
 transforms stay unsupported. The original chart modifier bytes survive edits
 and theme replay. Fixed source code execution matched 1120 cases; independent
 Python rounding differences and a source comment discrepancy are retained.
-See report_editor/NATIVE_XLSX_DATA_LABEL_LUMINANCE_ACCEPTANCE.md for evidence.
+See docs/archive/office-acceptance/NATIVE_XLSX_DATA_LABEL_LUMINANCE_ACCEPTANCE.md for evidence.
 
 ## 2026-11-13 native cell hyperlinks (Insert ▸ Link)
 
@@ -580,7 +580,7 @@ and unverifiable relationships are read-only with a reason), binds every edit to
 pinned `normalizeLinkTarget` also accepts these forms), applies the pinned writer and reads the final link set
 back before assembling the package. Bridge operation `applySheetHyperlinks {sheetName, edits}`; the Python
 native whitelist and `delivery/xlsx.py` operation kinds include it. Evidence:
-../../report_editor/NATIVE_XLSX_HYPERLINK_ACCEPTANCE.md.
+../../../docs/archive/office-acceptance/NATIVE_XLSX_HYPERLINK_ACCEPTANCE.md.
 
 ## PR 224 review fixes
 
@@ -649,11 +649,11 @@ Targeted RED/GREEN, independent namespace review and eleven saved XLSX files are
 
 `chart-delete.ts` 以已有SaxesParser按URI、解码属性和真实graphicFrame归属定位唯一目标，保留原字符串中非目标区间。三类XDR anchor、默认/任意前缀、转义关系ID和多次累积删除已验证；同anchor额外对象、重复目标、foreign chart/id及共享关系拒绝且来源不变。`zip.ts::EntrySource.readText` 增加可选preservePrefixes，仅该命名空间感知写入选择原文；默认读取行为保持，避免改写package关系或ContentTypes前缀。此为本地适配，以LOCAL-ADAPTATIONS-SHA256记录，不改SOURCE-SHA256的迁移身份。
 
-110个不同定向测试、两端类型检查、47.24秒隔离构建与394 JS预算通过。命名空间双图经真实UI/Agno工具候选、显式采纳、UndoRedo/草稿恢复、两次点击下载和明确修订重开；171个实际JS/CSS身份与独立openpyxl/lxml/ZIP及像素回读通过。provider和修订仓库分别是ScriptedModel与限定内存夹具。证据/tmp/office-xlsx-chart-namespace-20261113，详细范围见../../report_editor/NATIVE_XLSX_CHART_NAMESPACE_ACCEPTANCE.md；没有将本批扩展为多图对象选中UI、复杂图表依赖清理或桌面Excel验证完成。
+110个不同定向测试、两端类型检查、47.24秒隔离构建与394 JS预算通过。命名空间双图经真实UI/Agno工具候选、显式采纳、UndoRedo/草稿恢复、两次点击下载和明确修订重开；171个实际JS/CSS身份与独立openpyxl/lxml/ZIP及像素回读通过。provider和修订仓库分别是ScriptedModel与限定内存夹具。证据/tmp/office-xlsx-chart-namespace-20261113，详细范围见../../../docs/archive/office-acceptance/NATIVE_XLSX_CHART_NAMESPACE_ACCEPTANCE.md；没有将本批扩展为多图对象选中UI、复杂图表依赖清理或桌面Excel验证完成。
 
 ## 2026-11-13 饼环标签读取与源预设接线
 
-`chart-read.ts` 为 pie/doughnut 的 plot、series、point 层补充 showCategory/showPercent 及 bestFit 投影，复用现有字体、主题色、数字格式和复杂设置识别。柱形标签的保守边界不放开，自定义文字或手动布局不假装支持。宿主利用现有 applyChartEdits writer 登记固定源四布局/五配色；没有新增写入协议或图表依赖。读取与布局的定向保存/独立ZIP证据及最终宿主范围见 ../../report_editor/NATIVE_XLSX_CHART_SELECTION_PRESETS_ACCEPTANCE.md。原始 SOURCE-SHA256 保留，本地 chart-read 身份登记在 LOCAL-ADAPTATIONS-SHA256。
+`chart-read.ts` 为 pie/doughnut 的 plot、series、point 层补充 showCategory/showPercent 及 bestFit 投影，复用现有字体、主题色、数字格式和复杂设置识别。柱形标签的保守边界不放开，自定义文字或手动布局不假装支持。宿主利用现有 applyChartEdits writer 登记固定源四布局/五配色；没有新增写入协议或图表依赖。读取与布局的定向保存/独立ZIP证据及最终宿主范围见 ../../../docs/archive/office-acceptance/NATIVE_XLSX_CHART_SELECTION_PRESETS_ACCEPTANCE.md。原始 SOURCE-SHA256 保留，本地 chart-read 身份登记在 LOCAL-ADAPTATIONS-SHA256。
 
 
 2026-11-13 图表对象几何接线：以固定源 `WorkbookVisuals.tsx` 与 `xlsx-drawing-edit.ts` 为准补 move/八向 resize。twoCell 支持 move/resize；oneCell 只 move 并保留 extent，absoluteAnchor 仍明确拒绝。本地24px最小显示/选取及RTL投影保持一致；原始 SOURCE-SHA256 不变，必要本地适配登记 LOCAL-ADAPTATIONS-SHA256。见 `NATIVE_XLSX_CHART_OBJECT_GEOMETRY_ACCEPTANCE.md`。
@@ -672,4 +672,4 @@ freeze of thousands of rows/columns. `bridge/split-pane.ts` is a local adapter: 
 `removeSheetSplitPane {sheetName, expected}` removes the first sheetView's split pane (and pane-scoped
 selections, same rule as `setFrozenPane`) only when the current pane equals `expected`, then reads back. The
 Python native whitelist and `delivery/xlsx.py` include it. Creating split panes is not implemented. Evidence:
-../../report_editor/NATIVE_XLSX_SPLIT_PANE_ACCEPTANCE.md.
+../../../docs/archive/office-acceptance/NATIVE_XLSX_SPLIT_PANE_ACCEPTANCE.md.
