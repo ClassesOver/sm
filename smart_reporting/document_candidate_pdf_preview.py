@@ -6,10 +6,10 @@ It does not write annotations, edit PDF bytes, or accept candidates.
 from __future__ import annotations
 
 import asyncio
-from copy import deepcopy
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from typing import Any
 
 import fitz
