@@ -75,14 +75,21 @@ class ReportChannelWordAssistant:
             )
         except ReportingError as error:
             raise HTTPException(409, error.code) from None
+        if not await authorized():
+            raise HTTPException(403, "report_channel_membership_required")
         return self._status(job)
 
     async def status(self, channel: str, identity: ConnectorIdentity, task_id: str) -> dict:
+        grant = await self.repository.member_grant(channel, identity)
+        if grant is None:
+            raise HTTPException(403, "report_channel_membership_required")
         try:
             draft = await self._draft(channel)
             job = await self.ai.wait_edit_status(draft.session, task_id, wait_ms=0)
         except ReportingError:
             raise HTTPException(404, "report_channel_word_task_missing") from None
+        if not await self.repository.grant_active(grant):
+            raise HTTPException(403, "report_channel_membership_required")
         if not job.get("clientRequestId", "").startswith(self._prefix(channel, identity)):
             raise HTTPException(404, "report_channel_word_task_missing")
         return self._status(job)
