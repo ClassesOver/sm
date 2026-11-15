@@ -173,6 +173,22 @@ it.each(['ArrowLeft', 'ArrowRight', 'Home', 'End'].flatMap(key => ['composition'
   } finally { f.editor.destroy() }
 })
 
+it('routes GenOffice Home AI summary with the source prompt only for a nonempty document', () => {
+  const documentSummary=vi.fn()
+  const f=setupTabNavigation({documentSummary})
+  try {
+    const button=()=>f.ribbon.querySelector<HTMLButtonElement>('[data-action="word-ai-summary"]')!
+    expect(button().disabled).toBe(false)
+    expect(button().querySelector('.ai-feature-icon svg')).not.toBeNull()
+    button().click()
+    expect(documentSummary).toHaveBeenCalledWith('总结这篇文档的主要内容和要点')
+    f.editor.commands.setContent({type:'doc',content:[{type:'docParagraph',content:[{type:'text',text:'   '}]}]})
+    expect(button().disabled).toBe(true)
+    button().click()
+    expect(documentSummary).toHaveBeenCalledOnce()
+  } finally {f.editor.destroy()}
+})
+
 it('connects Table Layout gridlines to the screen-only table grid controller', () => {
   const host = document.body.appendChild(document.createElement('div'))
   const Table = Node.create({ name: 'docTable', group: 'block', content: 'docParagraph+', renderHTML: () => ['table', 0] })

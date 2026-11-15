@@ -123,7 +123,7 @@ const tabs: Tab[] = [
       { id: 'bulletCharPreset', label: 'Bullet Gallery', caption: '项目符号', kind: 'select', options: BULLET_GLYPHS.map((_, i) => String(i)), optionLabels: BULLET_GLYPHS.map(([, font], i) => `${BULLET_GLYPH_LABELS[i]} (${font})`), sourceActionId: 'onParagraphFormat' },
       { id: 'bulletSymbol', label: 'Bullet Symbols', caption: '其他符号', kind: 'select', options: BULLET_SYMBOLS, sourceActionId: 'onParagraphFormat' },
       { id: 'bulletCustomChar', label: 'Custom Bullet Character', caption: '自定义字符', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
-      { id: 'pictureBullet', label: 'Picture Bullet', sourceActionId: 'onParagraphFormat', unavailable: desktop('图片项目符号文件选择与上传') },
+      { id: 'pictureBullet', label: 'Picture Bullet', sourceActionId: 'onParagraphFormat' },
       { id: 'numType', label: 'Numbering Scheme', caption: '编号格式', kind: 'select', options: [...NUMBER_TYPES], optionLabels: ['1. 2. 3.', '1) 2) 3)', 'I. II. III.', 'A. B. C.', 'a) b) c)', 'a. b. c.', 'i. ii. iii.', '① ② ③', '一. 二. 三.'], sourceActionId: 'onParagraphFormat' },
       { id: 'startAt', label: 'Numbering Start', caption: '起始编号', kind: 'spacing', sourceActionId: 'onParagraphFormat' },
       { id: 'bulletHangEmu', label: 'Bullet Hanging Indent', caption: '悬挂缩进', kind: 'select', options: ['171450', '285750', '342900'], optionLabels: ['18 px', '30 px', '36 px'], sourceActionId: 'onParagraphFormat' },

@@ -1225,7 +1225,7 @@ it('converts the selected table through its captured identity and disables conve
   ribbon.dispose()
 })
 
-it('opens native table creation from Home and Insert and respects protected selections', () => {
+it('offers the six GenOffice table styles in Home and keeps Insert table creation', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
   let protectedSheet = false
@@ -1233,13 +1233,28 @@ it('opens native table creation from Home and Insert and respects protected sele
     rotation: () => 0, editable: () => true,
     protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
   })
-  const control = () => document.querySelector<HTMLButtonElement>('[data-ribbon-command="format-as-table"]')!
-  expect(control().disabled).toBe(false)
-  control().click(); expect(onCommand).toHaveBeenLastCalledWith('format-as-table')
+  const menu = document.querySelector<HTMLSelectElement>('[data-ribbon-control="table-style-presets"]')!
+  expect(menu).not.toBeNull()
+  expect(menu.disabled).toBe(false)
+  expect(Array.from(menu.options, option => [option.value, option.text])).toEqual([
+    ['', '套用表格格式'], ['format-as-table:TableStyleLight1', '浅色 1（灰）'],
+    ['format-as-table:TableStyleLight9', '浅色 9（蓝）'], ['format-as-table:TableStyleMedium2', '中等 2（蓝）'],
+    ['format-as-table:TableStyleMedium4', '中等 4（橙）'], ['format-as-table:TableStyleMedium7', '中等 7（绿）'],
+    ['format-as-table:TableStyleDark2', '深色 2（藏青）'],
+  ])
+  for (const option of Array.from(menu.options).slice(1)) {
+    menu.value = option.value
+    menu.dispatchEvent(new Event('change'))
+    expect(onCommand).toHaveBeenLastCalledWith(option.value)
+    expect(menu.value).toBe('')
+  }
+  protectedSheet = true; ribbon.refreshState(); expect(menu.disabled).toBe(true)
+  protectedSheet = false
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
-  expect(control().disabled).toBe(false); control().click()
-  expect(onCommand).toHaveBeenCalledTimes(2)
-  protectedSheet = true; ribbon.refreshState(); expect(control().disabled).toBe(true)
+  const control = document.querySelector<HTMLButtonElement>('[data-ribbon-command="format-as-table"]')!
+  expect(control.disabled).toBe(false); control.click()
+  expect(onCommand).toHaveBeenLastCalledWith('format-as-table')
+  protectedSheet = true; ribbon.refreshState(); expect(control.disabled).toBe(true)
   ribbon.dispose()
 })
 

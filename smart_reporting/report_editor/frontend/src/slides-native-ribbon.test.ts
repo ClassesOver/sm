@@ -708,7 +708,7 @@ it('uses source paragraph formatting actions, spacing presets and Enter-only poi
   ribbon.dispose()
 })
 
-it('exposes all pinned list options, disabled picture picking and honest conditional availability', () => {
+it('exposes all pinned list options, picture bullet picking and conditional availability', () => {
   const host = document.createElement('div'); document.body.append(host)
   const onAction = vi.fn()
   const ribbon = createSlidesNativeRibbon(host, { onAction })
@@ -721,8 +721,12 @@ it('exposes all pinned list options, disabled picture picking and honest conditi
   expect(options('bulletSizePct')).toEqual(['75', '90', '100', '125', '150'])
   expect(options('bulletColorPreset')).toHaveLength(10)
   const picture = host.querySelector<HTMLButtonElement>('[data-command="pictureBullet"]')!
-  expect(picture.disabled).toBe(true); expect(picture.title).toContain('上传')
+  expect(picture.disabled).toBe(true)
   ribbon.setTextFormatEnabled(true)
+  expect(picture.disabled).toBe(false)
+  picture.click()
+  expect(onAction.mock.lastCall?.[0]).toBe('pictureBullet')
+  onAction.mockClear()
   expect(select('bulletCharPreset').disabled).toBe(false)
   expect(select('bulletSizePct').disabled).toBe(true)
   expect(host.querySelector<HTMLInputElement>('[data-command="startAt"]')!.disabled).toBe(true)
@@ -748,6 +752,8 @@ it('exposes all pinned list options, disabled picture picking and honest conditi
   ribbon.setLocked(true)
   for (const control of host.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('[data-source-action="onParagraphFormat"], [data-source-action="onDirection"]')) expect(control.disabled).toBe(true)
   ribbon.setLocked(false)
+  expect(picture.disabled).toBe(false)
+  ribbon.setTextFormatEnabled(false)
   expect(picture.disabled).toBe(true)
   ribbon.dispose()
 })

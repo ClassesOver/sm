@@ -130,6 +130,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const syncLinkLayers = () => { for (const layer of linkLayers.values()) layer.sync() }
   let linkNavigationGeneration = 0
   let drawShape: PdfDrawingShape = 'rect'
+  let measureScale: MeasureScale | undefined, measureRecalibrate = false
   let drawColor: [number, number, number] = [...PDF_DRAW_COLORS[0]!.rgb]
   const drawButtons = new Map<PdfDrawingShape, HTMLButtonElement>()
   // 多边形逐点放置：当前页的待完成顶点（PDF 坐标）与预览层。
@@ -139,6 +140,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     if (!polygonDraft) return
     if (event.key === 'Escape') { cancelPolygon(); status.textContent = '已取消多边形' }
     else if (event.key === 'Enter') { event.preventDefault(); polygonDraft.finish() }
+  }, { signal: abort.signal })
+  root.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
+    if (event.target instanceof HTMLElement && event.target.closest('input,textarea,select,[contenteditable],dialog')) return
+    if (!(mode === 'draw' && drawShape === 'measure') && !measureRecalibrate) return
+    event.preventDefault()
+    setMode('select')
+    status.textContent = '已退出测量工具'
   }, { signal: abort.signal })
   const textEnabled = response.pdfTextEnabled === true && response.editingEnabled
   const review = new PdfPreviewReview()
@@ -796,12 +805,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   // 固定源 DRAW_TOOLS 顺序：ink、measure、rect、ellipse、arrow、polygon、caret；颜色取标注调色板。
   for (const [shape, label, id] of [['ink', '手绘', 'ink'], ['measure', '测量', 'measure'], ['rect', '矩形', 'rectangle'], ['ellipse', '椭圆', 'ellipse'], ['arrow', '箭头', 'arrow'], ['polygon', '多边形', 'polygon'], ['caret', '插入符号', 'caret']] as const) {
     const tool = button(label, () => {
-      // 固定源：再次点击已激活的测量工具 = 重新标定，下一条线作为参考线。
-      if (shape === 'measure' && mode === 'draw' && drawShape === 'measure') { measureRecalibrate = true; status.textContent = '重新标定：请画一条已知实际长度的参考线'; return }
-      if (shape === 'measure' && !measureScale) status.textContent = '测量：先画一条已知实际长度的参考线完成标定'
+      if (shape === 'measure' && mode === 'draw' && drawShape === 'measure') {
+        setMode('select')
+        // The deliberate toggle-off keeps one recalibration request for the next activation.
+        measureRecalibrate = true
+        status.textContent = '重新启用测量后，画一条已知实际长度的参考线'
+        return
+      }
+      if (shape === 'measure' && (!measureScale || measureRecalibrate)) status.textContent = '测量：先画一条已知实际长度的参考线完成标定'
       drawShape = shape; setMode(mode === 'draw' && drawShape === shape && tool.getAttribute('aria-pressed') === 'true' ? 'select' : 'draw') }, true)
     sourceCommand(tool, `annotate.drawTools.${id}`); tool.dataset.pdfDrawShape = shape
-    tool.title = shape === 'measure' ? '测量：拖出测量线，首次（或再次点击本按钮）会以该线标定比例；比例仅在本次会话有效，保存后写入带长度标签的 PDF 线批注' : shape === 'polygon' ? '多边形：逐个点击顶点，双击或按 Enter 完成，Esc 取消；保存后写入 PDF 批注' : shape === 'caret' ? '插入符号：在页面上点击放置；保存后写入 PDF 批注' : `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
+    tool.title = shape === 'measure' ? '测量：拖出测量线，首次绘制会标定比例；再次点击退出并重新启用后可重新标定；比例仅在本次会话有效，保存后写入带长度标签的 PDF 线批注' : shape === 'polygon' ? '多边形：逐个点击顶点，双击或按 Enter 完成，Esc 取消；保存后写入 PDF 批注' : shape === 'caret' ? '插入符号：在页面上点击放置；保存后写入 PDF 批注' : `${label}：在页面上拖动绘制，颜色取绘图颜色；保存后写入 PDF 批注`
     drawButtons.set(shape, tool)
   }
   const drawColorSelect = documentElement('select', 'pdf-draw-color')
@@ -1350,7 +1364,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   linkDialog.append(linkHeader, linkBody, linkFooter); root.append(linkDialog)
   let linkPending: { page: PdfPageIdentity; points: number[][]; snapshot: string; doc: PDFDocumentProxy | undefined } | undefined
   // 完整固定源校准控件；比例仅保留在当前会话，真实线批注复用原有 writer。
-  let measureScale: MeasureScale | undefined, measureRecalibrate = false
   const measurement=bindPdfMeasureDialog({owner:root.ownerDocument,snapshot:()=>JSON.stringify({source:model.sourceSha256,pages:model.pages,operations:draft.operations}),unavailable:()=>disposed||!document||locked||mutationBlocked?.()||previewing||printing||previewDocument||draft.closed||draft.saving||!response.editingEnabled?'当前 PDF 只读或正在变更':null,status:message=>{status.textContent=message}})
   async function commitMeasure(page: PdfPageIdentity, line: NativeOperation, scale: MeasureScale, userUnit: number) {
     const from = line.from as number[], to = line.to as number[]
@@ -1808,7 +1821,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     for (const node of pageNodes.values()) node.classList.toggle('is-active', node.dataset.pageId === activeId)
     updateControls(); renderTextPanel(true)
   }
-  function setMode(next: typeof mode) { if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); syncDrawingCanvases(); syncLinkLayers() }
+  function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument; for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); syncDrawingCanvases(); syncLinkLayers() }
   function canChangePendingDrawings() {
     return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
   }

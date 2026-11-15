@@ -1,5 +1,5 @@
 import {readModelSources,validateModels,applyModels,type ModelInsertion,type ModelViewEdit} from './pptx-model3d.ts'
-import { pictureInsertionName } from './pptx-images.ts'
+import { assetBytes, pictureInsertionName, type PictureAsset } from './pptx-images.ts'
 import {inspectCustomShows,prepareCustomShows,applyCustomShows,type CustomShow} from './pptx-custom-shows.ts'
 import { validateMediaInsertions, applyMediaInsertions, type MediaInsertion } from './pptx-media.ts'
 import { inspectMasterTextParts, validateMasterTextEdits, applyMasterTextEdits, type MasterTextEdit } from './pptx-master-text.ts'
@@ -26,7 +26,7 @@ import { patchSlideTransitionXml } from '../packages/pptx-engine/src/generate.ts
 import { readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import shapePresets from './shape-presets.json' with { type: 'json' }
-import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAdvanceTime, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAdvanceTime, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addImageMediaAndRel, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAdvanceTime, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAdvanceTime, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
 
@@ -165,7 +165,8 @@ type Input = {
   paragraphFormatting?: {
     slideIndex: number
     elementId: string
-    bullet?: 'char' | 'number' | 'none'
+    bullet?: 'char' | 'number' | 'none' | 'blip'
+    bulletImage?: PictureAsset
     bulletChar?: string
     bulletFont?: string
     numType?: string
@@ -554,7 +555,7 @@ if (request.action === 'inspect') {
   if (request.paragraphFormatting !== undefined && (!Array.isArray(request.paragraphFormatting) || request.paragraphFormatting.length > 500)) {
     throw new Error('paragraph_format_invalid')
   }
-  const paragraphFields = ['align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt', 'bullet', 'bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta']
+  const paragraphFields = ['align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt', 'bullet', 'bulletChar', 'bulletFont', 'bulletImage', 'numType', 'startAt', 'bulletHangEmu', 'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta']
   for (const format of request.paragraphFormatting ?? []) {
     if (!format || typeof format !== 'object' || Array.isArray(format) ||
       Object.keys(format).some(key => !['slideIndex', 'elementId', ...paragraphFields].includes(key)) ||
@@ -564,7 +565,9 @@ if (request.action === 'inspect') {
       (Object.hasOwn(format, 'lineSpacingPct') && ![100, 115, 150, 200, 250, 300].includes(format.lineSpacingPct!)) ||
       (['spaceBeforePt', 'spaceAfterPt'] as const).some(key => Object.hasOwn(format, key) &&
         (typeof format[key] !== 'number' || !Number.isFinite(format[key]) || format[key]! < 0 || format[key]! > 500)) ||
-      (Object.hasOwn(format, 'bullet') && !['char', 'number', 'none'].includes(format.bullet!)) ||
+      (Object.hasOwn(format, 'bullet') && !['char', 'number', 'none', 'blip'].includes(format.bullet!)) ||
+      ((format.bullet === 'blip') !== Object.hasOwn(format, 'bulletImage')) ||
+      (format.bullet === 'blip' && (Object.hasOwn(format, 'numType') || Object.hasOwn(format, 'startAt'))) ||
       (Object.hasOwn(format, 'bulletChar') && (typeof format.bulletChar !== 'string' || [...format.bulletChar].length !== 1 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff\ufffe\uffff]/u.test(format.bulletChar))) ||
       (Object.hasOwn(format, 'bulletFont') && (typeof format.bulletFont !== 'string' || !format.bulletFont.trim() || [...format.bulletFont].length > 200 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff\ufffe\uffff]/u.test(format.bulletFont))) ||
       (Object.hasOwn(format, 'numType') && !numberingTypes.includes(format.numType!)) ||
@@ -1005,12 +1008,28 @@ if (request.action === 'inspect') {
       })) throw new Error('text_format_target_invalid')
     }
   }
+  // GenOffice text-ops lands one media part and slide relationship per distinct picture bullet.
+  const paragraphImages = new Map<string, NonNullable<ReturnType<typeof addImageMediaAndRel>>>()
   for (const format of request.paragraphFormatting ?? []) {
-    const { slideIndex, elementId, ...patch } = format
+    const { slideIndex, elementId, bulletImage, ...patch } = format
     const slide = originalSlides[slideIndex]
     const element = slide?.elements.find(candidate => candidate.id === elementId)
-    if (!slide || !element || (element.type !== 'text' && element.type !== 'shape') || !element.text ||
-      !setElementParagraphFormat(slide, elementId, patch)) throw new Error('paragraph_format_target_invalid')
+    if (!slide || !element || (element.type !== 'text' && element.type !== 'shape') || !element.text) {
+      throw new Error('paragraph_format_target_invalid')
+    }
+    let bulletBlip
+    if (bulletImage !== undefined) {
+      if (!bulletImage || Object.keys(bulletImage).sort().join() !== 'bytesBase64,extension') throw new Error('picture_bullet_invalid')
+      const bytes = assetBytes(bulletImage)
+      if (bytes.length > 256 * 1024) throw new Error('picture_bullet_size_invalid')
+      const key = slide.path + '|' + bulletImage.extension + '|' + bulletImage.bytesBase64
+      const landed = paragraphImages.get(key) ?? addImageMediaAndRel(opened, slide, bytes, bulletImage.extension)
+      if (!landed) throw new Error('picture_bullet_invalid')
+      paragraphImages.set(key, landed)
+      bulletBlip = { mediaRef: landed.mediaPath, blipEmbedId: landed.rid }
+    }
+    if (!setElementParagraphFormat(slide, elementId, bulletBlip ? { ...patch, bulletBlip } : patch))
+      throw new Error('paragraph_format_target_invalid')
     // Validate every ordered command so a later opposite indent cannot hide overflow.
     if (element.text?.paragraphs.some(paragraph =>
         (paragraph.marL != null && (paragraph.marL < 0 || paragraph.marL > maxParagraphEmu)) ||

@@ -269,6 +269,49 @@ it.each([
  expect(f.draft.operations).toEqual([op])
 })
 
+it('measurement disarms before recalibration and clears a pending calibration when another tool is selected', async () => {
+ const observers:Array<{targets:Element[];callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void}>=[]
+ vi.stubGlobal('IntersectionObserver',class{
+  targets:Element[]=[]
+  constructor(readonly callback:(entries:Array<{target:Element;isIntersecting:boolean}>)=>void){observers.push(this)}
+  observe(target:Element){this.targets.push(target)}disconnect(){}unobserve(){}
+ })
+ const f=await fixture();await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="annotate"]')!.click()
+ const measure=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.annotate.drawTools.measure"]')!
+ const rect=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.annotate.drawTools.rectangle"]')!
+ async function draw(y:number){
+  const card=f.root.querySelector<HTMLElement>('.pdf-page')!,page=card.querySelector<HTMLElement>('.pdf-page-content')!
+  page.getBoundingClientRect=()=>new DOMRect(0,0,300,400)
+  observers.find(item=>item.targets.includes(card))!.callback([{target:card,isIntersecting:true}])
+  await vi.waitFor(()=>expect(typeof page.onpointerdown).toBe('function'))
+  page.onpointerdown!(new MouseEvent('pointerdown',{clientX:40,clientY:y}) as PointerEvent)
+  page.onpointerup!(new MouseEvent('pointerup',{clientX:140,clientY:y}) as PointerEvent)
+ }
+ const calibration = ()=>document.querySelector<HTMLDialogElement>('.pdf-measure-source-dialog')
+ measure.click();await vi.waitFor(()=>expect(measure.getAttribute('aria-pressed')).toBe('true'));await draw(130)
+ await vi.waitFor(()=>expect(calibration()?.querySelector('input[type=number]')).toBeTruthy())
+ const input=calibration()!.querySelector<HTMLInputElement>('input[type=number]')!
+ await act(async()=>{
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,'2')
+  input.dispatchEvent(new Event('input',{bubbles:true})); input.dispatchEvent(new Event('change',{bubbles:true}))
+ })
+ await act(async()=>calibration()!.querySelector<HTMLButtonElement>('.primary')!.click())
+ await vi.waitFor(()=>expect(f.draft.operations.at(-1)?.label).toBe('2.00 m'))
+ measure.click();await vi.waitFor(()=>expect(measure.getAttribute('aria-pressed')).toBe('false'))
+ measure.click();await vi.waitFor(()=>expect(measure.getAttribute('aria-pressed')).toBe('true'));await draw(155)
+ await vi.waitFor(()=>expect(calibration()?.open).toBe(true))
+ await act(async()=>[...calibration()!.querySelectorAll('button')].find(button=>button.textContent==='取消')!.click())
+ expect(f.draft.operations).toHaveLength(1)
+ measure.click();await vi.waitFor(()=>expect(measure.getAttribute('aria-pressed')).toBe('false'))
+ rect.click();await vi.waitFor(()=>expect(rect.getAttribute('aria-pressed')).toBe('true'))
+ measure.click();await vi.waitFor(()=>expect(measure.getAttribute('aria-pressed')).toBe('true'));await draw(181)
+ await vi.waitFor(()=>expect(f.draft.operations).toHaveLength(2))
+ expect(calibration()).toBeNull()
+ expect(f.draft.operations.map(op=>op.label)).toEqual(['2.00 m','2.00 m'])
+ measure.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+ expect(measure.getAttribute('aria-pressed')).toBe('false')
+})
 it('measurement crop warning remains separate from applied operations and preserves the draft',async()=>{
  const f=await fixture(),view=await f.create()
  const op:NativeOperation={kind:'addDrawing',pageId,shape:'measure',from:[230,200],to:[290,200],label:'W'.repeat(64),color:[1,0,0],width:1}

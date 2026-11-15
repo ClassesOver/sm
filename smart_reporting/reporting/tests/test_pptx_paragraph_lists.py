@@ -227,3 +227,29 @@ def test_inspect_reports_exact_source_condition_for_indent_delta_margin_recalcul
     assert state['hasExplicitHangingIndent'] is expected
     if own_indent is not None or inherited:
         assert state['indentEmu'] == (own_indent if own_indent is not None else -171450)
+
+def test_picture_bullets_reopen_with_embedded_png_and_keep_paragraph_text():
+    import base64
+    from zipfile import ZipFile
+    from PIL import Image
+
+    source = source_bytes()
+    png = BytesIO()
+    Image.new('RGBA', (12, 8), '#3164a5').save(png, format='PNG')
+    image = {'extension': 'png', 'bytesBase64': base64.b64encode(png.getvalue()).decode()}
+    result = ordered(source, {'bullet': 'blip', 'bulletImage': image})
+    assert target(result)['text'] == target(source)['text']
+    from smart_reporting.report_editor.slides_render import render_pptx_tree
+    node = next(node for node in render_pptx_tree(result)['slides'][0]['nodes']
+                if node['sourceId'] == target(result)['id'])
+    assert any(run.get('image') == 'data:image/png;base64,' + image['bytesBase64']
+               for line in node['text']['lines'] for run in line['runs'])
+    assert all(row['bulletKind'] == 'blip' for row in target(result)['paragraphLists'])
+    ids = xml(result).xpath('//p:sp[1]//a:pPr/a:buBlip/a:blip/@*[local-name()="embed"]', namespaces=NS)
+    assert len(ids) == 2 and ids[0] == ids[1]
+    with ZipFile(BytesIO(result)) as package:
+        relationships = etree.fromstring(package.read('ppt/slides/_rels/slide1.xml.rels'))
+        media = next(node.get('Target') for node in relationships if node.get('Id') == ids[0])
+        assert package.read('ppt/' + media.removeprefix('../')) == png.getvalue()
+    with pytest.raises(ValueError):
+        ordered(source, {'bullet': 'blip', 'bulletImage': {**image, 'extension': 'jpg'}})

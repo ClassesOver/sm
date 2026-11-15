@@ -70,6 +70,21 @@ it('creates a themed native table with normalized headers and one complete undo 
   expect(c.snapshot()).toEqual(created)
 })
 
+it('creates a native table with the selected preset as part of the creation undo entry', async () => {
+  const c = setup(), before = c.snapshot()
+  expect(c.installed.create('data', area, true, 'TableStyleDark2')).toBe(true)
+  const table = c.workbook.getTableList()[0]!
+  expect(c.manager.getTable('book', table.id)!.toJSON().meta).toMatchObject({
+    nativeTableStyleName: 'TableStyleDark2', nativeTableStyle: { name: 'TableStyleDark2', showRowStripes: true },
+  })
+  const created = c.snapshot()
+  await c.api.undo()
+  expect(c.snapshot()).toEqual(before)
+  expect(c.history.pitchTopUndoElement()).toBeNull()
+  await c.api.redo()
+  expect(c.snapshot()).toEqual(created)
+})
+
 it('creates no-header table using a free row above without moving formula data', async () => {
   const c = setup({ 1: { 0: { v: 'Ada' }, 1: { f: '=1+1', v: 2 } }, 2: { 0: { v: 'Grace' }, 1: { v: 3 } } }), before = c.snapshot()
   c.installed.create('data', { ...area, endRow: 2 }, false)

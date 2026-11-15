@@ -19,10 +19,13 @@ import { useDismissablePopover } from './vendor/genoffice-docs/packages/ui/src/p
 import { homeRibbonZh as zh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/home-zh'
 import { zh as ribbonZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/zh'
 import { zh as appZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/app/zh'
+import { zh as aiZh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ai/zh'
 
 type Props = {
   onExport?:(format:'html'|'markdown'|'pdf')=>void
   onAssistant?: () => void
+  onDocumentSummary?: (instruction: string) => void
+  documentSummaryUnavailable?: string | null
   onClearFormatting?: () => void
   clearFormattingUnavailable?: string | null
   editable: boolean
@@ -96,7 +99,7 @@ const unavailable = '原版控件保留；当前 DOCX 原生操作协议未支�
  * recorded in SOURCE-SHA256.json). Its App callbacks are replaced by Native
  * Tiptap/DOCX operations; unsupported commands remain visible and disabled.
  */
-export function DocxHomeSource({ onExport, onAssistant, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
+export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, documentSummaryUnavailable, onClearFormatting, clearFormattingUnavailable, editable, onChangeCase, caseUnavailable, onMark, onFontSize, onFontFamily, onFontSizeValue, onColor, onHighlight, highlight, highlightAvailable, onAlignment, onIndent, alignment, indentLeft, onList, listKind, listLevelDecreaseAvailable, listLevelIncreaseAvailable, listLevelOptions, listLevel, onListLevel, spaceBefore, spaceAfter, lineSpacing, onSpacing, onFontOptions, fontOptionsUnavailable, onParagraphOptions, paragraphOptionsUnavailable, onLineSpacingOptions, lineSpacingUnavailable, onSpecialIndentOptions, specialIndentUnavailable, onShading, shading, shadingAvailable, onBorders, borders, bordersAvailable, onParagraph, onVerticalAlign, verticalAlign, verticalAlignAvailable, paragraphStyleControl, multilevelListControl, bulletListControl, numberListControl, onSetNumberingValue, numberingValueUnavailable, onFindReplace, onSelectAll, onToggleFormattingMarks, formattingMarksVisible, onPaste, onPasteSpecial, onCut, onCopy, onPainterClick, onPainterDoubleClick, painterActive }: Props) {
   const fontListId = useId()
   const [caseOpen, setCaseOpen] = useState(false)
   const caseWrap = useRef<HTMLDivElement>(null)
@@ -160,7 +163,39 @@ export function DocxHomeSource({ onExport, onAssistant, onClearFormatting, clear
     <div className={key === "AI 助手" ? "ribbon-group office-ai-group" : "ribbon-group"}><div className="ribbon-group-items">{children}</div><div className="ribbon-group-label">{key}</div></div>
   )
   return <div className="ribbon-content docx-source-home">
-    {group('AI 助手', <OfficeAIEntry onOpen={onAssistant} />)}
+    {group('AI 助手', <>
+      <OfficeAIEntry onOpen={onAssistant} />
+      <button type="button" className="rb-big ai-entry" data-action="word-ai-summary" data-source-action="onAiPreset"
+        disabled={!onDocumentSummary || !!documentSummaryUnavailable} title={documentSummaryUnavailable ?? aiZh.aiSummarizeBtn}
+        aria-label={aiZh.aiSummarizeBtn} aria-description={documentSummaryUnavailable ?? undefined}
+        onClick={() => onDocumentSummary?.(aiZh.aiSummarizePrompt)}>
+        <span className="rb-big-icon">
+          <span className="ai-feature-icon" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path
+                d="M13.875 21H12H6.5C5.39543 21 4.5 20.1046 4.5 19V5C4.5 3.89543 5.39543 3 6.5 3H17.5C18.6046 3 19.5 3.89543 19.5 5V9V12V13"
+                strokeLinecap="round"
+              />
+              <path d="M8.00001 7H16" strokeLinecap="round" />
+              <path d="M8.00007 10.2032H14.0001" strokeLinecap="round" />
+              <path d="M8.00007 13.4062H12.0001" strokeLinecap="round" />
+              <path
+                d="M17 14L17.2579 14.697C17.5961 15.611 17.7652 16.068 18.0986 16.4014C18.432 16.7348 18.889 16.9039 19.803 17.2421L20.5 17.5L19.803 17.7579C18.889 18.0961 18.432 18.2652 18.0986 18.5986C17.7652 18.932 17.5961 19.389 17.2579 20.303L17 21L16.7421 20.303C16.4039 19.389 16.2348 18.932 15.9014 18.5986C15.568 18.2652 15.111 18.0961 14.197 17.7579L13.5 17.5L14.197 17.2421C15.111 16.9039 15.568 16.7348 15.9014 16.4014C16.2348 16.068 16.4039 15.611 16.7421 14.697L17 14Z"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+        </span>
+        <span>{aiZh.aiSummarizeBtn}</span>
+      </button>
+    </>)}
     <div className="ribbon-sep" />
     {group(zh.ribbonGroupClipboard, <>
       <div className="rb-split-wrap rb-big-split" ref={pasteWrap}>

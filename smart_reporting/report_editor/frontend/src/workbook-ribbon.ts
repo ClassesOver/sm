@@ -1,5 +1,6 @@
 import { createOfficeAIEntry } from './office-ai-entry'
 import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
+import { HOME_TABLE_STYLE_PRESETS, type HomeTableStylePreset } from './workbook-table-create'
 import type { TableStyleOption } from './workbook-table-style-edit'
 import { PROTECTED_SHEET_REASON, PROTECTED_SHEET_RIBBON } from './workbook-protection'
 import { ROTATION_VALUES, univerRotationToOoxml, type RotationValue } from './workbook-rotation'
@@ -52,6 +53,7 @@ type RibbonCommand =
   | `chart-layout:${'1' | '2' | '3' | '4'}`
   | `chart-colors:${'office' | 'blue' | 'green' | 'warm' | 'gray'}`
   | 'format-as-table'
+  | `format-as-table:${HomeTableStylePreset}`
   | 'bold'
   | 'italic'
   | 'underline'
@@ -450,7 +452,7 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('增加小数位', 'decimal-inc', 'decimal-inc'), action('减少小数位', 'decimal-dec', 'decimal-dec'),
       action('自定义数字格式', 'format:custom-open', 'format:custom-open'),
     ] },
-    { title: '样式', actions: [action('条件格式', 'cf-open', 'cf-open'), action('套用表格格式', 'format-as-table', 'format-as-table'), action('单元格样式', 'cell-style')] },
+    { title: '样式', actions: [action('条件格式', 'cf-open', 'cf-open'), action('单元格样式', 'cell-style')] },
     { title: '单元格', actions: [
       action('设置单元格格式', 'format-cells', 'format-cells'),
       action('插入行', 'insert-row-here', 'insert-row-here'),
@@ -614,6 +616,11 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
 }> = [
   { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
+  {
+    tab: 'Home', id: 'table-style-presets', label: '套用表格格式', group: '样式', after: 'cf-open', icon: '▦',
+    detail: '基于选区创建真实 Excel 表格（首行为表头）',
+    choices: HOME_TABLE_STYLE_PRESETS.map(({ style, label }) => ({ command: `format-as-table:${style}`, label })),
+  },
   {
     tab: 'Home', id: 'text-orientation', label: '方向', group: '对齐方式', after: 'wrap', icon: '⤴', detail: '方向',
     choices: [
@@ -1016,6 +1023,7 @@ export function mountWorkbookRibbon(
         ?? (!selected || (orientation && rotation === undefined) ? '请先选择单元格或区域' : undefined)
       const disabledReason = !editable ? '当前工作簿不可编辑或正在保存'
         : selectionReason ?? (view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : undefined)
+          ?? (menu.id === 'table-style-presets' ? view.table?.()?.reason : undefined)
       select.disabled = !!disabledReason
       select.title = disabledReason ?? menu.detail
       const mixed = orientation && rotation === 'mixed'
@@ -1553,17 +1561,6 @@ export function mountWorkbookRibbon(
         select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`zoom:${Number(value)}`) })
         section.append(select)
       }
-      if (active === 'Home' && group.title === '样式') {
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'cell-style'; select.setAttribute('aria-label', '单元格样式')
-        const labels = ['好', '差', '适中', '输入', '输出', '计算', '警告文本', '标题', '标题 1', '标题 2', '汇总', '强调色 1 20%', '强调色 1 40%', '强调色 1']
-        for (const [index, value] of ['', ...Object.keys(CELL_STYLE_PRESETS)].entries()) {
-          const option = document.createElement('option'); option.value = value; option.textContent = index === 0 ? '单元格样式' : labels[index - 1]!
-          select.append(option)
-        }
-        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`cell-style:${value}`) })
-        section.append(select)
-      }
       for (const item of group.actions) {
         if (active === 'Home' && item.id === 'cell-style') continue
         if (active === 'Home' && group.title === '字体' && /^(font-family|font-size|font-color|fill):/.test(item.id)) continue
@@ -1620,6 +1617,17 @@ export function mountWorkbookRibbon(
         const after = menu.after && section.querySelector('[data-ribbon-command="' + menu.after + '"]')
         if (after) after.after(wrapper)
         else section.insertBefore(wrapper, section.querySelector('button[data-ribbon-command]'))
+      }
+      if (active === 'Home' && group.title === '样式') {
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'cell-style'; select.setAttribute('aria-label', '单元格样式')
+        const labels = ['好', '差', '适中', '输入', '输出', '计算', '警告文本', '标题', '标题 1', '标题 2', '汇总', '强调色 1 20%', '强调色 1 40%', '强调色 1']
+        for (const [index, value] of ['', ...Object.keys(CELL_STYLE_PRESETS)].entries()) {
+          const option = document.createElement('option'); option.value = value; option.textContent = index === 0 ? '单元格样式' : labels[index - 1]!
+          select.append(option)
+        }
+        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`cell-style:${value}`) })
+        section.append(select)
       }
       sections.push(section)
     }

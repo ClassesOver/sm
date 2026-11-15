@@ -6,6 +6,16 @@ import type { CellEdit } from '@sheets-web/xlsx-engine'
 import { fromUniverStyle, styleDelta, type UniverStyleData } from './workbook-vendor/core/style-map'
 import { nativeTableTheme } from './workbook-table-styles'
 
+export const HOME_TABLE_STYLE_PRESETS = [
+  { style: 'TableStyleLight1', label: '浅色 1（灰）' },
+  { style: 'TableStyleLight9', label: '浅色 9（蓝）' },
+  { style: 'TableStyleMedium2', label: '中等 2（蓝）' },
+  { style: 'TableStyleMedium4', label: '中等 4（橙）' },
+  { style: 'TableStyleMedium7', label: '中等 7（绿）' },
+  { style: 'TableStyleDark2', label: '深色 2（藏青）' },
+] as const
+export type HomeTableStylePreset = typeof HOME_TABLE_STYLE_PRESETS[number]['style']
+
 export interface TableCreateRange { startRow: number; endRow: number; startColumn: number; endColumn: number }
 const SHIFT_STYLE_RESET = 'nativeTableCreateStyleReset'
 
@@ -100,7 +110,8 @@ export function installTableCreate(runtime: any, protectedSheet: (id: string) =>
   return {
     ownsMutation: (params: object) => owned.has(params),
     dispose() { disposed = true; transaction.dispose(); state.dispose() },
-    create(sheetId: string, requested: TableCreateRange, hasHeaders: boolean): boolean {
+    create(sheetId: string, requested: TableCreateRange, hasHeaders: boolean, styleName: HomeTableStylePreset = 'TableStyleMedium2'): boolean {
+      if (!HOME_TABLE_STYLE_PRESETS.some(({ style }) => style === styleName)) throw new Error('表格样式不受支持')
       if (disposed) throw new Error('创建表格已关闭')
       const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheetBySheetId(sheetId)
       if (!sheet) throw new Error('工作表不存在，请重新选择')
@@ -144,7 +155,7 @@ export function installTableCreate(runtime: any, protectedSheet: (id: string) =>
       }
       cellValue[area.startRow] = Object.fromEntries(headers.map((value, c) => [area.startColumn + c, { v: value, f: null, si: null, p: null }]))
       const cellParams = { unitId, subUnitId: sheetId, cellValue }, undoCells = injector.invoke(SetRangeValuesUndoMutationFactory, cellParams)
-      const style = { name: 'TableStyleMedium2', showRowStripes: true, showColumnStripes: false, showFirstColumn: false, showLastColumn: false }
+      const style = { name: styleName, showRowStripes: true, showColumnStripes: false, showFirstColumn: false, showLastColumn: false }
       const json = { id: tableId, name, range: area, options: { showHeader: true, showFooter: false, tableStyleId: themeId },
         columns: headers.map((displayName, c) => ({ id: `${tableId}:${c}`, displayName, dataType: 'string', formula: '', meta: {}, style: {} })), filters: { tableColumnFilterList: [] },
         meta: { nativeCreatedTable: true, nativeTotalsRowCount: 0, nativeTableStyle: style, nativeTableStyleName: style.name, nativeThemePalette: structuredClone(runtime.themePalette), nativeTableThemeId: themeId } }

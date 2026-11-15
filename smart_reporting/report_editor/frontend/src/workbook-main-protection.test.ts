@@ -342,6 +342,39 @@ it('saves full moved formatting when creating a table without headers through th
   current.view?.dispose()
 })
 
+it('applies Home table presets to a new selection and the existing table, then saves the chosen style', async () => {
+  const source = await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'Name' } },
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 'Ada' } },
+    { sheetName: 'Sheet1', row: 2, column: 0, writeValue: true, cell: { value: 'Grace' } },
+  ])
+  const draft = new NativeDraft(identity, store())
+  let downloaded: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    downloaded = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/p.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    sheet().setActiveSelection(sheet().getRange(1, 0))
+    grid.ribbon('format-as-table:TableStyleMedium4')
+    expect(grid.view.table()).toMatchObject({ style: 'TableStyleMedium4', range: 'A1:A3' })
+    const id = grid.view.table().id
+    grid.ribbon('format-as-table:TableStyleDark2')
+    expect(grid.view.table()).toMatchObject({ id, style: 'TableStyleDark2' })
+    history('undo')
+    expect(grid.view.table()).toMatchObject({ id, style: 'TableStyleMedium4' })
+    history('redo')
+    expect(grid.view.table()).toMatchObject({ id, style: 'TableStyleDark2' })
+    await vi.waitFor(() => expect(kinds(draft)).toContain('applyTableAdditions'))
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    const saved = await readWorkbook(downloaded!)
+    expect(saved.sheets[0]!.tables).toHaveLength(1)
+    expect(saved.sheets[0]!.tables![0]).toMatchObject({ style: { name: 'TableStyleDark2', showRowStripes: true } })
+    expect(saved.sheets[0]!.cells.A3?.value).toBe('Grace')
+  } finally { current.view?.dispose() }
+})
+
 it('saves a header row toggle through the editor and restores the original table on undo', async () => {
   const source = await applyTableAdditions(await applyCellEdits(await createBlankWorkbook(), [
     { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 'Name' } },

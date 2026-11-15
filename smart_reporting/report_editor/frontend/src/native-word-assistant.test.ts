@@ -19,6 +19,20 @@ it('默认整篇、同步未保存编辑并只读展示真实覆盖',async()=>{
  expect(root.textContent).toContain('未保存草稿');expect(root.textContent).toContain('尚未完整读取');expect(root.textContent).toContain('1 / 3');expect(root.textContent).toContain('第 1 个内容块')
  expect(root.textContent).not.toContain('opaque-block-hash');expect(root.textContent).not.toContain('opaque-cell-hash');expect(root.textContent).toContain('（已选单元格）');expect(root.textContent).toContain('已执行工具：读取文档内容块');expect(root.querySelector('img')).toBeNull();expect(root.querySelector('svg')).not.toBeNull();expect(draft.operations).toEqual([]);expect(draft.dirty).toBe(false);binding.dispose()
 })
+it('GenOffice 常用摘要覆盖上次选区和输入，按整篇启动一次只读任务',async()=>{
+ const api={wordAIStart:vi.fn().mockResolvedValue({taskId:'t',status:'completed',result}),wordAICancel:vi.fn()}
+ const {root,draft,binding}=fixture(api)
+ binding.open()
+ root.querySelector<HTMLSelectElement>('[data-word-ai=scope]')!.value='selection'
+ root.querySelector('textarea')!.value='上次的问题'
+ binding.openDocumentSummary('总结这篇文档的主要内容和要点')
+ binding.openDocumentSummary('第二次点击')
+ await vi.waitFor(()=>expect(root.textContent).toContain('文档总结'))
+ expect(api.wordAIStart).toHaveBeenCalledOnce()
+ expect(api.wordAIStart.mock.calls[0][0]).toMatchObject({action:'summarize',instruction:'总结这篇文档的主要内容和要点',selection:[],operations:[]})
+ expect(draft.dirty).toBe(false)
+ binding.dispose()
+})
 it('显式选区提交且选择变化丢弃迟到回答',async()=>{
  let finish!:(value:object)=>void
  const api={wordAIStart:vi.fn().mockImplementation(()=>new Promise(resolve=>{finish=resolve})),wordAICancel:vi.fn().mockResolvedValue({status:'cancelled'})}

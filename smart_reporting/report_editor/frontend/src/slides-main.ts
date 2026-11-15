@@ -2564,6 +2564,30 @@ function projectedParagraphs(element: DeckElement | undefined) {
   const formatting = element?.paragraphFormatting ?? element?.paragraphAlignments?.map(align => ({ align })) ?? []
   return projectParagraphs(formatting, element?.paragraphLists ?? [], paragraphFormattingEdits.filter(patch => patch.slideIndex === selectedSlide && patch.elementId === element?.id))
 }
+let choosingPictureBullet = false
+async function choosePictureBullet() {
+  const element = currentElement()
+  if (!nativeDraft || locked() || choosingPictureBullet || selectedObjects.size > 1 ||
+      !element?.editable || !element.text.trim() || !['shape', 'text'].includes(element.type)) return
+  const slideIndex = selectedSlide, sourceSha = deck.sha256
+  const snapshot = JSON.stringify(nativeDraft.operations)
+  const current = () => !locked() && !mutationPending && deck.sha256 === sourceSha &&
+    selectedSlide === slideIndex && currentElement()?.id === element.id && JSON.stringify(nativeDraft.operations) === snapshot
+  choosingPictureBullet = true
+  try {
+    const file = await pickSlideImage()
+    if (!file || !current()) return
+    if (file.size > 256 * 1024) throw new Error('图片项目符号不能超过 256 KiB')
+    const { bytesBase64, extension } = await prepareSlideImage(file, deck.size)
+    if (!current()) return
+    updateSelectedParagraph({ bullet: 'blip', bulletImage: { bytesBase64, extension } })
+  } catch (error) {
+    if (current()) statusMessage.textContent = error instanceof Error ? error.message : '无法读取图片项目符号'
+  } finally {
+    choosingPictureBullet = false
+  }
+}
+
 function updateSelectedParagraph(patch: Omit<ParagraphFormatting, 'slideIndex' | 'elementId'>) {
   const element = currentElement()
   if (selectedObjects.size>1 || !element?.editable || !element.text.trim()) return
@@ -2580,7 +2604,7 @@ function updateSelectedParagraph(patch: Omit<ParagraphFormatting, 'slideIndex' |
     return
   }
   // Keep a repeated absolute value from manufacturing a history entry and a false undo step.
-  if (JSON.stringify(proposal) === JSON.stringify(paragraphs)) return
+  if (!patch.bulletImage && JSON.stringify(proposal) === JSON.stringify(paragraphs)) return
   if (paragraphFormattingEdits.length >= 500) {
     statusMessage.textContent = '段落格式修改已达到 500 条；请先保存并打开新修订，再继续分批编辑。当前操作未应用。'
     return
@@ -2684,6 +2708,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
     if (locked()) return
     // 新建页保存前只能移动/再新建；页面级与对象级修改需要来源身份，由引擎拒绝。
     if (isNewSlide(selectedSlide) && !['commentsPane', 'newComment', 'addSlide', 'addSlideWithLayout', 'movePrevious', 'moveNext', 'theme', 'slideSize', 'slideOrientation', 'customSlideSize', 'saveRevision'].includes(command)) { statusMessage.textContent = NEW_SLIDE_REASON; return }
+    if (command === 'pictureBullet') { void choosePictureBullet(); return }
     if (PARAGRAPH_LIST_COMMANDS.includes(command)) {
       const patch = paragraphCommandPatch(command, value)
       if (patch) updateSelectedParagraph(patch)

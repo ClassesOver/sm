@@ -733,16 +733,33 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
             raise ValueError('native_office_operations_invalid')
     paragraph_formatting = _records(operation, 'paragraphFormatting', {'slideIndex', 'elementId'}, {
         'align', 'lineSpacingPct', 'spaceBeforePt', 'spaceAfterPt',
-        'bullet', 'bulletChar', 'bulletFont', 'numType', 'startAt', 'bulletHangEmu',
+        'bullet', 'bulletChar', 'bulletFont', 'bulletImage', 'numType', 'startAt', 'bulletHangEmu',
         'bulletSizePct', 'bulletColor', 'rtl', 'indentDelta',
     })
     for item in paragraph_formatting:
+        if 'bulletImage' in item:
+            image = item['bulletImage']
+            if (item.get('bullet') != 'blip' or not isinstance(image, dict)
+                or set(image) != {'extension', 'bytesBase64'} or image['extension'] not in ('png', 'jpg')
+                or not isinstance(image['bytesBase64'], str) or len(image['bytesBase64']) > 349528):
+                raise ValueError('native_office_operations_invalid')
+            try:
+                raw_image = base64.b64decode(image['bytesBase64'], validate=True)
+                if not raw_image or len(raw_image) > 256 * 1024 or base64.b64encode(raw_image).decode() != image['bytesBase64']:
+                    raise ValueError('picture_bullet_size_invalid')
+                with Image.open(BytesIO(raw_image)) as picture:
+                    if picture.format != {'png': 'PNG', 'jpg': 'JPEG'}[image['extension']] or picture.width * picture.height > 16_777_216:
+                        raise ValueError('picture_bullet_format_invalid')
+                    picture.verify()
+            except (OSError, ValueError, Image.DecompressionBombError):
+                raise ValueError('native_office_operations_invalid') from None
         if (not isinstance(item['elementId'], str) or not item['elementId']
             or not set(item) - {'slideIndex', 'elementId'}
             or ('align' in item and (not isinstance(item['align'], str) or item['align'] not in {'left', 'center', 'right', 'justify'}))
             or ('lineSpacingPct' in item and (not _number(item['lineSpacingPct'], 100, 300) or item['lineSpacingPct'] not in {100, 115, 150, 200, 250, 300}))
             or any(key in item and not _number(item[key], 0, 500) for key in ('spaceBeforePt', 'spaceAfterPt'))
-            or ('bullet' in item and (not isinstance(item['bullet'], str) or item['bullet'] not in {'char', 'number', 'none'}))
+            or ('bullet' in item and (not isinstance(item['bullet'], str) or item['bullet'] not in {'char', 'number', 'none', 'blip'}))
+            or (item.get('bullet') == 'blip' and ('bulletImage' not in item or bool(set(item) & {'numType', 'startAt'})))
             or ('bulletChar' in item and (not isinstance(item['bulletChar'], str) or len(item['bulletChar']) != 1 or ord(item['bulletChar']) < 32 or 0x7f <= ord(item['bulletChar']) <= 0x9f or 0xd800 <= ord(item['bulletChar']) <= 0xdfff or ord(item['bulletChar']) in {0xfffe, 0xffff}))
             or ('bulletFont' in item and (not isinstance(item['bulletFont'], str) or not item['bulletFont'].strip() or len(item['bulletFont']) > 200 or any(ord(char) < 32 or 0x7f <= ord(char) <= 0x9f or 0xd800 <= ord(char) <= 0xdfff or ord(char) in {0xfffe, 0xffff} for char in item['bulletFont'])))
             or ('numType' in item and (not isinstance(item['numType'], str) or item['numType'] not in _NUMBERING_TYPES))

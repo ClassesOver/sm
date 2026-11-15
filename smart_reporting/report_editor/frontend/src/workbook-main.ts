@@ -64,7 +64,7 @@ import { installTableDesign } from './workbook-table-design'
 import { installNativeTableStyleRendering } from './workbook-table-styles'
 import { installTableResize } from './workbook-table-resize'
 import { installTableConvert } from './workbook-table-convert'
-import { installTableCreate, inferTableRegion, tableCreateCellEdits } from './workbook-table-create'
+import { HOME_TABLE_STYLE_PRESETS, installTableCreate, inferTableRegion, tableCreateCellEdits, type HomeTableStylePreset, type TableCreateRange } from './workbook-table-create'
 import { createTableCreateDialog } from './workbook-table-create-dialog'
 import { installTableTotals } from './workbook-table-totals'
 import { installTableHeaderRow } from './workbook-table-header-row'
@@ -466,20 +466,31 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     markDirty(); ribbon.refreshState?.()
     feedback.textContent = '表格范围已更新，修改尚未保存。'
   })
-  const tableCreateDialog = createTableCreateDialog(shell.editor, (sheetId, text, hasHeaders) => {
+  const createSelectedTable = (sheetId: string, area: TableCreateRange, hasHeaders: boolean, style?: HomeTableStylePreset) => {
     if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
     const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getSheetBySheetId(sheetId)
     if (!sheet || !tableCreate) throw new Error('工作表身份已变化，请重新选择')
     const source = originalSheet(sheetId) ?? currentModel.sheets.find(item => item.name === sheet.getSheetName())
     if (source?.tablesReadOnlyReason) throw new Error(source.tablesReadOnlyReason)
     const ids = new Set(workbook!.getTableList?.().map(table => table.id))
-    if (!tableCreate.create(sheetId, parseRange(text), hasHeaders)) throw new Error('创建表格未执行')
+    if (!tableCreate.create(sheetId, area, hasHeaders, style)) throw new Error('创建表格未执行')
     const created = workbook!.getTableList?.().find(table => !ids.has(table.id))
     if (created) sheet.setActiveSelection(sheet.getRange(created.range.startRow, created.range.startColumn))
     markDirty(); ribbon.refreshState?.()
     shell.editor.querySelector<HTMLButtonElement>('[data-ribbon-tab="Table Design"]')?.click()
     feedback.textContent = '表格已创建，修改尚未保存。'
-  })
+  }
+  const tableCreateDialog = createTableCreateDialog(shell.editor, (sheetId, text, hasHeaders) =>
+    createSelectedTable(sheetId, parseRange(text), hasHeaders))
+  const selectedNativeTable = () => {
+    const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
+    const selection = sheet?.getSelection()?.getActiveRange()
+    if (!workbook || !sheet || !selection) return
+    const row = selection.getRow(), column = selection.getColumn()
+    const table = workbook.getTableList?.().find(table => table.subUnitId === sheet.getSheetId() &&
+      row >= table.range.startRow && row <= table.range.endRow && column >= table.range.startColumn && column <= table.range.endColumn)
+    return table ? { sheet, table } : undefined
+  }
   const originalSheet = (sheetId: string | undefined) => {
     const index = /^sheet-(\d+)$/.exec(sheetId ?? '')?.[1]
     return index === undefined ? undefined : currentModel?.sheets[Number(index)]
@@ -1723,16 +1734,26 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         } catch (error) { feedback.textContent = (error as Error).message }
         return
       }
-      if (command === 'format-as-table') {
+      if (command === 'format-as-table' || command.startsWith('format-as-table:')) {
         if (!editable()) return
         try {
+          const preset = HOME_TABLE_STYLE_PRESETS.find(({ style }) => command === `format-as-table:${style}`)
+          if (command !== 'format-as-table' && !preset) throw new Error('表格样式不受支持')
           const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet(), range = sheet?.getSelection()?.getActiveRange()
           if (!sheet || !range) throw new Error('请先选择单元格或区域')
           if (sheetProtected(sheet.getSheetId())) throw new Error('工作表受保护，请先撤销保护')
           const source = originalSheet(sheet.getSheetId()) ?? currentModel.sheets.find(item => item.name === sheet.getSheetName())
           if (source?.tablesReadOnlyReason) throw new Error(source.tablesReadOnlyReason)
+          const selectedTable = preset && selectedNativeTable()
+          if (preset && selectedTable) {
+            if (!tableStyleEdit?.setStyle(selectedTable.table.id, preset.style)) throw new Error('表格样式未应用')
+            markDirty(); ribbon.refreshState()
+            feedback.textContent = '表格样式已更新，修改尚未保存。'
+            return
+          }
           const area = range.getHeight() === 1 && range.getWidth() === 1 ? inferTableRegion(sheet, range.getRow(), range.getColumn()) ?? { startRow: range.getRow(), endRow: range.getRow(), startColumn: range.getColumn(), endColumn: range.getColumn() }
             : { startRow: range.getRow(), endRow: range.getRow() + range.getHeight() - 1, startColumn: range.getColumn(), endColumn: range.getColumn() + range.getWidth() - 1 }
+          if (preset) { createSelectedTable(sheet.getSheetId(), area, true, preset.style); return }
           tableCreateDialog.open({ sheetId: sheet.getSheetId(), range: `${formatAddress(area.startRow, area.startColumn)}:${formatAddress(area.endRow, area.endColumn)}` })
         } catch (error) { feedback.textContent = (error as Error).message }
         return
@@ -2616,15 +2637,11 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         }))]
       },
       table: () => {
-        const workbook = runtime.univerAPI.getActiveWorkbook(), sheet = workbook?.getActiveSheet()
-        const selection = sheet?.getSelection()?.getActiveRange()
-        if (!selection) return
-        const row = selection.getRow(), column = selection.getColumn()
-        const table = workbook?.getTableList?.().find(table => table.subUnitId === sheet!.getSheetId() &&
-          row >= table.range.startRow && row <= table.range.endRow && column >= table.range.startColumn && column <= table.range.endColumn)
-        if (!table) return
+        const current = selectedNativeTable()
+        if (!current) return
+        const { sheet, table } = current
         const reason = sheetProtected(table.subUnitId) ? '工作表受保护，请先撤销保护'
-          : currentModel.sheets.find(item => item.name === sheet!.getSheetName())?.tablesReadOnlyReason
+          : currentModel.sheets.find(item => item.name === sheet.getSheetName())?.tablesReadOnlyReason
         return { id: table.id, name: table.name,
           header: table.showHeader,
           filterButton: table.meta?.nativeFilterButton !== false,
