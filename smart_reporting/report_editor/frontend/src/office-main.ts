@@ -878,17 +878,38 @@ function renameOfficeFolder(id: string, inList: boolean) {
   })
 }
 
+function applyOfficeFileAction(entries: Entry[], action: string) {
+  const space = currentSpace
+  if (action === 'delete' && !window.confirm(`删除所选的 ${entries.length} 个文件？`)) return
+  void withImport(async () => {
+    await officeRequest(`/workspaces/${encodeURIComponent(space)}/files/bulk`, 'POST', {
+      action, versions: Object.fromEntries(entries.map(item => [item.id, item.version])),
+    })
+    const ids = new Set(entries.map(item => item.id))
+    for (const id of ids) selectedFiles.delete(id)
+    if (action === 'delete') for (const [path, entry] of tabEntries) {
+      if (!ids.has(entry.id)) continue
+      tabs.get(path)?.remove(); tabs.delete(path); tabEntries.delete(path)
+      if (selectedTab === path) selectedTab = ''
+    }
+    if (action !== 'hide_recent') invalidateKnowledge(space)
+    await refreshLibrary()
+  })
+}
+
 root.addEventListener('contextmenu', event => {
   if (!(event.target instanceof Element) || busy) return
   const tabButton = event.target.closest('.file-tab')?.querySelector<HTMLButtonElement>('[data-tab]')
   const tabEntry = tabButton ? tabEntries.get(tabButton.dataset.tab!) : undefined
   const homeTab = event.target.closest<HTMLButtonElement>('button[data-tab=""]')
-  if (!tabEntry && !homeTab && !canWrite()) return
-  if (homeTab && !currentUser) return
-  const row = event.target.closest('.file-row, .folder-row')
-  const action = row?.querySelector<HTMLButtonElement>('[data-file-actions], [data-folder-actions]')
-  const parent = (row as HTMLElement | null)?.dataset.dropFolder
-  if (!action && !parent && !tabEntry && !homeTab) return
+  if (!currentUser) return
+  const row = event.target.closest<HTMLElement>('.file-row, .folder-row')
+  const fileButton = row?.querySelector<HTMLButtonElement>('[data-open]')
+  const entry = fileButton && library.entries.find(item => item.path === fileButton.dataset.open)
+  const writable = canWrite()
+  const action = writable ? row?.querySelector<HTMLButtonElement>('[data-file-actions], [data-folder-actions]') : undefined
+  const parent = writable ? row?.dataset.dropFolder : undefined
+  if (!action && !parent && !entry && !tabEntry && !homeTab) return
   event.preventDefault()
   root.querySelector('.office-context-menu')?.remove()
   const menu = document.createElement('div')
@@ -935,6 +956,15 @@ root.addEventListener('contextmenu', event => {
   if (tabEntry || homeTab) {
     add('重新打开关闭的标签页', () => void withImport(reopenClosedTab), closedTabs.length > 0)
   }
+  if (entry) {
+    add('打开', () => void withImport(() => reopen(entry)))
+    add('在文件夹中显示', () => void revealOfficeFile(entry))
+    if (entry.starred) add('收藏分组', () => showFavoriteGroups([entry]))
+    if (view === 'recent' && !entry.recentHidden) {
+      add('从最近使用移除', () => applyOfficeFileAction([entry], 'hide_recent'))
+    }
+    if (view === 'starred') add('取消收藏', () => applyOfficeFileAction([entry], 'unstar'))
+  }
   if (action) {
     for (const [mode, label] of [['rename','重命名'], ['move','移动到文件夹'], ['delete','删除']] as const) {
       const folderId = action.dataset.folderActions
@@ -947,9 +977,7 @@ root.addEventListener('contextmenu', event => {
         } else manageOfficeItem(action.dataset, mode)
       })
     }
-    const entry = library.entries.find(item => item.id === action.dataset.fileActions)
     if (entry) add('复制文件', () => void withImport(() => duplicateOfficeEntry(entry)))
-    if (entry?.starred) add('收藏分组', () => showFavoriteGroups([entry]))
   }
   menu.addEventListener('toggle', () => { if (!menu.matches(':popover-open')) menu.remove() })
   menu.addEventListener('keydown', event => {
@@ -1009,21 +1037,7 @@ root.addEventListener('click', event => {
       }})
       return
     }
-    if (action === 'delete' && !window.confirm(`删除所选的 ${chosen.length} 个文件？`)) return
-    void withImport(async () => {
-      await officeRequest(`/workspaces/${encodeURIComponent(space)}/files/bulk`, 'POST', {
-        action, versions: Object.fromEntries(chosen.map(item => [item.id, item.version])),
-      })
-      const ids = new Set(chosen.map(item => item.id))
-      for (const id of ids) selectedFiles.delete(id)
-      if (action === 'delete') for (const [path, entry] of tabEntries) {
-        if (!ids.has(entry.id)) continue
-        tabs.get(path)?.remove(); tabs.delete(path); tabEntries.delete(path)
-        if (selectedTab === path) selectedTab = ''
-      }
-      if (action !== 'hide_recent') invalidateKnowledge(space)
-      await refreshLibrary()
-    })
+    applyOfficeFileAction(chosen, action)
     return
   }
   if (data.action === 'rerank-search') { void rerankSearch(); return }
