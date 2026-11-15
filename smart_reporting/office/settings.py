@@ -200,6 +200,9 @@ async def configure_office_agent(agent, *, update_model=False):
     if context is None:
         return
     await attach_personal_skills(agent)
+    from .provider_tools import attach_provider_tools
+
+    await attach_provider_tools(agent)
     if update_model:
         agent.model = await context[0].model(context[1], agent.model)
     config = await context[0].global_settings(context[1], require_admin=False)
