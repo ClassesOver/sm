@@ -53,7 +53,7 @@ const knowledgeTurns = new Map<string, KnowledgeTurn[]>()
 const savedKnowledgeDocuments = new Map<string, string>()
 const knowledgeInputs = new Map<string, string>()
 const knowledgePending = new Map<string, AbortController>()
-const knowledgeAttachments = new Map<string, {id: string; name: string}[]>()
+const knowledgeAttachments = new Map<string, string[]>()
 let accountGeneration = 0
 const knowledgeGeneration = new Map<string, number>()
 
@@ -269,6 +269,31 @@ function setKnowledgeDraft(space: string, value: string, conversation = conversa
   } catch { /* The in-page draft is still available. */ }
 }
 
+function knowledgeDraftAttachments(space: string): Entry[] {
+  if (space !== currentSpace) return []
+  let ids = knowledgeAttachments.get(draftKey(space))
+  if (!ids) {
+    try {
+      const stored: unknown = JSON.parse(sessionStorage.getItem(knowledgeDraftStorageKey(space, conversationOf(space)) + ':attachments') ?? 'null')
+      if (Array.isArray(stored)) ids = stored.filter((id): id is string => typeof id === 'string').slice(0, 10)
+    } catch { /* No recoverable attachment IDs. */ }
+  }
+  return [...new Set(ids)].flatMap(id => library.entries.find(item => item.id === id && item.space === space) ?? [])
+}
+
+function setKnowledgeDraftAttachments(space: string, ids: string[], conversation = conversationOf(space)) {
+  const key = space + '/' + conversation
+  if (ids.length) knowledgeAttachments.set(key, ids)
+  else knowledgeAttachments.delete(key)
+  const storageKey = knowledgeDraftStorageKey(space, conversation) + ':attachments'
+  try {
+    if (!ids.length) sessionStorage.removeItem(storageKey)
+    else if (knowledgeConversations.get(space)?.some(item => item.id === conversation)) {
+      sessionStorage.setItem(storageKey, JSON.stringify(ids))
+    }
+  } catch { /* Keep the in-page attachments. */ }
+}
+
 function ask() {
   const turns = knowledgeTurns.get(currentSpace) ?? []
   const pending = knowledgePending.has(currentSpace)
@@ -301,7 +326,7 @@ function ask() {
       <button class="kb-cta" data-view="recent">${icon('star', 14)} 去最近文件收藏</button>
     </div>`}${pendingQuestion ? `<article class="kb-turn" aria-busy="true"><div class="kb-question">${escape(pendingQuestion)}</div></article>` : ''}</div>
     <div class="kb-bottom"><p aria-live="polite">${pending ? '正在检索和阅读工作区资料…' : `当前工作区已收藏 ${library.entries.filter(item => item.starred).length} 个文件。回答会注明来源文件。`}</p><div class="composer">
-      <div class="kb-citations">${(knowledgeAttachments.get(key) ?? []).map(file =>
+      <div class="kb-citations">${knowledgeDraftAttachments(currentSpace).map(file =>
         `<button data-remove-attachment="${escape(file.id)}" ${pending ? 'disabled' : ''}
           aria-label="移除附件 ${escape(file.name)}">${escape(file.name)} ×</button>`).join('')}</div>
       <textarea aria-label="向知识库提问" placeholder="问一个关于收藏文件的问题…" maxlength="8000" ${pending || !ready || !currentUser ? 'disabled' : ''}>${pending ? '' : escape(draft)}</textarea>
@@ -370,17 +395,17 @@ async function loadKnowledge(space = currentSpace, { preserveTurns = false } = {
 async function sendKnowledge() {
   const space = currentSpace
   const account = accountGeneration
-  const key = draftKey(space), conversation = conversationOf(space)
+  const conversation = conversationOf(space)
   const question = knowledgeDraft(space).trim()
   if (!canSendKnowledge(question)) return
   knowledgeGeneration.set(space, (knowledgeGeneration.get(space) ?? 0) + 1)
   const controller = new AbortController()
   knowledgePending.set(space, controller); status = ''; render()
   try {
-    const turn = await officeRequest<KnowledgeTurn>(`/workspaces/${space}/knowledge`, 'POST', { question, conversation, attachmentIds: (knowledgeAttachments.get(key) ?? []).map(file => file.id) }, controller.signal)
+    const turn = await officeRequest<KnowledgeTurn>(`/workspaces/${space}/knowledge`, 'POST', { question, conversation, attachmentIds: knowledgeDraftAttachments(space).map(file => file.id) }, controller.signal)
     if (account !== accountGeneration || controller.signal.aborted) return
     setKnowledgeDraft(space, '', conversation)
-    knowledgeAttachments.delete(key)
+    setKnowledgeDraftAttachments(space, [], conversation)
     if (conversationOf(space) === conversation) {
       const turns = knowledgeTurns.get(space) ?? []
       knowledgeTurns.set(space, [...turns.filter(item => item.id !== turn.id), turn].slice(-30))
@@ -1114,12 +1139,11 @@ root.addEventListener('click', event => {
   if (data.action === 'kb-delete') {
     if (!confirm('删除当前会话及其问答记录？')) return
     const space = currentSpace, account = accountGeneration, conversation = conversationOf(space)
-    const key = draftKey(space)
     void withImport(async () => {
       await officeRequest(`/workspaces/${space}/knowledge/conversations?conversation=${encodeURIComponent(conversation)}`, 'DELETE')
       if (account !== accountGeneration) return
       setKnowledgeDraft(space, '', conversation)
-      knowledgeAttachments.delete(key)
+      setKnowledgeDraftAttachments(space, [], conversation)
       activeKnowledgeConversation.set(space, crypto.randomUUID())
       await loadKnowledge(space)
     })
@@ -1135,7 +1159,7 @@ root.addEventListener('click', event => {
   if (data.action === 'kb-stop') { knowledgePending.get(currentSpace)?.abort(); return }
   if (data.action === 'kb-send') { void sendKnowledge(); return }
   if (data.removeAttachment && !knowledgePending.has(currentSpace)) {
-    knowledgeAttachments.set(draftKey(currentSpace), (knowledgeAttachments.get(draftKey(currentSpace)) ?? []).filter(file => file.id !== data.removeAttachment))
+    setKnowledgeDraftAttachments(currentSpace, knowledgeDraftAttachments(currentSpace).map(file => file.id).filter(id => id !== data.removeAttachment))
     render()
     return
   }
@@ -1454,14 +1478,14 @@ picker.addEventListener('change', () => {
   })
 })
 function attachKnowledgeFiles(files: File[]) {
-  const space = currentSpace, key = draftKey(currentSpace)
+  const space = currentSpace, conversation = conversationOf(currentSpace)
   if (!files.length || !canWrite() || !knowledgeConversations.has(space) || knowledgePending.has(space)) return
   void withImport(async () => {
-    const attachments = knowledgeAttachments.get(key) ?? []
+    const attachments = knowledgeDraftAttachments(space).map(file => file.id)
     if (attachments.length + files.length > 10) throw new Error('一次最多添加 10 个附件。')
-    await importBatch(files, rootFolder, (id, file) => {
-      attachments.push({id,name:file.name})
-      knowledgeAttachments.set(key, attachments)
+    await importBatch(files, rootFolder, id => {
+      attachments.push(id)
+      setKnowledgeDraftAttachments(space, [...new Set(attachments)], conversation)
     })
   })
 }
