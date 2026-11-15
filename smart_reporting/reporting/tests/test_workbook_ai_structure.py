@@ -46,6 +46,47 @@ async def real_tools(source, *, scope='workbook'):
 
 
 @pytest.mark.anyio
+async def test_source_sheet_visibility_replays_in_order_and_moves_active_tab():
+    book = load_workbook(BytesIO(source_book()))
+    book.create_sheet('Secret').sheet_state = 'veryHidden'
+    stream = BytesIO()
+    book.save(stream)
+    source = stream.getvalue()
+    tools, previews = await real_tools(source)
+    await tools.propose_operations([
+        {'op': 'set_sheet_hidden', 'sheetId': 'Other', 'hidden': True},
+        {'op': 'set_sheet_hidden', 'sheetId': 'Other', 'hidden': False},
+        {'op': 'set_sheet_hidden', 'sheetId': 'Source', 'hidden': True},
+    ], '隐藏来源工作表')
+    edited = load_workbook(BytesIO(previews[0]))
+    assert edited.sheetnames == ['Source', 'Other', 'Secret']
+    assert [sheet.sheet_state for sheet in edited.worksheets] == ['hidden', 'visible', 'veryHidden']
+    assert edited.active.title == 'Other'
+    assert edited['Other']['A1'].value == '=Source!B3'
+    with ZipFile(BytesIO(source)) as original, ZipFile(BytesIO(previews[0])) as result:
+        for part in original.namelist():
+            if part != 'xl/workbook.xml':
+                assert original.read(part) == result.read(part)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('scenario', ['last_visible', 'very_hidden', 'locked', 'range'])
+async def test_source_sheet_visibility_respects_workbook_guards(scenario):
+    book = load_workbook(BytesIO(source_book()))
+    book['Other'].sheet_state = 'veryHidden'
+    book.security.lockStructure = scenario == 'locked'
+    stream = BytesIO()
+    book.save(stream)
+    tools, previews = await real_tools(stream.getvalue(), scope='range' if scenario == 'range' else 'workbook')
+    name = 'Other' if scenario in {'very_hidden', 'locked'} else 'Source'
+    with pytest.raises(ValueError, match='selection_mismatch' if scenario == 'range' else 'native_office_operations_invalid'):
+        await tools.propose_operations([
+            {'op': 'set_sheet_hidden', 'sheetId': name, 'hidden': scenario != 'very_hidden'},
+        ], '调整工作表可见性')
+    assert not previews
+
+
+@pytest.mark.anyio
 async def test_source_move_sheet_keeps_active_sheet_formulas_and_local_names():
     book = load_workbook(BytesIO(source_book()))
     book.create_sheet('Third')['A1'] = '保留'

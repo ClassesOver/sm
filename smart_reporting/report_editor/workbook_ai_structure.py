@@ -17,7 +17,7 @@ ROW_COLUMN_SOURCE_OPS = {
     'insert_cols': 'insert-cols', 'delete_cols': 'remove-cols',
 }
 SHEET_LIFECYCLE_OPS = {'add_sheet', 'rename_sheet', 'delete_sheet'}
-SHEET_SOURCE_OPS = SHEET_LIFECYCLE_OPS | {'move_sheet'}
+SHEET_SOURCE_OPS = SHEET_LIFECYCLE_OPS | {'move_sheet', 'set_sheet_hidden'}
 AXIS_SIZE_SOURCE_OPS = {'set_row_height', 'set_col_width'}
 
 
@@ -28,6 +28,7 @@ def translate_sheet_operation(operation: dict[str, Any], order: list[str]) -> di
         'rename_sheet': {'sheetId', 'name'},
         'delete_sheet': {'sheetId'},
         'move_sheet': {'sheetId', 'position'},
+        'set_sheet_hidden': {'sheetId', 'hidden'},
     }[op]
     if set(operation) != fields | {'op'}:
         raise ValueError('workbook_ai_sheet_order_invalid')
@@ -54,15 +55,20 @@ def translate_sheet_operation(operation: dict[str, Any], order: list[str]) -> di
             raise ValueError('workbook_ai_sheet_order_invalid')
         order.remove(source)
         removals.append(source)
-    else:
+    elif op == 'move_sheet':
         position = operation['position']
         if type(position) is not int or not 1 <= position <= min(len(order), 1000):
             raise ValueError('workbook_ai_sheet_order_invalid')
         order.remove(source)
         order.insert(position - 1, source)
-    return {'kind': 'applySheetEdits', 'plan': {
+    plan = {
         'additions': additions, 'renames': renames, 'removals': removals, 'order': list(order),
-    }}
+    }
+    if op == 'set_sheet_hidden':
+        if type(operation['hidden']) is not bool:
+            raise ValueError('workbook_ai_sheet_visibility_invalid')
+        plan['visibility'] = [{'sheetName': source, 'hidden': operation['hidden']}]
+    return {'kind': 'applySheetEdits', 'plan': plan}
 
 
 def translate_row_column_operation(operation: dict[str, Any], sheet_name: str) -> dict[str, Any]:

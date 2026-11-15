@@ -425,6 +425,7 @@ class WorkbookAIToolkit(Toolkit):
                 '整簿授权下用 {op:move_sheet,sheetId,position} 移动工作表标签。'
                 'position 从 1 开始；同批多个移动按提交顺序执行。'
                 '支持 add_sheet(name)、rename_sheet(sheetId,name) 和 delete_sheet(sheetId)。'
+                '用 set_sheet_hidden(sheetId,hidden) 隐藏或显示工作表；始终保留至少一个可见工作表。'
                 '在工作表结构批次内按当前表名寻址；Excel 新建空白表无需指定 rows 或 columns。'
                 '仍被其他工作表引用的表由写入器拒绝删除。'
             )
@@ -673,7 +674,7 @@ class WorkbookAIToolkit(Toolkit):
             operation.get('op') not in SHEET_SOURCE_OPS or 'kind' in operation for operation in operations
         ):
             raise ValueError('workbook_ai_structure_batch_invalid')
-        if any(operation.get('op') == 'move_sheet' for operation in operations) and any(
+        if any(operation.get('op') in {'move_sheet', 'set_sheet_hidden'} for operation in operations) and any(
             operation.get('kind') == 'applySheetEdits' for operation in operations
         ):
             raise ValueError('workbook_ai_structure_batch_invalid')

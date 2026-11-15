@@ -64,6 +64,8 @@ XLSX `set_row_height` 和 `set_col_width` 在整簿授权下复用原生尺寸�
 
 XLSX `find_replace` 在授权范围内按顺序重放，支持区分大小写和整格匹配。原生引擎扫描最多 200,000 格的范围，仅改写匹配的已有文本，保留单元格样式，并跳过公式、数字、布尔值和 Excel 错误值。富文本匹配后写回纯文本，沿用源操作语义。
 
+XLSX `set_sheet_hidden` 接到原生工作表结构写入器。隐藏当前工作表时，活动标签转到可见工作表。独立回读验证跨表公式和工作表部件保留，并覆盖拒绝隐藏最后一张可见表、显示 `veryHidden` 表、修改受保护结构和从选区授权修改整表。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。
