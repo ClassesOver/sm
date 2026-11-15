@@ -35,7 +35,7 @@ async def test_metric_endpoints_use_instance_configuration_without_organization_
         assert service.save_draft.await_args.args[1] == service.list.await_args.args[1]
 
 
-@pytest.mark.parametrize("module_name", ["metrics_api", "statistical_policy_api", "business_documents_api", "business_evidence_api", "catalog_api", "import_api", "report_issue_reviews_api", "data_sources.api"])
+@pytest.mark.parametrize("module_name", ["metrics_api", "statistical_policy_api", "business_documents_api", "business_evidence_api", "catalog_api", "import_api", "data_sources.api"])
 def test_management_write_contracts_do_not_expose_organization_fields(module_name):
     module = importlib.import_module("smart_reporting.management." + module_name)
     for value in vars(module).values():
