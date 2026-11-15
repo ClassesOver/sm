@@ -2764,7 +2764,8 @@ function renderInspector() {
   const tablePatch = element ? tableStyleEdits.get(editKey(selectedSlide,element.id)) : undefined
   const tablePreset = SLIDES_TABLE_PRESETS.find(item => item.name === tablePatch?.styleName)
   const presetReason = tablePresetReason(element)
-  for (const id of ['tableStyle','tableFirstRow','tableBandRow','tableRtl']) {
+  nativeRibbon?.setTablePresetEnabled(!presetReason, presetReason ?? undefined)
+  for (const id of ['tableFirstRow','tableBandRow','tableRtl']) {
     const control = root.querySelector<HTMLSelectElement | HTMLButtonElement>(`[data-command="${id}"]`)
     if (control) { control.disabled = !!presetReason; control.title = presetReason ?? '固定表格预设与选项；预设会清除直接底纹和边框，保留文字与表格方向' }
   }

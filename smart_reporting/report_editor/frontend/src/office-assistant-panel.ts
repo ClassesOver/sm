@@ -63,7 +63,16 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   let stickToBottom = true, panelDisposed = false
   let followFrame: number | undefined
   const onBodyScroll = () => { stickToBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48 }
-  const resetFollowing = () => { stickToBottom = true }
+  // Pinned slides AiPanel.tsx:1431-1446 / shared AiComposer: fit content,
+  // cap the input at 168px, and let the CSS minimum govern an empty draft.
+  const resizeInput = () => {
+    if (panelDisposed) return
+    if (input.value === '') { input.style.height = ''; return }
+    input.style.height = 'auto'
+    input.style.height = `${Math.min(input.scrollHeight, 168)}px`
+  }
+  input.addEventListener('input', resizeInput)
+  const resetFollowing = () => { stickToBottom = true; queueMicrotask(resizeInput) }
   const contentObserver = new MutationObserver(() => {
     if (stickToBottom) body.scrollTop = body.scrollHeight
   })
@@ -72,6 +81,7 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   parts.headerAction?.addEventListener('click',resetFollowing)
   for (const node of [...panel.childNodes]) if (node !== header) body.append(node)
   panel.append(toolbar,body,composer)
+  resizeInput()
   // 部分控制器在绑定外壳后才挂载工具进度，仍归入中间滚动区。
   const observer = new MutationObserver(() => {
     for (const node of [...panel.childNodes]) if (![header,toolbar,body,composer].includes(node as HTMLElement)) body.append(node)
@@ -98,6 +108,7 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
     if (event.repeat) return
     if (!start.disabled) start.click()
     else if (!cancel.disabled && input.value.trim()) parts.onQueue?.()
+    queueMicrotask(resizeInput)
   }
   input.addEventListener('keydown', onInputKey)
   const onKeyDown = (event: KeyboardEvent) => {
@@ -115,7 +126,7 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
       const active = document.activeElement
       if (active instanceof HTMLElement && active !== document.body && !panel.contains(active)) trigger = active
       if (followFrame !== undefined) cancelAnimationFrame(followFrame)
-      followFrame = requestAnimationFrame(() => { followFrame=undefined; if (!panelDisposed && !panel.hidden && stickToBottom) body.scrollTop = body.scrollHeight })
+      followFrame = requestAnimationFrame(() => { followFrame=undefined; if (!panelDisposed && !panel.hidden) { resizeInput(); if (stickToBottom) body.scrollTop = body.scrollHeight } })
     },
     dispose() {
       panelDisposed = true
@@ -127,6 +138,7 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
       close.removeEventListener('click', closePanel)
       panel.removeEventListener('keydown', onKeyDown)
       input.removeEventListener('keydown', onInputKey)
+      input.removeEventListener('input', resizeInput)
       input.removeEventListener('compositionstart', ime.handleCompositionStart)
       input.removeEventListener('compositionend', ime.handleCompositionEnd)
       body.removeEventListener('keydown', readKeys)

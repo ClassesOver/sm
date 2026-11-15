@@ -6,16 +6,16 @@ afterEach(() => { document.body.replaceChildren(); vi.restoreAllMocks(); vi.unst
 
 function setup() {
   const host = document.createElement('div'); document.body.append(host)
-  let operations: NativeOperation[] = []
+  let operations: NativeOperation[] = [], selectedId = 'title'
   const candidate = { editId: 'candidate', status: 'succeeded', snapshotSha256: 's'.repeat(64), proposal: { summary: '润色标题', operations: [{ kind: 'editSlides', edits: [{ slideIndex: 0, elementId: 'title', text: '候选标题' }], order: [0] }] } }
   const api = { start: vi.fn(async () => ({ ...candidate, status: 'running' })), status: vi.fn(async () => candidate),
     accept: vi.fn(async () => ({ operations: candidate.proposal.operations })), cancel: vi.fn(async () => ({})), cancelRequest: vi.fn(async () => ({})) }
   const apply = vi.fn((next: NativeOperation[]) => { operations = next })
   const view = mountSlidesNativeAI(host, { api: api as unknown as SlidesNativeAIClient, locked: () => false,
-    context: scope => ({ expectedSha256: 'a'.repeat(64), operations, scope: scope === 'deck' ? 'deck' : 'selection', selection: scope === 'deck' ? [] : [{ slideIndex: 0, elementId: 'title' }],
+    context: scope => ({ expectedSha256: 'a'.repeat(64), operations, scope: scope === 'deck' ? 'deck' : 'selection', selection: scope === 'deck' ? [] : [{ slideIndex: 0, elementId: selectedId }],
       label: '第 1 页 · 标题', objects: [{ slideIndex: 0, elementId: 'title', text: '人工文字', name: '标题' }] }), apply })
   const submit = () => { host.querySelector<HTMLTextAreaElement>('textarea')!.value = '润色'; host.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true })) }
-  return { host, api, apply, view, submit, change: () => { operations = [{ kind: 'editSlides', backgrounds: [{ slideIndex: 0, color: '#123456' }] }] } }
+  return { host, api, apply, view, submit, selectAnother: () => { selectedId = 'other' }, change: () => { operations = [{ kind: 'editSlides', backgrounds: [{ slideIndex: 0, color: '#123456' }] }] } }
 }
 
 it('quotes the selected object, previews Chinese candidates and requires explicit acceptance', async () => {
@@ -150,4 +150,40 @@ it('备注显式按页授权，展示备注前后差异并等待采纳，不发�
  expect(api.start).toHaveBeenCalledWith(expect.objectContaining({scope:'notes',selection:[{slideIndex:0}],operations}),expect.any(AbortSignal))
  expect(host.textContent).toContain('原备注草稿 → 候选演讲稿');expect(apply).not.toHaveBeenCalled()
  host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click();await vi.waitFor(()=>expect(apply).toHaveBeenCalledWith(candidate.proposal.operations));view.dispose()
+})
+
+it('holds queued edits until an existing PPTX candidate is explicitly accepted', async () => {
+ const { host, api, apply, view, submit } = setup()
+ try {
+  submit()
+  await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
+  const input=host.querySelector<HTMLTextAreaElement>('textarea')!
+  input.value='下一条编辑'
+  input.dispatchEvent(new Event('input',{bubbles:true}))
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+  await vi.waitFor(()=>expect(host.querySelector('.ai-queue-toggle')?.textContent).toContain('1 条排队中'))
+  expect(api.start).toHaveBeenCalledOnce()
+  expect(apply).not.toHaveBeenCalled()
+  host.querySelector<HTMLButtonElement>('.native-ai-accept')!.click()
+  await vi.waitFor(()=>expect(api.start).toHaveBeenCalledTimes(2))
+  expect(apply).toHaveBeenCalledOnce()
+  expect(api.start).toHaveBeenNthCalledWith(2,expect.objectContaining({instruction:'下一条编辑',operations:apply.mock.calls[0]?.[0]}),expect.any(AbortSignal))
+ } finally { view.dispose() }
+})
+
+it('discards a queued edit whose authorized PPTX object changed before dispatch', async () => {
+ const { host, api, apply, view, submit, selectAnother } = setup()
+ try {
+  submit()
+  await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.native-ai-preview')!.hidden).toBe(false))
+  const input=host.querySelector<HTMLTextAreaElement>('textarea')!
+  input.value='仅修改当前标题'
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+  await vi.waitFor(()=>expect(host.querySelector('.ai-queue-toggle')?.textContent).toContain('1 条排队中'))
+  selectAnother()
+  host.querySelector<HTMLButtonElement>('.native-ai-discard')!.click()
+  await vi.waitFor(()=>expect(host.textContent).toContain('排队指令的授权范围或目标已变化'))
+  expect(api.start).toHaveBeenCalledOnce()
+  expect(apply).not.toHaveBeenCalled()
+ } finally { view.dispose() }
 })

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import type { WorkbookModel } from '@sheets-web/xlsx-engine'
-import { GRID_PERMISSION_REASON, LOCKED_STRUCTURE_REASON, PROTECTED_SHEET_REASON, assertProtectionRespected, planProtection, protectionBlockReason } from './workbook-protection'
+import { GRID_PERMISSION_REASON, LOCKED_STRUCTURE_REASON, PROTECTED_SHEET_REASON, assertProtectionRespected, planProtection, protectedFilterAllowed, protectionBlockReason } from './workbook-protection'
 
 const model = (sheets: { name: string; protected?: boolean }[], lockStructure?: boolean) => ({
   sheets: sheets.map(sheet => ({ name: sheet.name, ...(sheet.protected === undefined ? {} : { protection: { protected: sheet.protected, hasPassword: false } }) })),
@@ -29,6 +29,42 @@ it('allows native heading dimensions as protected-sheet view commands', () => {
 it('allows changing worksheet direction without permitting protected cell edits', () => {
   expect(protectionBlockReason('sheet.command.set-worksheet-right-to-left', true, true)).toBeUndefined()
   expect(protectionBlockReason('sheet.command.set-range-values', true, true)).toBe(PROTECTED_SHEET_REASON)
+})
+
+it('allows criteria changes only within the existing permitted AutoFilter', () => {
+  const range = { startRow: 1, endRow: 8, startColumn: 2, endColumn: 4 }
+  const workbook = model([{ name: 'A', protected: true }])
+  Object.assign(workbook.sheets[0]!, {
+    protection: { protected: true, hasPassword: true, allow: { autoFilter: true } },
+    filter: { range, columns: [] },
+  })
+  const plan = planProtection(workbook, new Map(), undefined, () => 'Renamed')
+  const live = {
+    getSheetId: () => 'sheet-0', getSheetName: () => 'Renamed',
+    getFilter: () => ({
+      getRange: () => ({ getRow: () => 1, getColumn: () => 2, getHeight: () => 8, getWidth: () => 3 }),
+      getColumnFilterCriteria: () => null,
+    }),
+  }
+  const source = workbook.sheets[0]
+  for (const [command, col, allowed] of [
+    ['set-filter-criteria', 2, true], ['set-filter-criteria', 1, false],
+    ['clear-filter-criteria', undefined, true], ['re-calc-filter', undefined, true],
+    ['remove-sheet-filter', undefined, false], ['set-filter-range', undefined, false],
+    ['smart-toggle-filter', undefined, false],
+  ] as const) {
+    const id = `sheet.command.${command}`
+    const filterAllowed = protectedFilterAllowed(source, live, id, { col })
+    expect(protectionBlockReason(id, true, false, undefined, filterAllowed)).toBe(allowed ? undefined : PROTECTED_SHEET_REASON)
+  }
+  expect(protectedFilterAllowed(source, undefined, 'sheet.command.set-filter-criteria', { col: 2 })).toBe(false)
+  const op = { kind: 'applySheetFilter', sheetName: 'Renamed', filter: { range, columns: [{ colId: 0, values: ['Open'] }] } }
+  expect(() => assertProtectionRespected([op], plan, false)).not.toThrow()
+  expect(() => assertProtectionRespected([{ ...op, filter: { range, columns: [] } }], plan, false)).not.toThrow()
+  for (const change of [{ filter: null }, { filter: { range: { ...range, endColumn: 5 }, columns: [] } },
+    { hiddenRows: [1] }, { visibilityRange: { ...range, endRow: 9 } }]) {
+    expect(() => assertProtectionRespected([{ ...op, ...change }], plan, false)).toThrow(PROTECTED_SHEET_REASON)
+  }
 })
 
 it('orders unprotect before and protect after the edits, under original and final names', () => {

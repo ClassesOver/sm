@@ -388,13 +388,23 @@ it('routes only current-comment deletion and disables it without a trusted edita
   const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, commentCommands)
   document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
   const button = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-delete-current"]')!
-  expect(button.textContent).toBe('删除批注')
-  expect(button.querySelector('svg')).not.toBeNull()
+  const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-delete-menu"]')!
+  expect(trigger.textContent).toBe('删除')
+  expect(trigger.querySelectorAll('svg')).toHaveLength(2)
+  expect(trigger.disabled).toBe(true)
   expect(button.disabled).toBe(true);expect(button.title).toBe(unavailable)
   button.click();expect(deleteCurrent).not.toHaveBeenCalled()
   unavailable = null;editor.view.dispatch(editor.state.tr.setMeta('refresh-current-comment-delete', true))
   expect(button.disabled).toBe(false)
+  expect(trigger.disabled).toBe(false)
+  trigger.click()
+  expect(trigger.getAttribute('aria-expanded')).toBe('true')
+  button.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(trigger)
+  trigger.click()
   button.click();expect(deleteCurrent).toHaveBeenCalledOnce()
+  expect(trigger.getAttribute('aria-expanded')).toBe('false')
   editor.setEditable(false);unavailable = '当前文档不可编辑或正在保存'
   editor.view.dispatch(editor.state.tr.setMeta('refresh-current-comment-delete', true))
   expect(button.disabled).toBe(true);expect(button.title).toBe(unavailable)
@@ -411,10 +421,11 @@ it('routes resolved and all comment deletion through the trusted batch controlle
   const ribbon = createDocxRibbon(editor, true, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, commentCommands)
   document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="review"]')!.click()
   const resolved = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-delete-resolved"]')!, all = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-delete-all"]')!
+  const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="comment-delete-menu"]')!
   expect(resolved.disabled).toBe(true);expect(resolved.title).toBe(resolvedReason);expect(all.disabled).toBe(true);expect(all.title).toBe(allReason)
   resolvedReason = null;allReason = null;editor.view.dispatch(editor.state.tr.setMeta('refresh-comment-delete-batch', true))
   expect(resolved.disabled).toBe(false);expect(all.disabled).toBe(false)
-  resolved.click();all.click();expect(deleteAll.mock.calls.map(([only]) => only)).toEqual([true,false])
+  trigger.click();resolved.click();trigger.click();all.click();expect(deleteAll.mock.calls.map(([only]) => only)).toEqual([true,false])
   editor.destroy()
 })
 

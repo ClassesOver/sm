@@ -509,6 +509,9 @@ dialog:is(.pdf-layout-dialog, .slides-table-dialog, .slides-native-chart-dialog,
 .slides-native-ribbon-group [data-animation-collapse][hidden] { display: none; }
 .slides-native-ribbon-group [data-animation-collapse] { grid-row: span 3; align-self: start; flex-direction: column; min-width: 60px; }
 .slides-ribbon-popover.slides-animation-collapsed-flyout:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; max-width: min(760px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow: auto; box-sizing: border-box; }
+.slides-native-ribbon-group.slides-table-style-gallery button { grid-row: span 3; align-self: start; flex-direction: column; width: 66px; gap: 2px; padding: 4px; }
+.slides-native-ribbon-group.slides-table-style-gallery button > svg { flex: none; width: 44px; height: 26px; }
+.slides-native-ribbon-group.slides-table-style-gallery button > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .slides-fill-gradients { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
 .slides-native-ribbon-group .slides-fill-gradients button { min-height: 24px; padding: 0; border: 1px solid var(--office-border-strong); }
 .slides-shape-gallery { width: min(264px, calc(100vw - 16px)); max-height: min(320px, calc(100vh - 16px)); box-sizing: border-box; overflow: auto; }

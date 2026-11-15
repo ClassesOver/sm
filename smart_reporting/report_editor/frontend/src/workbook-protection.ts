@@ -16,6 +16,7 @@
 import type { WorkbookModel } from '@sheets-web/xlsx-engine'
 import type { WorkbookOperation } from './workbook-draft'
 import { editableRangeContains, type EditableRange, type ProtectedValueContext } from './workbook-editable-ranges'
+import type { FilterRange, FilterSheet } from './workbook-filters'
 
 export interface ProtectionState { readonly protected: boolean; readonly hasPassword: boolean }
 
@@ -41,17 +42,47 @@ export const LOCKED_STRUCTURE_REASON = '工作簿结构受保护，请先在“�
 export const GRID_PERMISSION_REASON = '网格内的区域/工作表权限不会写回文件；请使用“审阅”中的保护工作表'
 
 /** Why a Univer command is refused under the current protection, if it is. */
-export function protectionBlockReason(commandId: string, sheetProtected: boolean, structureLocked: boolean, context?: ProtectedValueContext): string | undefined {
+export function protectionBlockReason(commandId: string, sheetProtected: boolean, structureLocked: boolean, context?: ProtectedValueContext, filterAllowed = false): string | undefined {
   if (GRID_PERMISSION.test(commandId)) return GRID_PERMISSION_REASON
   const match = /^sheet\.command\.(.+)$/.exec(commandId)
   if (!match) return undefined
   const name = match[1]!
   if (STRUCTURE_COMMANDS.has(name)) return structureLocked ? LOCKED_STRUCTURE_REASON : undefined
   if (sheetProtected && !SHEET_VIEW_COMMANDS.has(name)) {
+    if (filterAllowed && /^(set-filter-criteria|clear-filter-criteria|re-calc-filter)$/.test(name)) return undefined
     if (name === 'set-range-values' && context && (context.writtenRanges ?? [context.range]).every(range => editableRangeContains(range, context.ranges))) return undefined
     return PROTECTED_SHEET_REASON
   }
   return undefined
+}
+
+function permittedFilterRange(sheet: WorkbookModel['sheets'][number] | undefined): FilterRange | undefined {
+  const filter = sheet?.filter
+  if (sheet?.protection?.allow?.autoFilter === true && filter && !filter.readOnlyReason
+    && !filter.columns.some(column => column.dateGroups !== undefined)) return filter.range
+  return undefined
+}
+
+function sameFilterRange(range: FilterRange, other: Partial<FilterRange> | undefined): boolean {
+  return !!other && range.startRow === other.startRow && range.endRow === other.endRow
+    && range.startColumn === other.startColumn && range.endColumn === other.endColumn
+}
+
+// Protection checks only the filter range; criteria values belong to the filter adapter.
+type FilterRangeSheet = {
+  getFilter(): Pick<NonNullable<ReturnType<FilterSheet['getFilter']>>, 'getRange'> | null
+}
+
+export function protectedFilterAllowed(source: WorkbookModel['sheets'][number] | undefined,
+  sheet: FilterRangeSheet | undefined, commandId: string, params: unknown): boolean {
+  if (!/^sheet\.command\.(set-filter-criteria|clear-filter-criteria|re-calc-filter)$/.test(commandId)) return false
+  const permitted = permittedFilterRange(source), live = sheet?.getFilter?.()?.getRange()
+  if (!permitted || !live || permitted.startRow !== live.getRow() || permitted.startColumn !== live.getColumn()
+    || permitted.endRow !== live.getRow() + live.getHeight() - 1
+    || permitted.endColumn !== live.getColumn() + live.getWidth() - 1) return false
+  if (commandId !== 'sheet.command.set-filter-criteria') return true
+  const col = (params as { col?: number } | undefined)?.col
+  return col !== undefined && Number.isInteger(col) && col >= permitted.startColumn && col <= permitted.endColumn
 }
 
 /** Ribbon commands still available on a protected sheet (view, navigation, copy, protection, structure). */
@@ -70,6 +101,7 @@ export interface ProtectionPlan {
   /** final sheet names protected both before and after this session — no edit may target them */
   readonly frozen: ReadonlySet<string>
   readonly editableRanges: ReadonlyMap<string, readonly EditableRange[]>
+  readonly filterRanges: ReadonlyMap<string, FilterRange>
 }
 
 /**
@@ -80,6 +112,7 @@ export function planProtection(model: WorkbookModel, desired: ReadonlyMap<string
   names: (id: string) => string | undefined, ranges: ReadonlyMap<string, readonly EditableRange[]> = new Map()): ProtectionPlan {
   const leading: WorkbookOperation[] = [], trailing: WorkbookOperation[] = [], frozen = new Set<string>()
   const editableRanges = new Map<string, readonly EditableRange[]>()
+  const filterRanges = new Map<string, FilterRange>()
   const originalLock = model.workbookProtection?.lockStructure ?? false
   if (structure === false && originalLock) leading.push({ kind: 'protectWorkbookStructure', lockStructure: false })
   model.sheets.forEach((sheet, index) => {
@@ -88,10 +121,15 @@ export function planProtection(model: WorkbookModel, desired: ReadonlyMap<string
     if (original && !wanted) leading.push({ kind: 'protectSheet', sheetName: sheet.name, protect: false })
     if (!finalName) return
     if (!original && wanted) trailing.push({ kind: 'protectSheet', sheetName: finalName, protect: true })
-    if (original && wanted) { frozen.add(finalName); editableRanges.set(finalName, ranges.get(sheet.name) ?? []) }
+    if (original && wanted) {
+      frozen.add(finalName)
+      editableRanges.set(finalName, ranges.get(sheet.name) ?? [])
+      const filterRange = permittedFilterRange(sheet)
+      if (filterRange) filterRanges.set(finalName, filterRange)
+    }
   })
   if (structure === true && !originalLock) trailing.push({ kind: 'protectWorkbookStructure', lockStructure: true })
-  return { leading, trailing, frozen, editableRanges }
+  return { leading, trailing, frozen, editableRanges, filterRanges }
 }
 
 /** 保存时同样限制到免密码允许区域内的值/公式，且禁止重排受锁定的工作簿结构。 */
@@ -99,6 +137,14 @@ export function assertProtectionRespected(operations: readonly WorkbookOperation
   for (const op of operations) {
     if (op.kind === 'protectSheet' || op.kind === 'protectWorkbookStructure' || op.kind === 'applyPageSetups' || op.kind === 'applyDefinedNames') continue
     if (op.kind === 'applySheetEdits' && structureLockedThroughout) throw new Error(LOCKED_STRUCTURE_REASON)
+    if (op.kind === 'applySheetFilter' && typeof op.sheetName === 'string') {
+      const range = plan.filterRanges.get(op.sheetName)
+      const filter = op.filter as { range?: FilterRange } | null | undefined
+      if (range && sameFilterRange(range, filter?.range)
+        && (op.visibilityRange === undefined || sameFilterRange(range, op.visibilityRange as FilterRange))
+        && (op.hiddenRows === undefined || (Array.isArray(op.hiddenRows)
+          && op.hiddenRows.every(row => Number.isInteger(row) && row > range.startRow && row <= range.endRow)))) continue
+    }
     const targets = op.kind === 'applyCellEdits'
       ? (op.edits as { sheetName: string; row?: number; column?: number; writeValue?: boolean; style?: unknown; styleReset?: unknown; rich?: unknown }[]).filter(edit => {
         if (!plan.frozen.has(edit.sheetName)) return false

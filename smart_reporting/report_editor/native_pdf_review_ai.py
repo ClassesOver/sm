@@ -8,7 +8,7 @@ from io import BytesIO
 from typing import Any, Literal
 
 from agno.agent import Agent
-from pydantic import Field
+from pydantic import Field, StrictInt
 from pypdf import PdfReader
 
 from ..office.contract import StrictModel
@@ -206,9 +206,10 @@ class NativePDFReviewTools:
                         )
                     ordinal += 1
 
-    def read_annotations(self, offset: int = 0, limit: int = 50, text_offset: int = 0) -> dict:
+    def read_annotations(self, offset: int = 0, limit: int = 50, text_offset: int = 0,
+                         *, start: StrictInt | None = None, end: StrictInt | None = None) -> dict:
         """读取实际批注，可信作者取自同一 PDF 的 /T；未知仍为 unknown。"""
-        result = self.reader.read_annotations(offset, limit, text_offset)
+        result = self.reader.read_annotations(offset, limit, text_offset, start=start, end=end)
         for item in result["annotations"]:
             item.update(self._metadata.get(item["annotationId"], {}))
         for annotation_id, note in self.notes.items():
@@ -225,9 +226,10 @@ class NativePDFReviewTools:
                     ordinal += 1
         return result
 
-    def read_pages(self, start_page: int = 1, page_count: int = 10, text_offset: int = 0) -> dict:
+    def read_pages(self, start_page: int | None = None, page_count: int | None = None, text_offset: int = 0,
+                   *, start: StrictInt | None = None, end: StrictInt | None = None) -> dict:
         """复用正文读取游标；完整读过的页附带实际对象边界，供精确原位候选使用。"""
-        result = self.reader.read_pages(start_page, page_count, text_offset)
+        result = self.reader.read_pages(start_page, page_count, text_offset, start=start, end=end)
         complete = self.reader.coverage()["fullyReadPages"]
         for page in result["pages"]:
             if page["pageNumber"] in complete:
@@ -683,9 +685,8 @@ class AgnoNativePDFReviewPlanner:
                 "最终只输出符合 output_schema 的 JSON answer，逐条说明候选、澄清、跳过及未覆盖范围，不用摘要替代工具处理。",
             ],
         )
-        from ..reporting.agent_events import run_owned_agent_with_events
-
         from ..office.settings import configure_office_agent
+        from ..reporting.agent_events import run_owned_agent_with_events
         await configure_office_agent(agent)
         output = await run_owned_agent_with_events(
             agent,

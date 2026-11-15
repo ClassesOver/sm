@@ -118,6 +118,8 @@ try{
  const draft=()=>page.evaluate(()=>{const key=Object.keys(localStorage).find(value=>value.startsWith('native-editor-draft:v1:'));return key?JSON.parse(localStorage.getItem(key)).operations:[]})
  await open(1);await page.locator('[data-tab-id="review"]').click()
  const resolved=page.locator('[data-action="comment-delete-resolved"]'),all=page.locator('[data-action="comment-delete-all"]')
+ const deletionMenu=page.locator('[data-action="comment-delete-menu"]')
+ await deletionMenu.click()
  assert.equal(await resolved.isEnabled(),true);assert.equal(await all.isEnabled(),true)
  let dialog=page.waitForEvent('dialog'),click=resolved.click(),confirm=await dialog;assert.match(confirm.message(),/所有已解决的批注/);await confirm.accept();await click
  assert.deepEqual(await draft(),expectedResolved)
@@ -126,6 +128,7 @@ try{
  assert.equal(await page.locator('.tiptap').evaluate(element=>element.editor.commands.undo()),true)
  assert.deepEqual(await draft(),[])
  assert.equal(await resolved.isEnabled(),true);assert.equal(await all.isEnabled(),true)
+ await deletionMenu.click()
  dialog=page.waitForEvent('dialog');click=all.click();confirm=await dialog;assert.match(confirm.message(),/文档中的所有批注/);await confirm.accept();await click
  assert.deepEqual(await draft(),expectedAll)
  assert.equal(await resolved.isDisabled(),true);assert.equal(await all.isDisabled(),true)
@@ -141,6 +144,7 @@ try{
  assert.equal(sha(downloaded),state.revisions[2].model.sourceSha256);assert.deepEqual(state.revisions[2].model.commentThreads.targets,[])
  await open(2);await page.locator('[data-tab-id="review"]').click()
  assert.equal(await resolved.isDisabled(),true);assert.equal(await all.isDisabled(),true)
+ assert.equal(await deletionMenu.isDisabled(),true)
  await page.screenshot({path:join(output,'comment-batch-deleted-reopened.png'),fullPage:true})
  const loadedChunks=Object.fromEntries(await Promise.all([...chunks].map(async([path,promise])=>[path,await promise])))
  assert.deepEqual(errors,[]);assert.equal(sha(await readFile(join(staticRoot,'.vite/manifest.json')),),manifestSha)

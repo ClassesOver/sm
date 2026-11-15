@@ -10,6 +10,7 @@
     "test:budget": "node scripts/check-build-budget.contract.mjs",
     "dev": "vite --host 0.0.0.0",
     "test": "vitest run",
+    "test:office-settings": "vitest run src/office-admin.test.ts src/office-admin-provider.test.ts src/office-admin-session.test.ts src/office-provider-settings.test.ts src/office-sources.test.ts src/office-generated-image.test.ts src/office-settings-session.test.tsx src/office-assistant-preferences.test.ts src/account-settings/dialog.test.tsx",
     "test:e2e:management": "playwright test --config playwright.management.config.ts",
     "check:management-budget": "node scripts/check-management-budget.mjs"
   },

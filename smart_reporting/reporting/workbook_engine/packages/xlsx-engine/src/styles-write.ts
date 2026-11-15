@@ -6,6 +6,7 @@
 import type { WorkbookStyleEdit } from './edit-schemas'
 import { shortDateNumFmtId } from './short-date'
 import { isGradientFill, type FillSpec, type StyleColor } from './style-color'
+import { resolveXfProtection } from './style-read'
 import { escapeXmlAttribute, extractElements, readCoreAttribute, sectionInner } from './xml'
 
 export class StylesheetEditor {
@@ -16,6 +17,7 @@ export class StylesheetEditor {
   private readonly borders: string[]
   private readonly hadBordersSection: boolean
   private readonly cellXfs: string[]
+  private readonly namedStyles: string[]
   private readonly dxfs: string[]
   private readonly hadDxfsSection: boolean
   private readonly originalCounts: {
@@ -47,6 +49,7 @@ export class StylesheetEditor {
     this.borders = bordersInner === null ? ['<border/>'] : extractElements(bordersInner, 'border')
     if (this.borders.length === 0) this.borders.push('<border/>')
     this.cellXfs = extractElements(cellXfsInner, 'xf')
+    this.namedStyles = extractElements(sectionInner(stylesXml, 'cellStyleXfs') ?? '', 'xf')
     const dxfsInner = sectionInner(stylesXml, 'dxfs')
     this.hadDxfsSection = dxfsInner !== null
     this.dxfs = dxfsInner === null ? [] : extractElements(dxfsInner, 'dxf')
@@ -119,7 +122,13 @@ export class StylesheetEditor {
       )
     }
     const alignment = buildAlignment(baseXf, delta)
-    const protection = buildProtection(baseXf, delta)
+    const changesProtection = delta.protectionLocked !== undefined || delta.protectionHidden !== undefined
+    const protection = changesProtection
+      ? buildProtection(resolveXfProtection(baseXf, this.namedStyles), delta)
+      : extractElements(baseXf, 'protection')[0] ?? ''
+    const applyProtection = changesProtection
+      ? '1'
+      : readCoreAttribute(baseXf, 'applyProtection')
 
     const attributes = [
       `numFmtId="${numFmtId}"`,
@@ -132,7 +141,7 @@ export class StylesheetEditor {
       ...(fillId !== 0 ? ['applyFill="1"'] : []),
       ...(borderId !== 0 ? ['applyBorder="1"'] : []),
       ...(alignment !== '' ? ['applyAlignment="1"'] : []),
-      ...(protection !== '' ? ['applyProtection="1"'] : []),
+      ...(applyProtection === undefined ? [] : [`applyProtection="${applyProtection}"`]),
     ].join(' ')
     const children = `${alignment}${protection}`
     const xf = children === '' ? `<xf ${attributes}/>` : `<xf ${attributes}>${children}</xf>`
@@ -408,20 +417,15 @@ function ownsItsAlignment(xf: string): boolean {
   return true
 }
 
-/// Merges protection flag deltas over the base xf's <protection>. Attributes
-/// at their OOXML defaults (locked=1, hidden=0) are omitted; an empty result
-/// drops the element.
-function buildProtection(baseXf: string, delta: WorkbookStyleEdit): string {
-  const baseProtection = baseXf.match(/<protection\b[^>]*\/?>/)?.[0] ?? ''
-  const locked =
-    delta.protectionLocked ?? (readCoreAttribute(baseProtection, 'locked') === '0' ? false : undefined)
-  const hidden =
-    delta.protectionHidden ?? (readCoreAttribute(baseProtection, 'hidden') === '1' ? true : undefined)
+/// An empty explicit protection element applies the schema defaults.
+function buildProtection(base: ReturnType<typeof resolveXfProtection>, delta: WorkbookStyleEdit): string {
+  const locked = delta.protectionLocked ?? base?.locked ?? true
+  const hidden = delta.protectionHidden ?? base?.hidden ?? false
   const attributes = [
     ...(locked === false ? ['locked="0"'] : []),
     ...(hidden === true ? ['hidden="1"'] : []),
   ]
-  return attributes.length === 0 ? '' : `<protection ${attributes.join(' ')}/>`
+  return attributes.length === 0 ? '<protection/>' : `<protection ${attributes.join(' ')}/>`
 }
 
 const XLSX_VERTICAL: Record<string, string> = {

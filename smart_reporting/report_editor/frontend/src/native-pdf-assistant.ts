@@ -1,3 +1,4 @@
+import { mountOfficeReadQueue } from './office-read-queue'
 import { appendOfficeAnswer } from './office-answer'
 import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel, createOfficeNewChatButton } from './office-assistant-panel'
@@ -31,11 +32,12 @@ export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
   const progress = mountNativeAIProgress(panel)
   panel.append(title,help,input,start,cancel,close,status,transcript); root.append(panel)
   const reset = createOfficeNewChatButton()
-  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,headerAction:reset})
+  const queue = mountOfficeReadQueue(input, submit)
+  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,headerAction:reset,queue:queue.host,onQueue:()=>queue.enqueue(action)})
   let action: NativePDFReadAction = 'ask', generation=0, disposed=false, busy=false, hasTurn=false
   const tasks = new OfficeAssistantController({start:options.api.pdfAIStart,status:options.api.pdfAIStatus,cancelRequest:options.api.pdfAICancel,id:(task: NativePDFReadTask)=>task.taskId,running:(task: NativePDFReadTask)=>task.status==='running'})
   let previous: {taskId: string; snapshot: string} | undefined
-  function update() { reset.hidden=!hasTurn; start.disabled=busy || action==='ask' && !input.value.trim(); cancel.disabled=!busy }
+  function update() { reset.hidden=!hasTurn; start.disabled=busy || action==='ask' && !input.value.trim(); cancel.disabled=!busy; queue.setBusy(busy) }
   function stop(message='任务已取消') {
     const turn=++generation; progress.reset(); busy=false
     status.textContent=message; update()
@@ -64,10 +66,13 @@ export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
     }
     if(result.toolEvents?.length) { const tools=document.createElement('p');tools.textContent='已执行工具：'+result.toolEvents.map(event=>event.tool).join(' → ');evidence.append(tools) }
   }
-  async function run() {
-    if(disposed || busy || action==='ask' && !input.value.trim()) return
+  function submit(instruction: string, preset: NativePDFReadAction) {
+    if (disposed || busy || preset === 'ask' && !instruction) return false
+    void run(instruction, preset)
+    return true
+  }
+  async function run(instruction: string, action: NativePDFReadAction) {
     panelView.beforeTask()
-    const instruction = input.value.trim()
     const question = action === 'ask' ? instruction : [(labels[action]), instruction].filter(Boolean).join(' · ')
     const turn=++generation, operations=structuredClone(options.draft.operations), selection=structuredClone(options.selection())
     const snapshot=JSON.stringify({operations,selection})
@@ -105,6 +110,7 @@ export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
     finally { if(turn===generation) { busy=false;tasks.release();progress.stop();update() } }
   }
   reset.onclick = () => {
+    queue.clear()
     stop('')
     hasTurn = false
     previous = undefined
@@ -114,7 +120,7 @@ export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
     update()
     input.focus({preventScroll:true})
   }
-  input.oninput=update;start.onclick=()=>{void run()};cancel.onclick=()=>stop()
+  input.oninput=update;start.onclick=()=>{submit(input.value.trim(),action)};cancel.onclick=()=>{queue.hold();stop()}
   update()
   return {
     open(preset: NativePDFReadAction='ask') {
@@ -125,12 +131,12 @@ export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
       // 停靠栏通过 MutationObserver 展开；展开后补回首次被隐藏祖先阻止的焦点。
       queueMicrotask(()=>{if(!disposed && !panel.hidden && document.activeElement!==input)input.focus({preventScroll:true})})
       if (busy && preset === 'ask') return
-      if (busy) stop('已取消上一任务，开始新的阅读任务')
+      if (busy) { queue.hold(); stop('已取消上一任务，开始新的阅读任务') }
       action = preset
       title.textContent = preset === 'ask' ? 'AI 助手' : 'AI 助手 · '+labels[preset]
       update()
-      if (preset !== 'ask') void run()
+      if (preset !== 'ask') submit(input.value.trim(),action)
     },
-    dispose() { if(disposed) return;panelView.dispose();stop();progress.reset();disposed=true;panel.remove() },
+    dispose() { if(disposed) return;disposed=true;panelView.dispose();stop();queue.dispose();panel.remove() },
   }
 }

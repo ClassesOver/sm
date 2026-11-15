@@ -91,6 +91,8 @@ XLSX `protect_sheet` 支持设置或解除无密码工作表保护。已有的�
 | `insert_blank_page`、`set_page_size`、`crop_pages`、`extract_pages`、`split_pdf`、`split_pages`、`merge_pages`、`replace_pages` | 当前 AI 工具链未完整注册。手工页面操作不等同 AI 已支持；多产物、第二来源与页身份映射需要完整闭环。 |
 | `set_watermark`、`set_header_footer`、`create_document` | 当前 AI 工具链未注册完整源语义；不能以手工入口或报告生成替代。 |
 
+PDF `read_pages` 与 `read_annotations` 已接源 `start/end` 页范围；保留原生分页兼容，续读带范围端点，批注覆盖按全局身份登记。共用输入框同步接入源自动伸缩，见[源页范围与输入框 UI 验收](NATIVE_PDF_AI_SOURCE_RANGES_ACCEPTANCE_20261115.md)。
+
 OCR 继续遵守此前用户排除范围，不因源其他代码存在而自动加入本目标。
 
 ## PPTX

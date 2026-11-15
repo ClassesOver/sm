@@ -15,6 +15,11 @@ on:
       - "smart_reporting/reporting/workbook_engine/**"
       - "smart_reporting/reporting/slides_engine/**"
       - "smart_reporting/report_editor/frontend/src/office-assistant-controller.test.ts"
+      - "smart_reporting/report_editor/frontend/src/office-*.ts"
+      - "smart_reporting/report_editor/frontend/src/office-*.tsx"
+      - "smart_reporting/report_editor/frontend/src/office-*.css"
+      - "smart_reporting/report_editor/frontend/src/account-settings/**"
+      - "smart_reporting/report_editor/frontend/package*.json"
       - ".github/workflows/report-channel-frontend.yml"
   pull_request:
     paths:
@@ -28,6 +33,11 @@ on:
       - "smart_reporting/reporting/doc_engine/**"
       - "smart_reporting/reporting/workbook_engine/**"
       - "smart_reporting/reporting/slides_engine/**"
+      - "smart_reporting/report_editor/frontend/src/office-*.ts"
+      - "smart_reporting/report_editor/frontend/src/office-*.tsx"
+      - "smart_reporting/report_editor/frontend/src/office-*.css"
+      - "smart_reporting/report_editor/frontend/src/account-settings/**"
+      - "smart_reporting/report_editor/frontend/package*.json"
       - ".github/workflows/report-channel-frontend.yml"
   workflow_dispatch:
 
@@ -61,10 +71,15 @@ jobs:
       - name: Focused Word task and channel integration tests
         if: ${{ success() || (failure() && steps.typecheck.outcome == 'failure') }}
         run: npx vitest run src/native-ai.test.ts src/office-assistant-controller.test.ts src/report-channel-share.test.ts --reporter=junit --outputFile=report-channel-frontend-junit.xml
+      - name: Office account, admin and provider regression tests
+        if: ${{ !cancelled() && (steps.typecheck.outcome == 'success' || steps.typecheck.outcome == 'failure') }}
+        run: npm run test:office-settings -- --reporter=junit --outputFile=office-settings-frontend-junit.xml
       - name: Upload focused test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: report-channel-frontend-junit
-          path: smart_reporting/report_editor/frontend/report-channel-frontend-junit.xml
+          path: |
+            smart_reporting/report_editor/frontend/report-channel-frontend-junit.xml
+            smart_reporting/report_editor/frontend/office-settings-frontend-junit.xml
           if-no-files-found: ignore

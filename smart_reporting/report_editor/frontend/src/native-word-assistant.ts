@@ -1,3 +1,4 @@
+import { mountOfficeReadQueue } from './office-read-queue'
 import { appendOfficeAnswer } from './office-answer'
 import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel, createOfficeNewChatButton } from './office-assistant-panel'
@@ -33,12 +34,24 @@ export function bindNativeWordAssistant(root: HTMLElement, options: Options) {
   transcript.className = 'native-ai-transcript'
   panel.append(title,help,controls,scope,input,start,cancel,close,status,transcript);root.append(panel)
   const progress=mountNativeAIProgress(panel)
-  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,headerAction:reset})
+  const queue = mountOfficeReadQueue(input, submit)
+  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,headerAction:reset,queue:queue.host,onQueue:()=>queue.enqueue(messageMeta())})
   const tasks = new OfficeAssistantController({start:options.api.wordAIStart,status:options.api.wordAIStatus,cancelRequest:options.api.wordAICancel,id:(task: NativeWordReadTask)=>task.taskId,running:(task: NativeWordReadTask)=>task.status==='running'})
   let action: NativeWordReadAction='ask', generation=0,busy=false,disposed=false,hasTurn=false
   let previous: {taskId: string; snapshot: string} | undefined
-  const selection=()=>scope.value==='selection' ? options.selection() : []
-  function update() {reset.hidden=!hasTurn;start.disabled=busy || action==='ask' && !input.value.trim();cancel.disabled=!busy;scope.disabled=busy;for(const [index,item] of actionButtons.entries()){item.disabled=busy;item.setAttribute('aria-pressed',String(Object.keys(actions)[index]===action))}}
+  const selection=(value: string)=>value==='selection' ? options.selection() : []
+  const messageMeta=()=>({action,scope:scope.value})
+  function update() {
+    reset.hidden = !hasTurn
+    start.disabled = busy || action === 'ask' && !input.value.trim()
+    scope.disabled = busy
+    cancel.disabled = !busy
+    for (const [index, item] of actionButtons.entries()) {
+      item.disabled = busy
+      item.setAttribute('aria-pressed', String(Object.keys(actions)[index] === action))
+    }
+    queue.setBusy(busy)
+  }
   function stop(message='任务已取消') {
     const turn=++generation;progress.reset();busy=false
     status.textContent=message;update()
@@ -60,20 +73,25 @@ export function bindNativeWordAssistant(root: HTMLElement, options: Options) {
     for(const citation of result.citations ?? []){const note=document.createElement('p');note.textContent='引用：第 '+citation.blockNumber+' 个内容块'+(citation.cellId ? '（已选单元格）' : '');evidence.append(note)}
     if(result.toolEvents?.length){const tools=document.createElement('p');tools.textContent='已执行工具：'+result.toolEvents.map(event=>toolLabels.get(event.tool) ?? event.tool).join(' → ');evidence.append(tools)}
   }
-  async function run() {
-    if(disposed || busy || action==='ask' && !input.value.trim())return
+  function submit(instruction: string, meta: ReturnType<typeof messageMeta>) {
+    if (disposed || busy || meta.action === 'ask' && !instruction) return false
+    void run(instruction, meta)
+    return true
+  }
+  async function run(instruction: string, {action,scope:messageScope}: ReturnType<typeof messageMeta>) {
     try {options.flushPendingEdits()} catch(error){status.textContent=error instanceof Error ? error.message : '未保存编辑同步失败';return}
-    if(scope.value==='selection' && !selection().length){status.textContent='选区无法可靠对应来源，请选择原有段落/单元格；表结构或新增段落变更后请先保存。';return}
-    const instruction = input.value.trim()
+    const selected=structuredClone(selection(messageScope))
+    if(messageScope==='selection' && !selected.length){status.textContent='选区无法可靠对应来源，请选择原有段落/单元格；表结构或新增段落变更后请先保存。';return}
+    panelView.beforeTask()
     const question = action === 'ask' ? instruction : [(actions[action][0]), instruction].filter(Boolean).join(' · ')
-    const turn=++generation,operations=structuredClone(options.draft.operations),selected=structuredClone(selection())
+    const turn=++generation,operations=structuredClone(options.draft.operations)
     const snapshot=JSON.stringify({operations,selection:selected}),requestId=crypto.randomUUID()
     busy=true;hasTurn=true;progress.reset();status.textContent='正在读取 Word 并运行 Agno 工具';update()
     try {
       const task=await tasks.run({clientRequestId:requestId,action,instruction,previousTaskId:action==='ask' && previous?.snapshot===snapshot ? previous.taskId : undefined,expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected},requestId,(started,signal)=>progress.start(options.api.wordAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
       if(!task || turn!==generation || disposed)return
       options.flushPendingEdits()
-      if(snapshot!==JSON.stringify({operations:options.draft.operations,selection:selection()})){progress.reset();status.textContent='草稿或选区已变化，请重新阅读。';return}
+      if(snapshot!==JSON.stringify({operations:options.draft.operations,selection:selection(messageScope)})){progress.reset();status.textContent='草稿或选区已变化，请重新阅读。';return}
       if(task.status==='completed' && task.result){previous={taskId:task.taskId,snapshot};display(task.result,question);status.textContent='阅读完成，文档与草稿未修改。'}
       else status.textContent=task.error?.message ?? (task.status==='cancelled' ? '任务已取消' : 'Word AI 未返回有效回答')
     }catch(error){if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : 'Word AI 阅读失败'}
@@ -88,9 +106,10 @@ export function bindNativeWordAssistant(root: HTMLElement, options: Options) {
     if (busy) return
     action = preset
     update()
-    if (preset !== 'ask') void run()
+    if (preset !== 'ask') submit(input.value.trim(),messageMeta())
   }
   reset.onclick = () => {
+    queue.clear()
     stop('')
     hasTurn = false
     previous = undefined
@@ -99,8 +118,8 @@ export function bindNativeWordAssistant(root: HTMLElement, options: Options) {
     update()
     input.focus({preventScroll:true})
   }
-  input.oninput=update;scope.onchange=()=>{status.textContent=scope.value==='selection' && !selection().length ? '请先选择要阅读的内容。' : '';update()}
-  start.onclick=()=>{void run()};cancel.onclick=()=>stop();update()
+  input.oninput=update;scope.onchange=()=>{status.textContent=scope.value==='selection' && !selection(scope.value).length ? '请先选择要阅读的内容。' : '';update()}
+  start.onclick=()=>{submit(input.value.trim(),messageMeta())};cancel.onclick=()=>{queue.hold();stop()};update()
   function openPrompt(instruction:string){if(disposed)return;open('ask');scope.value='document';input.value=instruction.slice(0,2000);status.textContent='将只读总结可核验的修订；实际读取覆盖范围会随结果列出。';update()}
   function openDocumentSummary(instruction:string) {
     if (disposed) return
@@ -110,5 +129,5 @@ export function bindNativeWordAssistant(root: HTMLElement, options: Options) {
     }
     open('summarize')
   }
-  return {open,openPrompt,openDocumentSummary,dispose(){if(disposed)return;panelView.dispose();stop();disposed=true;panel.remove()}}
+  return {open,openPrompt,openDocumentSummary,dispose(){if(disposed)return;disposed=true;panelView.dispose();stop();queue.dispose();panel.remove()}}
 }

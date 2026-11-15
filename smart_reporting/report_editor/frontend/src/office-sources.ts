@@ -54,7 +54,7 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
     if (panel.getAttribute('aria-busy') === 'true') return
     panel.setAttribute('aria-busy', 'true')
     const controls = [...panel.querySelectorAll<HTMLButtonElement | HTMLSelectElement | HTMLTextAreaElement | HTMLInputElement>(
-      'button:enabled, select:enabled, textarea:enabled, input[type=checkbox]:enabled',
+      'button:enabled, select:enabled, textarea:enabled, input:enabled',
     )]
     controls.forEach(control => { control.disabled = true })
     status.textContent = '正在处理…'

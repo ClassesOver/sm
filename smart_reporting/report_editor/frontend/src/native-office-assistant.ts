@@ -1,14 +1,7 @@
 import { appendOfficeAnswer } from './office-answer'
 import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel, createOfficeNewChatButton } from './office-assistant-panel'
-import { createElement as reactElement, useLayoutEffect } from 'react'
-import { flushSync } from 'react-dom'
-import { createRoot } from 'react-dom/client'
-import { AiQueueStrip } from './vendor/genoffice-docs/packages/ui/src/AiQueueStrip'
-import { useChatRunQueue, type ChatRunQueue } from './vendor/genoffice-docs/packages/ui/src/chat-run-queue'
-import { AI_QUEUE_LABELS } from './vendor/genoffice-docs/packages/ui/src/strings-ai-queue'
-import './vendor/genoffice-docs/packages/ui/src/ai-queue-strip.css'
-import './native-office-assistant-queue.css'
+import { mountOfficeReadQueue } from './office-read-queue'
 /** Office 阅读与编辑候选分开；回答不会写入草稿。 */
 import { createElement, MessageCircle, FileText, ListChecks, Sparkles, X, CircleStop } from 'lucide'
 import type { createNativeApi, NativeOfficeReadAction, NativeOfficeReadTask, NativeOfficeReadContext, NativeWorkbookNavigation } from './native-api'
@@ -23,20 +16,6 @@ type Options = {
   context: (scope: 'document' | 'selection') => Promise<NativeOfficeReadContext>
 }
 type ReadMessageMeta = { action: NativeOfficeReadAction; scope: 'document' | 'selection' }
-
-function OfficeReadQueue({busy, submit, publish}: {
-  busy: boolean
-  submit: (text: string, meta: ReadMessageMeta) => boolean
-  publish: (queue: ChatRunQueue<ReadMessageMeta>) => void
-}) {
-  const queue=useChatRunQueue({busy,submit})
-  useLayoutEffect(() => { publish(queue) },[publish,queue])
-  return reactElement(AiQueueStrip,{
-    items:queue.queued,labels:AI_QUEUE_LABELS.zh,paused:queue.paused,maxLength:2000,
-    onTogglePause:queue.togglePaused,onUpdate:queue.update,onMove:queue.move,
-    onRemove:queue.remove,onClear:queue.clear,
-  })
-}
 
 const actions = {ask: ['文档问答', MessageCircle], summarize: ['总结文档 / 选区', FileText], keyPoints: ['提取关键要点', ListChecks]} as const
 export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
@@ -59,36 +38,18 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   panel.append(title,help,controls,scope,input,start,cancel,close,status,transcript);root.append(panel)
   const progress=mountNativeAIProgress(panel)
   const reset = createOfficeNewChatButton()
-  const queueHost=document.createElement('div')
-  queueHost.className='office-assistant-queue'
-  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,headerAction:reset,queue:queueHost,onQueue:enqueue})
+  const queue = mountOfficeReadQueue(input, submit)
+  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,headerAction:reset,queue:queue.host,onQueue:()=>queue.enqueue(messageMeta())})
   const tasks = new OfficeAssistantController({start:options.api.officeAIStart,status:options.api.officeAIStatus,cancelRequest:options.api.officeAICancel,id:(task: NativeOfficeReadTask)=>task.taskId,running:(task: NativeOfficeReadTask)=>task.status==='running'})
   let action: NativeOfficeReadAction='ask', generation=0,busy=false,disposed=false,hasTurn=false
   let previous: {taskId: string; snapshot: string} | undefined
-  const queueRoot=createRoot(queueHost)
-  let queue: ChatRunQueue<ReadMessageMeta>
-  let renderedBusy: boolean | undefined
-  const publishQueue=(value: ChatRunQueue<ReadMessageMeta>)=>{queue=value}
-  const defaultPlaceholder=input.placeholder
-  function renderQueue() {
-    if (renderedBusy===busy) return
-    renderedBusy=busy
-    queueRoot.render(reactElement(OfficeReadQueue,{busy,submit,publish:publishQueue}))
-  }
   function update() {
     reset.hidden=!hasTurn;start.disabled=busy || action==='ask' && !input.value.trim();cancel.disabled=!busy;scope.disabled=busy
     for(const [index,item] of actionButtons.entries()){item.disabled=busy;item.setAttribute('aria-pressed',String(Object.keys(actions)[index]===action))}
-    input.placeholder=busy ? AI_QUEUE_LABELS.zh.queuePlaceholder : defaultPlaceholder
-    if (!disposed) renderQueue()
+    queue.setBusy(busy)
   }
   function messageMeta(): ReadMessageMeta {
     return {action,scope:scope.value==='selection' ? 'selection' : 'document'}
-  }
-  function enqueue() {
-    if (!busy || !input.value.trim()) return
-    queue.enqueue(input.value,messageMeta())
-    input.value=''
-    update()
   }
   function submit(instruction: string, meta: ReadMessageMeta) {
     if (disposed || busy || meta.action==='ask' && !instruction) return false
@@ -172,6 +133,6 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   input.oninput=update;scope.onchange=()=>{status.textContent=scope.value==='selection' ? '将读取编辑器当前真实选区；无效选区不会改为整篇阅读。' : '';update()}
   start.onclick=()=>{submit(input.value.trim(),messageMeta())}
   cancel.onclick=()=>{queue.hold();stop()}
-  flushSync(update)
-  return {open,dispose(){if(disposed)return;disposed=true;panelView.dispose();stop();queueRoot.unmount();panel.remove()}}
+  update()
+  return {open,dispose(){if(disposed)return;disposed=true;panelView.dispose();stop();queue.dispose();panel.remove()}}
 }

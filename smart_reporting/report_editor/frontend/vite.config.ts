@@ -105,6 +105,7 @@ export default defineConfig({
           if (id.endsWith('/src/pdf-operations.ts')) return 'native-pdf-operation-plans'
           // 页面导出对话框保留独立边界，避免挤占自动共享 PDF 控件块的预算。
           if (id.endsWith('/src/pdf-extract-dialog.ts')) return 'native-pdf-extract-controls'
+          if (/\/src\/pdf-(?:print-dialog|protection)\.ts$/.test(id)) return 'native-pdf-file-dialogs'
           if (id.endsWith('/src/workbook-notes.ts')) return 'workbook-note-controls'
           if (/\/src\/pdf-(?:signature-dialog|digital-signatures)(?:-source)?\.(?:ts|css)$/.test(id) || /\/src\/vendor\/genoffice-pdf\/renderer\/Signatures?Dialog\.tsx$/.test(id)) return 'native-pdf-signature-controls'
           if (/\/src\/workbook-pivot-pane\.(?:tsx?|css)$/.test(id) || id.includes('/src/vendor/genoffice-sheets-pivot/')) return 'workbook-pivot-field-controls'

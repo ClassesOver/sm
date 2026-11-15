@@ -148,6 +148,10 @@ async def create_app(directory: Path, port: int, *, draft: bool = False) -> Fast
                 ]
             ),
         )
+    if os.environ.get("PDF_AI_SOURCE_RANGES_SMOKE") == "1":
+        for call in model.responses[0].tool_calls:
+            if call["function"]["name"] in {"read_pages", "read_annotations"}:
+                call["function"]["arguments"] = json.dumps({"start": 1, "end": 2})
     actual_planner = create_native_pdf_read_planner(model)
     draft_fixtures = {}
     if draft:

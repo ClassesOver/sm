@@ -14,7 +14,7 @@ it('keeps distributed alignment distinct from justified alignment in import and 
   expect(fromUniverStyle({ ht: 6 }).hAlign).toBe('distributed')
 })
 
-import { applyCellEdits, createBlankWorkbook, readWorkbook } from '@sheets-web/xlsx-engine'
+import { applyCellEdits, assemblePackage, createBlankWorkbook, createBufferEntrySource, readWorkbook } from '@sheets-web/xlsx-engine'
 import { applyWorkbookOperations } from '../../../reporting/workbook_engine/bridge/operations'
 import { formatCellsOperation, selectedFormatCellsDraft, validateFormatCellsTarget, validateFormatCellsBudget, type FormatCellsTarget } from './workbook-format-cells'
 import { formatCellsCommands } from './vendor/genoffice-sheets-format/format-cells'
@@ -37,6 +37,61 @@ it('aggregates independently and echoes actual saved protection flags, with unto
   expect(single).toMatchObject({ locked: 'off', hidden: 'on', size: '11', bold: 'on' })
   expect(formatCellsCommands(draft, { ...draft, noFill: true })).toEqual(['fill:none'])
 })
+it('resolves named-style protection and retains the inherited flag in a partial edit', async () => {
+  const original = await createBlankWorkbook()
+  const path = 'xl/styles.xml'
+  const zip = await createBufferEntrySource(original)
+  const styles = (await zip.readText(path))
+    .replace(/(<cellStyleXfs\b[^>]*>)<xf[^>]*\/>/, '$1<xf><protection locked="false" hidden="true"/></xf>')
+  const bytes = (await assemblePackage(original, {
+    replaced: new Map([[path, styles]]), added: new Map(), addedBinary: new Map(),
+    removedEntries: [], addedEntries: [], touchedEntries: [path],
+  })).buffer
+  const before = await readWorkbook(bytes)
+  expect(before.styles.cellXfs[0]?.protection).toEqual({ locked: false, hidden: true })
+  const output = await applyCellEdits(bytes, [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 7 }, style: { protectionLocked: true } },
+  ])
+  const after = await readWorkbook(output)
+  expect(after.styles.cellXfs[after.sheets[0]!.cells.A1!.styleIndex!]?.protection)
+    .toEqual({ locked: true, hidden: true })
+})
+
+it('preserves imported protection booleans when applying unrelated formatting', async () => {
+  const bytes = await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 7 },
+      style: { protectionLocked: false, protectionHidden: true } },
+  ])
+  const path = 'xl/styles.xml'
+  const source = await createBufferEntrySource(bytes)
+  const styles = (await source.readText(path)).replace(
+    '<protection locked="0" hidden="1"/>', '<protection locked="false" hidden="true"/>')
+  expect(styles).toContain('locked="false" hidden="true"')
+  const imported = (await assemblePackage(bytes, {
+    replaced: new Map([[path, styles]]), added: new Map(), addedBinary: new Map(),
+    removedEntries: [], addedEntries: [], touchedEntries: [path],
+  })).buffer
+  const edited = await applyCellEdits(imported, [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, style: { bold: true } },
+  ])
+  const model = await readWorkbook(edited)
+  const xf = model.styles.cellXfs[model.sheets[0]!.cells.A1!.styleIndex!]!
+  expect(xf.protection).toEqual({ locked: false, hidden: true })
+  expect(model.styles.fonts[xf.fontId]?.bold).toBe(true)
+  const locked = await applyCellEdits(edited, [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, style: { protectionLocked: true } },
+  ])
+  const lockedModel = await readWorkbook(locked)
+  expect(lockedModel.styles.cellXfs[lockedModel.sheets[0]!.cells.A1!.styleIndex!]?.protection)
+    .toEqual({ locked: true, hidden: true })
+  const visible = await applyCellEdits(locked, [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: false, style: { protectionHidden: false } },
+  ])
+  const visibleModel = await readWorkbook(visible)
+  expect(visibleModel.styles.cellXfs[visibleModel.sheets[0]!.cells.A1!.styleIndex!]?.protection)
+    .toEqual({ locked: true, hidden: false })
+})
+
 it('rejects invalid later commands before any effect, unknown commands, stale targets and over-budget drafts', () => {
   const f = target()
   for (const commands of [ ['bold:on', 'font-size:999'], ['fill:#123456', 'indent:-1'], ['format:[invalid]0'], ['border:all:#xxxxxx:thin'], ['cellprot:locked-off:typo'], ['bold:maybe'], ['unknown:on'] ]) expect(() => formatCellsOperation(f.target, commands)).toThrow()

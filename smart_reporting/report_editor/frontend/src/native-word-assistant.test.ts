@@ -177,3 +177,25 @@ it('review summary preset opens a read-only question without starting work until
  const {root,binding,draft}=fixture(api);binding.openPrompt('总结所有待处理修订，不接受或拒绝任何修订。')
  expect(root.querySelector('textarea')!.value).toContain('修订');expect(api.wordAIStart).not.toHaveBeenCalled();root.querySelector<HTMLButtonElement>('[data-word-ai=start]')!.click();await vi.waitFor(()=>expect(api.wordAIStart).toHaveBeenCalled());expect(api.wordAIStart.mock.calls[0][0]).toMatchObject({action:'ask',selection:[],instruction:'总结所有待处理修订，不接受或拒绝任何修订。'});expect(draft.operations).toEqual([]);binding.dispose()
 })
+
+it('queues Enter while reading and continues after an explicit resume following Stop', async () => {
+  const api = {
+    wordAIStart: vi.fn().mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue({taskId:'queued',status:'failed'}),
+    wordAICancel: vi.fn().mockResolvedValue({status:'cancelled'}),
+  }
+  const {root,binding} = fixture(api)
+  binding.open('summarize')
+  await vi.waitFor(()=>expect(api.wordAIStart).toHaveBeenCalledOnce())
+  const input=root.querySelector('textarea')!
+  input.value='第二条'
+  input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}))
+  expect(input.value).toBe('')
+  await vi.waitFor(()=>expect(root.querySelector('.ai-queue-toggle')?.textContent).toContain('1 条排队中'))
+  root.querySelector<HTMLButtonElement>('[data-word-ai="cancel"]')!.click()
+  await vi.waitFor(()=>expect(root.querySelector('.ai-queue-strip')?.getAttribute('data-paused')).toBe('true'))
+  expect(api.wordAIStart).toHaveBeenCalledOnce()
+  root.querySelector<HTMLButtonElement>('[aria-label="继续排队"]')!.click()
+  await vi.waitFor(()=>expect(api.wordAIStart).toHaveBeenCalledTimes(2))
+  expect(api.wordAIStart.mock.calls[1][0]).toMatchObject({instruction:'第二条',action:'summarize'})
+  binding.dispose()
+})
