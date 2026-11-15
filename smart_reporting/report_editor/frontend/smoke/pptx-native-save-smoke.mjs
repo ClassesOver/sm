@@ -428,7 +428,7 @@ try {
     assert.ok(target)
     await page.locator('#object-select').selectOption(target.id)
     await page.locator('[data-ribbon-tab="transitions"]').click()
-    await page.locator('[data-command="transition"][data-source-action="onTransition"]').selectOption('wipe')
+    await page.locator('[data-transition-effect="wipe"][data-source-action="onTransition"]').click()
     await page.locator('[data-ribbon-tab="animations"]').click()
     await page.locator('[data-command="animationEffect"][data-source-action="onApplyAnimation"]').selectOption('flyIn')
     await page.locator('[data-command="animationDirection"]').selectOption('right')

@@ -290,10 +290,10 @@ it('localizes visible slide ribbon tabs, groups and controls in Simplified Chine
   expect(host.querySelector('[data-command="addSlide"]')?.textContent).toContain('新建幻灯片')
   expect(host.querySelector('[data-command="insertTable"] svg')).not.toBeNull()
   expect(host.querySelector('[data-command="insertTable"]')?.textContent).toContain('表格')
-  const transition = host.querySelector<HTMLSelectElement>('[data-command="transition"]')!
-  expect(transition.options[0].textContent).toBe('无')
-  expect(transition.options[1].textContent).toBe('平滑')
-  expect(transition.options[1].value).toBe('morph')
+  const transitions = host.querySelectorAll<HTMLButtonElement>('[data-command="transition"]')
+  expect(transitions[0].textContent).toBe('无')
+  expect(transitions[1].textContent).toBe('平滑')
+  expect(transitions[1].dataset.transitionEffect).toBe('morph')
   ribbon.setContext('table')
   expect(host.querySelector('[data-ribbon-tab="tableDesign"]')?.textContent).toBe('表格设计')
   expect(host.querySelector('[aria-label="表格样式"]')).not.toBeNull()
@@ -643,12 +643,18 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   const ribbon = createSlidesNativeRibbon(host, { onAction })
   const transitionGroup = host.querySelector<HTMLElement>('[aria-label="Transition to This Slide"]')!
   const timingGroup = host.querySelector<HTMLElement>('[aria-label="Timing"]')!
-  const transition = transitionGroup.querySelector<HTMLSelectElement>('[data-command="transition"]')!
+  const transitions = [...transitionGroup.querySelectorAll<HTMLButtonElement>('[data-command="transition"]')]
   const applyAll = timingGroup.querySelector<HTMLButtonElement>('[data-source-action="onTransition"]')!
   const animationTab = host.querySelector<HTMLButtonElement>('[data-ribbon-tab="animations"]')!
 
-  expect(transition.dataset.sourceAction).toBe('onTransition')
-  expect(transition.options.length).toBe(12)
+  expect(transitions.map(button => button.dataset.transitionEffect)).toEqual(['none', 'morph', 'fade', 'push', 'wipe', 'split', 'circle', 'cover', 'pull', 'dissolve', 'zoom', 'random'])
+  expect(transitions.every(button => button.dataset.sourceAction === 'onTransition' && !!button.querySelector('svg'))).toBe(true)
+  ribbon.setTransitionEditEnabled(true)
+  transitions[1].click()
+  expect(onAction).toHaveBeenCalledWith('transition', 'morph')
+  ribbon.setValue('transition', 'morph')
+  expect(transitions.filter(button => button.getAttribute('aria-pressed') === 'true')).toEqual([transitions[1]])
+  expect(applyAll.querySelector('svg')).not.toBeNull()
   expect(timingGroup.querySelector('[data-command="transitionDuration"]')).toBeNull()
   expect(timingGroup.querySelector('[data-command="transitionSound"]')).toBeNull()
   expect(applyAll.disabled).toBe(true)
@@ -687,8 +693,7 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('aria-pressed')).toBe('true')
   expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('aria-pressed')).toBe('true')
 
-  transition.value = 'wipe'
-  transition.dispatchEvent(new Event('change', { bubbles: true }))
+  transitions.find(button => button.dataset.transitionEffect === 'wipe')!.click()
   expect(onAction).toHaveBeenCalledWith('transition', 'wipe')
   ribbon.dispose()
 })
@@ -770,7 +775,7 @@ it('exposes all pinned list options, picture bullet picking and conditional avai
 it('retains source transition editability across lock/unlock independently of Apply to All', () => {
   const host = document.createElement('div'); document.body.append(host)
   const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
-  const select = host.querySelector<HTMLSelectElement>('[data-command="transition"]')!
+  const select = host.querySelector<HTMLButtonElement>('[data-transition-effect="wipe"]')!
   expect(select.disabled).toBe(true)
   ribbon.setTransitionEditEnabled(true); expect(select.disabled).toBe(false)
   ribbon.setLocked(true); expect(select.disabled).toBe(true)

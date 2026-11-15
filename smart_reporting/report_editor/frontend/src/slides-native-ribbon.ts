@@ -3,6 +3,7 @@ import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
 import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
 import { SLIDE_TRANSITIONS } from './slides-transitions'
+import { IconApplyAll, IconTransCircle, IconTransCover, IconTransDissolve, IconTransFade, IconTransMorph, IconTransNone, IconTransPull, IconTransPush, IconTransRandom, IconTransSplit, IconTransWipe, IconTransZoom } from './vendor/genoffice-slides/components/icons'
 import { SMARTART_GALLERY } from './vendor/genoffice-slides/components/smartart-gallery-data'
 import { CHART_GALLERY } from './vendor/genoffice-slides/components/chart-gallery-data'
 import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart-presets'
@@ -115,6 +116,14 @@ type RibbonGlyph = ComponentType<{ size?: number }>
 type Control = { id: string; label: string; kind?: 'button' | 'toggle' | 'select' | 'color' | 'number' | 'font' | 'spacing'; options?: string[]; optionLabels?: string[]; caption?: string; icon?: Parameters<typeof createElement>[0]; sourceIcon?: RibbonGlyph; sourceActionId?: string; unavailable?: string }
 type Group = { label: string; controls: Control[] }
 type Tab = { id: string; label: string; groups: Group[]; context?: NativeSlidesContext }
+
+// Pinned GenOffice Slides Ribbon.tsx transition gallery and English ribbon labels.
+const transitionCards = {
+  none: ['None', IconTransNone], morph: ['Morph', IconTransMorph], fade: ['Fade', IconTransFade],
+  push: ['Push', IconTransPush], wipe: ['Wipe', IconTransWipe], split: ['Split', IconTransSplit],
+  circle: ['Circle', IconTransCircle], cover: ['Cover', IconTransCover], pull: ['Uncover', IconTransPull],
+  dissolve: ['Dissolve', IconTransDissolve], zoom: ['Zoom', IconTransZoom], random: ['Random', IconTransRandom],
+} as const
 
 const noWrite = (operation: string) => `${operation} 尚无受支持的 editSlides 写回操作。`
 const PICTURE_TRANSPARENCY_PRESETS = ['0', '15', '30', '50', '65', '80', '95']
@@ -258,8 +267,8 @@ const tabs: Tab[] = [
     ] },
   ] },
   { id: 'transitions', label: 'Transitions', groups: [
-    { label: 'Transition to This Slide', controls: [{ id: 'transition', label: 'Effect', kind: 'select', sourceActionId: 'onTransition', options: [...SLIDE_TRANSITIONS] }] },
-    { label: 'Timing', controls: [{ id: 'applyTransitionAll', label: 'Apply to All', sourceActionId: 'onTransition' }] },
+    { label: 'Transition to This Slide', controls: [] },
+    { label: 'Timing', controls: [{ id: 'applyTransitionAll', label: 'Apply to All', sourceIcon: IconApplyAll, sourceActionId: 'onTransition' }] },
   ] },
   { id: 'animations', label: 'Animations', groups: [
     { label: 'Preview', controls: [{ id: 'animationPreview', label: 'Preview', sourceActionId: 'onAnimPreview' }] },
@@ -452,7 +461,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let transitionEditReason: string | undefined
   const updateTransitionEdit = () => {
     for (const control of controls.get('transition') ?? []) {
-      ;(control as HTMLSelectElement).disabled = locked || !transitionEditReady
+      ;(control as HTMLButtonElement).disabled = locked || !transitionEditReady
       control.title = transitionEditReady ? '更改视觉转场效果；保留原速度、换片、声音及扩展设置' : transitionEditReason ?? '请先打开已核验的演示文稿'
     }
   }
@@ -523,6 +532,26 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       heading.textContent = groupLabel
       group.append(heading)
       let controlHost: HTMLElement = group
+      if (tab.id === 'transitions' && groupDefinition.label === 'Transition to This Slide') {
+        group.classList.add('slides-transition-gallery')
+        controls.set('transition', SLIDE_TRANSITIONS.map(kind => {
+          const [english, icon] = transitionCards[kind]
+          const translated = localize(kind)
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.dataset.command = 'transition'
+          button.dataset.sourceAction = 'onTransition'
+          button.dataset.transitionEffect = kind
+          button.setAttribute('aria-pressed', 'false')
+          button.innerHTML = renderToStaticMarkup(reactElement(icon, { size: 24 }))
+          button.append(document.createTextNode(translated === kind ? english : translated))
+          button.addEventListener('click', () => {
+            if (!locked && transitionEditReady) options.onAction('transition', kind)
+          })
+          group.append(button)
+          return button
+        }))
+      }
       const pictureOutline = tab.id === 'pictureFormat' && groupDefinition.label === 'Outline'
       const shapeFill = tab.id === 'shapeFormat' && groupDefinition.label === 'Fill'
       const shapeOutline = tab.id === 'shapeFormat' && groupDefinition.label === 'Outline'
@@ -896,6 +925,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setValue(command, value, hint) {
       for (const element of controls.get(command) ?? []) {
+        if (command === 'transition') element.setAttribute('aria-pressed', String(element.dataset.transitionEffect === value))
         if (command === 'pictureOutlineWidth') for (const button of element.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
           button.setAttribute('aria-pressed', String(button.dataset.outlineWidth === value))
         }

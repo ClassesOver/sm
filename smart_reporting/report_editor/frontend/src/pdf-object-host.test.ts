@@ -429,6 +429,27 @@ it.each([false,true])('document properties close restores a visible entry or cur
  const close=panel.querySelector<HTMLButtonElement>('[data-metadata-cancel]');expect(close).not.toBeNull();close!.focus();close!.click()
  expect(panel.open).toBe(false);expect(document.activeElement).toBe(changed?tab:entry);expect(f.draft.operations).toEqual([])
 })
+it('shows the source paper presets and applies the chosen size to the current page set', async () => {
+ const f=await fixture({pages:3,capabilities:{pageSize:true}});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
+ const open=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.size"]')!
+ const dialog=f.root.querySelector<HTMLDialogElement>('.pdf-size-dialog')!
+ open.focus();open.click()
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ expect(dialog.querySelector('.pdf-size-scope')?.textContent).toContain('3')
+ const rows=[...dialog.querySelectorAll('.pdf-size-options')]
+ expect(rows.map(row=>[...row.querySelectorAll('button')].map(button=>button.textContent))).toEqual([['A3','A4','A5'],['Letter','Legal']])
+ expect(document.activeElement?.textContent).toBe('A3')
+ dialog.querySelector<HTMLButtonElement>('.pdf-layout-actions > button')!.click()
+ expect(dialog.open).toBe(false)
+ expect(document.activeElement).toBe(open)
+ expect(f.draft.operations).toEqual([])
+ open.click()
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ rows[1].querySelector<HTMLButtonElement>('button:last-child')!.click()
+ await vi.waitFor(()=>expect(f.draft.operations).toEqual([{kind:'setPageSize',preset:'Legal'}]))
+ await vi.waitFor(()=>expect(f.api.preview).toHaveBeenCalledWith(expect.objectContaining({operations:[{kind:'setPageSize',preset:'Legal'}]}),expect.anything()))
+})
 it('navigation shows current page identity after refresh without changing the draft',async()=>{
  const f=await fixture(),view=await f.create();await view.refresh()
  expect(f.root.querySelector('.pdf-thumbnail')?.getAttribute('aria-current')).toBe('page')

@@ -8,6 +8,8 @@
 .pdf-crop-dialog label { display: flex; justify-content: space-between; gap: 16px; }
 .pdf-crop-dialog input { width: 100px; }
 .pdf-crop-dialog p { line-height: 1.6; }
+.pdf-size-options { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:8px 0; }
+.pdf-size-options button { flex:1 0 5ch; }
 
 .pdf-pending-markup { position: absolute; box-sizing: border-box; pointer-events: none; }
 /* 待应用涂黑：深色半透明标记 + 红框（文档内容色，保存后由引擎写成纯黑块）。 */

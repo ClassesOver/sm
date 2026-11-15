@@ -1344,6 +1344,13 @@ it('offers all source zoom presets and the full dialog while respecting view rea
   expect(presets.getAttribute('aria-label')).toBe('缩放')
   expect(presets.title).toBe('缩放工作表')
   const group = presets.closest('.workbook-ribbon-group')!
+  const cover = presets.closest('.workbook-ribbon-large-menu')!
+  expect(cover.querySelector('.workbook-ribbon-icon svg')).toBeTruthy()
+  expect(cover.textContent).toContain('缩放')
+  for (const id of ['normal-view', 'toggle-page-break-preview', 'zoom-reset', 'zoom-to-selection']) {
+    expect(document.querySelector('[data-ribbon-command="' + id + '"]')?.classList.contains('workbook-ribbon-large')).toBe(true)
+  }
+  expect(document.querySelector('[data-ribbon-control="freeze-panes"]')?.closest('.workbook-ribbon-large-menu')).toBeTruthy()
   const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
   expect(buttons.slice(0, 2).map(button => button.dataset.ribbonCommand)).toEqual(['zoom-reset', 'zoom-to-selection'])
   const [reset, fit] = buttons

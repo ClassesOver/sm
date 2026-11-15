@@ -1463,6 +1463,23 @@ export function mountWorkbookRibbon(
     button.addEventListener('click', () => { if (!button.disabled) onCommand(command) })
     return button
   }
+  const largeViewMenu = (label: string, iconCommand: string, select: HTMLSelectElement) => {
+    const wrapper = document.createElement('label')
+    wrapper.className = 'workbook-ribbon-chart-menu workbook-ribbon-large-menu'
+    const icons = document.createElement('span')
+    icons.className = 'workbook-ribbon-large-menu-icons'
+    const icon = document.createElement('span')
+    icon.className = 'workbook-ribbon-icon'
+    icon.innerHTML = workbookCommandIcon(iconCommand) ?? ''
+    icons.append(icon)
+    icons.insertAdjacentHTML('beforeend', workbookCommandIcon('ribbon-caret') ?? '')
+    const caption = document.createElement('span')
+    caption.textContent = label
+    icons.setAttribute('aria-hidden', 'true')
+    caption.setAttribute('aria-hidden', 'true')
+    wrapper.append(icons, caption, select)
+    return wrapper
+  }
   const render = () => {
     visibleTabs = view?.table?.() ? [...tabs, 'Table Design'] : tabs
     if (!visibleTabs.includes(active)) active = 'Home'
@@ -1723,12 +1740,6 @@ export function mountWorkbookRibbon(
         section.append(controls)
       }
       if (active === 'View' && group.title === '窗口') {
-        const wrapper = document.createElement('label')
-        wrapper.className = 'workbook-ribbon-chart-menu'
-        const icon = document.createElement('span')
-        icon.className = 'workbook-ribbon-icon'
-        icon.setAttribute('aria-hidden', 'true')
-        icon.innerHTML = workbookCommandIcon('freeze-panes') ?? ''
         const select = document.createElement('select')
         select.className = 'workbook-ribbon-select'
         select.setAttribute('aria-label', '冻结窗格')
@@ -1740,16 +1751,9 @@ export function mountWorkbookRibbon(
           select.value = ''
           if (option?.value && !option.disabled && !select.disabled) onCommand(option.value as RibbonCommand)
         })
-        wrapper.append(icon, select)
-        section.append(wrapper)
+        section.append(largeViewMenu('冻结窗格', 'freeze-panes', select))
       }
       if (active === 'View' && group.title === '缩放') {
-        const wrapper = document.createElement('label')
-        wrapper.className = 'workbook-ribbon-chart-menu'
-        const icon = document.createElement('span')
-        icon.className = 'workbook-ribbon-icon'
-        icon.setAttribute('aria-hidden', 'true')
-        icon.innerHTML = workbookCommandIcon('', '🔍') ?? ''
         const select = document.createElement('select')
         select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '缩放'); select.dataset.ribbonMenu = 'zoom'
         const title = document.createElement('option'); title.value = ''; title.textContent = '缩放'
@@ -1757,8 +1761,7 @@ export function mountWorkbookRibbon(
           const option = document.createElement('option'); option.value = String(percent); option.textContent = `${percent}%`; return option
         }))
         select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(`zoom:${Number(value)}`) })
-        wrapper.append(icon, select)
-        section.append(wrapper)
+        section.append(largeViewMenu('缩放', 'zoom-open', select))
       }
       for (const item of group.actions) {
         if (active === 'Home' && item.id === 'cell-style') continue
@@ -1767,6 +1770,7 @@ export function mountWorkbookRibbon(
         if (active === 'Page Layout' && ['theme', 'theme-colors', 'theme-fonts'].includes(item.id)) continue
         const button = document.createElement('button')
         button.type = 'button'; button.dataset.ribbonCommand = item.id; button.title = item.label; button.setAttribute('aria-label', item.label)
+        if (active === 'View' && ['normal-view', 'toggle-page-break-preview', 'zoom-reset', 'zoom-to-selection'].includes(item.id)) button.classList.add('workbook-ribbon-large')
         if (item.id === 'format-as-table') button.setAttribute('aria-label', '创建表格')
         if (item.id === 'zoom-reset') button.setAttribute('aria-label', '重置缩放至 100%')
         const icon = workbookCommandIcon(item.id, COMMAND_GLYPHS[item.id])

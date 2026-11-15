@@ -1,7 +1,7 @@
 import { createElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { RIBBON_GLYPH_ICONS } from './workbook-vendor/ui/ribbon-icons'
-import { IconSuperscript, IconSubscript, IconRotateLeft, IconRotateRight, IconClearFormat, IconIndentInc, IconIndentDec, IconPrintLayout, IconUndo, IconRedo, IconTableProperties, IconAutoFit, IconTextBox, IconEquation, IconSymbol, IconTheme, IconThemeFonts, IconThemeColors, IconHeader, IconZoomIn, IconZoomOut, IconZoom100, IconZoom, IconPageWidth, IconTranslate } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { IconSuperscript, IconSubscript, IconRotateLeft, IconRotateRight, IconClearFormat, IconIndentInc, IconIndentDec, IconPrintLayout, IconUndo, IconRedo, IconTableProperties, IconAutoFit, IconTextBox, IconEquation, IconSymbol, IconTheme, IconThemeFonts, IconThemeColors, IconHeader, IconZoomIn, IconZoomOut, IconZoom100, IconZoom, IconPageWidth, IconTranslate, IconCaret } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { Bold, Italic, Underline, Strikethrough, DollarSign, Percent, Hash, Baseline, AlignVerticalSpaceAround, createElement as lucideElement } from 'lucide'
 
 // 固定 GenOffice 图形优先；源字体按钮本身为 B/I/U 文本时才用现有 Lucide 轮廓补齐。
@@ -16,7 +16,7 @@ const source: Record<string, ComponentType<{size?: number}>> = {
   theme: IconTheme, 'theme-fonts': IconThemeFonts, 'theme-colors': IconThemeColors,
   'header-footer-open': IconHeader, 'zoom-in': IconZoomIn, 'zoom-out': IconZoomOut, 'zoom-reset': IconZoom100,
   'zoom-open': IconZoom, 'zoom-to-selection': IconPageWidth, translate: IconTranslate,
-  'chart-descriptions': IconTextBox,
+  'chart-descriptions': IconTextBox, 'ribbon-caret': IconCaret,
 }
 const glyphs: Record<string,string> = {
   'forecast-sheet':'📈', 'chart-title':'🗎', 'chart-axis-cat':'↔', 'chart-axis-val':'↕', 'chart-legend':'▤', 'chart-labels':'🏷', 'chart-type-column':'📊', 'chart-type-bar':'▮▬', 'chart-type-line':'📈', 'chart-type-area':'◪', 'chart-type-pie':'◔', 'chart-type-doughnut':'◍', 'chart-select-data':'▦', 'chart-switch-row-col':'⇄', 'chart-format-pane':'🎨', 'chart-delete':'🗑',

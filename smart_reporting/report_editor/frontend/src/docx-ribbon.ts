@@ -43,6 +43,7 @@ import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { IconPageBorders } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconRotateLeft, IconRotateRight, IconFlipH, IconFlipV, IconComments, IconComment, IconTrash, IconToc, IconRefresh, IconPrintLayout, IconWebLayout, IconOutlineView, IconStoryView, IconReadMode, IconWholePage, IconCellAlign, IconWatermark, IconCaret } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
@@ -187,6 +188,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeFontDialog: (() => void) | undefined
   let closeParagraphDialog: (() => void) | undefined
   let closePageBorderDialog: (() => void) | undefined
+  let closePageBorderMenu: (() => void) | undefined
   let closeWatermarkMenu: (() => void) | undefined
   let closeWatermarkDialog: (() => void) | undefined
   let closeSpecialIndent: (() => void) | undefined
@@ -633,12 +635,36 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           // 固定源 ribbon-design-tab.tsx：方框(单实线) / 无 / 页面边框…（PageBorderDialog）。
           const wrap = document.createElement('div'), trigger = document.createElement('button'), menu = document.createElement('div')
           wrap.className = 'rb-split-wrap'
-          trigger.type = 'button'; trigger.className = 'rb-icon docx-ribbon-command'; trigger.dataset.action = 'page-borders'; trigger.textContent = label
+          trigger.type = 'button'; trigger.className = 'rb-big docx-ribbon-command'; trigger.dataset.action = 'page-borders'
+          const icon = document.createElement('span'), caption = document.createElement('span')
+          icon.className = 'rb-big-icon'
+          icon.innerHTML = renderToStaticMarkup(createElement(IconPageBorders, { size: 28 })) + renderToStaticMarkup(createElement(IconCaret))
+          caption.textContent = ribbonZh.ribbonPageBorders
+          trigger.append(icon, caption)
           trigger.setAttribute('aria-label', label); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-haspopup', 'true')
           menu.className = 'layout-menu docx-page-border-menu'; menu.hidden = true; menu.dataset.rbPanel = ''; menu.setAttribute('role', 'group'); menu.setAttribute('aria-label', '页面边框')
           wrap.addEventListener('mousedown', event => event.preventDefault())
-          const closeMenu = () => { menu.hidden = true; trigger.setAttribute('aria-expanded', 'false') }
-          trigger.addEventListener('click', () => { menu.hidden = !menu.hidden; trigger.setAttribute('aria-expanded', String(!menu.hidden)) })
+          let dismiss: (() => void) | undefined
+          const closeMenu = () => {
+            menu.hidden = true
+            trigger.setAttribute('aria-expanded', 'false')
+            dismiss?.()
+            dismiss = undefined
+            closePageBorderMenu = undefined
+          }
+          trigger.addEventListener('click', () => {
+            if (!menu.hidden) { closeMenu(); return }
+            menu.hidden = false
+            trigger.setAttribute('aria-expanded', 'true')
+            closePageBorderMenu = closeMenu
+            dismiss = installPopoverDismiss(closeMenu, { inside: () => [wrap] })
+          })
+          wrap.addEventListener('keydown', event => {
+            if (event.key !== 'Escape' || event.isComposing || menu.hidden) return
+            event.stopPropagation()
+            closeMenu()
+            trigger.focus()
+          })
           const apply = (value: DocxPageBorderValue, scope: PageBorderScope) => { try { const reason = pageBorders.reason(scope); if (reason) throw new Error(reason); pageBorders.apply(value, scope) } catch (error) { reportError?.(error) } closeMenu(); syncPageBorders() }
           const item = (text: string, action: string, run: () => void) => { const button = document.createElement('button'); button.type = 'button'; button.textContent = text; button.dataset.action = action; button.addEventListener('click', run); menu.append(button); return button }
           item('方框(单实线)', 'page-borders-box', () => apply({ pageBorder: true, pageBorderProps: null }, 'section'))
@@ -1049,6 +1075,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
+    closePageBorderMenu?.()
     closeWatermarkMenu?.()
     if (id !== 'design' && pageColorRoot) {
       pageColorRoot.unmount()
@@ -1467,10 +1494,14 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : pageBorders.reason('section')
     const current = pageBorders.current()
     trigger.disabled = reason !== null
-    trigger.title = reason ?? (current.pageBorder ? '页面边框：已设置（当前节）' : '为页面添加边框')
+    trigger.title = reason ?? ribbonZh.ribbonPageBordersTip
+    if (trigger.disabled) closePageBorderMenu?.()
     trigger.classList.toggle('active', current.pageBorder)
-    body.querySelector('[data-action="page-borders-box"]')?.classList.toggle('active', current.pageBorder && !current.pageBorderProps)
-    body.querySelector('[data-action="page-borders-none"]')?.classList.toggle('active', !current.pageBorder)
+    for (const button of body.querySelectorAll<HTMLButtonElement>('[data-action="page-borders-box"], [data-action="page-borders-none"]')) {
+      const selected = button.dataset.action === 'page-borders-box' ? current.pageBorder && !current.pageBorderProps : !current.pageBorder
+      button.classList.toggle('active', selected)
+      button.setAttribute('aria-pressed', String(selected))
+    }
   }
   function syncWatermark() {
     const trigger = body.querySelector<HTMLButtonElement>('[data-action="watermark"]')
@@ -1559,6 +1590,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   editor.on('update', renderHome)
   const dispose = () => {
     if (disposed) return
+    closePageBorderMenu?.()
     disposed = true; closeWatermarkMenu?.(); closePageBorderDialog?.(); closeWatermarkDialog?.(); tools?.pictureFormat?.closeArrangeMenu(); closeTableLayoutMenus(); cellBorderControls?.dispose(); numberingValueControl.destroy()
     disposeScroll()
     editor.off('selectionUpdate', refreshSelection)

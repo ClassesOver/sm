@@ -238,7 +238,7 @@ it('restores all supported PPTX editSlides fields without rewriting an unchanged
   expect(shell.editor.querySelector<HTMLTextAreaElement>('#object-text')!.value).toBe('恢复正文')
   expect(shell.editor.querySelector<HTMLInputElement>('.geometry-grid [name="x"]')!.value).toBe('30')
   expect(shell.editor.querySelector<HTMLButtonElement>('[data-command="bold"]')!.getAttribute('aria-pressed')).toBe('true')
-  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="transition"]')!.value).toBe('wipe')
+  expect(shell.editor.querySelector<HTMLButtonElement>('[data-transition-effect="wipe"]')!.getAttribute('aria-pressed')).toBe('true')
   expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="animationDirection"]')!.value).toBe('right')
   expect(shell.editor.querySelector<HTMLInputElement>('[aria-label="新增文本内容"]')!.value).toBe('恢复文本框')
   expect(shell.editor.querySelector<HTMLOptionElement>('#object-select option[value="old-shape"]')).toBeNull()
@@ -706,7 +706,7 @@ it('applies the current source/pending transition once to source identities acro
   opened.view.dispose!()
   const recovered = new NativeDraft(draftIdentity, store)
   opened = await openDraft(recovered, api)
-  expect(opened.shell.editor.querySelector<HTMLSelectElement>('[data-command="transition"]')!.value).toBe('wipe')
+  expect(opened.shell.editor.querySelector<HTMLButtonElement>('[data-transition-effect="wipe"]')!.getAttribute('aria-pressed')).toBe('true')
   opened.shell.save.click(); await vi.waitFor(() => expect(api.save).toHaveBeenCalledOnce())
   expect(api.save.mock.calls[0][0].operations[0].transitions).toEqual([{ slideIndex: 2, kind: 'wipe' }, { slideIndex: 0, kind: 'wipe' }, { slideIndex: 1, kind: 'wipe' }])
   expect(opened.shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!.disabled).toBe(true)
@@ -757,7 +757,7 @@ it('restores ordered absolute transition records with last-write semantics witho
   draft.setOperations([{ kind: 'editSlides', transitions }])
   const source = { ...deck, slides: [deck.slides[0], { ...deck.slides[0], slideIndex: 1, transition: 'push' }] }
   const { shell, view } = await openDraft(draft, { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })
-  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="transition"]')!.value).toBe('wipe')
+  expect(shell.editor.querySelector<HTMLButtonElement>('[data-transition-effect="wipe"]')!.getAttribute('aria-pressed')).toBe('true')
   expect(draft.operations[0].transitions).toEqual(transitions)
   shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!.click()
   expect(draft.operations[0].transitions).toEqual([{ slideIndex: 0, kind: 'wipe' }, { slideIndex: 1, kind: 'wipe' }])
@@ -785,12 +785,17 @@ it.each([true, false])('gates single transition editing separately from bulk met
   const store = draftStore(), draft = new NativeDraft(draftIdentity, store)
   const source = { ...deck, slides: [{ ...deck.slides[0], transitionApplyAllSafe: false, transitionEditSafe, transition: 'fade' }] }
   const { shell, view } = await openDraft(draft, { preview: vi.fn(async () => ({ model: source })), renderTree: vi.fn(async () => ({ slides: [] })) })
-  const select = shell.editor.querySelector<HTMLSelectElement>('[data-command="transition"]')!
-  expect(select.disabled).toBe(!transitionEditSafe)
+  const effect = shell.editor.querySelector<HTMLButtonElement>('[data-transition-effect="wipe"]')!
+  expect(effect.disabled).toBe(!transitionEditSafe)
   expect(shell.editor.querySelector<HTMLButtonElement>('[data-command="applyTransitionAll"]')!.disabled).toBe(true)
-  select.value = 'wipe'; select.dispatchEvent(new Event('change', { bubbles: true }))
-  if (transitionEditSafe) expect(draft.operations[0].transitions).toEqual([{ slideIndex: 0, kind: 'wipe' }])
-  else { expect(draft.operations).toEqual([]); expect(shell.editor.querySelector('.slides-status')?.textContent ?? shell.editor.textContent).toMatch(/不能安全修改/) }
+  effect.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  if (transitionEditSafe) {
+    expect(draft.operations[0].transitions).toEqual([{ slideIndex: 0, kind: 'wipe' }])
+    expect(effect.getAttribute('aria-pressed')).toBe('true')
+  } else {
+    expect(draft.operations).toEqual([])
+    expect(effect.getAttribute('aria-pressed')).toBe('false')
+  }
   view.dispose!()
 })
 it('refuses an unsafe restored source transition without replacing persisted draft', async () => {

@@ -103,6 +103,15 @@ describe('Word page borders (pinned PageBorderDialog + applySectionSettings)', (
     ribbon.querySelector<HTMLButtonElement>('[data-tab-label="设计"]')!.click()
     const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders"]')!
     expect(trigger.disabled).toBe(false)
+    expect(trigger.classList.contains('rb-big')).toBe(true)
+    expect(trigger.querySelectorAll('.rb-big-icon svg')).toHaveLength(2)
+    trigger.click()
+    const none = ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-none"]')!
+    expect(none.getAttribute('aria-pressed')).toBe('true')
+    none.focus()
+    none.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(trigger)
     trigger.click(); ribbon.querySelector<HTMLButtonElement>('[data-action="page-borders-box"]')!.click()
     expect(apply).toHaveBeenLastCalledWith({ pageBorder: true, pageBorderProps: null }, 'section')
     expect(trigger.classList.contains('active')).toBe(true)

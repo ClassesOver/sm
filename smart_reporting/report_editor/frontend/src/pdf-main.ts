@@ -1189,18 +1189,31 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     } finally { cropApplying = false; updateControls() }
   }
   const sizeDialog = documentElement('dialog', 'pdf-layout-dialog pdf-crop-dialog pdf-size-dialog'); sizeDialog.setAttribute('aria-label', '页面尺寸')
-  const sizeTitle = documentElement('h3'); sizeTitle.textContent = '全部保留页的页面尺寸'
+  const sizeTitle = documentElement('h3'); sizeTitle.textContent = pdfRibbonLabel('页面尺寸')
+  const sizeScope = documentElement('p', 'pdf-size-scope')
   const sizeHint = documentElement('p'); sizeHint.textContent = '按原始整页等比缩放内容与批注并居中，保留显示方向；尺寸改变的页面重置裁切范围，尺寸已匹配的页面保持原样。保存会创建新修订；先查看实际写回预览。'
   const sizeError = documentElement('p'); sizeError.setAttribute('role', 'alert')
-  const sizeOptions = documentElement('fieldset'); sizeOptions.style.border = '0'
-  for (const paper of PDF_PAPER_SIZES) {
-    const choice = documentElement('button'); choice.type = 'button'; choice.textContent = paper.label
-    choice.addEventListener('click', () => { void applyPageSize(paper.label).catch(error => { sizeError.textContent = error instanceof Error ? error.message : String(error); showError(error) }) })
-    sizeOptions.append(choice)
-  }
+  const paperSizeRows = [PDF_PAPER_SIZES.slice(0, 3), PDF_PAPER_SIZES.slice(3)].map(papers => {
+    const row = documentElement('div', 'pdf-size-options')
+    for (const paper of papers) {
+      const choice = documentElement('button'); choice.type = 'button'; choice.textContent = paper.label
+      choice.addEventListener('click', () => { void applyPageSize(paper.label).catch(error => { sizeError.textContent = error instanceof Error ? error.message : String(error); showError(error) }) })
+      row.append(choice)
+    }
+    return row
+  })
   let sizeApplying = false
+  const sizeOptions = documentElement('fieldset')
+  const sizeActions = documentElement('div', 'pdf-layout-actions')
   const sizeCancel = documentElement('button'); sizeCancel.type = 'button'; sizeCancel.textContent = '取消'; sizeCancel.addEventListener('click', () => sizeDialog.close())
-  sizeOptions.append(sizeCancel); sizeDialog.append(sizeTitle, sizeHint, sizeError, sizeOptions); root.append(sizeDialog)
+  sizeActions.append(sizeCancel)
+  sizeOptions.append(...paperSizeRows, sizeActions)
+  sizeDialog.append(sizeTitle, sizeScope, sizeHint, sizeError, sizeOptions)
+  sizeDialog.addEventListener('close', () => {
+    const trigger = pageButtons.get('genoffice.pdf.page.size')
+    if (trigger?.closest('[role="tabpanel"]:not([hidden])')) trigger.focus()
+  })
+  root.append(sizeDialog)
   function pageSizeUnavailable() {
     if (model.capabilities?.pageSize !== true) return model.capabilities?.pageSizeReason ?? '当前 PDF 引擎未确认页面尺寸写回能力'
     if (draft.operations.some(op => ['cropPage', 'replaceText', 'replyNote', 'replyPendingNote'].includes(op.kind))) return '请先保存裁切、原位改字或回复并重开，再变更页面尺寸'
@@ -1208,7 +1221,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function openPageSize() {
     if (sizeApplying || !document || locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled || pageSizeUnavailable()) return
-    sizeError.textContent = ''; sizeDialog.showModal()
+    sizeScope.textContent = pdfRibbonLabel('将所有页缩放到所选纸型（共 {total} 页）').replace('{total}', String(state().length))
+    sizeError.textContent = ''
+    sizeDialog.showModal()
+    paperSizeRows[0].querySelector('button')?.focus()
   }
   async function applyPageSize(preset: string) {
     if (sizeApplying || !sizeDialog.open || locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled || pageSizeUnavailable()) return

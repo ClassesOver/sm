@@ -27,9 +27,10 @@ it('中文圆形转场使用源标签，选择保留原工具参数与SVG', () =
   const actions: unknown[][] = []
   const ribbon = createSlidesNativeRibbon(host, { onAction: (...action) => actions.push(action) })
   ribbon.setTransitionEditEnabled(true)
-  const transition = host.querySelector<HTMLSelectElement>('[data-command="transition"]')!
-  expect(transition.querySelector('option[value="circle"]')?.textContent).toBe('圆形')
-  transition.value = 'circle'; transition.dispatchEvent(new Event('change'))
+  const transition = host.querySelector<HTMLButtonElement>('[data-transition-effect="circle"]')!
+  expect(transition.textContent).toBe('圆形')
+  expect(transition.querySelector('svg')).not.toBeNull()
+  transition.click()
   expect(actions).toEqual([['transition', 'circle']])
   expect(host.querySelector('[data-command="motionPathCircle"] svg')).not.toBeNull()
   ribbon.dispose()
@@ -54,7 +55,7 @@ it('英文界面保留尺寸与转场原标签', () => {
   const host = document.body.appendChild(document.createElement('div'))
   const ribbon = createSlidesNativeRibbon(host, { onAction: () => {} })
   expect([...host.querySelectorAll('[data-command="slideSize"] option')].map(option => option.textContent)).toEqual(['16:9', '4:3', 'A4', 'A3'])
-  expect(host.querySelector('[data-command="transition"] option[value="circle"]')?.textContent).toBe('circle')
+  expect(host.querySelector('[data-transition-effect="circle"]')?.textContent).toBe('Circle')
   expect(host.querySelector('[data-command="insertWordArt"]')?.getAttribute('aria-label')).toBe('WordArt')
   ribbon.dispose()
 })

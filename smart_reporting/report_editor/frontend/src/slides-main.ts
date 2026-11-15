@@ -3173,7 +3173,12 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         break
       case 'transition':
         if (transitionEditUnavailable()) { statusMessage.textContent = transitionEditUnavailable()!; break }
-        if (SLIDE_TRANSITIONS.includes(value as SlideTransition) && order.includes(selectedSlide)) { transitionEdits.set(selectedSlide, value as SlideTransition); markDirty() }
+        if (SLIDE_TRANSITIONS.includes(value as SlideTransition) && order.includes(selectedSlide)) {
+          transitionEdits.set(selectedSlide, value as SlideTransition)
+          transitionSelect.value = String(value)
+          nativeRibbon?.setValue('transition', transitionSelect.value)
+          markDirty()
+        }
         break
       case 'applyTransitionAll': {
         const effect = transitionEdits.get(selectedSlide) ?? deck?.slides[selectedSlide]?.transition ?? 'none'
