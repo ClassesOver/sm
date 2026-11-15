@@ -53,4 +53,4 @@ jobs:
       - name: TypeScript type check
         run: npx tsc --noEmit
       - name: Focused Word task and channel integration tests
-        run: npx vitest run src/native-ai.test.ts src/office-assistant-controller.test.ts --reporter=verbose
+        run: npx vitest run src/native-ai.test.ts src/office-assistant-controller.test.ts src/report-channel-share.test.ts --reporter=verbose
