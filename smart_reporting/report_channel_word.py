@@ -44,8 +44,8 @@ class ReportChannelWordAssistant:
         return draft
 
     @staticmethod
-    def _prefix(channel: str, identity: ConnectorIdentity) -> str:
-        scope = json.dumps([channel, identity.connector, identity.subject, identity.session])
+    def _prefix(channel: str, identity: ConnectorIdentity, grant: str) -> str:
+        scope = json.dumps([channel, identity.connector, identity.subject, identity.session, grant])
         return hashlib.sha256(scope.encode()).hexdigest() + "_"
 
     @staticmethod
@@ -69,7 +69,7 @@ class ReportChannelWordAssistant:
                 expected_sha256=draft.source_sha256,
                 operations=draft.operations,
                 selection=draft.selection,
-                client_request_id=self._prefix(channel, identity) + request_hash,
+                client_request_id=self._prefix(channel, identity, grant) + request_hash,
                 server_session_reference=draft.session_reference,
                 authorization_check=authorized,
             )
@@ -90,6 +90,6 @@ class ReportChannelWordAssistant:
             raise HTTPException(404, "report_channel_word_task_missing") from None
         if not await self.repository.grant_active(grant):
             raise HTTPException(403, "report_channel_membership_required")
-        if not job.get("clientRequestId", "").startswith(self._prefix(channel, identity)):
+        if not job.get("clientRequestId", "").startswith(self._prefix(channel, identity, grant)):
             raise HTTPException(404, "report_channel_word_task_missing")
         return self._status(job)
