@@ -166,9 +166,10 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         bytes = await replaceSheetDataValidations(bytes, parsed.sheetName, parsed.rules); break
       }
       case 'applyCfRules': bytes = await applyCfRules(bytes, op.rules); break
+      case 'appendSheetConditionalFormats':
       case 'replaceSheetConditionalFormats': {
         const parsed = replaceSheetConditionalFormatsOperationSchema.parse(op)
-        bytes = await replaceConditionalFormattingSnapshots(bytes, [{ sheetName: parsed.sheetName, rules: parsed.rules }]); break
+        bytes = await replaceConditionalFormattingSnapshots(bytes, [{ sheetName: parsed.sheetName, rules: parsed.rules, append: parsed.kind === 'appendSheetConditionalFormats' }]); break
       }
       case 'patchSheetNotes': {
         const parsed = z.object({ kind: z.literal('patchSheetNotes'), sheetName: z.string().min(1).max(31), sourceIdentity: z.string().regex(/^[a-f0-9]{64}$/),

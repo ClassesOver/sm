@@ -54,6 +54,7 @@ _XLSX_FIELDS = {
     'replaceSheetDataValidations': {'sheetName', 'rules'},
     'applyDataValidationSource': {'sheetName', 'range', 'validation'},
     'replaceSheetConditionalFormats': {'sheetName', 'rules'},
+    'appendSheetConditionalFormats': {'sheetName', 'rules'},
     'addPivot': {'addition'}, 'applyColumnWidths': {'sheetName', 'entries'},
     'applySheetOutline': {'sheetName', 'rows', 'columns', 'summaryBelow', 'summaryRight'},
     'applyRowHeights': {'sheetName', 'entries'}, 'applyPageSetups': {'setups'},

@@ -20,6 +20,7 @@ from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_bounda
 from ..office.ai_skills import WORKBOOK_GUIDES, source_workbook_guide
 from .workbook_ai import WorkbookAIProposal
 from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
+from .workbook_ai_conditional_formatting import source_conditional_rule
 from .workbook_ai_page_setup import page_setup_patch
 from .workbook_ai_structure import (
     AXIS_SIZE_SOURCE_OPS,
@@ -454,6 +455,10 @@ class WorkbookAIToolkit(Toolkit):
                 'validation 支持 list(values)、listRef(range)、numberBetween(min,max)、'
                 'dateBetween(start,end)，日期为 YYYY-MM-DD，以及 checkbox 和 formula(formula，以等号开头)。'
                 '列表过长或包含逗号时请引用同表单元格区域。仅整簿授权可修改数据验证。'
+                '用 add_conditional_format(sheetId,range,rule) 新增条件格式，'
+                'rule.kind 支持 number、text、blank、duplicate、top10、formula、colorScale、dataBar。'
+                '前六种规则使用 format(fillColor?,fontColor?,bold?,italic?)。'
+                '用 clear_conditional_formats(sheetId) 清除指定工作表的全部条件格式。'
             )
         if 'structure' in guides:
             catalog['structure'] += (
@@ -586,6 +591,18 @@ class WorkbookAIToolkit(Toolkit):
         if op in {'add_defined_name', 'delete_defined_name'}:
             plan = {'sets': [{'name': operation['name'], 'refersTo': operation['ref']}]} if op == 'add_defined_name' else {'removes': [operation['name']]}
             return {'kind': 'applyDefinedNames', 'plan': plan}
+        if op in {'add_conditional_format', 'clear_conditional_formats'}:
+            required = {'op', 'sheetId'} if op == 'clear_conditional_formats' else {'op', 'sheetId', 'range', 'rule'}
+            if set(operation) != required or not isinstance(operation['sheetId'], str) or not operation['sheetId']:
+                raise ValueError('workbook_ai_conditional_format_invalid')
+            name = self._sheet(operation['sheetId'])['name']
+            if op == 'clear_conditional_formats':
+                return {'kind': 'replaceSheetConditionalFormats', 'sheetName': name, 'rules': []}
+            r0, r1, c0, c1 = _bounds(operation['range'])
+            return {'kind': 'appendSheetConditionalFormats', 'sheetName': name, 'rules': [{
+                'ranges': [{'startRow': r0, 'endRow': r1, 'startColumn': c0, 'endColumn': c1}],
+                'stopIfTrue': False, 'rule': source_conditional_rule(operation['rule']),
+            }]}
         if op == 'set_data_validation':
             if (set(operation) != {'op', 'sheetId', 'range', 'validation'}
                     or not isinstance(operation['sheetId'], str) or not operation['sheetId']

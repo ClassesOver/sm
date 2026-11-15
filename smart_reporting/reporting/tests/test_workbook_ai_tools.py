@@ -11,6 +11,7 @@ from agno.agent import Agent
 from agno.models.response import ModelResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font
 from openpyxl.utils.datetime import CALENDAR_MAC_1904
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -23,6 +24,59 @@ from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
+
+
+@pytest.mark.anyio
+async def test_source_conditional_formats_append_all_kinds_and_clear_only_target_sheet():
+    book = Workbook()
+    book.active.conditional_formatting.add('A1', FormulaRule(formula=['A1>0'], stopIfTrue=True))
+    book.create_sheet('Other').conditional_formatting.add('A1', FormulaRule(formula=['A1<0']))
+    stream = BytesIO()
+    book.save(stream)
+    original = stream.getvalue()
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', original, operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    model = {'sheets': [{'name': 'Sheet'}, {'name': 'Other'}]}
+    tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)
+    style = {'fillColor': '#ABCDEF', 'fontColor': '#112233', 'bold': True, 'italic': True}
+    rules = [
+        {'kind': 'number', 'operator': 'between', 'value': 1, 'value2': 5, 'format': style},
+        {'kind': 'text', 'operator': 'notContains', 'text': '草稿', 'format': style},
+        {'kind': 'blank', 'blank': False, 'format': style},
+        {'kind': 'duplicate', 'unique': True, 'format': style},
+        {'kind': 'top10', 'rank': 15, 'percent': True, 'bottom': True, 'format': style},
+        {'kind': 'formula', 'formula': '=B7>0', 'format': style},
+        {'kind': 'colorScale', 'minColor': '#FF0000', 'midColor': '#FFFF00', 'maxColor': '#00FF00'},
+        {'kind': 'dataBar'},
+    ]
+    await tools.propose_operations([
+        {'op': 'add_conditional_format', 'sheetId': 'Sheet', 'range': f'B{index}:D{index}', 'rule': rule}
+        for index, rule in enumerate(rules, 2)
+    ], '添加各类条件格式')
+    formats = load_workbook(BytesIO(written))['Sheet'].conditional_formatting
+    assert formats['A1'][0].stopIfTrue and formats['A1'][0].priority == 1
+    expected = ['cellIs', 'notContainsText', 'notContainsBlanks', 'uniqueValues',
+                'top10', 'expression', 'colorScale', 'dataBar']
+    appended = [formats[f'B{i}:D{i}'][0] for i in range(2, 10)]
+    assert [rule.type for rule in appended] == expected
+    assert [rule.priority for rule in appended] == list(range(2, 10))
+    assert appended[0].formula == ['1', '5'] and appended[0].dxf.font.b and appended[0].dxf.font.i
+    assert appended[4].percent and appended[4].bottom and appended[4].rank == 15
+    assert appended[5].formula == ['B7>0']
+    assert appended[6].colorScale.cfvo[1].val == 50
+    assert appended[7].dataBar.color.rgb == 'FF638EC6'
+
+    original = written
+    tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([{'op': 'clear_conditional_formats', 'sheetId': 'Sheet'}], '清除条件格式')
+    book = load_workbook(BytesIO(written))
+    assert not book['Sheet'].conditional_formatting
+    assert book['Other'].conditional_formatting['A1'][0].formula == ['A1<0']
 
 
 @pytest.mark.anyio

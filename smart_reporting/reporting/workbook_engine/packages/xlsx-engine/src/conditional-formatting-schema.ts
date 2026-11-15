@@ -12,5 +12,5 @@ export const conditionalFormattingSnapshotRuleSchema=z.object({
  if(reason!==null)context.addIssue({code:'custom',path:['rule'],message:reason})
 })
 export const replaceSheetConditionalFormatsOperationSchema=z.object({
- kind:z.literal('replaceSheetConditionalFormats'),sheetName:z.string().min(1).max(31),rules:z.array(conditionalFormattingSnapshotRuleSchema).max(10000),
+ kind:z.enum(['replaceSheetConditionalFormats','appendSheetConditionalFormats']),sheetName:z.string().min(1).max(31),rules:z.array(conditionalFormattingSnapshotRuleSchema).max(10000),
 }).strict()

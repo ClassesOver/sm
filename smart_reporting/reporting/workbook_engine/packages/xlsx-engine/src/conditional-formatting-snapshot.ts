@@ -8,7 +8,7 @@ import { isValidRuleSqref } from './cf-schemas'
 import { formatAddress } from './cell-address'
 import { readXmlAttribute, extractElements } from './xml'
 import { parseThemePalette } from './style-read'
-export interface SheetConditionalFormattingSnapshot { sheetName: string; rules: readonly CfWireRule[] }
+export interface SheetConditionalFormattingSnapshot { sheetName: string; rules: readonly CfWireRule[]; append?: boolean }
 export async function replaceConditionalFormattingSnapshots(bytes: Uint8Array, sheets: readonly SheetConditionalFormattingSnapshot[]): Promise<Uint8Array> {
  if (!sheets.length) return bytes
  const source=await createBufferEntrySource(bytes),book=await source.readText('xl/workbook.xml')
@@ -23,14 +23,19 @@ export async function replaceConditionalFormattingSnapshots(bytes: Uint8Array, s
   const sheet=parseSheetElements(book).find(item=>item.name===snapshot.sheetName)
   if(!sheet?.relationshipId)throw Error('Conditional-formatting target sheet does not exist')
   const path=await resolveWorksheetPath(source,sheet.relationshipId),xml=await source.readText(path)
+  for(const wire of snapshot.rules){
+   if(!wire.ranges.length||wire.ranges.some(area=>Object.values(area).some(value=>!Number.isSafeInteger(value)||value<0)||!isValidRuleSqref(`${formatAddress(area.startRow,area.startColumn)}:${formatAddress(area.endRow,area.endColumn)}`)))throw Error('Conditional-formatting snapshot range invalid')
+  }
+  if(snapshot.append){
+   const next=applyCfRules(xml,snapshot.rules,styles,{append:true})
+   if(next!==xml)replaced.set(path,next)
+   continue
+  }
   const original=readConditionalFormattingSnapshot(xml,stylesXml,themePalette)
   if(original.issues.length)throw Error('Conditional-formatting source snapshot is incomplete: '+original.issues.join('; '))
   for(const linked of original.linkedRules){
    const matches=snapshot.rules.filter(rule=>wireIdentity(rule)===wireIdentity(linked))
    if(matches.length!==1)throw Error('Conditional-formatting linked source rule must remain unchanged')
-  }
-  for(const wire of snapshot.rules){
-   if(!wire.ranges.length||wire.ranges.some(area=>Object.values(area).some(value=>!Number.isSafeInteger(value)||value<0)||!isValidRuleSqref(`${formatAddress(area.startRow,area.startColumn)}:${formatAddress(area.endRow,area.endColumn)}`)))throw Error('Conditional-formatting snapshot range invalid')
   }
   if(wireIdentityArray(original.rules)===wireIdentityArray(snapshot.rules))continue
   const entries=extractElements(xml,'cfRule').sort((a,b)=>Number(readXmlAttribute(a,'priority'))-Number(readXmlAttribute(b,'priority')))
