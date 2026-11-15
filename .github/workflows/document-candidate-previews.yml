@@ -30,20 +30,33 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install isolated preview test dependencies
+
         run: python -m pip install "pytest>=8,<10" "anyio>=4,<5" "openpyxl>=3.1,<4" "python-pptx>=1,<2" "pymupdf>=1.26,<2" "ruff>=0.12,<1" "fastapi>=0.110,<1" "httpx>=0.27,<1" "sqlalchemy>=2,<3"
+      - name: Compile candidate Python modules
+        run: python -m compileall -q smart_reporting/document_candidate_*.py
       - name: Ruff focused preview modules
         run: |
-          python -m ruff check smart_reporting/document_candidate_contract.py smart_reporting/document_candidate_xlsx_targets.py smart_reporting/document_candidate_xlsx_operations.py smart_reporting/document_candidate_xlsx_preview.py smart_reporting/document_candidate_pptx_targets.py smart_reporting/document_candidate_pptx_preview.py smart_reporting/document_candidate_pdf_targets.py smart_reporting/document_candidate_pdf_preview.py smart_reporting/document_candidate_gateway.py
+          python -m ruff check smart_reporting/document_candidate_contract.py smart_reporting/document_candidate_xlsx_targets.py smart_reporting/document_candidate_xlsx_operations.py smart_reporting/document_candidate_xlsx_preview.py smart_reporting/document_candidate_pptx_targets.py smart_reporting/document_candidate_pptx_preview.py smart_reporting/document_candidate_pdf_targets.py smart_reporting/document_candidate_pdf_preview.py smart_reporting/document_candidate_gateway.py smart_reporting/document_candidate_xlsx_adapter.py smart_reporting/document_candidate_pptx_adapter.py smart_reporting/document_candidate_pdf_adapter.py
       - name: Run isolated real-file preview tests
         run: |
-          python -m pytest -q -k "not trio" -o addopts="" \
+          python -m pytest -q -k "not trio" -o addopts="" --junitxml=candidate-preview-tests.xml \
             smart_reporting/tests/test_document_candidate_contract.py \
             smart_reporting/tests/test_document_candidate_gateway.py \
             smart_reporting/tests/test_document_candidate_xlsx_targets.py \
             smart_reporting/tests/test_document_candidate_xlsx_operations.py \
+            smart_reporting/tests/test_document_candidate_xlsx_adapter.py \
             smart_reporting/tests/test_document_candidate_xlsx_preview.py \
             smart_reporting/tests/test_document_candidate_pptx_targets.py \
+            smart_reporting/tests/test_document_candidate_pptx_adapter.py \
             smart_reporting/tests/test_document_candidate_pptx_preview.py \
             smart_reporting/tests/test_document_candidate_pdf_preview.py
+            smart_reporting/tests/test_document_candidate_pdf_adapter.py
+      - name: Upload pytest JUnit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-preview-junit
+          path: candidate-preview-tests.xml
+          if-no-files-found: ignore
       - name: Whitespace check
         run: git diff --check HEAD~1 HEAD
