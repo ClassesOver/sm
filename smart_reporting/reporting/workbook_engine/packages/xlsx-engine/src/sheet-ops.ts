@@ -482,11 +482,33 @@ export async function applyRowColumnOps(
 /// and notes make the call fail closed: formula text moved between rows
 /// would silently re-target relative references, and note relocation rides
 /// the grid path where the move payload preserves authors.
+/** Keep the existing merge anchors only when every affected merge moves as
+ * one block into an equivalent merge. A merge crossing the selection cannot move. */
+function assertSortPreservesMerges(merges: readonly string[], bounds: RangeBounds, targets: ReadonlyMap<number, number>): void {
+  const areas = merges.map(ref => ({ ref, ...parseRange(ref) }))
+  const key = (area: RangeBounds) => `${area.startRow}:${area.endRow}:${area.startColumn}:${area.endColumn}`
+  const layout = new Set(areas.map(key))
+  for (const area of areas) {
+    if (area.endColumn < bounds.startColumn || area.startColumn > bounds.endColumn) continue
+    const first = Math.max(area.startRow, bounds.startRow), last = Math.min(area.endRow, bounds.endRow)
+    let moved = false
+    for (let row = first; row <= last; row++) if (targets.get(row) !== row) { moved = true; break }
+    if (!moved) continue
+    const fail = () => new Error(`排序会拆分合并单元格或改变其布局（${area.ref}）。`)
+    if (area.startRow < bounds.startRow || area.endRow > bounds.endRow ||
+        area.startColumn < bounds.startColumn || area.endColumn > bounds.endColumn) throw fail()
+    const target = targets.get(area.startRow)!
+    for (let row = area.startRow; row <= area.endRow; row++) {
+      if (targets.get(row) !== target + row - area.startRow) throw fail()
+    }
+    if (!layout.has(key({ ...area, startRow: target, endRow: target + area.endRow - area.startRow }))) throw fail()
+  }
+}
+
 /** Relocate hyperlink coverage with the sorted cells, retaining the original
  * targets and relationship ids. A range crossing the sort boundary may split. */
-function remapSortedHyperlinks(xml: string, bounds: RangeBounds, order: readonly number[]): string {
-  if (!/<hyperlinks\b/.test(xml) || order.every((source, target) => source === target)) return xml
-  const targetRows = new Map(order.map((source, target) => [bounds.startRow + source, bounds.startRow + target]))
+function remapSortedHyperlinks(xml: string, bounds: RangeBounds, targetRows: ReadonlyMap<number, number>): string {
+  if (!/<hyperlinks\b/.test(xml)) return xml
   return xml.replace(/<hyperlinks\b[^>]*>[\s\S]*?<\/hyperlinks>/g, section => section.replace(/<hyperlink\b[^>]*?(?:\/>|>[\s\S]*?<\/hyperlink>)/g, link => {
     const attribute = /(\sref\s*=\s*)(["'])(.*?)\2/
     const ref = attribute.exec(link)?.[3]
@@ -563,6 +585,10 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     rows.push(cells)
   }
   const order = computeSortedRowOrder(rows, first!.offset, first!.ascending, thenBy)
+  if (order.every((source, target) => source === target)) return sourceBytes
+  const dataBounds = { ...bounds, startRow: firstDataRow }
+  const targetRows = new Map(order.map((source, target) => [firstDataRow + source, firstDataRow + target]))
+  assertSortPreservesMerges(sheet.merges, dataBounds, targetRows)
 
   const workbookXml = await source.readText('xl/workbook.xml')
   const parts = await sheetPartsOf(source, workbookXml)
@@ -635,7 +661,7 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     return inserted + (rebuiltRows.get(rowIndex) ?? rowXml)
   })
   const nextBody = body + additions.map(([, xml]) => xml).join('')
-  const rewritten = remapSortedHyperlinks(`${sheetData[1]}${nextBody}${sheetData[3]}`, { ...bounds, startRow: firstDataRow }, order)
+  const rewritten = remapSortedHyperlinks(`${sheetData[1]}${nextBody}${sheetData[3]}`, dataBounds, targetRows)
   const mutationPlan: MutationPlan = {
     replaced: new Map([[target.path, rewritten]]),
     added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [],

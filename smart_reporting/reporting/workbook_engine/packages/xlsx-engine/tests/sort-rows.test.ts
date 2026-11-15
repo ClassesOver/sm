@@ -85,6 +85,26 @@ it('keeps inherited cell styles attached to rows moved by a protected sort', asy
   expect(result.rows.map(row => row.styleIndex)).toEqual([bold, italic])
 })
 
+it('preserves compatible merge layouts and rejects a sort that would split a merge', async () => {
+  let bytes = await applyCellEdits(await createBlankWorkbook(), ['Header', 2, 1].map((value, row) => ({
+    sheetName: 'Sheet1', row, column: 0, writeValue: true, cell: { value },
+  })))
+  const path = (await readWorkbook(bytes)).sheets[0]!.path
+  const zip = await JSZip.loadAsync(bytes)
+  const worksheet = await zip.file(path)!.async('string')
+  const withMerges = async (merges: readonly string[]) => {
+    zip.file(path, worksheet.replace('</worksheet>', `<mergeCells count="${merges.length}">${merges.map(ref => `<mergeCell ref="${ref}"/>`).join('')}</mergeCells></worksheet>`))
+    return zip.generateAsync({ type: 'uint8array' })
+  }
+  const spec = { range: 'A1:B3', byColumn: 'A', ascending: true, hasHeader: true }
+  bytes = await withMerges(['A1:B1', 'A2:B2', 'A3:B3'])
+  const valid = (await readWorkbook(await sortRangeRows(bytes, 'Sheet1', spec))).sheets[0]!
+  expect(valid.merges).toEqual(['A1:B1', 'A2:B2', 'A3:B3'])
+  expect(valid.cells.A2?.value).toBe(1)
+  await expect(sortRangeRows(await withMerges(['A1:B1', 'A2:B2']), 'Sheet1', spec)).rejects.toThrow('合并单元格')
+  await expect(sortRangeRows(await withMerges(['A2:C2']), 'Sheet1', spec)).rejects.toThrow('合并单元格')
+})
+
 it('moves hyperlinks with sorted cells and leaves the remaining coverage in place', async () => {
   const bytes = await applyCellEdits(await createBlankWorkbook(), ['Header', 3, 1, 2].map((value, row) => ({
     sheetName: 'Sheet1', row, column: 0, writeValue: true, cell: { value }, style: { protectionLocked: false },
