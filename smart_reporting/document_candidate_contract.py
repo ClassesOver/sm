@@ -8,6 +8,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
+import json
 from typing import Any, Protocol
 
 
@@ -52,8 +53,15 @@ class DocumentCandidateRequest:
             not isinstance(item, dict) or not item for item in self.selection
         ):
             raise ValueError("document_selection_invalid")
+        # Every adapter hashes/serializes selections. Reject unserializable or
+        # non-finite values here rather than raising late inside an engine.
+        try:
+            encoded = json.dumps(self.selection, allow_nan=False, ensure_ascii=False)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("document_selection_invalid") from exc
+        if len(encoded.encode("utf-8")) > 65536:
+            raise ValueError("document_selection_invalid")
         # Frozen dataclasses do not freeze nested caller-owned dictionaries.
-        # Snapshot selections so a caller cannot change targets during an await.
         object.__setattr__(self, "selection", tuple(deepcopy(item) for item in self.selection))
 
 
