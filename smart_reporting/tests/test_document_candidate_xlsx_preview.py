@@ -127,3 +127,33 @@ async def test_concurrent_identical_xlsx_previews_propose_once():
     results = await asyncio.gather(*(engine.prepare(request) for _ in range(8)))
     assert len(set(results)) == 1
     assert calls == 1
+
+
+@pytest.mark.anyio
+async def test_cached_xlsx_preview_rechecks_source_on_retry_and_status():
+    original = workbook_bytes()
+    changed = original + b"changed"
+    current = original
+    digest = hashlib.sha256(original).hexdigest()
+    scope = DocumentScope("channel", "grant", "book", "1", digest, DocumentFormat.XLSX)
+    proposals = 0
+
+    async def source(_):
+        return current
+
+    async def propose(_):
+        nonlocal proposals
+        proposals += 1
+        return ({"sheet": "Sheet1", "range": "A1", "value": 15},)
+
+    engine = XlsxLiteralPreviewEngine(source, propose)
+    request = DocumentCandidateRequest(
+        scope, "same", "Edit", ({"sheet": "Sheet1", "range": "A1"},),
+    )
+    task = await engine.prepare(request)
+    current = changed
+    with pytest.raises(PermissionError, match="document_source_changed"):
+        await engine.prepare(request)
+    with pytest.raises(PermissionError, match="document_source_changed"):
+        await engine.status(scope, task)
+    assert proposals == 1
