@@ -1253,6 +1253,11 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
     ) -> TaskSnapshot:
         return await self._create_native_candidate_task(scope, instruction, request_sha256, "native-slides-ai")
 
+    async def create_native_pdf_task(
+        self, scope: TaskExecutionScope, instruction: str, request_sha256: str,
+    ) -> TaskSnapshot:
+        return await self._create_native_candidate_task(scope, instruction, request_sha256, "native-pdf-ai")
+
     async def _create_native_candidate_task(
         self, scope: TaskExecutionScope, instruction: str, request_sha256: str, executor_id: str,
     ) -> TaskSnapshot:
@@ -1261,7 +1266,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                 or not isinstance(request_sha256, str)
                 or re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None):
             raise TaskExecutionRepositoryError("native_workbook_input_invalid", "Office 候选任务输入无效。")
-        # Excel introduced these columns. Both editors use the same receipt storage,
+        # Excel introduced these columns. Other editors use the same receipt storage,
         # while all reads and transitions remain bound to the full task scope.
         return await self.create_task_with_initial_attempt(
             scope, instruction, _native_workbook_request_sha256=request_sha256,

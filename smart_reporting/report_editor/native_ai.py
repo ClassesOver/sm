@@ -577,6 +577,8 @@ class NativeAIService:
         base: list[dict[str, Any]],
         selected: list[dict[str, Any]],
         prompt: str,
+        *,
+        persist: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         try:
             await self._require_job_authorization(job)
@@ -648,12 +650,17 @@ class NativeAIService:
             await check_office_access(context.document_id, write=True)
             if job.status != "running":
                 return
-            job.proposal = {
+            proposal = {
                 "summary": planned.summary,
                 "operations": candidate,
                 "previewSha256": preview["draftSha256"],
                 **(self._pdf_preview_fields(preview) if context.format == "pdf" else {}),
             }
+            if persist is not None:
+                await persist(proposal)
+                if job.status != "running":
+                    return
+            job.proposal = proposal
             job.status = "succeeded"
         except asyncio.CancelledError:
             job.status = "cancelled"

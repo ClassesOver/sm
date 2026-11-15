@@ -1268,3 +1268,41 @@ async def test_pdf_ai_freezes_selection_before_awaiting_source_preview(pdf_sampl
         assert ready["status"] == "succeeded", ready
         assert ready["proposal"]["operations"][0]["objectId"] == target["objectId"]
         assert ready["proposal"]["skippedOperations"] == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("commit_fails", [False, True])
+async def test_pdf_candidate_commit_preserves_verified_preview_identity(pdf_sample, monkeypatch, commit_fails):
+    from contextlib import aclosing
+
+    from smart_reporting.report_editor.native_ai import NativeAIService
+
+    editor, context, session, model, _ = pdf_sample
+    selection = pdf_ai_selection(model)
+
+    async def planner(_prompt, **_kwargs):
+        return pdf_ai_plan(selection, "Amount due 700")
+
+    receipts = []
+    async with aclosing(NativeAIService(editor, planner=planner, enabled=True)) as ai:
+        run = ai._run_job
+
+        async def run_with_receipt(job, *args):
+            async def persist(proposal):
+                assert job.status == "running" and job.proposal is None
+                receipts.append(proposal)
+                if commit_fails:
+                    raise RuntimeError("receipt storage failed")
+            await run(job, *args, persist=persist)
+
+        monkeypatch.setattr(ai, "_run_job", run_with_receipt)
+        started = await ai.start_edit(session, instruction="Change selected amount", operations=[],
+            selection=[selection], expected_sha256=context.source_file.sha256)
+        ready = await ai.wait_edit_status(session, started["editId"])
+        assert len(receipts) == 1
+        assert receipts[0]["previewDigest"]
+        assert receipts[0]["skippedOperations"] == []
+        if commit_fails:
+            assert ready["status"] == "failed" and "proposal" not in ready
+        else:
+            assert ready["status"] == "succeeded" and ready["proposal"] == receipts[0]

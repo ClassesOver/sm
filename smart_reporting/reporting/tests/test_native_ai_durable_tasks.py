@@ -66,7 +66,7 @@ async def durable(tmp_path):
             await connection.execute(delete(repository.tasks).where(
                 repository.tasks.c.thread_id == context.scope.thread_id,
                 repository.tasks.c.sandbox_id.like('native-workspace-%'),
-                repository.tasks.c.agent_id.in_(['native-workbook-ai', 'native-slides-ai'])))
+                repository.tasks.c.agent_id.in_(['native-workbook-ai', 'native-slides-ai', 'native-pdf-ai'])))
         await fixture.workspace.registry.aclose()
         await database.async_engine.dispose()
         database.sync_engine.dispose()
@@ -194,7 +194,7 @@ async def test_workbook_task_registration_is_atomic_and_keeps_digest_private(dur
         await repository.create_task_with_initial_attempt(scope, 'Change selected range')
     assert generic_retry.value.code == 'native_workbook_input_conflict'
 
-@pytest.mark.parametrize('executor', ['native-workbook-ai', 'native-slides-ai'])
+@pytest.mark.parametrize('executor', ['native-workbook-ai', 'native-slides-ai', 'native-pdf-ai'])
 async def test_native_candidate_finish_is_fenced_and_recoverable(durable, executor):
     from dataclasses import replace
     from smart_reporting.task_execution.models import TaskExecutionScope
@@ -206,14 +206,20 @@ async def test_native_candidate_finish_is_fenced_and_recoverable(durable, execut
     scope = TaskExecutionScope(task_id, context.scope.user_id, context.scope.thread_id,
                                'native-workspace-candidate', executor)
     request_sha256 = 'a' * 64
-    create = (repository.create_native_workbook_task if executor == 'native-workbook-ai'
-              else repository.create_native_slides_task)
-    task = await create(scope, 'Change selected range', request_sha256)
+    create = getattr(repository, {
+        'native-workbook-ai': 'create_native_workbook_task',
+        'native-slides-ai': 'create_native_slides_task',
+        'native-pdf-ai': 'create_native_pdf_task',
+    }[executor])
+    task = await create(scope, 'Change selection', request_sha256)
     lease = await repository.claim_lease(task_id, 'candidate-worker')
     task, _ = await repository.open_initial(task_id, lease, task.state_version)
-    operations = proposal().engine_operations() if executor == 'native-workbook-ai' else [{
-        'kind': 'editSlides', 'edits': [{'slideIndex': 0, 'elementId': 'title', 'text': 'New title'}],
-    }]
+    if executor == 'native-workbook-ai':
+        operations = proposal().engine_operations()
+    elif executor == 'native-slides-ai':
+        operations = [{'kind': 'editSlides', 'edits': [{'slideIndex': 0, 'elementId': 'title', 'text': 'New title'}]}]
+    else:
+        operations = [{'kind': 'replaceText', 'pageId': 'page', 'objectId': 'text', 'newText': 'New text'}]
     receipt = {'contextSha256': context.digest(), 'snapshotSha256': 'b' * 64,
                'clientRequestId': 'original-request',
                'proposal': {'summary': 'Private candidate', 'operations': operations, 'previewSha256': 'c' * 64}}
