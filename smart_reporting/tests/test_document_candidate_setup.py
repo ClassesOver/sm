@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from smart_reporting.document_candidate_contract import DocumentFormat, DocumentScope
-from smart_reporting.document_candidate_setup import build_word_document_gateway
+from smart_reporting.document_candidate_setup import build_document_gateway, build_word_document_gateway
 from smart_reporting.report_channel_api import ConnectorIdentity
 
 
@@ -52,3 +52,48 @@ async def test_word_gateway_factory_registers_docx_only():
             "channel", identity, request_id="two", instruction="Edit",
             selection=({"cell": "A1"},),
         )
+
+
+@pytest.mark.anyio
+async def test_four_format_gateway_only_registers_supplied_engines():
+    identity = ConnectorIdentity("dsh", "subject", "session")
+    current = DocumentScope("channel", "grant", "document", "1", "a" * 64, DocumentFormat.PDF)
+
+    class PdfAdapter:
+        format = DocumentFormat.PDF
+
+        async def prepare(self, request):
+            assert request.scope == current
+            return "pdf-task"
+
+        async def status(self, authorized_scope, task_id):
+            return {"taskId": task_id, "status": "preview_ready", "accepted": False}
+
+    async def resolve(channel, caller):
+        return current if channel == "channel" and caller == identity else None
+
+    gateway = build_document_gateway(resolve, pdf=PdfAdapter())
+    task = await gateway.prepare(
+        "channel", identity, request_id="one", instruction="Add note",
+        selection=({"page": 0, "rect": [0, 0, 1, 1]},),
+    )
+    assert task == "pdf-task"
+    assert (await gateway.status("channel", identity, task))["accepted"] is False
+    from dataclasses import replace
+    current = replace(current, format=DocumentFormat.PPTX)
+    with pytest.raises(ValueError, match="document_adapter_unavailable"):
+        await gateway.prepare(
+            "channel", identity, request_id="two", instruction="Edit slide",
+            selection=({"slide_id": 256, "shape_id": 2},),
+        )
+
+
+def test_four_format_gateway_rejects_misregistered_adapter():
+    class WrongAdapter:
+        format = DocumentFormat.XLSX
+
+    async def resolve(channel, caller):
+        return None
+
+    with pytest.raises(ValueError, match="document_adapter_format_mismatch"):
+        build_document_gateway(resolve, pdf=WrongAdapter())
