@@ -66,14 +66,19 @@ class DocumentCandidateRequest:
         # strings throughout nested selections and that canonical serialization
         # is safe before any async adapter work starts.
         pending: list[Any] = list(self.selection)
+        seen_containers: set[int] = set()
         while pending:
             value = pending.pop()
-            if isinstance(value, dict):
-                if any(not isinstance(key, str) for key in value):
-                    raise ValueError("document_selection_invalid")
-                pending.extend(value.values())
-            elif isinstance(value, (tuple, list)):
-                pending.extend(value)
+            if isinstance(value, (dict, tuple, list)):
+                if id(value) in seen_containers:
+                    continue
+                seen_containers.add(id(value))
+                if isinstance(value, dict):
+                    if any(not isinstance(key, str) for key in value):
+                        raise ValueError("document_selection_invalid")
+                    pending.extend(value.values())
+                else:
+                    pending.extend(value)
         try:
             encoded = json.dumps(
                 self.selection, allow_nan=False, ensure_ascii=False, sort_keys=True,
