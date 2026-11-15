@@ -98,3 +98,30 @@ async def test_pdf_preview_task_is_idempotent_and_grant_scoped():
             "channel", "another-grant", "pdf", "1", scope.source_sha256,
             DocumentFormat.PDF,
         ), task)
+
+
+@pytest.mark.anyio
+async def test_pdf_preview_rejects_source_changed_during_page_extraction():
+    original = sample_pdf()
+    changed = original + b"new revision"
+    scope = DocumentScope(
+        "channel", "grant", "pdf", "1", hashlib.sha256(original).hexdigest(),
+        DocumentFormat.PDF,
+    )
+    reads = 0
+
+    async def source(_):
+        nonlocal reads
+        reads += 1
+        return changed if reads >= 3 else original
+
+    async def propose(_):
+        return ({"page": 0, "rect": [0, 0, 1, 1], "note": "Verify"},)
+
+    engine = PdfAnnotationPreviewEngine(source, propose)
+    request = DocumentCandidateRequest(
+        scope, "one", "Annotate", ({"page": 0, "rect": [0, 0, 1, 1]},),
+    )
+    with pytest.raises(PermissionError, match="document_source_changed"):
+        await engine.prepare(request)
+    assert reads == 3
