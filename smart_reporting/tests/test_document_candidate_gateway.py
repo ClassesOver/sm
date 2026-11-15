@@ -434,3 +434,45 @@ async def test_format_candidate_validation_errors_return_422(error_code):
         })
     assert result.status_code == 422
     assert result.json()["detail"] == "document_task_invalid"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [
+    {"taskId": "another-task", "status": "preview_ready", "accepted": False},
+    {"taskId": None, "status": "preview_ready"},
+])
+async def test_gateway_never_returns_status_of_different_task(status):
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def status(self, authorized_scope, task_id):
+            return status
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+
+    async def resolve(channel, identity):
+        return scope() if channel == "channel-a" and identity == "member" else None
+
+    gateway = DocumentCandidateGateway(registry, resolve)
+    with pytest.raises(DocumentCandidateDenied, match="document_task_identity_mismatch"):
+        await gateway.status("channel-a", "member", "expected-task")
+
+
+@pytest.mark.anyio
+async def test_gateway_rejects_non_mapping_adapter_status():
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def status(self, authorized_scope, task_id):
+            return None
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+
+    async def resolve(channel, identity):
+        return scope()
+
+    gateway = DocumentCandidateGateway(registry, resolve)
+    with pytest.raises(ValueError, match="document_task_status_invalid"):
+        await gateway.status("channel-a", "member", "expected-task")
