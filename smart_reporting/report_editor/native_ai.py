@@ -572,7 +572,11 @@ class NativeAIService:
                 return
             if job.word_task_reference is not None:
                 planned = await asyncio.wait_for(
-                    self.word_task_dispatcher.execute(job.word_task_reference), timeout=self.timeout_seconds)
+                    self.word_task_dispatcher.execute(
+                        job.word_task_reference, shutdown_requested=lambda: self._closed,
+                    ),
+                    timeout=self.timeout_seconds,
+                )
             else:
                 planned = await asyncio.wait_for(
                     self._plan_with_events(job, prompt, selected, format=context.format),

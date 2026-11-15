@@ -117,7 +117,7 @@ class WordTaskDispatcher:
         await self._current_editor(ref, session_reference, base)
         return NativeWordAIProposal.model_validate(receipt['proposal'])
 
-    async def execute(self, ref):
+    async def execute(self, ref, *, shutdown_requested=None):
         self.require_available()
         task = await self.repository.get_task_snapshot(ref.scope.external_run_id)
         if task is None or task.scope != ref.scope:
@@ -125,7 +125,7 @@ class WordTaskDispatcher:
         if task.state is TaskState.COMPLETED:
             return await self._completed_proposal(ref)
         async with TaskSession(self.repository, ref.scope) as task_session:
-            return await self._execute_claim(ref, task_session)
+            return await self._execute_claim(ref, task_session, shutdown_requested=shutdown_requested)
 
     async def _completed_proposal(self, ref):
         receipt = await self.repository.get_completed_native_word_candidate(ref.scope,
@@ -159,7 +159,7 @@ class WordTaskDispatcher:
             # failure, retry the model, or acquire authority via scope-only cancel.
             return
 
-    async def _execute_claim(self, ref, task_session):
+    async def _execute_claim(self, ref, task_session, *, shutdown_requested):
         task_id = ref.scope.external_run_id
         session_reference = ref.word_input.binding.server_session_reference
         bridge = None
@@ -213,6 +213,8 @@ class WordTaskDispatcher:
                 if external is not None:
                     transport_args['registered_proposal'] = lambda: bridge.registered_proposal
                 final = await self.transport.run(**transport_args)
+                if shutdown_requested is not None and shutdown_requested():
+                    raise asyncio.CancelledError
                 parsed = await bridge.reconcile(final, ticket=ticket)
                 task_session.assert_alive()
                 await self._current_editor(ref, session_reference)
@@ -234,7 +236,11 @@ class WordTaskDispatcher:
         except BaseException as error:
             if bridge is not None:
                 bridge.cancel()
-            await self._close_failed_claim(ref, task_session, error)
+            # On service shutdown TaskSession releases the lease. Keep the durable
+            # attempt open for another instance to resume with the same request.
+            if not (isinstance(error, asyncio.CancelledError)
+                    and shutdown_requested is not None and shutdown_requested()):
+                await self._close_failed_claim(ref, task_session, error)
             if not isinstance(error, asyncio.CancelledError):
                 owner = asyncio.current_task()
                 if owner is not None and owner.cancelling():

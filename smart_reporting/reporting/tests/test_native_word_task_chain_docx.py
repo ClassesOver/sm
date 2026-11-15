@@ -862,3 +862,28 @@ async def test_parallel_changed_request_returns409_without_cancelling_original_t
     finally:
         release.set()
         await asyncio.gather(first, return_exceptions=True)
+
+@pytest.mark.parametrize("mode", ["valid", "swallow_cancel"])
+async def test_word_service_shutdown_allows_same_attempt_recovery(chain, mode):
+    from smart_reporting.task_execution.models import TaskState
+
+    chain.transport.mode = mode
+    chain.transport.release = asyncio.Event()
+    first = await started(chain)
+    await asyncio.wait_for(chain.transport.proposed.wait(), 10)
+
+    await chain.ai.aclose()
+    interrupted = await chain.repository.get_task_snapshot(first["editId"])
+    assert interrupted.state is TaskState.ACTIVE
+    assert interrupted.lease_owner is None
+
+    chain.transport.release = None
+    restored = await restart_projection(chain)
+    assert restored["editId"] == first["editId"]
+    assert restored["status"] == "succeeded", restored
+    completed = await chain.repository.get_task_snapshot(first["editId"])
+    assert completed.state is TaskState.COMPLETED
+    assert completed.current_internal_run_id == interrupted.current_internal_run_id
+    attempt = await chain.repository.get_attempt(completed.current_internal_run_id)
+    assert attempt.resume_count == 1
+    assert chain.transport.calls == 2
