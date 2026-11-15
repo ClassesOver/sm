@@ -62,14 +62,26 @@ class DocumentCandidateRequest:
             not isinstance(item, dict) or not item for item in self.selection
         ):
             raise ValueError("document_selection_invalid")
-        # Every adapter hashes/serializes selections. Reject unserializable or
-        # non-finite values here rather than raising late inside an engine.
+        # Adapter fingerprints sort JSON object keys. Validate that keys are
+        # strings throughout nested selections and that canonical serialization
+        # is safe before any async adapter work starts.
+        pending: list[Any] = list(self.selection)
+        while pending:
+            value = pending.pop()
+            if isinstance(value, dict):
+                if any(not isinstance(key, str) for key in value):
+                    raise ValueError("document_selection_invalid")
+                pending.extend(value.values())
+            elif isinstance(value, (tuple, list)):
+                pending.extend(value)
         try:
-            encoded = json.dumps(self.selection, allow_nan=False, ensure_ascii=False)
-        except (TypeError, ValueError, OverflowError) as exc:
+            encoded = json.dumps(
+                self.selection, allow_nan=False, ensure_ascii=False, sort_keys=True,
+            )
+            if len(encoded.encode("utf-8")) > 65536:
+                raise ValueError("document_selection_invalid")
+        except (TypeError, ValueError, OverflowError, UnicodeError, RecursionError) as exc:
             raise ValueError("document_selection_invalid") from exc
-        if len(encoded.encode("utf-8")) > 65536:
-            raise ValueError("document_selection_invalid")
         # Frozen dataclasses do not freeze nested caller-owned dictionaries.
         object.__setattr__(self, "selection", tuple(deepcopy(item) for item in self.selection))
 
