@@ -325,3 +325,41 @@ async def test_document_selection_mismatch_returns_422():
         })
     assert response.status_code == 422
     assert response.json()["detail"] == "document_task_invalid"
+
+
+@pytest.mark.anyio
+async def test_document_request_id_conflict_returns_http_409():
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from unittest.mock import AsyncMock
+    from smart_reporting.report_channel_api import ConnectorIdentity, create_report_channel_router
+
+    identity = ConnectorIdentity("dsh", "member", "session")
+
+    class Adapter:
+        format = DocumentFormat.PPTX
+
+        async def prepare(self, request):
+            raise ValueError("document_request_id_conflict")
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+
+    async def resolve(channel, caller):
+        return replace(scope(), format=DocumentFormat.PPTX)
+
+    async def authenticate(request):
+        return identity
+
+    repository = type("Repository", (), {"has_member": AsyncMock(return_value=True)})()
+    app = FastAPI()
+    app.include_router(create_report_channel_router(
+        repository, authenticate, document_gateway=DocumentCandidateGateway(registry, resolve),
+    ))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        response = await http.post("/reports/v1/channels/channel-a/document-tasks", json={
+            "request_id": "same", "instruction": "Edit",
+            "selection": [{"slide_id": 256, "shape_id": 2}],
+        })
+    assert response.status_code == 409
+    assert response.json()["detail"] == "document_request_id_conflict"
