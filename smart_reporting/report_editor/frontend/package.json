@@ -9,7 +9,6 @@
     "check:budget": "node scripts/check-build-budget.mjs",
     "test:budget": "node scripts/check-build-budget.contract.mjs",
     "dev": "vite --host 0.0.0.0",
-    "smoke": "node smoke/report-editor-smoke.mjs",
     "test": "vitest run",
     "test:e2e:management": "playwright test --config playwright.management.config.ts",
     "check:management-budget": "node scripts/check-management-budget.mjs"
