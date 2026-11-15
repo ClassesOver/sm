@@ -87,6 +87,9 @@ class XlsxLiteralPreviewEngine:
                 1 for sheet in workbook.worksheets
                 for cell in sheet._cells.values() if cell.data_type == "f"
             )
+            # Parsing and formula inspection can be expensive. Do not publish
+            # a preview if the source changed after the previous digest check.
+            await self._verified_source(request.scope)
             # Never mutate or save the workbook: a diff is the only output.
             if task_id in self._tasks:
                 previous_scope, previous_fingerprint, previous = self._tasks[task_id]
