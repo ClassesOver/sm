@@ -101,6 +101,9 @@ import { chartSwitchReference, switchChartSeries } from './workbook-chart-switch
 import { createUniver } from './workbook-vendor/grid/create-univer'
 import { loadWorkbookData, readBack, openFindReplace } from './workbook-vendor/grid/sync'
 import { validateWorkbookReplacement, workbookReplacementCommand } from './workbook-find-replace'
+import { createWorkbookSpelling, planWorkbookSpellingReplacements } from './workbook-spelling'
+import type { SpellSnapshot } from './vendor/genoffice-sheets-spelling/spell-check'
+import { spellcheckEnabled, storeSpellcheckEnabled } from './vendor/genoffice-sheets-spelling/spellcheck-pref'
 import { buildWorkbookData } from './workbook-vendor/core/univer-data'
 import { diffToEdits } from './workbook-vendor/core/session-core'
 import { geometryChanges } from './workbook-vendor/core/data-tools'
@@ -483,6 +486,41 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
   }
   const sheetProtected = (sheetId: string | undefined) =>
     sheetId !== undefined && (sheetProtection.get(sheetId) ?? originalSheet(sheetId)?.protection?.protected ?? false)
+  let spellcheckOn = spellcheckEnabled()
+  const spelling = createWorkbookSpelling(shell.editor, {
+    snapshot: () => {
+      const book = runtime.univerAPI.getActiveWorkbook()
+      if (!book || loading || disposed) return
+      return { data: book.getSnapshot() as SpellSnapshot,
+        sheets: book.getSheets().map(sheet => ({ sheetId: sheet.getSheetId(), sheetName: sheet.getSheetName() })) }
+    },
+    jump: ({ cell }) => {
+      const book = runtime.univerAPI.getActiveWorkbook(), sheet = book?.getSheetBySheetId(cell.sheetId)
+      if (!book || !sheet || sheet.getSheetName() !== cell.sheetName) return
+      book.setActiveSheet(sheet); book.setActiveRange(sheet.getRange(cell.row, cell.column))
+      void goToReveal.reveal(sheet, cell.row, cell.column, () => !disposed && book.getActiveSheet()?.getSheetId() === cell.sheetId)
+    },
+    editable,
+    replace: async (findings, suggestion) => {
+      const book = runtime.univerAPI.getActiveWorkbook()
+      if (!book || !editable()) throw new Error('当前工作簿不可编辑')
+      const replacements = planWorkbookSpellingReplacements(book.getSnapshot() as SpellSnapshot, findings, suggestion, sheetProtected)
+      const result = await runtime.univerAPI.executeCommand<object, { success: number; failure: number }>('sheet.command.replace', {
+        unitId: book.getId(), replacements,
+      })
+      if (!result?.success || result.failure) throw new Error(feedback.textContent || '部分更正未应用，请重新检查。')
+      return result.success
+    },
+  })
+  const openSpelling = () => {
+    if (loading || saving || disposed) return
+    if (!spellcheckOn) { feedback.textContent = '拼写检查已关闭，可在审阅的校对组开启。'; return }
+    spelling.open()
+  }
+  const spellingShortcut = (event: KeyboardEvent) => {
+    if (event.key !== 'F7' || event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+    event.preventDefault(); openSpelling()
+  }
   // 固定源 Insert ▸ 符号（handleInsertSymbol）：追加到活动单元格，经官方 FRange.setValue 写入网格，保存差分写回值。
   const symbolDialog = createWorkbookSymbolDialog(shell.editor, char => {
     if (!editable()) throw new Error('工作簿正在加载或保存')
@@ -2044,6 +2082,18 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         }, (error: unknown) => { feedback.textContent = (error as Error).message })
         return
       }
+      if (command === 'spell-check' || command === 'spellcheck-toggle') {
+        if (command === 'spell-check') openSpelling()
+        else {
+          spellcheckOn = !spellcheckOn
+          storeSpellcheckEnabled(spellcheckOn)
+          if (!spellcheckOn) spelling.close()
+          threadsView?.refresh?.()
+          feedback.textContent = spellcheckOn ? '拼写检查已开启。' : '拼写检查已关闭。'
+          ribbon.refreshState?.()
+        }
+        return
+      }
       if (command === 'comment-new' || command === 'comment-delete' || command === 'comment-prev' ||
           command === 'comment-next' || command === 'comments-pane-toggle') {
         if (loading || saving || disposed) return
@@ -2681,6 +2731,7 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           if (command === 'note-prev' || command === 'note-next') return sheet.getNotes().length ? undefined : '当前工作表没有批注'
         } catch (error) { return (error as Error).message }
       },
+      spelling: () => ({ ready: !loading && !saving && !disposed, enabled: spellcheckOn }),
     },
   )
   chartSelection = installWorkbookChartSelection(shell.editor.querySelector<HTMLElement>('.workbook-grid')!, runtime, {
@@ -3602,10 +3653,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     recommendedChartsDialog?.dispose()
     shell.save.disabled = true
     submit.disabled = true
+    spelling.dispose()
     if (options.native) { pivotControlOverlay?.dispose(); pageBreakPreview.dispose(); formulaTrace.dispose(); watchWindow.dispose(); errorChecking.dispose(); loadingLock.dispose(); goToReveal.dispose(); crossHighlight.dispose(); crossHighlightTheme?.removeEventListener('change', refreshCrossHighlight); formulaBar.dispose(); rtl.dispose(); functionOverrides?.dispose(); runtime.univer.dispose(); throw error }
     return
   }
   const threadsHost = document.createElement('div')
+  shell.editor.addEventListener('keydown', spellingShortcut, true)
   shell.editor.querySelector('.workbook-grid-frame')!.append(threadsHost)
   const noteHost = shell.editor.querySelector<HTMLElement>('.workbook-note-pictures-host')!
   const noteToggle = document.createElement('button')
@@ -3934,6 +3987,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       epoch: () => mergeGeneration, persisted: () => persistence, operations: async () => await currentOperations() as NativeOperation[],
       setOperations: operations => nativeDraft?.setOperations(operations) })
   }, dispose() {
+    spelling.dispose()
+    shell.editor.removeEventListener('keydown', spellingShortcut, true)
     pictureSelection?.dispose()
     shell.editor.removeEventListener('pointerdown', cancelPictureSelection, true)
     shell.editor.removeEventListener('keydown', cancelPictureSelection, true)

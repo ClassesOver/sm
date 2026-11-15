@@ -67,5 +67,5 @@ export function mountWorkbookThreads(host:HTMLElement,options:{runtime:ReturnTyp
  const unsubscribe=threadStore.subscribe(render),unsubscribePane=threadPane.subscribe(render)
  const affordances=installThreadedCommentAffordances(options.runtime,{threadStore,theme:()=> 'light',onHover:value=>{hover=value;render()}})
  threadStore.load(options.model);render()
- return {run,reason,load(model:WorkbookModel){hover=null;threadStore.load(model);render()},dispose(){disposed=true;affordances.dispose();unsubscribe();unsubscribePane();root.unmount();paneHost.remove()}}
+ return {run,reason,refresh:render,load(model:WorkbookModel){hover=null;threadStore.load(model);render()},dispose(){disposed=true;affordances.dispose();unsubscribe();unsubscribePane();root.unmount();paneHost.remove()}}
 }

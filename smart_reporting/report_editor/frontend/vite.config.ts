@@ -88,6 +88,7 @@ export default defineConfig({
           // 主宿主与复用的渲染组件分别打包，避免自动合并后超过既定预算。
           if (id.endsWith('/src/slides-main.ts')) return 'slides-main'
           if (id.endsWith('/src/workbook-main.ts')) return 'workbook-main'
+          if (id.endsWith('/xlsx-engine/src/cell-address.ts')) return 'workbook-cell-address'
           // 新增属性/签名/图片批注控件保留独立边界，避免挤占主编辑器预算。
           if (id.includes('/node_modules/utif2/')) return 'native-office-tiff-decoder'
           if (/\/node_modules\/(?:fast-xml-parser|fast-xml-builder|strnum|path-expression-matcher|xml-naming|is-unsafe|@nodable\/entities)\//.test(id)) return 'native-office-xml-parser'

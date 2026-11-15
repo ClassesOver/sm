@@ -156,6 +156,8 @@ type RibbonCommand =
   | 'comment-prev'
   | 'comment-next'
   | 'comments-pane-toggle'
+  | 'spell-check'
+  | 'spellcheck-toggle'
   | 'freeze-panes'
   | 'zoom-in'
   | 'zoom-out'
@@ -553,7 +555,11 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     ] },
   ],
   Review: [
-    { title: '校对', actions: [action('工作簿统计信息', 'workbook-statistics', 'workbook-statistics')] },
+    { title: '校对', actions: [
+      action('拼写检查', 'spell-check', 'spell-check'),
+      action('工作簿统计信息', 'workbook-statistics', 'workbook-statistics'),
+      action('检查拼写', 'spellcheck-toggle', 'spellcheck-toggle'),
+    ] },
     { title: '语言', actions: [action('翻译', 'translate')] },
     { title: '批注', actions: [
       action('新建批注', 'comment-new', 'comment-new'), action('删除', 'comment-delete', 'comment-delete'),
@@ -788,6 +794,7 @@ export function mountWorkbookRibbon(
     headings?(): { visible: boolean; available: boolean }
     rightToLeft?(): { active: boolean; available: boolean }
     noteReason?(command: string): string | undefined
+    spelling?(): { ready: boolean; enabled: boolean }
     /// 缩进继承样式不可完整回读时的禁用原因（引擎 indentReadOnlyReason）。
     indentReason?(): string | undefined
     /// 格式刷是否处于单次/锁定状态（aria-pressed 镜像）。
@@ -1001,6 +1008,13 @@ export function mountWorkbookRibbon(
         const reason = view.noteReason?.(id) ?? (view.noteReason ? undefined : '批注来源尚未就绪')
         button.disabled = !!reason
         button.title = reason ?? button.getAttribute('aria-label') ?? ''
+      }
+      if (id === 'spell-check' || id === 'spellcheck-toggle') {
+        const spelling = view.spelling?.()
+        button.disabled = !spelling?.ready
+        button.title = !spelling?.ready ? '工作簿尚未就绪'
+          : id === 'spell-check' ? '检查工作表文本 (F7)' : '开启或关闭拼写检查'
+        if (id === 'spellcheck-toggle') button.setAttribute('aria-pressed', String(!!spelling?.enabled))
       }
       if (format) {
         const property = ({ bold: 'bold', italic: 'italic', underline: 'underline', 'underline:double': 'doubleUnderline', strike: 'strikethrough' } as const)[id as 'bold']

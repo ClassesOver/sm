@@ -692,7 +692,7 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
   const idsByGroup = groups.map(group => [...group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => button.dataset.ribbonCommand))
   expect(idsByGroup).toEqual([
-    ['workbook-statistics'], ['translate'],
+    ['spell-check', 'workbook-statistics', 'spellcheck-toggle'], ['translate'],
     ['comment-new', 'comment-delete', 'comment-prev', 'comment-next', 'comments-pane-toggle'],
     [], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
   ])
@@ -711,8 +711,8 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
     expect(button?.title, id).toContain(reason)
     expect(button?.getAttribute('aria-description'), id).toContain(reason)
   }
-  expect(document.querySelector('[data-ribbon-command="spell-check"]')).toBeNull()
-  expect(document.querySelector('[data-ribbon-command="spellcheck-toggle"]')).toBeNull()
+  expect(labels.get('spell-check')).toBe('拼写检查')
+  expect(labels.get('spellcheck-toggle')).toBe('检查拼写')
   expect(document.querySelector('[data-ribbon-command="workbook-change-password"]')).toBeNull()
   expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="workbook-statistics"]')!.disabled).toBe(false)
 })
