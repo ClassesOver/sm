@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -216,6 +217,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
             Column("mutation_sequence", BigInteger, nullable=False, default=0),
             Column("native_word_input", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_input_sha256", String(64)),
+            Column("native_workbook_request_sha256", String(64)),
             Column("native_word_candidate_receipt", JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")),
             Column("native_word_candidate_sha256", String(64)),
             CheckConstraint("(native_word_input IS NULL) = (native_word_input_sha256 IS NULL)",
@@ -449,6 +451,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                 ("instruction_sequence", "BIGINT NOT NULL DEFAULT 0"),
                 ("native_word_input", "JSONB"),
                 ("native_word_input_sha256", "VARCHAR(64)"),
+                ("native_workbook_request_sha256", "VARCHAR(64)"),
                 ("native_word_candidate_receipt", "JSONB"),
                 ("native_word_candidate_sha256", "VARCHAR(64)"),
                 ("acceptance_contract", "JSONB"),
@@ -1234,6 +1237,18 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         value = f"{external_run_id}:attempt:{attempt_no}".encode()
         return hashlib.sha256(value).hexdigest()[:32]
 
+    async def create_native_workbook_task(
+        self, scope: TaskExecutionScope, instruction: str, request_sha256: str,
+    ) -> TaskSnapshot:
+        if (scope.executor_id != "native-workbook-ai"
+                or re.fullmatch(r"native-workbook-ai:[0-9a-f]{32,64}", scope.external_run_id) is None
+                or not isinstance(request_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None):
+            raise TaskExecutionRepositoryError("native_workbook_input_invalid", "XLSX 任务输入无效。")
+        return await self.create_task_with_initial_attempt(
+            scope, instruction, _native_workbook_request_sha256=request_sha256,
+        )
+
     async def create_task_with_initial_attempt(
         self,
         scope: TaskExecutionScope,
@@ -1243,8 +1258,9 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
         acceptance_contract: dict[str, Any] | None = None,
         max_instruction_bytes: int = MAX_INSTRUCTION_BYTES,
         _native_word_input: dict[str, Any] | None = None,
+        _native_workbook_request_sha256: str | None = None,
     ) -> TaskSnapshot:
-        # Private typed creation seam, used only by create_native_word_task.
+        # Private creation arguments are used by the native Office services.
         # Do not expose this argument in task HTTP/model tools.
         word_payload = word_digest = None
         if _native_word_input is not None:
@@ -1302,6 +1318,7 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                         status=TaskState.NEW,
                         native_word_input=word_payload,
                         native_word_input_sha256=word_digest,
+                        native_workbook_request_sha256=_native_workbook_request_sha256,
                         state_version=1,
                         lease_epoch=0,
                         instruction_sequence=1,
@@ -1367,10 +1384,17 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
                     "task_initial_instruction_conflict", "外部 run 的初始目标不一致。"
                 )
             async with self.db.db_engine.connect() as connection:
-                stored_word = (await connection.execute(select(self.tasks.c.native_word_input_sha256)
-                    .where(self.tasks.c.external_run_id == scope.external_run_id))).scalar_one_or_none()
+                stored_native_inputs = (await connection.execute(
+                    select(self.tasks.c.native_word_input_sha256, self.tasks.c.native_workbook_request_sha256)
+                    .where(self.tasks.c.external_run_id == scope.external_run_id)
+                )).one_or_none()
+            if stored_native_inputs is None:
+                raise TaskExecutionRepositoryError("task_create_failed", "执行任务状态创建失败。")
+            stored_word, stored_workbook = stored_native_inputs
             if stored_word != word_digest:
                 raise TaskExecutionRepositoryError("native_word_input_conflict", "Word任务输入不可修改。")
+            if stored_workbook != _native_workbook_request_sha256:
+                raise TaskExecutionRepositoryError("native_workbook_input_conflict", "XLSX 任务输入不可修改。")
             return existing
         created = await self.get_task_snapshot(scope.external_run_id)
         assert created is not None

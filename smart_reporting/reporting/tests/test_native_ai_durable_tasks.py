@@ -167,3 +167,29 @@ async def test_cross_instance_cancel_fences_late_model_result(durable):
     with pytest.raises(ReportingError):
         await first.accept_edit(d['session'],job['editId'],expected_sha256=d['request']['expected_sha256'],
             operations=[],snapshot_sha256=job['snapshotSha256'])
+
+async def test_workbook_task_registration_is_atomic_and_keeps_digest_private(durable):
+    from smart_reporting.task_execution.models import TaskExecutionScope
+    from smart_reporting.task_execution.repository import TaskExecutionRepositoryError
+
+    repository = durable['repository']
+    context = durable['context']
+    task_id = 'native-workbook-ai:' + uuid4().hex
+    scope = TaskExecutionScope(task_id, context.scope.user_id, context.scope.thread_id,
+                               'native-workspace-registration', 'native-workbook-ai')
+    one, two = await asyncio.gather(*(
+        repository.create_native_workbook_task(scope, 'Change selected range', 'a' * 64)
+        for _ in range(2)
+    ))
+    assert one == two
+    assert one.state is TaskState.NEW
+    assert one.scope == scope
+    assert await repository.attempt_instruction(task_id, 0) == 'Change selected range'
+    assert 'a' * 64 not in repr(await repository.get_task_snapshot(task_id))
+
+    with pytest.raises(TaskExecutionRepositoryError) as mismatch:
+        await repository.create_native_workbook_task(scope, 'Change selected range', 'b' * 64)
+    assert mismatch.value.code == 'native_workbook_input_conflict'
+    with pytest.raises(TaskExecutionRepositoryError) as generic_retry:
+        await repository.create_task_with_initial_attempt(scope, 'Change selected range')
+    assert generic_retry.value.code == 'native_workbook_input_conflict'
