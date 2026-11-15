@@ -103,4 +103,23 @@ describe('shared Office task control',()=>{
   await controller.cancel();expect(cancel).toHaveBeenCalledTimes(2);expect(cancel).toHaveBeenLastCalledWith('task')
  })
 
+ it('follow resumes an existing task and observes its terminal state',async()=>{
+  const status=vi.fn(async()=>({id:'existing',status:'completed'}))
+  const start=vi.fn(async()=>({id:'new',status:'completed'}))
+  const controller=new OfficeAssistantController({start,status,cancel:async()=>{},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  expect(await controller.follow('existing')).toEqual({id:'existing',status:'completed'})
+  expect(status).toHaveBeenCalledWith('existing',expect.any(AbortSignal))
+  expect(start).not.toHaveBeenCalled()
+ })
+ it('follow cancellation cleans a task returned after local abort',async()=>{
+  const delayed=deferred<Job>(),cancel=vi.fn(async()=>{}),cancelRequest=vi.fn(async()=>{})
+  const controller=new OfficeAssistantController({start:async()=>({id:'other',status:'completed'}),status:()=>delayed.promise,cancel,cancelRequest,id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  const following=controller.follow('existing')
+  await controller.cancel()
+  delayed.resolve({id:'existing',status:'running'})
+  expect(await following).toBeUndefined()
+  expect(cancel).toHaveBeenCalledWith('existing')
+  expect(cancelRequest).not.toHaveBeenCalled()
+ })
+
 })
