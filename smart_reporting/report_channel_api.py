@@ -167,7 +167,7 @@ def create_report_channel_router(
             except (DocumentCandidateDenied, PermissionError):
                 raise HTTPException(403, "document_channel_authorization_required") from None
             except ValueError as error:
-                if str(error) == "document_adapter_unavailable":
+                if str(error) in {"document_adapter_unavailable", "document_request_id_conflict"}:
                     raise HTTPException(409, str(error)) from None
                 if str(error) in {
                     "document_request_id_invalid", "document_instruction_invalid",
@@ -186,7 +186,7 @@ def create_report_channel_router(
             except (DocumentCandidateDenied, PermissionError):
                 raise HTTPException(403, "document_channel_authorization_required") from None
             except ValueError as error:
-                if str(error) == "document_adapter_unavailable":
+                if str(error) in {"document_adapter_unavailable", "document_request_id_conflict"}:
                     raise HTTPException(409, str(error)) from None
                 if str(error) in {
                     "document_request_id_invalid", "document_instruction_invalid",
