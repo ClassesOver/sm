@@ -236,3 +236,37 @@ async def test_private_acp_endpoint_requires_exchange_and_reuses_bound_conversat
         response = await http.get(word_path + "/" + receipt["taskId"], headers=headers)
         assert response.raise_for_status().json()["status"] == "succeeded"
         assert receipt["reviewPath"] == "/reports/v1/native/report-a/1#word-task=synthetic-task"
+
+
+@pytest.mark.anyio
+async def test_restored_acp_conversation_is_cached_across_requests():
+    identity = ConnectorIdentity("dsh", "synthetic", "session")
+    restores = []
+
+    class Conversation:
+        async def prompt(self, caller, message, *, message_id):
+            assert caller == identity
+            return message.upper()
+
+    conversation = Conversation()
+
+    class Bridge:
+        async def restore(self, channel, caller):
+            restores.append((channel, caller))
+            return conversation
+
+    async def authenticate(request):
+        return identity
+
+    app = FastAPI()
+    app.include_router(create_report_channel_router(
+        object(), authenticate, acp=Bridge(),
+    ))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://reports.test") as http:
+        path = "/reports/v1/channels/report-a/acp/messages"
+        for i in range(2):
+            response = await http.post(path, json={"message_id": str(i), "text": "hello"})
+            assert response.status_code == 200
+            assert response.json() == {"reply": "HELLO"}
+    assert restores == [("report-a", identity)]
