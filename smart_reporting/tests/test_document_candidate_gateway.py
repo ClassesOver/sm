@@ -363,3 +363,25 @@ async def test_document_request_id_conflict_returns_http_409():
         })
     assert response.status_code == 409
     assert response.json()["detail"] == "document_request_id_conflict"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("returned_task_id", [None, "", "../other", "bad id", 42, "x" * 257])
+async def test_gateway_rejects_invalid_adapter_generated_task_ids(returned_task_id):
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def prepare(self, request):
+            return returned_task_id
+
+    async def resolve(channel, identity):
+        return scope()
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+    gateway = DocumentCandidateGateway(registry, resolve)
+    with pytest.raises(ValueError, match="document_task_id_invalid"):
+        await gateway.prepare(
+            "channel-a", "member", request_id="one", instruction="Edit",
+            selection=({"objectId": "one"},),
+        )
