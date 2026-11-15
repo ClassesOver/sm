@@ -1,6 +1,7 @@
 import { readSheetThreads, type SheetThreadsModel } from './thread-read'
 import type { SheetTableSource } from './table-source'
 import { SaxesParser } from 'saxes'
+import { formatAddress } from './cell-address'
 import { columnWidthToPixels, rowHeightToPixels } from './geometry'
 /// Workbook importer: bytes → editor model (sheets, cells with style
 /// indexes, geometry, styles, theme palette). Values/formulas follow the
@@ -403,6 +404,11 @@ export function inheritedCellStyleIndex(axes: WorksheetAxes, row: number, column
     axisStyleLookups.set(axes, lookup)
   }
   return lookup(row, column)
+}
+
+export function isCellUnlocked(model: WorkbookModel, sheet: SheetModel, row: number, column: number): boolean {
+  const styleIndex = sheet.cells?.[formatAddress(row, column)]?.styleIndex ?? inheritedCellStyleIndex(sheet, row, column) ?? 0
+  return model.styles?.cellXfs[styleIndex]?.protection?.locked === false
 }
 
 function parseGeometry(worksheetXml: string) {

@@ -38,9 +38,9 @@ import { setWorksheetCellText } from './workbook-write'
 import { shiftConditionalFormattingXml,overlayConditionalFormattingXml } from './conditional-formatting-structure-xml'
 import {parseThemePalette} from './style-read'
 import { shiftSheetNotes } from './notes'
-import { parseRange, parseAddress, formatAddress, columnIndex } from './cell-address'
+import { parseRange, parseAddress, formatAddress, columnIndex, rangeCellCount } from './cell-address'
 import { computeSortedRowOrder } from './sort-range'
-import { parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
+import { inheritedCellStyleIndex, isCellUnlocked, parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
 import { assemblePackage, createBufferEntrySource, type MutationPlan } from './zip'
 import { assertRemovedTableDependencies, planSheetRemovalParts, removePartOverrides } from './sheet-removal-parts'
 
@@ -487,6 +487,17 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
   const sheet = model.sheets.find(entry => entry.name === sheetName)
   if (!sheet) throw new Error(`workbook.xml 中找不到工作表 "${sheetName}"。`)
   const bounds = parseRange(spec.range)
+  if (sheet.protection?.protected) {
+    if (sheet.protection.allow.sort !== true) throw new Error('受保护的工作表未授权排序。')
+    if (bounds.endRow >= 1048576 || bounds.endColumn >= 16384 || rangeCellCount(bounds) > 1_000_000) {
+      throw new Error('受保护工作表的排序范围过大。')
+    }
+    for (let row = bounds.startRow; row <= bounds.endRow; row++) {
+      for (let column = bounds.startColumn; column <= bounds.endColumn; column++) {
+        if (!isCellUnlocked(model, sheet, row, column)) throw new Error(`排序范围包含锁定单元格 ${formatAddress(row, column)}。`)
+      }
+    }
+  }
   const keyColumn = columnIndex(spec.byColumn)
   if (keyColumn < bounds.startColumn || keyColumn > bounds.endColumn) throw new Error(`Sort column ${spec.byColumn} is outside the range ${spec.range}.`)
   const inRange = (row: number, column: number) => row >= bounds.startRow && row <= bounds.endRow && column >= bounds.startColumn && column <= bounds.endColumn
@@ -542,7 +553,8 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
   const columnNumberOf = (cellXml: string): number => columnIndex(cellXml.match(/\br="([A-Z]{1,3})[0-9]+"/)?.[1] ?? 'A')
   const rebuiltRows = new Map<number, string>()
   for (let row = firstDataRow; row <= bounds.endRow; row += 1) {
-    const moved = rangeCells.get(firstDataRow + order[row - firstDataRow]!) ?? new Map<number, string>()
+    const fromRow = firstDataRow + order[row - firstDataRow]!
+    const moved = rangeCells.get(fromRow) ?? new Map<number, string>()
     const existing = rangeRowXml.get(row)
     const rowMatch = existing?.match(/^(<row\b[^>]*>)([\s\S]*?)(<\/row>)$/)
     const kept: string[] = []
@@ -554,7 +566,14 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     const pieces = [...kept]
     for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) {
       const cellXml = moved.get(column)
-      if (cellXml) pieces.push(renumberRow(cellXml, row))
+      if (cellXml) {
+        const sourceIndex = inheritedCellStyleIndex(sheet, fromRow, column) ?? 0
+        const targetIndex = inheritedCellStyleIndex(sheet, row, column) ?? 0
+        const styled = sourceIndex !== targetIndex && sheet.cells[formatAddress(fromRow, column)]?.styleIndex === undefined
+          ? cellXml.replace(/<c\b/, `<c s="${sourceIndex}"`)
+          : cellXml
+        pieces.push(renumberRow(styled, row))
+      }
     }
     pieces.sort((left, right) => columnNumberOf(left) - columnNumberOf(right))
     if (rowMatch) rebuiltRows.set(row, `${rowMatch[1]}${pieces.join('')}${rowMatch[3]}`)

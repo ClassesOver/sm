@@ -1,6 +1,25 @@
 import { expect, it } from 'vitest'
 import JSZip from 'jszip'
-import { applyCellEdits, applySheetNotes, createBlankWorkbook, readWorkbook, sortRangeRows } from '../src'
+import { applyCellEdits, applySheetNotes, createBlankWorkbook, protectSheet, readWorkbook, sortRangeRows } from '../src'
+
+it('requires both sort permission and unlocked cells throughout a protected sort range', async () => {
+  const bytes = await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 20 }, style: { protectionLocked: false } },
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 10 }, style: { protectionLocked: false } },
+    { sheetName: 'Sheet1', row: 1, column: 1, writeValue: true, cell: { value: 'locked' } },
+  ])
+  const spec = { range: 'A1:A2', byColumn: 'A', ascending: true, hasHeader: false }
+  const denied = await protectSheet(bytes, 'Sheet1', true)
+  await expect(sortRangeRows(denied, 'Sheet1', spec)).rejects.toThrow('未授权排序')
+  const allowed = await protectSheet(bytes, 'Sheet1', true, { sort: true })
+  await expect(sortRangeRows(allowed, 'Sheet1', { ...spec, range: 'A1:B2' })).rejects.toThrow('排序范围包含锁定单元格')
+  const sorted = await sortRangeRows(allowed, 'Sheet1', spec)
+  const saved = (await readWorkbook(sorted)).sheets[0]!
+  expect(saved.cells.A1?.value).toBe(10)
+  expect(saved.cells.A2?.value).toBe(20)
+  expect(saved.cells.B2?.value).toBe('locked')
+  expect(saved.protection).toMatchObject({ protected: true, allow: { sort: true } })
+})
 
 it('sortRangeRows permutes full cell records so styles move with values', async () => {
   let bytes = await applyCellEdits(await createBlankWorkbook(), [
@@ -24,6 +43,28 @@ it('sortRangeRows permutes full cell records so styles move with values', async 
   expect(sheet.cells.B1?.styleIndex).toBeUndefined()
   expect(sheet.cells.B2?.styleIndex).toBe(before.cells.B1?.styleIndex)
   expect(sheet.cells.C4?.value).toBe('range外')
+})
+
+it('keeps inherited cell styles attached to rows moved by a protected sort', async () => {
+  let bytes = await applyCellEdits(await createBlankWorkbook(), [
+    { sheetName: 'Sheet1', row: 0, column: 0, writeValue: true, cell: { value: 2 }, style: { protectionLocked: false, bold: true } },
+    { sheetName: 'Sheet1', row: 1, column: 0, writeValue: true, cell: { value: 1 }, style: { protectionLocked: false, italic: true } },
+  ])
+  bytes = await protectSheet(bytes, 'Sheet1', true, { sort: true })
+  const before = (await readWorkbook(bytes)).sheets[0]!
+  const bold = before.cells.A1!.styleIndex!, italic = before.cells.A2!.styleIndex!
+  const zip = await JSZip.loadAsync(bytes)
+  const worksheet = (await zip.file(before.path)!.async('string'))
+    .replace('<row r="1">', `<row r="1" s="${bold}" customFormat="1">`)
+    .replace('<row r="2">', `<row r="2" s="${italic}" customFormat="1">`)
+    .replace(/(<c r="A[12]") s="\d+"/g, '$1')
+  zip.file(before.path, worksheet)
+  const inherited = await zip.generateAsync({ type: 'uint8array' })
+  const sorted = await sortRangeRows(inherited, 'Sheet1', { range: 'A1:A2', byColumn: 'A', ascending: true, hasHeader: false })
+  const result = (await readWorkbook(sorted)).sheets[0]!
+  expect(result.cells.A1).toMatchObject({ value: 1, styleIndex: italic })
+  expect(result.cells.A2).toMatchObject({ value: 2, styleIndex: bold })
+  expect(result.rows.map(row => row.styleIndex)).toEqual([bold, italic])
 })
 
 it('sortRangeRows fails closed on formulas and notes inside the range', async () => {
