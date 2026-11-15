@@ -1,6 +1,7 @@
 import { readSheetThreads, type SheetThreadsModel } from './thread-read'
 import type { SheetTableSource } from './table-source'
 import { SaxesParser } from 'saxes'
+import { formatAddress } from './cell-address'
 import { columnWidthToPixels, rowHeightToPixels } from './geometry'
 /// Workbook importer: bytes → editor model (sheets, cells with style
 /// indexes, geometry, styles, theme palette). Values/formulas follow the
@@ -34,6 +35,7 @@ export interface ModelCell {
 export interface ColumnDef {
   start: number
   end: number
+  styleIndex?: number
   width: number | undefined
   hidden: boolean
   outlineLevel?: number
@@ -42,6 +44,7 @@ export interface ColumnDef {
 
 export interface RowDef {
   row: number
+  styleIndex?: number
   height: number | undefined
   hidden: boolean
   outlineLevel?: number
@@ -355,6 +358,59 @@ function readHeaderFooter(worksheetXml: string): SheetHeaderFooterModel | undefi
   return result
 }
 
+export function readWorksheetAxes(worksheetXml: string) {
+  const readStyle = (raw: string | undefined) => raw !== undefined && /^\d{1,5}$/.test(raw) ? { styleIndex: Number(raw) } : {}
+  const columns: ColumnDef[] = [...(sectionInner(worksheetXml, 'cols') ?? '').matchAll(/<col\b([^>]*?)\/>/g)].map((match) => {
+    const attributes = match[1] ?? ''
+    return {
+      start: Number(readXmlAttribute(attributes, 'min') ?? 1),
+      end: Number(readXmlAttribute(attributes, 'max') ?? 1),
+      ...readStyle(readXmlAttribute(attributes, 'style')),
+      width:
+        readXmlAttribute(attributes, 'width') === undefined
+          ? undefined
+          : Number(readXmlAttribute(attributes, 'width')),
+      hidden: readXmlAttribute(attributes, 'hidden') === '1',
+      ...readOutlineLine(attributes),
+    }
+  })
+
+  const rows: RowDef[] = [...(sectionInner(worksheetXml, 'sheetData') ?? '').matchAll(/<row\b([^>]*?)(?:\/>|>)/g)].map((match) => {
+    const attributes = match[1] ?? ''
+    return {
+      row: Number(readXmlAttribute(attributes, 'r') ?? 0),
+      ...(['1', 'true'].includes(readXmlAttribute(attributes, 'customFormat') ?? '') ? readStyle(readXmlAttribute(attributes, 's')) : {}),
+      height:
+        readXmlAttribute(attributes, 'ht') === undefined
+          ? undefined
+          : Number(readXmlAttribute(attributes, 'ht')),
+      hidden: readXmlAttribute(attributes, 'hidden') === '1',
+      ...readOutlineLine(attributes),
+    }
+  })
+  return { rows, columns }
+}
+
+type WorksheetAxes = Pick<SheetModel, 'rows' | 'columns'>
+const axisStyleLookups = new WeakMap<WorksheetAxes, (row: number, column: number) => number | undefined>()
+
+/** Rows override column defaults; coordinates supplied by callers are zero-based. */
+export function inheritedCellStyleIndex(axes: WorksheetAxes, row: number, column: number): number | undefined {
+  let lookup = axisStyleLookups.get(axes)
+  if (!lookup) {
+    const rows = new Map((axes.rows ?? []).flatMap(row => row.styleIndex === undefined ? [] : [[row.row, row.styleIndex] as const]))
+    const columns = (axes.columns ?? []).filter(column => column.styleIndex !== undefined)
+    lookup = (row, column) => rows.get(row + 1) ?? columns.find(axis => axis.start <= column + 1 && axis.end >= column + 1)?.styleIndex
+    axisStyleLookups.set(axes, lookup)
+  }
+  return lookup(row, column)
+}
+
+export function isCellUnlocked(model: WorkbookModel, sheet: SheetModel, row: number, column: number): boolean {
+  const styleIndex = sheet.cells?.[formatAddress(row, column)]?.styleIndex ?? inheritedCellStyleIndex(sheet, row, column) ?? 0
+  return model.styles?.cellXfs[styleIndex]?.protection?.locked === false
+}
+
 function parseGeometry(worksheetXml: string) {
   let defaultColumnWidthPx=columnWidthToPixels(8.43),defaultRowHeightPx=rowHeightToPixels(15),depth=0
   const formatParser=new SaxesParser({xmlns:true})
@@ -368,37 +424,8 @@ function parseGeometry(worksheetXml: string) {
   formatParser.on('closetag',()=>{depth--});formatParser.write(worksheetXml).close()
   const { outlineSummaryBelow, outlineSummaryRight } = readOutlineSummary(worksheetXml)
   const dimension = worksheetXml.match(/<dimension\b[^>]*\bref="([^"]+)"/)?.[1] ?? null
-
-  const merges = [...worksheetXml.matchAll(/<mergeCell\b[^>]*\bref="([^"]+)"/g)].map(
-    (match) => match[1]!,
-  )
-
-  const columns: ColumnDef[] = [...worksheetXml.matchAll(/<col\b([^>]*?)\/>/g)].map((match) => {
-    const attributes = match[1] ?? ''
-    return {
-      start: Number(readXmlAttribute(attributes, 'min') ?? 1),
-      end: Number(readXmlAttribute(attributes, 'max') ?? 1),
-      width:
-        readXmlAttribute(attributes, 'width') === undefined
-          ? undefined
-          : Number(readXmlAttribute(attributes, 'width')),
-      hidden: readXmlAttribute(attributes, 'hidden') === '1',
-      ...readOutlineLine(attributes),
-    }
-  })
-
-  const rows: RowDef[] = [...worksheetXml.matchAll(/<row\b([^>]*?)(?:\/>|>)/g)].map((match) => {
-    const attributes = match[1] ?? ''
-    return {
-      row: Number(readXmlAttribute(attributes, 'r') ?? 0),
-      height:
-        readXmlAttribute(attributes, 'ht') === undefined
-          ? undefined
-          : Number(readXmlAttribute(attributes, 'ht')),
-      hidden: readXmlAttribute(attributes, 'hidden') === '1',
-      ...readOutlineLine(attributes),
-    }
-  })
+  const merges = [...worksheetXml.matchAll(/<mergeCell\b[^>]*\bref="([^"]+)"/g)].map(match => match[1]!)
+  const { rows, columns } = readWorksheetAxes(worksheetXml)
 
   // printOptions：打印网格线/标题（OOXML 默认 false，仅显式 "1"/"true" 打开）。
   const printOptions = worksheetXml.match(/<(?:[\w.-]+:)?printOptions\b[^>]*?(?:\/>|>)/)?.[0]

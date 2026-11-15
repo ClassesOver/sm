@@ -4,7 +4,7 @@ import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
 import { TableMiniPreview } from './vendor/genoffice-slides/components/table-mini-preview'
 import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
 import { SLIDE_TRANSITIONS } from './slides-transitions'
-import { AnimEffectIcon, IconAnimStar, IconPathDiagonal } from './vendor/genoffice-slides/components/icons'
+import { AnimEffectIcon, IconAnimStar, IconNoneX, IconPathDiagonal } from './vendor/genoffice-slides/components/icons'
 import { EFFECT_LABELS, MOTION_PATHS, type SequenceEffect } from './slides-animation-sequence'
 import { IconApplyAll, IconTransCircle, IconTransCover, IconTransDissolve, IconTransFade, IconTransMorph, IconTransNone, IconTransPull, IconTransPush, IconTransRandom, IconTransSplit, IconTransWipe, IconTransZoom } from './vendor/genoffice-slides/components/icons'
 import { SMARTART_GALLERY } from './vendor/genoffice-slides/components/smartart-gallery-data'
@@ -113,6 +113,7 @@ export interface NativeSlidesRibbon {
   setTransitionApplyAllEnabled(enabled: boolean, reason?: string): void
   setAnimationGallery(target: 'shape' | 'media' | null, effect: string): void
   setTablePresetEnabled(enabled: boolean, reason?: string): void
+  setTableShadingState(value: string, cell: boolean, enabled: boolean, hint: string): void
   cancelAnimationHover(): void
   setLocked(locked: boolean): void
   dispose(): void
@@ -350,7 +351,6 @@ const tabs: Tab[] = [
     ] },
     { label: 'Shading', controls: [
       { id: 'tableShadingWholeTable', label: '底纹作用于整表', sourceActionId: 'onEditTableStyle' },
-      { id: 'tableShading', label: 'Shading', caption: '底纹', kind: 'select', sourceActionId: 'onEditTableStyle', options: ['', ...TABLE_SHADING_COLORS, 'none'], optionLabels: ['选择底纹', '白色', '浅灰', '浅青', '淡蓝', '灰蓝', '浅黄', '浅橙', '浅桃', '浅绿', '浅紫', '无填充'] },
     ] },
     { label: 'Borders', controls: [
       { id: 'tableAllBorders', label: 'All Borders', caption: '所有边框', sourceActionId: 'onEditTableStyle' },
@@ -516,6 +516,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let appliedAnimation = ''
   let tablePresetReady = false
   let tablePresetReason: string | undefined
+  let tableShading: { group: HTMLElement; heading: HTMLElement; palette: HTMLFieldSetElement; enabled: boolean } | undefined
   const updateTablePresetGallery = () => {
     for (const element of controls.get('tableStyle') ?? []) {
       const button = element as HTMLButtonElement
@@ -624,6 +625,32 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       heading.textContent = groupLabel
       group.append(heading)
       let controlHost: HTMLElement = group
+      if (tab.id === 'tableDesign' && groupDefinition.label === 'Shading') {
+        const palette = document.createElement('fieldset')
+        palette.className = 'slides-table-shading'
+        palette.dataset.command = 'tableShading'
+        palette.disabled = true
+        palette.setAttribute('aria-label', groupLabel)
+        for (const color of [...TABLE_SHADING_COLORS, 'none']) {
+          const swatch = document.createElement('button')
+          swatch.type = 'button'
+          swatch.dataset.tableShadingColor = color
+          swatch.dataset.sourceAction = 'onEditTableStyle'
+          const label = color === 'none' ? localize('No Shading') : color
+          swatch.title = label
+          swatch.setAttribute('aria-label', label)
+          swatch.setAttribute('aria-pressed', 'false')
+          if (color === 'none') swatch.innerHTML = renderToStaticMarkup(reactElement(IconNoneX, { size: 12 }))
+          else swatch.style.backgroundColor = color
+          swatch.addEventListener('mousedown', event => event.preventDefault())
+          swatch.addEventListener('click', () => {
+            if (!palette.disabled) options.onAction('tableShading', color)
+          })
+          palette.append(swatch)
+        }
+        group.append(palette)
+        tableShading = { group, heading, palette, enabled: false }
+      }
       if (tab.id === 'tableDesign' && groupDefinition.label === 'Table Styles') {
         group.classList.add('slides-table-style-gallery')
         controls.set('tableStyle', SLIDES_TABLE_PRESETS.map(preset => {
@@ -1108,6 +1135,20 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       animationTarget = target; appliedAnimation = effect; updateAnimationGallery()
     },
     setTablePresetEnabled(enabled, reason) { tablePresetReady = enabled; tablePresetReason = reason; updateTablePresetGallery() },
+    setTableShadingState(value, cell, enabled, hint) {
+      if (!tableShading) return
+      const { group, heading, palette } = tableShading
+      const label = localize(cell ? 'Cell Shading' : 'Shading')
+      group.setAttribute('aria-label', label)
+      heading.textContent = label
+      palette.setAttribute('aria-label', label)
+      tableShading.enabled = enabled
+      palette.disabled = locked || !enabled
+      palette.title = hint
+      for (const swatch of palette.querySelectorAll<HTMLButtonElement>('button')) {
+        swatch.setAttribute('aria-pressed', String(swatch.dataset.tableShadingColor === value))
+      }
+    },
     cancelAnimationHover,
     setSlideOrientationEnabled(enabled) {
       hasWritableSlideSize = enabled
@@ -1131,6 +1172,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         if (command === 'pictureOutlineWidth') for (const button of element.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
           button.setAttribute('aria-pressed', String(button.dataset.outlineWidth === value))
         }
+        if (command === 'pictureNoOutline') element.setAttribute('aria-pressed', value)
         if (command === 'pictureOpacity') {
           for (const choice of pictureTransparency?.menu.querySelectorAll<HTMLButtonElement>('[data-picture-transparency]') ?? []) {
             choice.setAttribute('aria-pressed', String(choice.dataset.pictureTransparency === value))
@@ -1180,6 +1222,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
+      if (tableShading) tableShading.palette.disabled = value || !tableShading.enabled
       for (const flyout of animationFlyouts) flyout.trigger.disabled = value
       if (value) {
         cancelAnimationHover()

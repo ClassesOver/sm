@@ -34,7 +34,7 @@ export function sortOrderRules(range: SortRange, levels: readonly SortLevel[]): 
   return rules
 }
 
-export function createSortDialog(root: HTMLElement, apply: (range: SortRange, hasTitle: boolean, rules: { colIndex: number; type: 'asc' | 'desc' }[]) => void) {
+export function createSortDialog(root: HTMLElement, apply: (range: SortRange, hasTitle: boolean, rules: { colIndex: number; type: 'asc' | 'desc' }[]) => void | Promise<void>) {
   let range: SortRange | undefined
   const levels = Array.from({ length: SORT_LEVELS }, (_, index) => `
     <div class="workbook-ribbon-sort-level" data-sort-level="${index}">
@@ -52,20 +52,27 @@ export function createSortDialog(root: HTMLElement, apply: (range: SortRange, ha
   const error = modal.card.querySelector<HTMLElement>('[role="alert"]')!
   const header = modal.card.querySelector<HTMLInputElement>('[data-sort-header]')!
   const rows = [...modal.card.querySelectorAll<HTMLElement>('[data-sort-level]')]
+  const submit = modal.card.querySelector<HTMLButtonElement>('button[type="submit"]')!
   modal.card.querySelector('.workbook-ribbon-format-cancel')!.addEventListener('click', modal.close)
-  modal.card.querySelector('form')!.addEventListener('submit', event => {
+  modal.card.querySelector('form')!.addEventListener('submit', async event => {
     event.preventDefault()
+    if (submit.disabled) return
     try {
       if (!range) throw new Error('请先选择要排序的区域')
       const chosen = rows.map(row => ({
         colIndex: Number(row.querySelector<HTMLSelectElement>('[data-sort-column]')!.value),
         order: row.querySelector<HTMLSelectElement>('[data-sort-order]')!.value as 'asc' | 'desc',
       }))
-      apply(range, header.checked, sortOrderRules(range, chosen)); modal.close()
+      submit.disabled = true
+      const result = apply(range, header.checked, sortOrderRules(range, chosen))
+      if (result) await result
+      modal.close()
     } catch (cause) { error.textContent = (cause as Error).message }
+    finally { submit.disabled = false }
   })
   return {
     open(captured: SortRange) {
+      if (submit.disabled) return
       if (captured.endRow - captured.startRow < 1) throw new Error('请选择至少两行数据后再排序')
       range = captured
       const columns = sortColumnOptions(captured)

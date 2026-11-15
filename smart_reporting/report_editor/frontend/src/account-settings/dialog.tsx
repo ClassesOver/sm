@@ -4,11 +4,11 @@ import { SectionIcon } from './icons'
 import './dialog.css'
 export type Theme = 'system' | 'light' | 'dark'
 export interface PersonalSettings { theme: Theme; skills: { id: string; name: string; description: string; enabled: boolean }[] }
-export function AccountSettingsDialog({ username, settings, onSave, onClose, onLogout, onAssistantPreferences }: {
+export function AccountSettingsDialog({ username, settings, onSave, onClose, onLogout, onAssistantPreferences, onDocumentPreferences, initialSection = 'account' }: {
   username: string; settings: PersonalSettings; onSave(value: PersonalSettings): Promise<PersonalSettings>;
-  onClose(): void; onLogout(): Promise<void>; onAssistantPreferences?(): void;
+  onClose(): void; onLogout(): Promise<void>; onAssistantPreferences?(): void; onDocumentPreferences?(): void; initialSection?: 'account' | 'general';
 }) {
-  const [section, setSection] = useState<'account' | 'general' | 'skills'>('account')
+  const [section, setSection] = useState<'account' | 'general' | 'skills'>(initialSection)
   const [draft, setDraft] = useState(settings), [baseline, setBaseline] = useState(settings)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [message, setMessage] = useState('')
   const [confirm, setConfirm] = useState<'close' | 'logout' | null>(null)
@@ -44,12 +44,13 @@ export function AccountSettingsDialog({ username, settings, onSave, onClose, onL
       }
     }}>
       <div className="set-header"><h2 className="set-title">设置</h2><button className="set-close" onClick={close} disabled={busy} aria-label="关闭设置"><svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 2l10 10M12 2L2 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg></button></div>
-      <div className="set-body"><nav className="set-nav" aria-label="个人设置">{([{ id: 'account', label: '账户' }, { id: 'general', label: '偏好' }, { id: 'skills', label: 'Skill' }] as const).map(item => <button key={item.id} className={`set-nav-item${section === item.id ? ' active' : ''}`} aria-current={section === item.id} onClick={() => setSection(item.id)}><SectionIcon id={item.id} />{item.label}</button>)}</nav>
-        <div className="set-pane"><h3 className="set-pane-title">{section === 'account' ? '账户' : section === 'general' ? '偏好' : 'Skill'}</h3>
+      <div className="set-body"><nav className="set-nav" aria-label="个人设置">{([{ id: 'account', label: '账户' }, { id: 'general', label: '偏好' }, { id: 'skills', label: '技能' }] as const).map(item => <button key={item.id} className={`set-nav-item${section === item.id ? ' active' : ''}`} aria-current={section === item.id} onClick={() => setSection(item.id)}><SectionIcon id={item.id} />{item.label}</button>)}</nav>
+        <div className="set-pane"><h3 className="set-pane-title">{section === 'account' ? '账户' : section === 'general' ? '偏好' : '技能'}</h3>
           {section === 'account' && <><div className="set-field"><div className="set-field-text"><span className="set-field-label">账号</span><span className="set-field-value">{username}</span></div></div><div className="set-pane-footer"><button className="set-btn" disabled={busy} onClick={() => dirty ? setConfirm('logout') : void logout()}>退出登录</button></div></>}
           {section === 'general' && <label className="set-field"><span className="set-field-text">外观</span><select aria-label="外观" disabled={busy} value={draft.theme} onChange={e => { setDraft({ ...draft, theme: e.target.value as Theme }); setMessage('') }}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></label>}
           {section === 'general' && onAssistantPreferences && <button className="set-btn" onClick={onAssistantPreferences}>AI 助手界面偏好</button>}
-          {section === 'skills' && <>{draft.skills.length === 0 && <p>暂无可用 Skill</p>}{draft.skills.map(skill => <label className="set-field" key={skill.id}><span className="set-field-text"><span><span className="set-field-label">{skill.name}</span><span className="set-field-desc">{skill.description}</span></span></span><input type="checkbox" aria-label={`启用 ${skill.name}`} checked={skill.enabled} disabled={busy} onChange={e => { setDraft({ ...draft, skills: draft.skills.map(x => x.id === skill.id ? { ...x, enabled: e.target.checked } : x) }); setMessage('') }} /></label>)}</>}
+          {section === 'general' && onDocumentPreferences && <button className="set-btn" onClick={onDocumentPreferences}>文档偏好</button>}
+          {section === 'skills' && <>{draft.skills.length === 0 && <p>暂无可用技能</p>}{draft.skills.map(skill => <label className="set-field" key={skill.id}><span className="set-field-text"><span><span className="set-field-label">{skill.name}</span><span className="set-field-desc">{skill.description}</span></span></span><input type="checkbox" aria-label={`启用 ${skill.name}`} checked={skill.enabled} disabled={busy} onChange={e => { setDraft({ ...draft, skills: draft.skills.map(x => x.id === skill.id ? { ...x, enabled: e.target.checked } : x) }); setMessage('') }} /></label>)}</>}
           {section !== 'account' && <div className="set-pane-footer"><button className="set-btn primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? '保存中…' : '保存'}</button></div>}
           {error && <p role="alert">{error}</p>}<p role="status">{message}</p>
           {confirm && <div className="set-confirm" role="alertdialog" aria-label="未保存的修改"><p>有未保存的修改，是否放弃？</p><button className="set-btn" onClick={() => setConfirm(null)}>继续编辑</button><button className="set-btn" disabled={busy} onClick={() => { const action = confirm; setConfirm(null); if (action === 'logout') void logout(); else onClose() }}>放弃修改</button></div>}

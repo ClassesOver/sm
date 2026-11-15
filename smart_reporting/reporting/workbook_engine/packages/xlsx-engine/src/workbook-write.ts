@@ -8,7 +8,7 @@ import type { WorkbookRichRun, WorkbookStyleEdit } from './edit-schemas'
 import { sha256Hex } from './sha256'
 import { spillsDynamicArray, withFutureFunctionMarkers } from './future-functions'
 import { StylesheetEditor } from './styles-write'
-import { parseSheetElements, readCellText, readSharedStrings, resolveWorksheetPath } from './workbook-read'
+import { inheritedCellStyleIndex, parseSheetElements, readCellText, readSharedStrings, readWorksheetAxes, resolveWorksheetPath } from './workbook-read'
 import { materializeEditedSharedFormulas } from './shared-formulas'
 import { assemblePackage, createBufferEntrySource, type EntrySource, type MutationPlan } from './zip'
 import { decodeCellText, escapeRegExp, escapeXmlAttribute, escapeCellText, escapeXmlText, readXmlAttribute } from './xml'
@@ -168,6 +168,7 @@ function patchCellKeepingStyle(
   cell: CellEdit['cell'],
   styleOverride?: number,
   rich?: readonly WorkbookRichRun[],
+  inheritedStyle?: number,
 ): string {
   const cellMatch = worksheetXml.match(
     new RegExp(`<c\\b([^>]*)\\br="${address}"([^>]*?)(?:/>|>[\\s\\S]*?</c>)`),
@@ -178,7 +179,7 @@ function patchCellKeepingStyle(
       : cellMatch
         ? readXmlAttribute(`${cellMatch[1] ?? ''} ${cellMatch[2] ?? ''}`, 's')
         : undefined
-  const replacement = serializeStyledCell(address, cell, styleIndex, rich)
+  const replacement = serializeStyledCell(address, cell, styleIndex ?? inheritedStyle?.toString(), rich)
   // Function replacements throughout: user text can contain `$1`/`$&`, which
   // string replacements would expand as backreferences and corrupt the XML.
   if (cellMatch) return worksheetXml.replace(cellMatch[0], () => replacement)
@@ -331,6 +332,7 @@ export async function applyCellEdits(
 
   // sheet name → worksheet XML, patched through the overlay
   const worksheetXmlByName = new Map<string, string>()
+  const axesBySheet = new Map<string, ReturnType<typeof readWorksheetAxes>>()
   const worksheetPathByName = new Map<string, string>()
   const workbookXml = await source.readText('xl/workbook.xml')
   let workbookPatched = workbookXml
@@ -352,21 +354,23 @@ export async function applyCellEdits(
         (await findWorksheetPath(source, workbookXml, edit.sheetName))
       worksheetPathByName.set(edit.sheetName, path)
       worksheetXml = await source.readText(path)
+      axesBySheet.set(edit.sheetName, readWorksheetAxes(worksheetXml))
       const addresses = valueEditsBySheet.get(edit.sheetName)
       if (addresses) worksheetXml = materializeEditedSharedFormulas(worksheetXml, addresses)
     }
     const address = `${columnLabelOf(edit.column)}${edit.row + 1}`
     const wantsStyle = edit.styleReset === true || hasStyleDelta(edit.style)
+    const inherited = inheritedCellStyleIndex(axesBySheet.get(edit.sheetName)!, edit.row, edit.column)
     let styleOverride: number | undefined
     if (wantsStyle) {
       const baseIndex =
-        edit.styleReset === true ? 0 : (readCellStyleIndex(worksheetXml, address) ?? 0)
+        edit.styleReset === true ? 0 : (readCellStyleIndex(worksheetXml, address) ?? inherited ?? 0)
       styleOverride =
         edit.style === undefined ? baseIndex : stylesheet.resolveStyle(baseIndex, edit.style)
     }
     if (edit.writeValue) {
       sawFormula = sawFormula || edit.cell.formula !== undefined
-      worksheetXml = patchCellKeepingStyle(worksheetXml, address, edit.cell, styleOverride, edit.rich)
+      worksheetXml = patchCellKeepingStyle(worksheetXml, address, edit.cell, styleOverride, edit.rich, inherited)
     } else if (styleOverride !== undefined) {
       worksheetXml = patchCellStyleOnly(worksheetXml, address, styleOverride)
     }

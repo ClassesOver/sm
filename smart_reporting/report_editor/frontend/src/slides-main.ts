@@ -698,15 +698,23 @@ function opacityReason(): string | null {
 function pictureOutlineEnabled(element: DeckElement | undefined) {
   return element?.type === 'picture' && element.pictureOutlineEditable === true
 }
-function currentPictureOutline(elementId: string): NonNullable<ShapeStyleEdit['stroke']> {
+function currentPictureOutline(elementId: string): ShapeStroke | null | undefined {
   const pending = shapeStyleEdits.get(editKey(selectedSlide, elementId))
-  if (pending) return pending.stroke ? { ...pending.stroke } : { color: '#000000', widthPt: 1 }
+  if (pending?.stroke !== undefined) return pending.stroke
   const node = renderTree?.slides.find(slide => slide.slideIndex === selectedSlide)?.nodes.find(item => item.sourceId === elementId)
-  const sourceStroke = node?.type === 'picture' ? node.stroke : undefined
+  if (node?.type !== 'picture') return
+  const sourceStroke = node.stroke
+  if (!sourceStroke) return null
   return {
-    color: sourceStroke && /^#[a-f\d]{6}$/i.test(sourceStroke.color) ? sourceStroke.color : '#000000',
-    widthPt: sourceStroke?.widthPt && sourceStroke.widthPt >= 0.01 && sourceStroke.widthPt <= 100 ? sourceStroke.widthPt : 1,
+    color: /^#[a-f\d]{6}$/i.test(sourceStroke.color) ? sourceStroke.color : '#000000',
+    widthPt: sourceStroke.widthPt && sourceStroke.widthPt >= 0.01 && sourceStroke.widthPt <= 100 ? sourceStroke.widthPt : 1,
   }
+}
+function syncPictureOutline() {
+  const stroke = selectedElement && pictureOutlineEnabled(currentElement()) ? currentPictureOutline(selectedElement) : undefined
+  nativeRibbon?.setValue('pictureOutlineColor', stroke?.color ?? '#000000')
+  nativeRibbon?.setValue('pictureOutlineWidth', stroke ? String(stroke.widthPt) : '')
+  nativeRibbon?.setValue('pictureNoOutline', String(stroke === null))
 }
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
   return backgroundImageReuseEdits.some(item=>item.slideIndices.includes(slideIndex)) || backgroundImageEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundGradientEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundResetEdits.has(slideIndex) || backgroundGraphicsEdits.has(slideIndex) || pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
@@ -1146,6 +1154,7 @@ const canvasStatus = root.querySelector<HTMLElement>('.canvas-status')!
 let canvasSelectionGeneration = 0
 function renderCanvas() {
   syncViewZoomControls()
+  syncPictureOutline()
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   mediaPlayback?.dispose();mediaPlayback=undefined
   animationPreviewOverlay?.dispose()
@@ -2658,11 +2667,6 @@ function renderInspector() {
   nativeRibbon?.setValue('background', backgroundColor.value)
   { const picture = currentElement(), pending = picture ? pictureOpacities.find(item => item.slideIndex === selectedSlide && item.elementId === picture.id) : undefined
     nativeRibbon?.setValue('pictureOpacity', picture?.type === 'picture' ? String(Math.round((1 - (pending?.opacity ?? picture.pictureOpacity ?? 1)) * 100)) : '') }
-  if (selectedElement) {
-    const stroke = currentPictureOutline(selectedElement)
-    nativeRibbon?.setValue('pictureOutlineColor', stroke.color)
-    nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
-  }
   nativeRibbon?.setValue('animationEffect', animationEffect.value)
   const galleryTarget = animationGalleryTarget(element)
   nativeRibbon?.setAnimationGallery(galleryTarget, galleryTarget
@@ -2758,7 +2762,7 @@ function renderInspector() {
 
   const structureButton=root.querySelector<HTMLButtonElement>('[data-command="tableStructure"]')
   if(structureButton){const reason=tableStructureReason(element);structureButton.disabled=!!reason;structureButton.title=reason??'增删来源表格行列'}
-  for(const id of ['tableShading','tableAllBorders','tableNoBorders']) {const control=root.querySelector<HTMLInputElement>(`[data-command="${id}"]`);if(control) { const atLimit=!!element && !tableStyleEdits.has(editKey(selectedSlide,element.id)) && tableStyleEdits.size>=500; control.disabled=locked() || tableStructureEdits.get(selectedSlide)?.elementId===element?.id || atLimit; if(atLimit) control.title='表格样式修改已达到 500 项，请先保存'; else if(control.title==='表格样式修改已达到 500 项，请先保存') control.title='' }}
+  for(const id of ['tableAllBorders','tableNoBorders']) {const control=root.querySelector<HTMLInputElement>(`[data-command="${id}"]`);if(control) { const atLimit=!!element && !tableStyleEdits.has(editKey(selectedSlide,element.id)) && tableStyleEdits.size>=500; control.disabled=locked() || tableStructureEdits.get(selectedSlide)?.elementId===element?.id || atLimit; if(atLimit) control.title='表格样式修改已达到 500 项，请先保存'; else if(control.title==='表格样式修改已达到 500 项，请先保存') control.title='' }}
   const tablePatch = element ? tableStyleEdits.get(editKey(selectedSlide,element.id)) : undefined
   const tablePreset = SLIDES_TABLE_PRESETS.find(item => item.name === tablePatch?.styleName)
   const presetReason = tablePresetReason(element)
@@ -2784,14 +2788,13 @@ function updateTableShadingControls(element = currentElement()) {
   const selectedCell = shadingCellFor(element)
   const targetLabel = tableCellEditor.querySelector<HTMLElement>('[data-table-shading-target]')
   if (targetLabel) targetLabel.textContent = selectedCell ? `底纹目标：第 ${selectedCell.row + 1} 行 ${selectedCell.col + 1} 列` : '底纹目标：整表'
-  const palette = root.querySelector<HTMLSelectElement>('[data-command="tableShading"]')
   const whole = root.querySelector<HTMLButtonElement>('[data-command="tableShadingWholeTable"]')
   const commonReason = selectedObjects.size>1 || locked() || isNewSlide(selectedSlide) || element?.type !== 'table' || deletions.has(editKey(selectedSlide,element.id)) || tableStructureEdits.get(selectedSlide)?.elementId === element.id
   const reason = element && !tableStyleEdits.has(editKey(selectedSlide,element.id)) && tableStyleEdits.size >= 500 ? '表格样式修改已达到 500 项，请先保存' : selectedCell && element?.tableCellShadingEditable !== true ? element?.tableCellShadingReason || '此来源表格暂不支持安全单格底纹' : ''
-  if (palette) { palette.disabled = !!commonReason || !!reason; palette.title = reason || (selectedCell ? `只修改第 ${selectedCell.row + 1} 行 ${selectedCell.col + 1} 列底纹` : '修改整表底纹，并清除此前的单格底纹覆盖') }
   if (whole) { whole.disabled = !!commonReason || !selectedCell; whole.title = '将底纹作用目标改回整表；不修改草稿' }
   const patch = element ? tableStyleEdits.get(editKey(selectedSlide,element.id)) : undefined
-  nativeRibbon?.setValue('tableShading', selectedCell ? patch?.cellShadings?.find(cell => cell.row === selectedCell.row && cell.col === selectedCell.col)?.shadingColor ?? '' : patch?.shadingColor ?? '')
+  const color = selectedCell ? patch?.cellShadings?.find(cell => cell.row === selectedCell.row && cell.col === selectedCell.col)?.shadingColor : patch?.shadingColor
+  nativeRibbon?.setTableShadingState(color ?? '', !!selectedCell, !commonReason && !reason, reason || (selectedCell ? `只修改第 ${selectedCell.row + 1} 行 ${selectedCell.col + 1} 列底纹` : '修改整表底纹，并清除此前的单格底纹覆盖'))
 }
 
 function tablePresetReason(element = currentElement()): string | null {
@@ -2985,7 +2988,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         if (!target || !pictureOutlineEnabled(target) || selectedObjects.size !== 1 || pendingGroup(selectedSlide)) return
         const key = editKey(selectedSlide, target.id)
         if (deletions.has(key) || (!shapeStyleEdits.has(key) && shapeStyleEdits.size >= 500)) return
-        const stroke = currentPictureOutline(target.id)
+        const stroke = { ...(currentPictureOutline(target.id) ?? { color: '#000000', widthPt: 1 }) }
         if (command === 'pictureOutlineColor') {
           if (typeof value !== 'string' || !/^#[a-f\d]{6}$/i.test(value)) return
           stroke.color = value.toUpperCase()
@@ -2997,10 +3000,6 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         shapeStyleEdits.set(key, { slideIndex: selectedSlide, elementId: target.id, stroke: command === 'pictureNoOutline' ? null : stroke })
         renderStructurePending()
         markDirty()
-        if (command === 'pictureNoOutline') {
-          nativeRibbon?.setValue('pictureOutlineColor', '#000000')
-          nativeRibbon?.setValue('pictureOutlineWidth', '')
-        } else nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
         return
       }
       case 'pictureOpacity': {
@@ -3106,7 +3105,9 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
             delete patch.cellShadings
           }
         } else patch.borderPreset=command === 'tableAllBorders' ? 'all' : 'none'
-        tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview(); break
+        tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview()
+        if (command === 'tableShading') { updateTableShadingControls(target); return }
+        break
       }
       case 'shapeStylePreset':
       case 'shapeFill':

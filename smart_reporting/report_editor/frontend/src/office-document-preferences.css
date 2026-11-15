@@ -1,0 +1,30 @@
+.office-document-preferences-host{width:min(720px,94vw);max-height:86vh;padding:0;border:1px solid #e7e7e7;border-radius:14px;background:#fff;color:#292929;overflow:hidden}
+.office-document-preferences-host::backdrop{background:#0003}
+.office-document-preferences{padding:28px 32px 0;font:14px/1.6 system-ui,sans-serif;display:flex;flex-direction:column;max-height:84vh;box-sizing:border-box}
+.office-document-preferences header{display:flex;justify-content:space-between;align-items:center;flex:none}
+.office-document-preferences h2{margin:0;font-size:18px;font-weight:600}.office-document-preferences>p{color:#777;font-size:12px;margin:8px 0 24px}
+.office-document-preferences nav{display:flex;gap:24px;margin:18px 0 22px;border-bottom:1px solid #eee;flex-wrap:wrap;flex:none}
+.office-document-preferences button,.office-document-preferences select{padding:6px 12px;border:1px solid #ddd;border-radius:6px;background:transparent;color:inherit;cursor:pointer;font:inherit}
+.office-document-preferences>label{font-size:13px;color:#666}.office-document-preferences>label select{margin-left:8px;color:#292929}
+.office-document-preferences nav button{padding:8px 0;border:0;border-radius:0;color:#888;font-size:13px;border-bottom:2px solid transparent}
+.office-document-preferences nav button[aria-current=true],.office-document-preferences nav button[aria-selected=true]{color:#222;border-bottom-color:#333}
+.office-document-preferences button:disabled{opacity:.4;cursor:default}
+.office-document-fields{min-height:230px;overflow:auto;padding:0 2px 10px;flex:1}
+.office-document-fields form,.office-document-fields .preference-style-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:24px}
+.office-document-fields form>.preference-wide-field,.office-document-fields form>button{grid-column:1/-1}
+.office-document-fields .ant-form-item{margin-bottom:20px}.office-document-fields .ant-form-item-label>label{font-size:13px;color:#666}
+.office-preferences-details{border-top:1px solid #eee;margin:4px 0 14px;padding-top:14px}
+.office-preferences-details summary{color:#666;cursor:pointer;font-size:13px;margin-bottom:14px}
+.office-document-preferences footer{display:flex;justify-content:flex-end;padding:16px 0 20px;border-top:1px solid #eee;flex:none}
+.office-document-preferences footer button{background:#333;color:#fff;border-color:#333;font-size:13px}
+.office-document-preferences>[role=status]:empty{display:none}.office-document-preferences>[role=status]{margin:4px 0 10px}
+html[data-office-theme=dark] .office-document-preferences-host{background:#242424;color:#eee;border-color:#444}
+html[data-office-theme=dark] .office-document-preferences :is(nav,footer,.office-preferences-details){border-color:#444}
+html[data-office-theme=dark] .office-document-preferences nav button[aria-current=true],html[data-office-theme=dark] .office-document-preferences nav button[aria-selected=true]{color:#eee;border-bottom-color:#eee}
+html[data-office-theme=dark] .office-document-preferences>label select{color:#eee}
+@media(max-width:560px){.office-document-preferences{padding:22px 20px 0}.office-document-preferences nav{gap:14px}.office-document-fields form,.office-document-fields .preference-style-fields{grid-template-columns:1fr}}
+
+.office-document-preferences .office-format-tabs{gap:28px;margin:0 0 18px}.office-document-preferences .office-format-tabs button{font-size:14px;padding:8px 4px 12px}
+.office-document-preferences .office-section-tabs{gap:10px;border:0;margin:0 0 22px}.office-document-preferences .office-section-tabs button{padding:5px 10px;border:0;border-radius:5px;font-size:12px}.office-document-preferences .office-section-tabs button[aria-current=true]{background:#f3f3f3}
+html[data-office-theme=dark] .office-document-preferences .office-section-tabs button[aria-current=true]{background:#383838}
+@media(max-width:560px){.office-document-preferences .office-format-tabs{gap:12px}.office-document-preferences .office-section-tabs{gap:4px}}

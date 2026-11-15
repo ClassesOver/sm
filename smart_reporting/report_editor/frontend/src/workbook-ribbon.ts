@@ -984,7 +984,7 @@ export function mountWorkbookRibbon(
     theme?(): { colorName?: string; fontName?: string; reason?: string; fontsReason?: string } | undefined
     definedNames?(): readonly string[]
     /// 审阅▸保护：当前工作表与工作簿结构的有效保护状态；reason 为不可切换原因（密码保护）。
-    protection?(): { sheet: { protected: boolean; allowFilter?: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
+    protection?(): { sheet: { protected: boolean; allowFilter?: boolean; allowSort?: boolean; reason?: string }; workbook: { locked: boolean; reason?: string } }
     /// 公式▸计算：当前工作表公式视图与计算模式（编辑器状态）。
     outlineSummary?(): { below: boolean; right: boolean }
     calculation?(): { formulaView: boolean; manual: boolean }
@@ -1135,8 +1135,14 @@ export function mountWorkbookRibbon(
       const orientation = menu.id === 'text-orientation'
       const selectionReason = (orientation ? reason : undefined)
         ?? (!selected || (orientation && rotation === undefined) ? '请先选择单元格或区域' : undefined)
+      const protection = view.protection?.().sheet
+      const sortMenu = menu.id === 'sort' || menu.id === 'sort-filter'
+      const allowsProtectedChoice = (command: string | undefined) =>
+        (protection?.allowSort === true && (command === 'sort:asc' || command === 'sort:desc' || command === 'sort-custom-open')) ||
+        (protection?.allowFilter === true && (command === 'filter-clear' || command === 'filter-reapply'))
+      const blockedByProtection = protection?.protected && (!sortMenu || !menu.choices.some(choice => allowsProtectedChoice(choice.command)))
       const disabledReason = !editable ? '当前工作簿不可编辑或正在保存'
-        : selectionReason ?? (view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : undefined)
+        : selectionReason ?? (blockedByProtection ? PROTECTED_SHEET_REASON : undefined)
           ?? (menu.id === 'table-style-presets' ? view.table?.()?.reason : undefined)
       select.disabled = !!disabledReason
       select.title = disabledReason ?? menu.detail
@@ -1148,9 +1154,14 @@ export function mountWorkbookRibbon(
       else select.removeAttribute('aria-description')
       const summary = view.outlineSummary?.()
       for (const choice of menu.choices) {
-        if (!choice.summary && !orientation) continue
+        if (!choice.summary && !orientation && !sortMenu) continue
         const option = select.querySelector<HTMLOptionElement>('[value="' + choice.command + '"]')
         if (!option) continue
+        if (sortMenu) {
+          option.disabled = !!protection?.protected && !allowsProtectedChoice(choice.command)
+          option.title = option.disabled ? PROTECTED_SHEET_REASON : ''
+          continue
+        }
         const value = ROTATION_VALUES[choice.command as keyof typeof ROTATION_VALUES]
         const expectedRotation = value === 'v' ? 255 : value === undefined ? undefined : univerRotationToOoxml({ a: value })
         const checked = choice.summary ? summary?.[choice.summary] ?? true : rotation !== undefined && rotation === expectedRotation
@@ -1386,18 +1397,18 @@ export function mountWorkbookRibbon(
       if (freezeHere) freezeHere.disabled = !selected
       if (freezeMenu.disabled && freezeMenu.getAttribute('aria-expanded') === 'true') closeLargeViewMenu?.()
     }
-    const notes = body.querySelector<HTMLSelectElement>('[data-ribbon-control="notes"]')
-    if (notes) for (const option of Array.from(notes.options).slice(1)) {
-      const reason = view.noteReason?.(option.value) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
+    for (const option of body.querySelectorAll<HTMLButtonElement>('[data-ribbon-control="notes"] ~ [role="listbox"] [data-menu-command]')) {
+      const reason = view.noteReason?.(option.dataset.menuCommand!) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
       option.disabled = !!reason
       option.title = reason ?? ''
     }
-    const translation = body.querySelector<HTMLSelectElement>('[data-ribbon-control="translate"]')
+    const translation = body.querySelector<HTMLButtonElement>('[data-ribbon-control="translate"]')
     if (translation) {
       const reason = view.translateReason?.() ?? (view.onTranslate ? undefined : '当前会话未开放 AI 翻译')
       translation.disabled = !!reason
       translation.title = reason ?? '用 AI 翻译选区文本'
       translation.setAttribute('aria-description', translation.title)
+      if (translation.disabled && translation.getAttribute('aria-expanded') === 'true') closeLargeViewMenu?.()
     }
     for (const button of body.querySelectorAll<HTMLButtonElement>('[data-sheet-option]')) {
       const command = button.dataset.ribbonCommand
@@ -1485,7 +1496,7 @@ export function mountWorkbookRibbon(
     button.addEventListener('click', () => { if (!button.disabled) onCommand(command) })
     return button
   }
-  const largeRibbonMenu = (label: string, iconCommand: string, detail: string, choices: readonly (readonly [RibbonCommand, string])[], symbol?: string) => {
+  const largeRibbonMenu = <Choice extends string>(label: string, iconCommand: string, detail: string, choices: readonly (readonly [Choice, string])[], pick: (value: Choice) => void, symbol?: string) => {
     const wrapper = document.createElement('div')
     wrapper.className = 'workbook-ribbon-chart-menu workbook-ribbon-large-menu'
     const icons = document.createElement('span')
@@ -1566,7 +1577,7 @@ export function mountWorkbookRibbon(
       option.addEventListener('click', () => {
         if (!option.disabled && !trigger.disabled && !menu.hidden) {
           close(true)
-          onCommand(command)
+          pick(command)
         }
       })
       menu.append(option)
@@ -1600,38 +1611,17 @@ export function mountWorkbookRibbon(
       heading.textContent = group.title
       section.append(heading)
       if (active === 'Review' && group.title === '语言') {
-        const wrapper = document.createElement('label')
-        wrapper.className = 'workbook-ribbon-chart-menu'
-        const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
-        icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('translate') ?? ''
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'translate'
-        select.setAttribute('aria-label', '翻译')
-        select.disabled = !view?.onTranslate
-        select.append(new Option('翻译', ''), ...workbookTranslationLanguages.map(language => new Option(language, language)))
-        select.addEventListener('change', () => {
-          const language = workbookTranslationLanguages.find(item => item === select.value)
-          select.value = ''
-          if (language && !select.disabled) view?.onTranslate?.(language)
-        })
-        wrapper.append(icon, select); section.append(wrapper)
+        const { wrapper, trigger } = largeRibbonMenu<WorkbookTranslationLanguage>('翻译', 'translate', '用 AI 翻译选区文本',
+          workbookTranslationLanguages.map(language => [language, language]), language => view?.onTranslate?.(language))
+        trigger.dataset.ribbonControl = 'translate'
+        trigger.disabled = !view?.onTranslate
+        section.append(wrapper)
       }
       if (active === 'Review' && group.title === '注释') {
-        const wrapper = document.createElement('label')
-        wrapper.className = 'workbook-ribbon-chart-menu'
-        const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
-        icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('', '🗒') ?? ''
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'notes'
-        select.setAttribute('aria-label', '注释')
-        select.setAttribute('aria-description', '在所选位置添加或编辑')
-        select.append(new Option('注释', ''), ...noteMenuChoices.map(([id, label]) => new Option(label, id)))
-        select.addEventListener('change', () => {
-          const choice = select.selectedOptions[0]
-          select.value = ''
-          if (choice?.value && !choice.disabled) onCommand(choice.value as RibbonCommand)
-        })
-        wrapper.append(icon, select); section.append(wrapper)
+        const { wrapper, trigger } = largeRibbonMenu('注释', '', '在所选位置添加或编辑', noteMenuChoices, onCommand, '🗒')
+        trigger.dataset.ribbonControl = 'notes'
+        trigger.setAttribute('aria-description', '在所选位置添加或编辑')
+        section.append(wrapper)
       }
       if (group.title === 'AI 助手') {
         section.classList.add('office-ai-group')
@@ -1759,7 +1749,7 @@ export function mountWorkbookRibbon(
       if (active === 'Page Layout' && group.title === '页面设置') {
         // ExcelShell PageSetup uses the same large MenuSelect as the View tab.
         for (const {id, label, symbol, field, choices} of PAGE_SETUP_MENUS) {
-          const {wrapper, trigger} = largeRibbonMenu(label, id, label, choices, symbol)
+          const {wrapper, trigger} = largeRibbonMenu(label, id, label, choices, onCommand, symbol)
           if (field) trigger.dataset.ribbonControl = id
           else trigger.dataset.ribbonMenu = id
           section.append(wrapper)
@@ -1826,13 +1816,13 @@ export function mountWorkbookRibbon(
         section.append(controls)
       }
       if (active === 'View' && group.title === '窗口') {
-        const { wrapper, trigger } = largeRibbonMenu('冻结窗格', 'freeze-panes', '冻结行和列', FREEZE_CHOICES)
+        const { wrapper, trigger } = largeRibbonMenu('冻结窗格', 'freeze-panes', '冻结行和列', FREEZE_CHOICES, onCommand)
         trigger.dataset.ribbonControl = 'freeze-panes'
         section.append(wrapper)
       }
       if (active === 'View' && group.title === '缩放') {
-        const { wrapper, trigger } = largeRibbonMenu('缩放', 'zoom-open', '缩放工作表',
-          [50, 75, 100, 125, 150, 200].map(percent => [`zoom:${percent}`, percent + '%']))
+        const { wrapper, trigger } = largeRibbonMenu<RibbonCommand>('缩放', 'zoom-open', '缩放工作表',
+          [50, 75, 100, 125, 150, 200].map(percent => [`zoom:${percent}`, percent + '%']), onCommand)
         trigger.dataset.ribbonMenu = 'zoom'
         section.append(wrapper)
       }
@@ -1936,8 +1926,9 @@ export function mountWorkbookRibbon(
         }))
         select.addEventListener('change', () => {
           const choice = menu.choices.find(({ command }) => command === select.value)
+          const selectedOption = select.selectedOptions[0]
           select.value = ''
-          if (choice?.command && !select.disabled) onCommand(choice.command)
+          if (choice?.command && !select.disabled && !selectedOption?.disabled) onCommand(choice.command)
         })
         wrapper.append(icon, select)
         const after = menu.after && section.querySelector('[data-ribbon-command="' + menu.after + '"]')

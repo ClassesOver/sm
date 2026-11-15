@@ -4,7 +4,7 @@
 /// formula text between rows silently re-targets relative references, which
 /// is exactly the class of damage the preview model exists to prevent.
 
-import { columnIndex, formatAddress, parseRange } from './cell-address'
+import { columnIndex, formatAddress, parseRange, type RangeBounds } from './cell-address'
 
 export type SortScalar = string | number | boolean | null
 
@@ -21,11 +21,29 @@ export interface SortComputedChange {
   readonly after: SortScalar
 }
 
-export interface SortSpec {
-  readonly range: string
+interface SortColumn {
   readonly byColumn: string
   readonly ascending: boolean
+}
+
+export interface SortSpec extends SortColumn {
+  readonly range: string
   readonly hasHeader: boolean
+  readonly thenBy?: readonly SortColumn[]
+}
+
+export function sortKeyOffsets(spec: SortSpec, bounds: RangeBounds) {
+  const secondary = spec.thenBy ?? []
+  if (!Array.isArray(secondary) || secondary.length > 2) throw new Error('排序最多支持三个关键字。')
+  const seen = new Set<number>()
+  return [spec, ...secondary].map(key => {
+    if (!key || typeof key.byColumn !== 'string' || typeof key.ascending !== 'boolean') throw new Error('排序关键字无效。')
+    const column = columnIndex(key.byColumn)
+    if (column < bounds.startColumn || column > bounds.endColumn) throw new Error(`Sort column ${key.byColumn} is outside the range ${spec.range}.`)
+    if (seen.has(column)) throw new Error('排序关键字不能重复。')
+    seen.add(column)
+    return { offset: column - bounds.startColumn, ascending: key.ascending }
+  })
 }
 
 /// blanks always sort last; numbers before booleans before text (Excel order)
@@ -58,13 +76,18 @@ export function computeSortedRowOrder(
   rows: readonly (readonly SortScalar[])[],
   keyOffset: number,
   ascending: boolean,
+  thenBy: readonly { offset: number; ascending: boolean }[] = [],
 ): number[] {
+  const keys = [{ offset: keyOffset, ascending }, ...thenBy]
   return rows
-    .map((row, index) => ({ key: row[keyOffset] ?? null, index }))
+    .map((cells, index) => ({ cells, index }))
     .sort((a, b) => {
-      const cmp = compareScalars(a.key, b.key)
-      const oriented = a.key === null || b.key === null || cmp === 0 ? cmp : ascending ? cmp : -cmp
-      return oriented !== 0 ? oriented : a.index - b.index
+      for (const key of keys) {
+        const left = a.cells[key.offset] ?? null, right = b.cells[key.offset] ?? null
+        const compared = compareScalars(left, right)
+        if (compared) return left === null || right === null || key.ascending ? compared : -compared
+      }
+      return a.index - b.index
     })
     .map((entry) => entry.index)
 }
@@ -74,16 +97,13 @@ export function computeSortChanges(
   readCell: (address: string) => SortCellState,
 ): SortComputedChange[] {
   const bounds = parseRange(spec.range)
-  const keyColumn = columnIndex(spec.byColumn)
-  if (keyColumn < bounds.startColumn || keyColumn > bounds.endColumn) {
-    throw new Error(`Sort column ${spec.byColumn} is outside the range ${spec.range}.`)
-  }
+  const [first, ...thenBy] = sortKeyOffsets(spec, bounds)
   const firstDataRow = bounds.startRow + (spec.hasHeader ? 1 : 0)
   if (firstDataRow >= bounds.endRow) {
     throw new Error('The sort range needs at least two data rows.')
   }
 
-  const rows: { key: SortScalar; cells: SortScalar[] }[] = []
+  const rows: SortScalar[][] = []
   for (let row = firstDataRow; row <= bounds.endRow; row += 1) {
     const cells: SortScalar[] = []
     for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) {
@@ -99,21 +119,17 @@ export function computeSortChanges(
       // moves. Raw serials sort numerically — Excel's order.
       cells.push(state.rawValue !== undefined ? state.rawValue : state.value)
     }
-    rows.push({ key: cells[keyColumn - bounds.startColumn] ?? null, cells })
+    rows.push(cells)
   }
 
-  const order = computeSortedRowOrder(
-    rows.map((row) => row.cells),
-    keyColumn - bounds.startColumn,
-    spec.ascending,
-  )
+  const order = computeSortedRowOrder(rows, first!.offset, first!.ascending, thenBy)
 
   const changes: SortComputedChange[] = []
   order.forEach((sourceIndex, offset) => {
     const targetRow = firstDataRow + offset
-    rows[sourceIndex]?.cells.forEach((value, columnOffset) => {
+    rows[sourceIndex]?.forEach((value, columnOffset) => {
       const address = formatAddress(targetRow, bounds.startColumn + columnOffset)
-      const before = rows[offset]?.cells[columnOffset] ?? null
+      const before = rows[offset]?.[columnOffset] ?? null
       if (before !== value) changes.push({ address, before, after: value })
     })
   })

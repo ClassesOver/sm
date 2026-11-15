@@ -132,3 +132,12 @@ it.each([200, 503])('source draft freezes editable fields and retains immutable 
   expect(get('更换连接地址（留空保留）').value).toBe(status === 200 ? '' : 'starrocks://user:test@db.example/db')
   if (status === 503) expect(host.textContent).toContain('暂时不可用')
 })
+
+it('后台授权入口只维护工作区授权，连接配置沿用原管理页面', async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {configurable: true, value(this: HTMLDialogElement) { this.open = true }})
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({items: [{source_id: 'sales', name: '销售', database: 'sales', publishedRevision: 1}], nextCursor: null})))
+  await showOfficeSources(document.body, {admin: true, grantsOnly: true})
+  expect(document.body.textContent).toContain('工作区授权')
+  expect(document.body.textContent).not.toContain('连接与表范围')
+  expect(document.body.textContent).not.toContain('新增 StarRocks')
+})

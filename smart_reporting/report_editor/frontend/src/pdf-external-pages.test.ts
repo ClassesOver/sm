@@ -29,6 +29,27 @@ it('honors an explicit insertion position including the beginning of the documen
   await vi.waitFor(()=>expect(f.submit).toHaveBeenCalledTimes(1))
   expect(f.submit.mock.calls[0]![0].afterPage).toBe(0)
 })
+it('validates replacement ranges before keyboard file selection and submits the chosen pages with Enter', async () => {
+  const f=fixture();f.view.open('replace')
+  const pages=f.root.querySelector<HTMLInputElement>('[aria-label="替换父 PDF 页码"]')!
+  const choose=vi.spyOn(f.file,'click').mockImplementation(()=>{})
+  const enter=(options:KeyboardEventInit={})=>pages.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,...options}))
+  expect(document.activeElement).toBe(pages)
+  expect(pages.value).toBe('2')
+  pages.value='4'
+  expect(enter({isComposing:true})).toBe(true)
+  expect(enter()).toBe(false)
+  expect(choose).not.toHaveBeenCalled()
+  expect(pages.getAttribute('aria-invalid')).toBe('true')
+  pages.value='1,3';pages.dispatchEvent(new Event('input',{bubbles:true}))
+  expect(pages.hasAttribute('aria-invalid')).toBe(false)
+  expect(enter()).toBe(false)
+  expect(choose).toHaveBeenCalledOnce()
+  expect(f.submit).not.toHaveBeenCalled()
+  f.upload();expect(enter()).toBe(false)
+  await vi.waitFor(()=>expect(f.submit.mock.calls[0]?.[0]).toMatchObject({action:'replace',pages:[1,3]}))
+  await vi.waitFor(()=>expect(f.root.querySelector('a')?.getAttribute('href')).toBe('/real.pdf'))
+})
 it('replacement submits selected parent pages and retries preserve request identity',async()=>{
   const f=fixture();f.submit.mockRejectedValueOnce(new Error('temporary'))
   f.view.open('replace');f.upload();f.root.querySelector<HTMLInputElement>('[aria-label="替换父 PDF 页码"]')!.value='3,1'

@@ -16,7 +16,7 @@ export default defineConfig({
       const directory = output.dir ?? fileURLToPath(new URL('../static/', import.meta.url))
       await mkdir(join(directory, 'licenses'), { recursive: true })
       await cp(new URL('./node_modules/pdfjs-dist/LICENSE', import.meta.url), join(directory, 'licenses/pdfjs-LICENSE'))
-      for (const family of ['genoffice-docs', 'genoffice-sheets-format']) for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/vendor/${family}/${file}`, import.meta.url), join(directory, `licenses/${family}-${file}`))
+      for (const family of ['genoffice-docs', 'genoffice-sheets-format', 'genoffice-ui']) for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/vendor/${family}/${file}`, import.meta.url), join(directory, `licenses/${family}-${file}`))
       for (const file of ['LICENSE', 'NOTICE']) await cp(new URL(`./src/account-settings/${file}`, import.meta.url), join(directory, `licenses/genoffice-settings-${file}`))
       for (const folder of ['cmaps', 'standard_fonts', 'wasm']) {
         await cp(new URL(`./node_modules/pdfjs-dist/${folder}`, import.meta.url),
@@ -86,6 +86,12 @@ export default defineConfig({
         onlyExplicitManualChunks: true,
         chunkFileNames: 'assets/lazy-[name]-[hash].js',
         manualChunks(id) {
+          // Shared preference widgets load only when personal document settings open.
+          const antComponent = id.match(/\/node_modules\/antd\/es\/([^/]+)\//)
+          if (antComponent) return 'preferences-ant'
+          const rcComponent = id.match(/\/node_modules\/@rc-component\/([^/]+)\//)
+          if (rcComponent) return 'preferences-rc-' + rcComponent[1]
+
           // 主宿主与复用的渲染组件分别打包，避免自动合并后超过既定预算。
           if (id.endsWith('/src/slides-main.ts')) return 'slides-main'
           if (id.endsWith('/src/workbook-main.ts')) return 'workbook-main'

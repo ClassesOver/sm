@@ -1,3 +1,4 @@
+import './office-ui-theme.css'
 import { setOfficeAssistantIdentity } from './office-assistant-preferences'
 import {openInlineFolder, renameInlineItem} from './office-inline-folder'
 import type { renderOfficeAnswer } from './office-answer'
@@ -171,6 +172,20 @@ window.addEventListener('genoffice-session-expired', () => {
   render()
 })
 
+function openPersonalSettings(initialSection: 'account' | 'general' = 'account') {
+  if (!currentUser) return
+  const account = accountGeneration, user = currentUser
+  void import('./office-settings').then(({ showOfficeSettings }) => showOfficeSettings(root, { user, initialSection, isCurrent: () => account === accountGeneration,
+    onLogout: () => { clearAccount(); render() } })).catch(error => { status = error.message; render() })
+}
+function openRequestedPreferences() {
+  const url = new URL(window.location.href)
+  if (currentUser && url.searchParams.get('settings') === 'preferences') {
+    url.searchParams.delete('settings'); history.replaceState(null, '', url)
+    openPersonalSettings('general')
+  }
+}
+
 async function start() {
   const account = ++accountGeneration
   try {
@@ -183,7 +198,7 @@ async function start() {
     if (account !== accountGeneration) return
     status = ''
   } catch (error) { if (account === accountGeneration) status = error instanceof Error ? error.message : 'Office 登录失败。' }
-  if (account === accountGeneration) render()
+  if (account === accountGeneration) { render(); openRequestedPreferences() }
 }
 
 function showLogin() {
@@ -211,6 +226,7 @@ function showLogin() {
       status = ''
       dialog.close()
       render()
+      openRequestedPreferences()
     } catch (error) {
       if (account === accountGeneration) dialog.querySelector('p')!.textContent = error instanceof Error ? error.message : '登录失败。'
     } finally { submit.disabled = false }
@@ -1354,9 +1370,7 @@ root.addEventListener('click', event => {
   }
   if (data.action === 'login') { showLogin(); return }
   if (data.action === 'personal-settings' && currentUser) {
-    const account = accountGeneration, user = currentUser
-    void import('./office-settings').then(({ showOfficeSettings }) => showOfficeSettings(root, { user, isCurrent: () => account === accountGeneration,
-      onLogout: () => { clearAccount(); render() } })).catch(error => { status = error.message; render() })
+    openPersonalSettings()
     return
   }
   if (data.action === 'company-sources' || data.action === 'space-sources') {

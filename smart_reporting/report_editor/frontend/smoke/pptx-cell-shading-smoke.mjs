@@ -129,19 +129,19 @@ try {
   await text.fill('styled cell'); await text.blur()
   await page.locator('[data-ribbon-tab="tableDesign"]').click()
   assert.equal(target.tableCellShadingEditable,true)
-  const style = name => page.locator(`[data-table-style-preset="${name}"]`), shading=page.locator('[data-command="tableShading"]'), whole=page.locator('[data-command="tableShadingWholeTable"]')
+  const style = name => page.locator(`[data-table-style-preset="${name}"]`), shading = color => page.locator(`[data-table-shading-color="${color}"]`), whole=page.locator('[data-command="tableShadingWholeTable"]')
   const cell=(row,col)=>page.getByLabel(`表格单元格 ${row+1} 行 ${col+1} 列`,{exact:true})
   const readDraft=()=>page.evaluate(()=>JSON.parse(Object.entries(localStorage).find(([key])=>key.includes('fixture-pptx'))?.[1]??'{"operations":[]}').operations)
   await style('zebraBlue').click()
-  await cell(1,1).focus();await shading.selectOption('#FFF2CC')
+  await cell(1,1).focus();await shading('#FFF2CC').click()
   assert.deepEqual((await readDraft())[0].tableStyles[0].cellShadings,[{row:1,col:1,shadingColor:'#FFF2CC'}])
-  await whole.click();await shading.selectOption('#FFE6CC')
+  await whole.click();await shading('#FFE6CC').click()
   assert.equal((await readDraft())[0].tableStyles[0].cellShadings,undefined)
   await style('zebraBlue').click()
   assert.equal((await readDraft())[0].tableStyles[0].shadingColor,undefined)
-  await cell(1,1).focus();await shading.selectOption('#FFF2CC')
-  await cell(0,2).focus();await shading.selectOption('#E2EFDA')
-  await cell(1,2).focus();await shading.selectOption('none')
+  await cell(1,1).focus();await shading('#FFF2CC').click()
+  await cell(0,2).focus();await shading('#E2EFDA').click()
+  await cell(1,2).focus();await shading('none').click()
   await page.locator('[data-command="tableAllBorders"]').click()
   const expected=await readDraft()
   assert.deepEqual(expected[0].tableStyles,[{slideIndex:0,elementId:target.id,styleName:'zebraBlue',cellShadings:[{row:0,col:2,shadingColor:'#E2EFDA'},{row:1,col:1,shadingColor:'#FFF2CC'},{row:1,col:2,shadingColor:'none'}],borderPreset:'all'}])
@@ -154,7 +154,7 @@ try {
   assert.equal(rendered().cells.find(c=>c.row===0&&c.col===0).fill.color,'#4472C4')
   await page.reload();await page.locator('.slides-native-ribbon').waitFor();await select.selectOption(target.id)
   assert.equal(await text.inputValue(),'styled cell');assert.deepEqual(await readDraft(),expected)
-  await cell(1,1).focus();assert.equal(await shading.inputValue(),'#FFF2CC')
+  await cell(1,1).focus();assert.equal(await shading('#FFF2CC').getAttribute('aria-pressed'),'true')
   await page.locator('[data-ribbon-tab="tableDesign"]').click()
   if(process.env.PPTX_NEW_SLIDE_SCREENSHOT) await page.screenshot({path:process.env.PPTX_NEW_SLIDE_SCREENSHOT})
   await page.locator('[data-action="save"]').click()
@@ -186,7 +186,7 @@ print(json.dumps({'cell':t.cell(1,2).text,'targetFills':['FFF2CC','E2EFDA','none
   activeBytes=savedBytes;activeSha=createHash('sha256').update(savedBytes).digest('hex');activeRevision=2
   await page.goto(`${baseUrl}/reports/v1/editor/assets/native.html?smokeRevision=2`);await page.locator('.slides-native-ribbon').waitFor()
   await select.selectOption(target.id);assert.equal(await text.inputValue(),'styled cell')
-  assert.equal(await style('zebraBlue').getAttribute('aria-pressed'),'true');await cell(1,1).focus();assert.equal(await shading.inputValue(),'') // Saved source has no pending override; the picker stays at its choose-color placeholder.
+  assert.equal(await style('zebraBlue').getAttribute('aria-pressed'),'true');await cell(1,1).focus();assert.equal(await page.locator('[data-table-shading-color][aria-pressed="true"]').count(),0) // Saved source has no pending override; the palette has no active swatch.
   assert.deepEqual(pageErrors,[]);assert.deepEqual(failedResponses,[])
   const receipt={ok:true,sourceSha,outputSha:activeSha,independent:JSON.parse(result.stdout),operation:expected[0],productionBuild:true}
   if(process.env.PPTX_SMOKE_EVIDENCE_DIR){const directory=resolve(process.env.PPTX_SMOKE_EVIDENCE_DIR);await mkdir(directory,{recursive:true});await writeFile(join(directory,'source.pptx'),sourceBytes);await writeFile(join(directory,'downloaded.pptx'),downloaded);await writeFile(join(directory,'evidence.json'),JSON.stringify(receipt,null,2))}

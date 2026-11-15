@@ -1,6 +1,7 @@
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 
 const simplifiedChineseLabels: Record<string, string> = {
+  'Cell Shading': '单元格底纹', 'No Shading': '无底纹',
   'Table Style Options': '表格选项', Borders: '边框',
   'Advanced Animation': '高级动画',
   Gradient: '渐变', 'No Gradient': '无渐变', 'Light Variations': '浅色变体', 'Dark Variations': '深色变体',

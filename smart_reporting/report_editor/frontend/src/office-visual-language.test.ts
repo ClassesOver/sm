@@ -2,13 +2,14 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 /**
- * 四种原生 Office 编辑器（Word / Excel / PowerPoint / PDF）共享以 md 报告编辑器为基准的视觉语言。
- * 守卫：基准 token 派生自 style.css；四个 Ribbon 的选中、悬停、按下、禁用、焦点状态引用同一组 --office-*；
+ * 四种原生 Office 编辑器共享独立的 GenOffice UI 主题。
+ * 守卫：基准 token 派生自 GenOffice；四个 Ribbon 的选中、悬停、按下、禁用、焦点状态引用同一组 --office-*；
  * PDF/PPTX 不再保留独立的青绿色强调色。
  */
 const read = (name: string) => readFileSync(`src/${name}`, 'utf8')
 const theme = read('style.css')
 const office = read('office-theme.css')
+const uiTokens = read('office-ui-theme.css')
 const sheets = { word: read('docx.css'), workbook: read('workbook.css'), pdf: read('pdf.css') + read('pdf-ribbon.css'), slides: read('slides.css') }
 const ribbonModule = read('slides-native-ribbon.ts')
 
@@ -21,24 +22,27 @@ function rule(selector: string) {
   throw new Error(`Missing rule: ${selector}`)
 }
 function rootToken(name: string) {
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  for (const sheet of Array.from(document.styleSheets)) for (const item of Array.from(sheet.cssRules)) {
+    if (item instanceof CSSStyleRule && item.selectorText.startsWith(':where(.office-ui-theme') && item.style.getPropertyValue(name)) return item.style.getPropertyValue(name).trim()
+  }
+  throw new Error(`Missing Office token: ${name}`)
 }
 
-describe('unified native Office visual language (md baseline)', () => {
+describe('separated native Office UI theme', () => {
   beforeEach(() => {
-    document.head.innerHTML = [theme, sheets.word, sheets.workbook, sheets.pdf, sheets.slides, office].map(css => `<style>${css}</style>`).join('')
+    document.head.innerHTML = [theme, uiTokens, sheets.word, sheets.workbook, sheets.pdf, sheets.slides, office].map(css => `<style>${css}</style>`).join('')
   })
 
-  it('derives every office token from the md editor design tokens', () => {
-    expect(rootToken('--office-accent')).toBe('var(--color-primary)')
-    expect(rootToken('--office-accent-soft')).toBe('var(--color-primary-soft)')
-    expect(rootToken('--office-canvas')).toBe('var(--color-bg)')
-    expect(rootToken('--office-pressed-bg')).toBe('var(--color-primary-soft)')
-    expect(rootToken('--office-pressed-border')).toBe('var(--color-border-strong)')
-    expect(rootToken('--office-hover-border')).toBe('var(--color-border-strong)')
+  it('maps the separate UI theme to source tokens without changing document rules', () => {
+    expect(rootToken('--office-accent')).toBe('var(--color-brand-secondary)')
+    expect(rootToken('--office-accent-soft')).toBe('var(--bg-hover-accent)')
+    expect(rootToken('--office-canvas')).toBe('var(--canvas)')
+    expect(rootToken('--office-pressed-bg')).toBe('var(--pressed)')
+    expect(rootToken('--office-pressed-border')).toBe('var(--border-strong)')
+    expect(rootToken('--office-hover-border')).toBe('var(--border-hover)')
     // md `.report-actions button` 的悬停底色、焦点环、禁用透明度与分组分隔线
     expect(theme).toMatch(/\.report-actions button:not\(\.is-primary\):hover \{[^}]*background: #f2f6f9/)
-    expect(rootToken('--office-hover-bg')).toBe('#f2f6f9')
+    expect(rootToken('--office-hover-bg')).toBe('var(--bg-hover)')
     expect(theme).toMatch(/\.report-actions button:focus-visible \{[^}]*outline: 2px solid #8fc9df/)
     expect(rootToken('--office-focus-ring')).toBe('#8fc9df')
     expect(theme).toMatch(/\.report-actions button:disabled \{[^}]*opacity: 0\.55/)

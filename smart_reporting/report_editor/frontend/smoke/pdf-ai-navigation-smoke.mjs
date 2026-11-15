@@ -39,8 +39,13 @@ try {
  await page.waitForFunction(()=>document.querySelector('#report-editor')?.getAttribute('aria-busy')==='false',null,{timeout:90000})
  const draft=()=>page.evaluate(()=>Object.fromEntries(Object.entries(localStorage).filter(([key])=>key.startsWith('native-editor-draft:'))))
  const before=await draft()
- await page.locator('[data-pdf-ribbon-tab="home"]').click()
- await page.locator('[data-source-command-id="genoffice.pdf.home.ai.openAssistant"]').click()
+ const openAssistant=async()=>{
+  const compact=page.locator('[data-action="assistant"]')
+  if(await compact.count())await compact.click()
+  else {await page.locator('[data-pdf-ribbon-tab="home"]').click();await page.locator('[data-source-command-id="genoffice.pdf.home.ai.openAssistant"]').click()}
+ }
+ await openAssistant()
+ if(await page.locator('.office-workspace-native').count()){assert.equal(await page.locator('.app-bar').isVisible(),false);assert.equal(await page.locator('.pdf-ribbon').isVisible(),true)}
  const panel=page.locator('.native-pdf-assistant')
  assert.equal(await panel.locator('.office-assistant-composer select,.office-assistant-composer [role=combobox]').count(),0)
  const input=panel.getByLabel('PDF AI 问题或补充要求')
@@ -74,7 +79,7 @@ try {
  await panel.locator('.office-assistant-close').click()
  await page.waitForFunction(()=>document.querySelectorAll('.native-pdf-assistant .native-ai-answer').length===2,null,{timeout:60000})
  assert.equal(await panel.isVisible(),false)
- await page.locator('[data-source-command-id="genoffice.pdf.home.ai.openAssistant"]').click()
+ await openAssistant()
  await page.waitForFunction(()=>{
   const body=document.querySelector('.native-pdf-assistant .office-assistant-body')
   return body && body.clientHeight>0 && body.scrollHeight-body.scrollTop-body.clientHeight<2

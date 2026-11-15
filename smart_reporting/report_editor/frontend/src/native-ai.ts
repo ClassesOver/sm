@@ -1,3 +1,5 @@
+import { mountOfficeReadQueue } from './office-read-queue'
+import { mountDocxEditQueue, type DocxEditQueue } from './docx-edit-queue'
 import { OfficeAssistantController } from './office-assistant-controller'
 import { missingNativeAITask, reconnectNativeAITask, temporaryConnectionFailure } from './native-ai-recovery'
 import type { createNativeApi, NativeAIJob, NativeAISelection, NativeAIReviewSelection, NativeAINoteSelection } from './native-api'
@@ -8,6 +10,7 @@ import { bindOfficeAssistantPanel } from './office-assistant-panel'
 /** 候选只在显式采纳后进入当前草稿，仍须用户保存为独立修订。 */
 export function bindNativeAI(container: HTMLElement, options: {
   api: ReturnType<typeof createNativeApi>; draft: NativeDraft; format?: 'docx' | 'pdf'
+  wordEditQueue?: DocxEditQueue
   view: { refresh(): Promise<void>; flushPendingEdits?(): void }; onDraftChange(): void
   locked?(): boolean; onStateChange?(): void
 }) {
@@ -36,6 +39,7 @@ export function bindNativeAI(container: HTMLElement, options: {
   const body = button('body-selection', '使用正文选区');body.hidden=true
   const start = button('start', '生成修改建议'), accept = button('accept', '采纳到草稿'), cancel = button('cancel', '取消建议')
   panel.append(input, start, accept, cancel, body, status, details); container.append(panel)
+  const queue = options.format === 'docx' ? mountOfficeReadQueue(input, submitQueued) : undefined
   let panelView: ReturnType<typeof bindOfficeAssistantPanel> | undefined
   if (options.format === 'docx') {
     panel.classList.add('native-ai-panel')
@@ -43,7 +47,8 @@ export function bindNativeAI(container: HTMLElement, options: {
     const help = document.createElement('p'); help.textContent = '仅为当前正文选区或审阅目标生成候选，核对后显式采纳到草稿；保存后生成独立修订。'
     const dismiss = button('close', '关闭助手')
     panel.append(title,help,dismiss)
-    panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close:dismiss,onClose:close})
+    panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close:dismiss,onClose:close,
+      queue:queue?.host,onQueue:()=>queue?.enqueue(selectionIdentity())})
   }
   const progress = mountNativeAIProgress(panel)
   let selection: NativeAISelection[] = [], documentSelection: NativeAISelection[] = [], reviewMode=false
@@ -54,10 +59,15 @@ export function bindNativeAI(container: HTMLElement, options: {
   // Report-channel handoffs must preserve the trusted draft scope.
   let presetScope: 'selection' | 'document' | undefined, presetStale=false
   let activeRequestId: string | undefined
-  const currentWordTarget = () => JSON.stringify({instruction:input.value.trim(),selection,operations:options.draft.operations})
+  let editQueue: ReturnType<typeof mountDocxEditQueue> | undefined
+  const selectionIdentity = () => JSON.stringify([options.draft.identity.sourceSha256, selection])
+  const currentWordTarget = () => JSON.stringify([selectionIdentity(), options.draft.operations])
+  const pendingWordCandidate = () => !!queue && job?.status === 'succeeded' && job.accepted !== true
   const editable = () => !disposed && !options.draft.closed && !options.draft.saving && !options.locked?.()
   function update() {
-    start.disabled = !editable() || busy || accepting || !selection.length || presetStale
+    start.disabled = !editable() || busy || accepting || pendingWordCandidate() || !selection.length || presetStale
+    queue?.setBusy(busy || accepting || pendingWordCandidate())
+    editQueue?.setBlocked(!editable() || busy || accepting || pendingWordCandidate())
     accept.disabled = !editable() || busy || accepting || presetStale || job?.status !== 'succeeded' || job.accepted === true
     cancel.disabled = disposed || !job && !busy
     options.onStateChange?.()
@@ -87,14 +97,34 @@ export function bindNativeAI(container: HTMLElement, options: {
     status.textContent = value.proposal?.summary ?? value.error?.message ?? ({running:'正在生成并核验建议',succeeded:'建议已核验',failed:'建议生成失败',cancelled:'建议已取消'}[value.status])
     update()
   }
-  start.onclick = async () => {
-    if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) return
-    try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
-    if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) {update();return}
+  function prepare(instruction: string) {
+    if (!editable() || busy || accepting || pendingWordCandidate() || presetStale || !selection.length || !instruction) return false
+    try { options.view.flushPendingEdits?.() }
+    catch (error) {
+      status.textContent = error instanceof Error ? error.message : '未保存输入同步失败'
+      return false
+    }
+    return editable() && !busy && !accepting && !presetStale && !!selection.length
+  }
+  function submitQueued(instruction: string, target: string) {
+    if (!editable() || busy || accepting || pendingWordCandidate()) return false
+    if (!prepare(instruction) || selectionIdentity() !== target) {
+      queue?.hold()
+      status.textContent = '请恢复排队指令的授权选区并确认草稿已同步，再继续排队。'
+      return false
+    }
+    void generate(instruction)
+    return true
+  }
+  start.onclick = () => {
+    const instruction = input.value.trim()
+    if (prepare(instruction)) void generate(instruction)
+  }
+  async function generate(instruction: string) {
     panelView?.beforeTask()
     const turn = ++generation
-    const instruction=input.value.trim(), selected=structuredClone(selection)
-    if(options.format==='docx')wordTarget=JSON.stringify({instruction,selection:selected,operations:options.draft.operations})
+    const selected=structuredClone(selection)
+    if(options.format==='docx')wordTarget=currentWordTarget()
     const target=wordTarget
     const requestId = crypto.randomUUID()
     activeRequestId = requestId
@@ -164,12 +194,14 @@ export function bindNativeAI(container: HTMLElement, options: {
     }
   }
   cancel.onclick = async () => {
+    if (busy || accepting) queue?.hold()
     const turn=++generation; progress.stop(); busy = false
     activeRequestId = undefined; job = undefined; status.textContent = '建议已取消'; update()
     details.hidden = true
     try { await tasks.cancel() } catch (error) { if (!disposed && turn===generation) status.textContent = error instanceof Error ? error.message : '服务端取消失败' }
   }
   function clearCandidate() {
+    queue?.hold()
     activeRequestId=undefined
     ++generation;progress.reset();busy=false;job=undefined;wordTarget=undefined;details.hidden=true
     void tasks.cancel().catch(()=>{})
@@ -179,7 +211,24 @@ export function bindNativeAI(container: HTMLElement, options: {
     clearCandidate(); panel.hidden = true; status.textContent = '建议已取消'; update()
   }
   body.onclick=()=>{clearCandidate();presetScope=undefined;presetStale=false;reviewMode=false;noteBeforeText=undefined;body.hidden=true;selection=structuredClone(documentSelection);input.value='';status.textContent='已切换到正文选区，请输入修改要求';update()}
-  if(options.format==='docx')input.oninput=()=>{if(job || busy){clearCandidate();status.textContent='修改要求已变化，请重新生成建议。';update()}}
+  if (options.format === 'docx' && options.wordEditQueue) {
+    editQueue = mountDocxEditQueue(options.wordEditQueue, input, status, resolve => {
+      if (!editable() || busy || accepting || pendingWordCandidate()) return
+      options.view.flushPendingEdits?.()
+      if (!editable() || busy || accepting || pendingWordCandidate()) return
+      const batch = resolve()
+      if (!batch.targets.length) return
+      presetScope = undefined
+      presetStale = false
+      reviewMode = true
+      noteBeforeText = undefined
+      body.hidden = false
+      selection = structuredClone(batch.targets)
+      void generate(batch.instruction)
+      return batch
+    })
+    input.before(editQueue.element)
+  }
   update()
   return {
     update,
@@ -259,6 +308,6 @@ export function bindNativeAI(container: HTMLElement, options: {
       }
       selection = structuredClone(value); update()
     },
-    dispose() { if(disposed)return;panelView?.dispose();clearCandidate();disposed = true;progress.stop();panel.remove() },
+    dispose() { if(disposed)return;panelView?.dispose();clearCandidate();disposed = true;editQueue?.dispose();queue?.dispose();progress.stop();panel.remove() },
   }
 }

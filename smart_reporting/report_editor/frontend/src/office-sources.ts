@@ -37,11 +37,11 @@ function choices(values: string[], selected: string[]) {
   return { container, values: () => [...boxes].filter(([, box]) => box.checked).map(([value]) => value) }
 }
 
-export async function showOfficeSources(host: HTMLElement, options: { admin: boolean; space?: OfficeSpace }) {
+export async function showOfficeSources(host: HTMLElement, options: { admin: boolean; grantsOnly?: boolean; space?: OfficeSpace }) {
   const queryDrafts = new Map<string, string>()
   const panel = node('dialog')
   panel.className = 'office-administration office-sources'
-  const heading = node('h2', options.admin ? '公司数据源管理' : '工作区数据源')
+  const heading = node('h2', options.grantsOnly ? '工作区数据源授权' : options.admin ? '公司数据源管理' : '工作区数据源')
   const content = node('div'), status = node('p'), close = node('button', '关闭')
   status.setAttribute('role', 'status')
   close.onclick = () => panel.close()
@@ -75,7 +75,7 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
   async function list() {
     content.replaceChildren()
     if (!options.admin) { await available(); return }
-    content.append(button('新增 StarRocks 数据源', async () => edit()))
+    if (!options.grantsOnly) content.append(button('新增 StarRocks 数据源', async () => edit()))
     let cursor: string | null = null
     do {
       const page: { items: Source[]; nextCursor: string | null } = await officeRequest(
@@ -84,7 +84,7 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
         const row = node('div'); row.className = 'office-admin-row'
         row.append(node('span', `${source.name} · ${source.database}`),
           node('small', source.publishedRevision ? `已发布 v${source.publishedRevision}` : '未发布'),
-          button('连接与表范围', async () => edit(source.source_id)),
+          ...(!options.grantsOnly ? [button('连接与表范围', async () => edit(source.source_id))] : []),
           button('工作区授权', async () => grants(source.source_id)))
         content.append(row)
       }

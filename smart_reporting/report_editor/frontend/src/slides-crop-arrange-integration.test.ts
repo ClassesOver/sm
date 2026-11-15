@@ -21,7 +21,7 @@ const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5
   ] },
   { slideIndex: 1, elements: [{ id: 'other', type: 'text', name: '其他页', text: '其他页', editable: true, arrangeEditable: true, geometry: geometry(40, 40) }] },
 ] }
-async function open(operations: Record<string, unknown>[] = []) {
+async function open(operations: Record<string, unknown>[] = [], renderTree: Promise<object> = Promise.resolve({ slides: [] })) {
   document.documentElement.lang = 'zh-CN'
   const storage = new Map<string, string>()
   const draft = new NativeDraft({ documentId: 'crop-arrange', revision: 1, sourceSha256: source.sha256,
@@ -30,7 +30,7 @@ async function open(operations: Record<string, unknown>[] = []) {
   if (operations.length) draft.setOperations(operations as any)
   const root = document.createElement('main'); document.body.append(root)
   const shell = createEditorShell(root, 'full', 'pptx')
-  const request = vi.fn(async (path: string, _init?: RequestInit) => path === 'deck' ? source : path === 'render-tree' ? { slides: [] }
+  const request = vi.fn(async (path: string, _init?: RequestInit) => path === 'deck' ? source : path === 'render-tree' ? renderTree
     : { revision: 2, revisionRegistered: true, validation: { issues: [] } })
   const view = createSlidesEditorView(shell.editor, { native: true, draft, request: request as any, save: shell.save, download: shell.exportPptx })
   await view.ready
@@ -43,7 +43,8 @@ async function open(operations: Record<string, unknown>[] = []) {
 }
 
 it('stages and clears picture outlines from the Picture Format ribbon', async () => {
-  const app = await open()
+  let resolveTree!: (tree: object) => void
+  const app = await open([], new Promise(resolve => { resolveTree = resolve }))
   try {
     const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
     object.value = 'picture'
@@ -54,9 +55,17 @@ it('stages and clears picture outlines from the Picture Format ribbon', async ()
     expect(menu.getAttribute('aria-expanded')).toBe('true')
     const color = app.shell.editor.querySelector<HTMLInputElement>('[data-command="pictureOutlineColor"]')!
     expect(color.disabled).toBe(false)
+    const widths = [...app.shell.editor.querySelectorAll<HTMLButtonElement>('[data-command="pictureOutlineWidth"] [data-outline-width]')]
+    const none = app.command('pictureNoOutline')
+    expect(widths.some(button => button.getAttribute('aria-pressed') === 'true')).toBe(false)
+    expect(none.getAttribute('aria-pressed')).toBe('false')
+    resolveTree({ slides: [{ slideIndex: 0, widthPx: 960, heightPx: 540, background: { kind: 'solid', color: '#FFFFFF' },
+      nodes: [{ sourceId: 'picture', type: 'picture', box: { x: 40, y: 200, w: 200, h: 100 },
+        stroke: { color: '#8899AA', widthPt: 3 } }] }] })
+    await vi.waitFor(() => expect(color.value).toBe('#8899aa'))
+    expect(widths.find(button => button.dataset.outlineWidth === '3')?.getAttribute('aria-pressed')).toBe('true')
     color.value = '#123456'
     color.dispatchEvent(new Event('change', { bubbles: true }))
-    const widths = [...app.shell.editor.querySelectorAll<HTMLButtonElement>('[data-outline-width]')]
     expect(widths.map(button => button.dataset.outlineWidth)).toEqual(['0.5', '1', '1.5', '2.25', '3', '4.5', '6'])
     widths.find(button => button.dataset.outlineWidth === '2.25')!.click()
     expect(menu.getAttribute('aria-expanded')).toBe('false')
@@ -66,10 +75,14 @@ it('stages and clears picture outlines from the Picture Format ribbon', async ()
     menu.click()
     app.command('pictureNoOutline').click()
     expect(app.draft.operations[0]?.shapeStyles).toEqual([{ slideIndex: 0, elementId: 'picture', stroke: null }])
+    expect(none.getAttribute('aria-pressed')).toBe('true')
+    expect(widths.some(button => button.getAttribute('aria-pressed') === 'true')).toBe(false)
     app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
     expect(app.draft.operations[0]?.shapeStyles).toEqual([
       { slideIndex: 0, elementId: 'picture', stroke: { color: '#123456', widthPt: 2.25 } },
     ])
+    expect(none.getAttribute('aria-pressed')).toBe('false')
+    expect(widths.find(button => button.dataset.outlineWidth === '2.25')?.getAttribute('aria-pressed')).toBe('true')
   } finally {
     app.view.dispose()
   }

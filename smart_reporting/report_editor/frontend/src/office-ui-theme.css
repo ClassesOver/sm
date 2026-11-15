@@ -1,0 +1,60 @@
+@import './vendor/genoffice-ui/tokens.scoped.css';
+
+/* Compatibility aliases belong to UI chrome only, never document contents. */
+:where(.office-ui-theme, #office, .office-admin-page, .editor-account-settings, body > [class*='docx-'][class*='-host'], body > [class*='pdf-'][class*='-host'], body > [class*='workbook-'][class*='-host'], body > [class*='slides-'][class*='-host']) {
+  --office-accent: var(--color-brand-secondary);
+  --office-accent-hover: var(--color-border-brand);
+  --office-accent-soft: var(--bg-hover-accent);
+  --office-ink: var(--text-primary);
+  --office-ink-2: var(--text-secondary);
+  --office-muted: var(--text-tertiary);
+  --office-chrome: var(--surface);
+  --office-tabbar: var(--surface-subtle);
+  --office-border: var(--border);
+  --office-border-soft: var(--border-subtle);
+  --office-border-strong: var(--border-strong);
+  --office-separator: #dfe8ef;
+  --office-hover-bg: var(--bg-hover);
+  --office-hover-border: var(--border-hover);
+  --office-pressed-bg: var(--pressed);
+  --office-pressed-border: var(--border-strong);
+  --office-pressed-ink: var(--text-primary);
+  --office-selection: var(--color-select-border);
+  --office-disabled-opacity: 0.55;
+  --office-focus-ring: #8fc9df;
+  --office-canvas: var(--canvas);
+  --office-sidebar: var(--bg-content);
+  --office-page-border: #d5dfe6;
+  --office-page-shadow: 0 1px 2px rgb(27 42 65 / 4%), 0 14px 36px rgb(27 42 65 / 8%);
+  --office-primary-shadow: 0 2px 7px rgb(11 79 138 / 18%);
+  --office-radius: var(--radius-6);
+  --office-font-size: 14px;
+  --office-label-size: var(--font-size-xs);
+  --office-tabbar-height: 36px;
+  --office-tab-height: 32px;
+  --office-body-height: 112px;
+  --office-control-height: 28px;
+  --office-big-control-height: 60px;
+}
+:where(.office-ui-theme, #office, .office-admin-page, .editor-account-settings, body > [class*='docx-'][class*='-host'], body > [class*='pdf-'][class*='-host'], body > [class*='workbook-'][class*='-host'], body > [class*='slides-'][class*='-host']) {
+  --color-primary: var(--color-brand-secondary);
+  --color-accent: var(--color-border-brand);
+  --color-primary-soft: var(--bg-hover-accent);
+  --color-ink: var(--text-primary);
+  --color-ink-2: var(--text-secondary);
+  --color-text-muted: var(--text-tertiary);
+  --color-border: var(--border);
+  --color-border-soft: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+}
+.office-ui-theme > .app-bar { background:var(--chrome-bg); color:var(--text-primary); border-color:var(--border); }
+.office-ui-theme > .report-meta { background:var(--surface-subtle); color:var(--text-secondary); border-color:var(--border); }
+
+/* Preference chrome overrides belong to the UI theme layer. */
+html[data-office-theme=dark] #office{color:var(--text-primary);--line:var(--border);--muted:var(--text-secondary)}
+html[data-office-theme=dark] #office :is(.office-body,main,.tabbar,aside,.space-selector,.file-list,.home-content){background:var(--bg-content);color:var(--text-primary)}
+html[data-office-theme=dark] #office :is(.tab.active,.file-tab.active,.file-row:hover){background:var(--active-bg);color:var(--text-primary)}
+
+.office-ui-theme { background:var(--canvas);color:var(--text-primary); }
+
+.office-ui-theme > :is(.app-bar,.report-meta), .office-ui-theme :is(.office-task-dock,.pdf-ai-dock) { font-family:var(--gs-font-sans); }

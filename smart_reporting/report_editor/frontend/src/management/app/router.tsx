@@ -18,7 +18,7 @@ const Policies = lazy(() => import('../features/policies/page'))
 const Metrics = lazy(() => import('../features/metrics/page'))
 const Knowledge = lazy(() => import('../features/knowledge/page'))
 const SystemConfiguration = lazy(() => import('../features/configuration/system'))
-const Preferences = lazy(() => import('../features/configuration/preferences'))
+function Preferences() { useEffect(() => { window.location.replace('/office?settings=preferences') }, []); return <a href="/office?settings=preferences">打开个人偏好</a> }
 function Boundary() {
   const { state, load } = useSession(),
     location = useLocation()

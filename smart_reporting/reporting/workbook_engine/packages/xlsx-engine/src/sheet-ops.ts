@@ -38,9 +38,10 @@ import { setWorksheetCellText } from './workbook-write'
 import { shiftConditionalFormattingXml,overlayConditionalFormattingXml } from './conditional-formatting-structure-xml'
 import {parseThemePalette} from './style-read'
 import { shiftSheetNotes } from './notes'
-import { parseRange, parseAddress, formatAddress, columnIndex } from './cell-address'
-import { computeSortedRowOrder } from './sort-range'
-import { parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
+import { parseRange, parseAddress, formatAddress, columnIndex, rangeCellCount, type RangeBounds } from './cell-address'
+import { computeSortedRowOrder, sortKeyOffsets, type SortSpec } from './sort-range'
+import { inheritedCellStyleIndex, isCellUnlocked, parseSheetElements, resolveWorksheetPath, readWorkbook } from './workbook-read'
+import { readSheetNotes } from './note-read'
 import { assemblePackage, createBufferEntrySource, type MutationPlan } from './zip'
 import { assertRemovedTableDependencies, planSheetRemovalParts, removePartOverrides } from './sheet-removal-parts'
 
@@ -481,21 +482,98 @@ export async function applyRowColumnOps(
 /// and notes make the call fail closed: formula text moved between rows
 /// would silently re-target relative references, and note relocation rides
 /// the grid path where the move payload preserves authors.
+/** Keep the existing merge anchors only when every affected merge moves as
+ * one block into an equivalent merge. A merge crossing the selection cannot move. */
+function assertSortPreservesMerges(merges: readonly string[], bounds: RangeBounds, targets: ReadonlyMap<number, number>): void {
+  const areas = merges.map(ref => ({ ref, ...parseRange(ref) }))
+  const key = (area: RangeBounds) => `${area.startRow}:${area.endRow}:${area.startColumn}:${area.endColumn}`
+  const layout = new Set(areas.map(key))
+  for (const area of areas) {
+    if (area.endColumn < bounds.startColumn || area.startColumn > bounds.endColumn) continue
+    const first = Math.max(area.startRow, bounds.startRow), last = Math.min(area.endRow, bounds.endRow)
+    let moved = false
+    for (let row = first; row <= last; row++) if (targets.get(row) !== row) { moved = true; break }
+    if (!moved) continue
+    const fail = () => new Error(`排序会拆分合并单元格或改变其布局（${area.ref}）。`)
+    if (area.startRow < bounds.startRow || area.endRow > bounds.endRow ||
+        area.startColumn < bounds.startColumn || area.endColumn > bounds.endColumn) throw fail()
+    const target = targets.get(area.startRow)!
+    for (let row = area.startRow; row <= area.endRow; row++) {
+      if (targets.get(row) !== target + row - area.startRow) throw fail()
+    }
+    if (!layout.has(key({ ...area, startRow: target, endRow: target + area.endRow - area.startRow }))) throw fail()
+  }
+}
+
+/** Relocate hyperlink coverage with the sorted cells, retaining the original
+ * targets and relationship ids. A range crossing the sort boundary may split. */
+function remapSortedHyperlinks(xml: string, bounds: RangeBounds, targetRows: ReadonlyMap<number, number>): string {
+  if (!/<hyperlinks\b/.test(xml)) return xml
+  return xml.replace(/<hyperlinks\b[^>]*>[\s\S]*?<\/hyperlinks>/g, section => section.replace(/<hyperlink\b[^>]*?(?:\/>|>[\s\S]*?<\/hyperlink>)/g, link => {
+    const attribute = /(\sref\s*=\s*)(["'])(.*?)\2/
+    const ref = attribute.exec(link)?.[3]
+    if (!ref) return link
+    let area: RangeBounds
+    try { area = parseRange(ref) } catch { return link }
+    const firstColumn = Math.max(area.startColumn, bounds.startColumn), lastColumn = Math.min(area.endColumn, bounds.endColumn)
+    const firstRow = Math.max(area.startRow, bounds.startRow), lastRow = Math.min(area.endRow, bounds.endRow)
+    if (firstColumn > lastColumn || firstRow > lastRow) return link
+
+    const moved: [number, number][] = []
+    if (area.startRow < firstRow) moved.push([area.startRow, firstRow - 1])
+    if (lastRow < area.endRow) moved.push([lastRow + 1, area.endRow])
+    for (let row = firstRow; row <= lastRow; row++) {
+      const target = targetRows.get(row) ?? row
+      moved.push([target, target])
+    }
+    const spans: [number, number][] = []
+    for (const span of moved.sort((a, b) => a[0] - b[0])) {
+      const last = spans.at(-1)
+      if (last && span[0] <= last[1] + 1) last[1] = Math.max(last[1], span[1])
+      else spans.push(span)
+    }
+    if (spans.length === 1 && spans[0]![0] === area.startRow && spans[0]![1] === area.endRow) return link
+
+    const regions = spans.map(([startRow, endRow]) => ({ startRow, endRow, startColumn: firstColumn, endColumn: lastColumn }))
+    if (area.startColumn < firstColumn) regions.push({ ...area, endColumn: firstColumn - 1 })
+    if (lastColumn < area.endColumn) regions.push({ ...area, startColumn: lastColumn + 1 })
+    return regions.map(region => {
+      const first = formatAddress(region.startRow, region.startColumn), last = formatAddress(region.endRow, region.endColumn)
+      const next = first === last ? first : first + ':' + last
+      return link.replace(attribute, (_full, prefix: string, quote: string) => prefix + quote + next + quote)
+    }).join('')
+  }))
+}
+
 export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
-  spec: { range: string; byColumn: string; ascending: boolean; hasHeader: boolean }): Promise<Uint8Array> {
+  spec: SortSpec): Promise<Uint8Array> {
   const model = await readWorkbook(sourceBytes)
   const sheet = model.sheets.find(entry => entry.name === sheetName)
   if (!sheet) throw new Error(`workbook.xml 中找不到工作表 "${sheetName}"。`)
   const bounds = parseRange(spec.range)
-  const keyColumn = columnIndex(spec.byColumn)
-  if (keyColumn < bounds.startColumn || keyColumn > bounds.endColumn) throw new Error(`Sort column ${spec.byColumn} is outside the range ${spec.range}.`)
+  if (sheet.protection?.protected) {
+    if (sheet.protection.allow.sort !== true) throw new Error('受保护的工作表未授权排序。')
+    if (bounds.endRow >= 1048576 || bounds.endColumn >= 16384 || rangeCellCount(bounds) > 1_000_000) {
+      throw new Error('受保护工作表的排序范围过大。')
+    }
+    for (let row = bounds.startRow; row <= bounds.endRow; row++) {
+      for (let column = bounds.startColumn; column <= bounds.endColumn; column++) {
+        if (!isCellUnlocked(model, sheet, row, column)) throw new Error(`排序范围包含锁定单元格 ${formatAddress(row, column)}。`)
+      }
+    }
+  }
+  const [first, ...thenBy] = sortKeyOffsets(spec, bounds)
   const inRange = (row: number, column: number) => row >= bounds.startRow && row <= bounds.endRow && column >= bounds.startColumn && column <= bounds.endColumn
   for (const [address, cell] of Object.entries(sheet.cells)) {
     if (!cell.formula) continue
     const { row, column } = parseAddress(address)
     if (inRange(row, column)) throw new Error(`The sort range contains a formula at ${address} — sorting would silently re-target its references.`)
   }
-  if (sheet.notes) for (const note of sheet.notes.notes) {
+  const source = await createBufferEntrySource(sourceBytes)
+  const notes = sheet.protection?.protected
+    ? await readSheetNotes(source, sheet.path, { allowProtected: true }) : sheet.notes
+  if (sheet.protection?.protected && notes?.readOnlyReason) throw new Error(notes.readOnlyReason)
+  if (notes) for (const note of notes.notes) {
     if (inRange(note.row, note.column)) throw new Error('排序范围包含批注；请改用网格排序以保留批注作者。')
   }
   const firstDataRow = bounds.startRow + (spec.hasHeader ? 1 : 0)
@@ -506,9 +584,12 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) cells.push(sheet.cells[formatAddress(row, column)]?.value ?? null)
     rows.push(cells)
   }
-  const order = computeSortedRowOrder(rows, keyColumn - bounds.startColumn, spec.ascending)
+  const order = computeSortedRowOrder(rows, first!.offset, first!.ascending, thenBy)
+  if (order.every((source, target) => source === target)) return sourceBytes
+  const dataBounds = { ...bounds, startRow: firstDataRow }
+  const targetRows = new Map(order.map((source, target) => [firstDataRow + source, firstDataRow + target]))
+  assertSortPreservesMerges(sheet.merges, dataBounds, targetRows)
 
-  const source = await createBufferEntrySource(sourceBytes)
   const workbookXml = await source.readText('xl/workbook.xml')
   const parts = await sheetPartsOf(source, workbookXml)
   const target = parts.find(part => part.name === sheetName)
@@ -542,7 +623,8 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
   const columnNumberOf = (cellXml: string): number => columnIndex(cellXml.match(/\br="([A-Z]{1,3})[0-9]+"/)?.[1] ?? 'A')
   const rebuiltRows = new Map<number, string>()
   for (let row = firstDataRow; row <= bounds.endRow; row += 1) {
-    const moved = rangeCells.get(firstDataRow + order[row - firstDataRow]!) ?? new Map<number, string>()
+    const fromRow = firstDataRow + order[row - firstDataRow]!
+    const moved = rangeCells.get(fromRow) ?? new Map<number, string>()
     const existing = rangeRowXml.get(row)
     const rowMatch = existing?.match(/^(<row\b[^>]*>)([\s\S]*?)(<\/row>)$/)
     const kept: string[] = []
@@ -554,7 +636,14 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     const pieces = [...kept]
     for (let column = bounds.startColumn; column <= bounds.endColumn; column += 1) {
       const cellXml = moved.get(column)
-      if (cellXml) pieces.push(renumberRow(cellXml, row))
+      if (cellXml) {
+        const sourceIndex = inheritedCellStyleIndex(sheet, fromRow, column) ?? 0
+        const targetIndex = inheritedCellStyleIndex(sheet, row, column) ?? 0
+        const styled = sourceIndex !== targetIndex && sheet.cells[formatAddress(fromRow, column)]?.styleIndex === undefined
+          ? cellXml.replace(/<c\b/, `<c s="${sourceIndex}"`)
+          : cellXml
+        pieces.push(renumberRow(styled, row))
+      }
     }
     pieces.sort((left, right) => columnNumberOf(left) - columnNumberOf(right))
     if (rowMatch) rebuiltRows.set(row, `${rowMatch[1]}${pieces.join('')}${rowMatch[3]}`)
@@ -572,8 +661,9 @@ export async function sortRangeRows(sourceBytes: Uint8Array, sheetName: string,
     return inserted + (rebuiltRows.get(rowIndex) ?? rowXml)
   })
   const nextBody = body + additions.map(([, xml]) => xml).join('')
+  const rewritten = remapSortedHyperlinks(`${sheetData[1]}${nextBody}${sheetData[3]}`, dataBounds, targetRows)
   const mutationPlan: MutationPlan = {
-    replaced: new Map([[target.path, `${sheetData[1]}${nextBody}${sheetData[3]}`]]),
+    replaced: new Map([[target.path, rewritten]]),
     added: new Map(), addedBinary: new Map(), removedEntries: [], addedEntries: [],
     touchedEntries: [target.path],
   }

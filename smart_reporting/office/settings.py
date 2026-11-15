@@ -108,7 +108,7 @@ class OfficeSettings:
         if not global_settings and not set(document.get("disabledSkills", [])) <= {
             skill["id"] for skill in skill_catalog()
         }:
-            raise OfficeError("office_skill_unknown", "Skill列表已变化，请重新打开设置。", 422)
+            raise OfficeError("office_skill_unknown", "技能列表已变化，请重新打开设置。", 422)
         if not global_settings:
             document = {
                 "theme": document["theme"],
@@ -205,6 +205,9 @@ async def configure_office_agent(agent, *, update_model=False):
     if context is None:
         return
     await attach_personal_skills(agent)
+    from .document_preferences import OfficeDocumentPreferences
+
+    await OfficeDocumentPreferences(context[0].office).attach(agent, context[1])
     from .provider_tools import attach_provider_tools
 
     await attach_provider_tools(agent)

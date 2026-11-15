@@ -36,13 +36,13 @@ function targetPath(sheetPath: string, target: string): string {
   if (!path.startsWith('xl/')) throw new Error('批注关系越界')
   return path
 }
-export async function readSheetNotes(source: EntrySource, path: string, options: { allowPictures?: boolean; allowThreads?: boolean } = {}): Promise<NoteSource> {
+export async function readSheetNotes(source: EntrySource, path: string, options: { allowPictures?: boolean; allowThreads?: boolean; allowProtected?: boolean } = {}): Promise<NoteSource> {
   const result: NoteSource = { notes: [], sourceIdentity: '', commentXml: new Map(), shapeXml: new Map(), authors: [] }
   try {
     const sheet = await source.readText(path)
     const relsPath = path.replace(/\/([^/]+)$/, '/_rels/$1.rels')
     const rels = await source.has(relsPath) ? await source.readText(relsPath) : ''
-    if (/<(?:\w+:)?sheetProtection\b/.test(sheet)) throw new Error('受保护工作表暂不支持批注编辑')
+    if (!options.allowProtected && /<(?:\w+:)?sheetProtection\b/.test(sheet)) throw new Error('受保护工作表暂不支持批注编辑')
     if (!options.allowThreads && /threadedComment|person\b|persons\b/i.test(rels + sheet)) throw new Error('线程批注不属于 legacy notes，暂不支持编辑')
     const relationships = [...rels.matchAll(/<Relationship\b[^>]*\/?\s*>/g)].map(m => m[0])
     const notes = relationships.filter(r => readXmlAttribute(r, 'Type') === 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments')

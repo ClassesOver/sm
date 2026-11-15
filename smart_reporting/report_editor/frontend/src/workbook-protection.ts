@@ -12,7 +12,7 @@
  * unlocked cell XF. A locked structure blocks sheet add/remove/rename/reorder/hide. The save
  * enforces the same rule, so a replayed draft cannot write past protection.
  */
-import { formatAddress, type RangeBounds, type WorkbookModel } from '@sheets-web/xlsx-engine'
+import { isCellUnlocked, type RangeBounds, type WorkbookModel } from '@sheets-web/xlsx-engine'
 import type { WorkbookOperation } from './workbook-draft'
 import { editableRangeContains, validRange, type EditableRange, type ProtectedValueContext } from './workbook-editable-ranges'
 import type { FilterRange, FilterSheet } from './workbook-filters'
@@ -63,8 +63,7 @@ export function protectedValuePermission(model: WorkbookModel, sheet: WorkbookMo
     if (!sheet || (range.endRow - range.startRow + 1) * (range.endColumn - range.startColumn + 1) > 1_000_000) return false
     for (let row = range.startRow; row <= range.endRow; row++) {
       for (let column = range.startColumn; column <= range.endColumn; column++) {
-        const styleIndex = sheet.cells?.[formatAddress(row, column)]?.styleIndex
-        if (styleIndex !== undefined && model.styles.cellXfs[styleIndex]?.protection?.locked === false) continue
+        if (isCellUnlocked(model, sheet, row, column)) continue
         if (!editableRangeContains({ startRow: row, endRow: row, startColumn: column, endColumn: column }, ranges)) return false
       }
     }

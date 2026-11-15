@@ -16,10 +16,10 @@ beforeEach(() => {
   root = createRoot(document.querySelector('#test')!)
 })
 afterEach(async () => { await act(async () => root.unmount()); vi.restoreAllMocks() })
-it('个人菜单仅有账户、偏好和Skill，关闭恢复账户入口焦点', async () => {
+it('个人菜单仅有账户、偏好和技能，关闭恢复账户入口焦点', async () => {
   const close = vi.fn()
   await act(async () => root.render(<AccountSettingsDialog username="alice" settings={saved} onSave={async value => value} onClose={close} onLogout={async () => {}} />))
-  expect([...document.querySelectorAll('nav button')].map(x => x.textContent)).toEqual(['账户', '偏好', 'Skill'])
+  expect([...document.querySelectorAll('nav button')].map(x => x.textContent)).toEqual(['账户', '偏好', '技能'])
   expect(document.querySelector('[role="dialog"]')?.textContent).toContain('alice')
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click())
   expect(close).toHaveBeenCalledOnce()
@@ -43,10 +43,10 @@ it('保存失败保留个人草稿，可以重试，不误报成功', async () =
   expect(save).toHaveBeenLastCalledWith({ ...saved, theme: 'dark' })
   expect(document.body.textContent).toContain('已保存')
 })
-it('未保存修改关闭时提示，取消关闭保留Skill选择', async () => {
+it('未保存修改关闭时提示，取消关闭保留技能选择', async () => {
   const close = vi.fn()
   await act(async () => root.render(<AccountSettingsDialog username="alice" settings={saved} onSave={async x => x} onClose={close} onLogout={async () => {}} />))
-  await click('Skill')
+  await click('技能')
   await act(async () => document.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click())
   await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="关闭设置"]')!.click())
   expect(close).not.toHaveBeenCalled()

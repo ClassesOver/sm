@@ -724,7 +724,8 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet?.() ?? undefined
     return {
       sheet: { protected: sheetProtected(sheetId), allowFilter: protectedFilterAllowed(originalSheet(sheetId), sheet,
-        'sheet.command.clear-filter-criteria', undefined), reason: password ? '此工作表受密码保护，暂不支持撤销或修改其保护' : undefined },
+        'sheet.command.clear-filter-criteria', undefined), allowSort: originalSheet(sheetId)?.protection?.allow?.sort === true,
+        reason: password ? '此工作表受密码保护，暂不支持撤销或修改其保护' : undefined },
       workbook: { locked: structureLocked(), reason: currentModel?.workbookProtection?.hasPassword ? '工作簿结构受密码保护，暂不支持撤销或修改其保护' : undefined },
     }
   }
@@ -767,9 +768,29 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
     if (!runtime.univerAPI.syncExecuteCommand('sheet.command.set-range-values', params)) throw new Error(feedback.textContent || '删除重复值未应用')
     feedback.textContent = `已删除 ${plan.removed} 行重复值，修改尚未保存。`
   })
+  const sortProtectedRange = (range: SortRange, hasHeader: boolean, rules: readonly { colIndex: number; type: 'asc' | 'desc' }[]) => {
+    const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+    if (!sheet || !sheetProtected(sheet.getSheetId())) throw new Error('工作表已变化，请重新选择排序区域')
+    const sheetName = sheet.getSheetName(), source = original, core = sheet.getSheet()
+    const [first, ...thenBy] = rules.map(rule => ({
+      byColumn: formatAddress(0, rule.colIndex).slice(0, -1), ascending: rule.type === 'asc',
+    }))
+    if (!first) throw new Error('请至少选择一个排序依据')
+    const validate = () => {
+      if (!editable() || original !== source || runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet() !== core
+        || sheet.getSheetName() !== sheetName) throw new Error('工作表已变化，请重新选择排序区域')
+    }
+    return applyWorkbookDraftOperation(validate, { kind: 'sortRange', sheetName, spec: {
+      range: formatAddress(range.startRow, range.startColumn) + ':' + formatAddress(range.endRow, range.endColumn),
+      ...first, hasHeader, ...(thenBy.length ? { thenBy } : {}),
+    } }, '已排序，修改尚未保存。')
+  }
+  let sameSortTarget: (() => boolean) | undefined
   const sortDialog = createSortDialog(shell.editor, (range, hasTitle, orderRules) => {
     if (!editable()) throw new Error('当前工作簿不可编辑或正在保存')
+    if (!sameSortTarget?.()) throw new Error('工作表已变化，请重新选择排序区域')
     const workbook = runtime.univerAPI.getActiveWorkbook()!, sheet = workbook.getActiveSheet()!
+    if (sheetProtected(sheet.getSheetId())) return sortProtectedRange(range, hasTitle, orderRules)
     const reason = noteStructureReason(currentModel, noteWorkbook(), { id: 'sheet.command.sort-range' })
     if (reason) throw new Error(reason)
     const applied = runtime.univerAPI.syncExecuteCommand('sheet.command.sort-range', { range, orderRules, hasTitle, unitId: workbook.getId(), subUnitId: sheet.getSheetId() })
@@ -2576,8 +2597,11 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           return
         }
         if (command === 'sort-custom-open') {
-          const range = workbook.getActiveSheet()?.getSelection()?.getActiveRange()?.getRange() as SortRange | undefined
-          if (!range) throw new Error('请先选择要排序的区域')
+          const sheet = workbook.getActiveSheet()
+          const range = sheet?.getSelection()?.getActiveRange()?.getRange()
+          if (!sheet || !range) throw new Error('请先选择要排序的区域')
+          const core = sheet.getSheet()
+          sameSortTarget = () => runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet() === core
           sortDialog.open({ startRow: range.startRow, endRow: range.endRow, startColumn: range.startColumn, endColumn: range.endColumn })
           return
         }
@@ -2632,8 +2656,15 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           return
         }
         if (command === 'sort:asc' || command === 'sort:desc') {
-          // The official sort migrates notes in-grid; readOnlyReason notes stay
-          // blocked through the same structural reason.
+          const sheet = workbook.getActiveSheet()
+          if (sheet && sheetProtected(sheet.getSheetId())) {
+            const range = sheet.getSelection()?.getActiveRange()?.getRange()
+            if (!range || range.startRow >= range.endRow) throw new Error('请至少选择两行以排序')
+            void sortProtectedRange(range, false, [{ colIndex: range.startColumn, type: command === 'sort:asc' ? 'asc' : 'desc' }]).catch(error => {
+              feedback.textContent = (error as Error).message
+            })
+            return
+          }
           const reason = noteStructureReason(currentModel, noteWorkbook(), { id: 'sheet.command.sort-range' })
           if (reason) throw new Error(reason)
         }

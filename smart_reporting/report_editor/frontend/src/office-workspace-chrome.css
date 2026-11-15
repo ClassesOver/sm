@@ -1,0 +1,3 @@
+/* The legacy report toolbar is separate from each native Office ribbon. */
+.office-workspace-native > .app-bar { display:none !important; }
+.office-workspace-native { --app-bar-height:0px; }

@@ -24,5 +24,8 @@ it('保存期间冻结全局表单，防止在途编辑被服务器回执覆盖'
   await vi.waitFor(() => expect(input.disabled).toBe(false))
   expect(document.querySelector('.office-admin-layout > section > [role="status"]')!.textContent).toContain('已保存')
   expect(clearKey.disabled).toBe(true)
+  ;[...document.querySelectorAll<HTMLButtonElement>('nav button')].find(x => x.textContent === '数据源管理')!.click()
+  expect(document.querySelector<HTMLAnchorElement>('a[href="/management/sources"]')?.textContent).toBe('打开数据源管理')
+  expect(document.querySelector('section')?.textContent).toContain('工作区数据源授权')
   vi.unstubAllGlobals()
 })
