@@ -16,6 +16,10 @@ class Editor:
             sourceFile={"path": "native/source.xlsx", "size": 10, "sha256": "a" * 64, "mediaType": NATIVE_MEDIA["xlsx"]})
         self.previews = []
 
+    async def read_file(self, _context):
+        # Controlled editor; HTTP accept now rechecks file identity after preview.
+        return b"synthetic source"
+
     async def context_for_session(self, _session):
         return self.context
 

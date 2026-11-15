@@ -705,6 +705,7 @@ class NativeAIService:
         operations: list[dict[str, Any]],
         snapshot_sha256: str,
         server_session_reference: str | None = None,
+        revalidate_session=None,
     ) -> dict[str, Any]:
         started = perf_counter()
         job, context = await self._job(session, edit_id)
@@ -717,11 +718,12 @@ class NativeAIService:
             raise _invalid("native_ai_snapshot_changed", "完整草稿已变化，请重新生成候选。")
         if job.status != "succeeded" or job.proposal is None or self._closed:
             raise _invalid("native_ai_not_ready", "AI 候选尚不可采纳。")
-        combined = self._combined_operations(context, base, job.proposal["operations"])
+        proposal = job.proposal
+        combined = self._combined_operations(context, base, proposal["operations"])
         preview = await self.editor.preview(
             context, expected_sha256=expected_sha256, operations=combined
         )
-        if job.status != "succeeded" or job.proposal is None or self._closed:
+        if job.status != "succeeded" or job.proposal is not proposal or self._closed:
             raise _invalid("native_ai_not_ready", "AI 候选已取消，未加入草稿。")
         if context.format == "pdf" and preview.get("previewDigest") != job.proposal.get(
             "previewDigest"
@@ -732,10 +734,25 @@ class NativeAIService:
         if job.word_task_reference is not None:
             trusted = await self.word_task_dispatcher.completed(job.word_task_reference,
                 session_reference=server_session_reference, base=base)
-            if job.status != 'succeeded' or job.proposal is None or self._closed:
+            if job.status != 'succeeded' or job.proposal is not proposal or self._closed:
                 raise _invalid('native_ai_not_ready', 'Word 候选已失效。')
             if trusted.engine_operations() != job.proposal['operations']:
                 raise _invalid('native_ai_not_ready', 'Word 候选已失效。')
+        # HTTP authority is observed again after preview/receipt awaits. Direct service
+        # callers retain their existing session contract; routes supply this callback.
+        if revalidate_session is not None:
+            current_session = await revalidate_session()
+            current_context = await self._context(current_session)
+            if current_context.digest() != context.digest():
+                raise _invalid("native_ai_snapshot_changed", "完整草稿已变化，请重新生成候选。")
+            await self.editor.read_file(current_context)
+            # The file/context read also yields: recheck registry/expiry last.
+            if await revalidate_session() != current_session:
+                raise _invalid("native_permission_denied", "原生会话权限已变化。")
+        if snapshot_sha256 != job.snapshot_sha256:
+            raise _invalid("native_ai_snapshot_changed", "完整草稿已变化，请重新生成候选。")
+        if job.status != "succeeded" or job.proposal is not proposal or self._closed:
+            raise _invalid("native_ai_not_ready", "AI 候选已取消，未加入草稿。")
         job.accepted = True
         logger.bind(
             format=context.format, document_id=context.document_id, revision=context.revision,
