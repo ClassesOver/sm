@@ -3,6 +3,25 @@ import {OfficeAssistantController} from './office-assistant-controller'
 const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(r=>resolve=r);return {promise,resolve}}
 type Job={id:string;status:string}
 describe('shared Office task control',()=>{
+ it.each([false,true])('rejects a different followed task identity (after polling: %s)',async afterPolling=>{
+  const status=vi.fn<(_id:string)=>Promise<Job>>()
+  if(afterPolling)status.mockResolvedValueOnce({id:'followed',status:'running'})
+  status.mockResolvedValueOnce({id:'unrelated',status:'completed'})
+  const cancel=vi.fn(async(_id:string)=>{})
+  const controller=new OfficeAssistantController({start:async()=>({id:'started',status:'running'}),status,cancel,id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  await expect(controller.follow('followed')).rejects.toThrow('office_task_identity_mismatch')
+  expect(cancel).not.toHaveBeenCalledWith('unrelated')
+ })
+ it('can cancel a followed task before the initial status receipt',async()=>{
+  const pending=deferred<Job>()
+  const cancel=vi.fn(async(_id:string)=>{})
+  const controller=new OfficeAssistantController({start:async()=>({id:'started',status:'running'}),status:()=>pending.promise,cancel,id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})
+  const following=controller.follow('followed')
+  await controller.cancel()
+  pending.resolve({id:'late-unrelated',status:'completed'})
+  expect(await following).toBeUndefined()
+  expect(cancel.mock.calls).toEqual([['followed']])
+ })
  it('returns the terminal server state unchanged through shared polling',async()=>{
   const status=vi.fn(async()=>({id:'word',status:'completed'}))
   const controller=new OfficeAssistantController({start:async()=>({id:'word',status:'running'}),status,cancel:async()=>{},cancelRequest:async()=>{},id:(j:Job)=>j.id,running:(j:Job)=>j.status==='running'})

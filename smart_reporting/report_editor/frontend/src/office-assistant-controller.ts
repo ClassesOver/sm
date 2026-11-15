@@ -28,11 +28,12 @@ export class OfficeAssistantController<Input, Job> {
     return this.track(signal => this.transport.start(input, signal), requestId, onStart, recover)
   }
   follow(taskId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
-    return this.track(signal => this.transport.status(taskId, signal), '', onStart)
+    return this.track(signal => this.transport.status(taskId, signal), '', onStart, undefined, taskId)
   }
   private async track(load: (signal: AbortSignal) => Promise<Job>, requestId: string,
     onStart?: (job: Job, signal: AbortSignal) => void,
-    recover?: (job: Job, error: unknown, signal: AbortSignal) => Promise<Job> | undefined): Promise<Job | undefined> {
+    recover?: (job: Job, error: unknown, signal: AbortSignal) => Promise<Job> | undefined,
+    knownTaskId = ''): Promise<Job | undefined> {
     if (this.busy || this.accepting) throw new Error('office_task_busy')
     const previousRequest = this.requestId, previousTask = this.taskId
     if (previousRequest || previousTask) void this.cleanup(previousRequest, previousTask).catch(() => {})
@@ -40,7 +41,7 @@ export class OfficeAssistantController<Input, Job> {
     this.terminalObserved = false
     this.abort.abort(); this.abort = new AbortController()
     const signal = this.abort.signal
-    this.requestId = requestId; this.taskId = ''; this.busy = true
+    this.requestId = requestId; this.taskId = knownTaskId; this.busy = true
     try {
       let job = await load(signal)
       if (turn !== this.generation) {
@@ -50,7 +51,9 @@ export class OfficeAssistantController<Input, Job> {
         if (requestId) await this.cleanup(this.transport.cancel ? '' : requestId, this.transport.cancel ? this.transport.id(job) : '')
         return undefined
       }
-      this.taskId = this.transport.id(job)
+      const expectedTaskId = knownTaskId || this.transport.id(job)
+      if (!expectedTaskId || this.transport.id(job) !== expectedTaskId) throw new Error('office_task_identity_mismatch')
+      this.taskId = expectedTaskId
       onStart?.(job, signal)
       if (turn !== this.generation) return undefined
       while (this.transport.running(job)) {
@@ -67,6 +70,7 @@ export class OfficeAssistantController<Input, Job> {
           onStart?.(job, signal)
         }
         if (turn !== this.generation) return undefined
+        if (this.transport.id(job) !== expectedTaskId) throw new Error('office_task_identity_mismatch')
       }
       this.terminalObserved = true
       return job
