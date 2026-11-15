@@ -512,3 +512,26 @@ async def test_document_task_status_identity_mismatch_is_hidden_at_http_boundary
     assert result.status_code == 403
     assert "unrelated-content" not in result.text
     assert result.json()["detail"] == "document_channel_authorization_required"
+
+
+@pytest.mark.anyio
+async def test_gateway_returns_detached_task_receipt_snapshot():
+    owned = {"taskId": "expected-task", "status": "preview_ready",
+             "changes": [{"after": "original"}]}
+
+    class Adapter:
+        format = DocumentFormat.DOCX
+
+        async def status(self, authorized_scope, task_id):
+            return owned
+
+    registry = DocumentAdapterRegistry()
+    registry.register(Adapter())
+
+    async def resolve(channel, identity):
+        return scope()
+
+    gateway = DocumentCandidateGateway(registry, resolve)
+    receipt = await gateway.status("channel-a", "member", "expected-task")
+    receipt["changes"][0]["after"] = "client mutation"
+    assert owned["changes"][0]["after"] == "original"
