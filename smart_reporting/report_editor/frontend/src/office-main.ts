@@ -50,6 +50,7 @@ const conversationOf = (space: string) => activeKnowledgeConversation.get(space)
 const draftKey = (space: string) => space + '/' + conversationOf(space)
 let formatOfficeAnswer: typeof renderOfficeAnswer | undefined
 const knowledgeTurns = new Map<string, KnowledgeTurn[]>()
+const savedKnowledgeDocuments = new Map<string, string>()
 const knowledgeInputs = new Map<string, string>()
 const knowledgePending = new Map<string, AbortController>()
 const knowledgeAttachments = new Map<string, {id: string; name: string}[]>()
@@ -140,7 +141,7 @@ function clearAccount() {
   for (const frame of tabs.values()) frame.remove()
   tabs.clear(); tabEntries.clear()
   closedTabs.length = 0
-  knowledgeTurns.clear(); knowledgeInputs.clear(); knowledgeAttachments.clear()
+  knowledgeTurns.clear(); knowledgeInputs.clear(); knowledgeAttachments.clear(); savedKnowledgeDocuments.clear()
   for (const controller of knowledgePending.values()) controller.abort()
   knowledgePending.clear(); knowledgeGeneration.clear(); activeKnowledgeConversation.clear(); knowledgeConversations.clear()
   currentUser = undefined; spaces = []; currentSpace = ''; selectedTab = ''
@@ -227,6 +228,15 @@ function canSendKnowledge(draft: string) {
     knowledgeConversations.has(currentSpace) && !knowledgePending.has(currentSpace))
 }
 
+function knowledgeWordAction(turn: KnowledgeTurn) {
+  if (!turn.citations.length) return ''
+  const fileId = savedKnowledgeDocuments.get(turn.id)
+  const file = fileId && library.entries.find(item => item.id === fileId)
+  const disabled = busy ? 'disabled' : ''
+  if (file) return `<div class="kb-citations"><button data-open-answer-docx="${escape(file.id)}" ${disabled}>打开已保存的 ${escape(file.name)}</button></div>`
+  return canWrite() ? `<div class="kb-citations"><button data-answer-docx="${escape(turn.id)}" ${disabled}>另存为 Word</button></div>` : ''
+}
+
 function ask() {
   const turns = knowledgeTurns.get(currentSpace) ?? []
   const pending = knowledgePending.has(currentSpace)
@@ -250,7 +260,7 @@ function ask() {
     </div>
     <div class="kb-thread ${hasMessages ? 'has-messages' : ''}" data-thread="${escape(key)}" data-last-turn="${escape(pendingQuestion ? 'pending' : turns.at(-1)?.id ?? '')}">${hasMessages ? turns.map(turn => `<article class="kb-turn">
       <div class="kb-question">${escape(turn.question)}</div><div class="kb-answer">${formatOfficeAnswer?.(turn.answer) ?? escape(turn.answer)}</div>
-      ${turn.citations.length && canWrite() ? `<div class="kb-citations"><button data-answer-docx="${escape(turn.id)}" ${busy ? 'disabled' : ''}>另存为 Word</button></div>` : ''}
+      ${knowledgeWordAction(turn)}
       <div class="kb-citations">${turn.citations.map(citation => `<button data-citation="${escape(citation.fileId)}" data-revision="${citation.revision}">${icon('file', 14)} ${escape(citation.name)} · 修订 ${citation.revision}</button>`).join('')}</div>
     </article>`).join('') : `<div class="kb-hero">
       <span class="kb-icon">${icon('book', 22)}</span><h2>问知识库</h2>
@@ -1088,16 +1098,21 @@ root.addEventListener('click', event => {
     return
   }
   if (data.action === 'kb-attach') { picker.removeAttribute('webkitdirectory'); picker.click(); return }
+  if (data.openAnswerDocx) {
+    const entry = library.entries.find(item => item.id === data.openAnswerDocx)
+    if (entry) void withImport(() => reopen(entry))
+    return
+  }
   if (data.answerDocx) {
     const space = currentSpace, account = accountGeneration
+    const turn = data.answerDocx
     const conversation = encodeURIComponent(conversationOf(space))
     void withImport(async () => {
-      const result = await officeRequest<{ fileId: string; editor: { url: string } }>(
-        `/workspaces/${space}/knowledge/${encodeURIComponent(data.answerDocx!)}/docx?conversation=${conversation}`, 'POST')
+      const result = await officeRequest<{ fileId: string }>(
+        `/workspaces/${space}/knowledge/${encodeURIComponent(turn)}/docx?conversation=${conversation}`, 'POST')
       if (account !== accountGeneration) return
+      savedKnowledgeDocuments.set(turn, result.fileId)
       await refreshLibrary()
-      const entry = library.entries.find(item => item.id === result.fileId)
-      if (entry) open(entry, grantPath(result.editor.url))
     })
     return
   }
