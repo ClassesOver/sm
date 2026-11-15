@@ -40,3 +40,23 @@ def test_xlsx_operation_rejects_duplicate_targets():
             ({"sheet": "Sheet1", "range": "A1", "value": 1},
              {"sheet": "Sheet1", "range": "A1", "value": 2}),
         )
+
+
+@pytest.mark.parametrize("target", [
+    {"sheet": ["Sheet1"], "range": "A1", "value": 1},
+    {"sheet": "Sheet1", "range": ["A1"], "value": 1},
+    {"sheet": "Sheet1", "range": "XFE1", "value": 1},
+])
+def test_xlsx_operation_malformed_target_fails_with_validation_error(target):
+    with pytest.raises(ValueError):
+        validate_xlsx_operations(_SELECTION, (target,))
+
+
+@pytest.mark.parametrize("value", [
+    "\u200b=SUM(A1)", "\ufeff=1+1", "\uff1d1+1", "\uff0b1+1",
+])
+def test_xlsx_operation_rejects_invisible_and_compatibility_formula_prefix(value):
+    with pytest.raises(ValueError, match="xlsx_formula_or_value_unsafe"):
+        validate_xlsx_operations(
+            _SELECTION, ({"sheet": "Sheet1", "range": "A1", "value": value},)
+        )
