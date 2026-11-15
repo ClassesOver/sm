@@ -5,8 +5,10 @@ It does not write annotations, edit PDF bytes, or accept candidates.
 """
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 import hashlib
-import io
+import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -24,12 +26,30 @@ class PdfAnnotationPreviewEngine:
     ) -> None:
         self._load_source = load_source
         self._propose = propose
+        self._lock = asyncio.Lock()
+        self._tasks: dict[str, tuple[DocumentScope, str, dict[str, Any]]] = {}
 
-    async def prepare(self, request: DocumentCandidateRequest) -> dict[str, Any]:
+    async def prepare(self, request: DocumentCandidateRequest) -> str:
+        async with self._lock:
+            return await self._prepare_locked(request)
+
+    async def _prepare_locked(self, request: DocumentCandidateRequest) -> str:
         validate_pdf_selection(request.selection)
+        task_id = hashlib.sha256(json.dumps([
+            request.scope.channel, request.scope.grant, request.scope.document_id,
+            request.scope.revision, request.scope.source_sha256, request.request_id,
+        ]).encode()).hexdigest()
+        fingerprint = hashlib.sha256(json.dumps([
+            request.instruction, request.selection,
+        ], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        existing = self._tasks.get(task_id)
+        if existing is not None and (existing[0] != request.scope or existing[1] != fingerprint):
+            raise ValueError("document_request_id_conflict")
         source = await self._load_source(request.scope)
         if hashlib.sha256(source).hexdigest() != request.scope.source_sha256:
             raise PermissionError("document_source_changed")
+        if existing is not None:
+            return task_id
         proposals = await self._propose(request)
         if not proposals or len(proposals) > 100:
             raise ValueError("pdf_annotations_invalid")
@@ -71,4 +91,17 @@ class PdfAnnotationPreviewEngine:
                     "note": item["note"],
                     "context": " ".join(str(word[4]) for word in words)[:2000],
                 })
-        return {"status": "preview_ready", "accepted": False, "changes": changes}
+        self._tasks[task_id] = (request.scope, fingerprint, {
+            "taskId": task_id, "status": "preview_ready",
+            "accepted": False, "changes": changes,
+        })
+        return task_id
+
+    async def status(self, scope: DocumentScope, task_id: str) -> dict[str, Any]:
+        entry = self._tasks.get(task_id)
+        if entry is None or entry[0] != scope:
+            raise PermissionError("document_task_not_accessible")
+        source = await self._load_source(scope)
+        if hashlib.sha256(source).hexdigest() != scope.source_sha256:
+            raise PermissionError("document_source_changed")
+        return deepcopy(entry[2])
