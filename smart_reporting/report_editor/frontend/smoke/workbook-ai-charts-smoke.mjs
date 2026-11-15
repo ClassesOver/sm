@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import {spawn, spawnSync} from 'node:child_process'
 import {createHash} from 'node:crypto'
 import {mkdir, readFile, writeFile} from 'node:fs/promises'
-import {join} from 'node:path'
+import {delimiter,join} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {setTimeout as delay} from 'node:timers/promises'
 import {chromium} from 'playwright'
@@ -17,16 +17,18 @@ const port=Number(process.env.WORKBOOK_AI_CHARTS_PORT??4353),origin=`http://127.
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex')
 const manualRange=process.env.WORKBOOK_AI_CHARTS_VALUE_RANGE==='1'
 const sourceData=process.env.WORKBOOK_AI_CHARTS_SOURCE_DATA==='1'
-await mkdir(directory,{recursive:false})
+const python=process.env.WORKBOOK_AI_CHARTS_PYTHON??join(repo,'.venv/bin/python')
+const externalServer=process.env.WORKBOOK_AI_CHARTS_EXTERNAL_SERVER==='1'
+if(!externalServer)await mkdir(directory,{recursive:false})
 const manifest=await readFile(join(staticDirectory,'.vite/manifest.json'))
-const server=spawn(join(repo,'.venv/bin/python'),[join(frontend,'smoke/workbook-ai-charts-server.py'),'--directory',directory,'--port',String(port),...(process.env.WORKBOOK_AI_CHARTS_SOURCE?['--source',process.env.WORKBOOK_AI_CHARTS_SOURCE]:[])],{
- cwd:repo,env:{...process.env,PYTHONPATH:repo,PDF_SMOKE_STATIC_DIRECTORY:staticDirectory},stdio:'pipe'})
+const server=externalServer?null:spawn(python,[join(frontend,'smoke/workbook-ai-charts-server.py'),'--directory',directory,'--port',String(port),...(process.env.WORKBOOK_AI_CHARTS_SOURCE?['--source',process.env.WORKBOOK_AI_CHARTS_SOURCE]:[])],{
+ cwd:repo,env:{...process.env,PYTHONPATH:[repo,process.env.PYTHONPATH].filter(Boolean).join(delimiter),PDF_SMOKE_STATIC_DIRECTORY:staticDirectory},stdio:'pipe'})
 let serverLog='',browser,page,stage='server'
-server.stdout.on('data',data=>{serverLog+=data});server.stderr.on('data',data=>{serverLog+=data})
+server?.stdout.on('data',data=>{serverLog+=data});server?.stderr.on('data',data=>{serverLog+=data})
 const pageErrors=[],consoleErrors=[],httpErrors=[],assetErrors=[],checks=[],assets=new Map(),saves=[]
 try{
  for(let attempt=0;;attempt++){
-  assert.equal(server.exitCode,null,serverLog)
+  if(server)assert.equal(server.exitCode,null,serverLog)
   try{if((await fetch(origin+'/__smoke__/state',{signal:AbortSignal.timeout(1500)})).ok)break}catch{}
   assert(attempt<240,serverLog);await delay(250)
  }
@@ -37,6 +39,45 @@ try{
  await writeFile(join(directory,'canvas-font-preflight.json'),JSON.stringify(fontPreflight,null,2))
  assert.equal(fontPreflight.ok,true,'Canvas text is not renderable in this browser environment: '+JSON.stringify(fontPreflight))
  page=await browser.newPage({viewport:{width:1560,height:1200}})
+ if(sourceData)await page.addInitScript(()=>{
+  const prototype=CanvasRenderingContext2D.prototype
+  const {save,restore,fillText,beginPath,arc,fill}=prototype
+  const states=new WeakMap()
+  window.__reboundLinePaints=[]
+  function state(context){
+   if(!states.has(context))states.set(context,{depth:0,chartDepth:null,point:null,points:[]})
+   return states.get(context)
+  }
+  prototype.save=function(){state(this).depth++;return save.call(this)}
+  prototype.restore=function(){
+   const current=state(this)
+   if(current.depth===current.chartDepth){
+    if(window.__reboundLinePaints.length<100)window.__reboundLinePaints.push(current.points)
+    current.chartDepth=null
+   }
+   current.depth=Math.max(0,current.depth-1)
+   return restore.call(this)
+  }
+  prototype.fillText=function(...args){
+   if(args[0]==='第二季度收入'&&this.font==='11px system-ui'){
+    const current=state(this)
+    current.chartDepth=current.depth-1
+    current.points=[]
+   }
+   return fillText.apply(this,args)
+  }
+  prototype.beginPath=function(){state(this).point=null;return beginPath.call(this)}
+  prototype.arc=function(...args){
+   const current=state(this)
+   if(current.chartDepth!==null&&args[2]===2.5)current.point=args.slice(0,3)
+   return arc.apply(this,args)
+  }
+  prototype.fill=function(...args){
+   const current=state(this)
+   if(current.chartDepth!==null&&current.point)current.points.push(current.point)
+   return fill.apply(this,args)
+  }
+ })
  if(process.env.WORKBOOK_AI_CHARTS_SOURCE_LABEL_STYLE==='1')await page.addInitScript(()=>{
   window.__labelFontPaints=[]
   const original=CanvasRenderingContext2D.prototype.fillText
@@ -70,6 +111,7 @@ try{
  await page.locator('[data-ribbon-command="bold"]').click()
  await waitKind('applyCellEdits',true)
  const manual=await operations();assert(manual.length>0)
+ await writeFile(join(directory,'manual-draft.json'),JSON.stringify(manual,null,2))
  const panel=page.locator('.workbook-native-ai')
  async function generate(instruction){
   await page.locator('[data-action="office-edit-ai"]').click();await panel.waitFor()
@@ -91,6 +133,11 @@ try{
   await download.saveAs(join(directory,name+'.xlsx'));assert.equal(await download.failure(),null)
   const bytes=await readFile(join(directory,name+'.xlsx'));assert.equal(sha(bytes),payload.artifacts.xlsx.sha256)
   await page.goto(payload.editor.openUrl);await ready()
+  if(name==='rebound'){
+   await page.waitForFunction(()=>window.__reboundLinePaints?.some(points=>points.length===1),null,{timeout:10000})
+   const paints=await page.evaluate(()=>window.__reboundLinePaints)
+   await writeFile(join(directory,'rebound-line-paints.json'),JSON.stringify(paints,null,2))
+  }
   const reopened=await page.evaluate(async()=>await(await fetch(location.pathname+'/api/context')).json())
   assert.equal(reopened.context.revision,parent+1);assert.equal(reopened.context.sourceFile.sha256,sha(bytes))
   const actual=await page.request.get(page.url()+'/api/file');assert.equal(actual.status(),200);assert.equal(sha(await actual.body()),sha(bytes))
@@ -159,7 +206,7 @@ try{
  stage='save-delete';await saveAndReopen('deleted',5)
  }
  stage='independent-checks'
- const verified=spawnSync(join(repo,'.venv/bin/python'),[join(frontend,'smoke/'+(sourceData?'workbook-ai-chart-sources-verify.py':'workbook-ai-charts-verify.py')),directory],{cwd:repo,encoding:'utf8'})
+ const verified=spawnSync(python,[join(frontend,'smoke/'+(sourceData?'workbook-ai-chart-sources-verify.py':'workbook-ai-charts-verify.py')),directory],{cwd:repo,encoding:'utf8'})
  assert.equal(verified.status,0,verified.stdout+verified.stderr)
  const independent=JSON.parse(verified.stdout)
  await Promise.all(checks);assert(assets.size>0)
@@ -174,5 +221,6 @@ try{
  if(page)await page.screenshot({path:join(directory,'failure.png'),fullPage:true}).catch(()=>{})
  throw error
 }finally{
- await browser?.close();server.kill('SIGTERM');await writeFile(join(directory,'server.log'),serverLog)
+ await browser?.close()
+ if(server){server.kill('SIGTERM');await writeFile(join(directory,'server.log'),serverLog)}
 }
