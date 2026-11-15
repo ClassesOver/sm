@@ -20,23 +20,20 @@ from fastapi.responses import (
 )
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, StrictBool, StrictInt, ValidationError
 
-from ..reporting.contract import SHA256_PATTERN
+from ..office.contract import SHA256_PATTERN
+from ..office.editor_grants import ReportEditorGrantService
 from ..reporting.delivery.docx_native import inspect_docx
-from ..reporting.delivery.pdf_native import inspect_pdf, read_pdf_image_background, read_pdf_image_pixels, shrink_pdf
 from ..reporting.delivery.office_engine import run_office_engine
+from ..reporting.delivery.pdf_native import (
+    inspect_pdf,
+    read_pdf_image_background,
+    read_pdf_image_pixels,
+    shrink_pdf,
+)
 from ..reporting.models import ReportingError
-from .api import EDITOR_SESSION_COOKIE
 from .native import NativeEditorService, bind_native_workspace
 from .native_mail_merge import decode_mail_merge_csv
 from .native_models import NATIVE_ARTIFACT_MEDIA, NativeScope
-from .native_refresh import (
-    NativeRefreshRequest,
-    native_refresh_capability,
-    native_refresh_delivery,
-    native_refresh_status,
-    start_native_refresh,
-)
-from .service import ReportEditorGrantService
 
 NATIVE_SESSION_COOKIE = "native_editor_session"
 
@@ -60,12 +57,6 @@ class NativeImageBackgroundClip(BaseModel):
 class NativeImageBackgroundPayload(NativeImagePixelsPayload):
     clip: NativeImageBackgroundClip
     pxWidth: StrictInt = Field(ge=1, le=2400)
-
-
-class NativeOpenPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
-    format: Literal["docx", "pdf"]
-    request_id: str = Field(alias="requestId", min_length=1, max_length=256)
 
 
 class NativeSavePayload(BaseModel):
@@ -279,21 +270,6 @@ def create_native_editor_router(
         except ReportingError as error:
             raise _error(error) from None
 
-    @router.post("/reports/v1/editor/{report_id}/{revision}/api/native/open")
-    async def open_from_report(
-        report_id: str, revision: int, request: Request, payload: NativeOpenPayload
-    ):
-        _csrf(request, grants, EDITOR_SESSION_COOKIE, allowed_origin)
-        try:
-            session = await grants.lookup_session(request.cookies.get(EDITOR_SESSION_COOKIE, ""))
-            if session.report_id != report_id or session.revision != revision:
-                raise ReportingError("native_permission_denied", "报告会话与请求版本不一致。")
-            return await editor.open_report(
-                session, format=payload.format, request_id=payload.request_id
-            )
-        except ReportingError as error:
-            raise _error(error) from None
-
     @router.post("/reports/v1/native/{document_id}/{revision}/api/word/{action}")
     async def word_file_action(document_id: str, revision: int, action: Literal["new", "save-as"],
                                request: Request, payload: NativeWordFilePayload):
@@ -396,6 +372,16 @@ def create_native_editor_router(
             },
         )
 
+    # 前端构建 base 为 /reports/v1/editor/assets/（native.html 引用的 JS/CSS/字体均在此）；
+    # 旧编辑器退役后由 Office 路由继续提供，路径保持不变以兼容已构建页面与冒烟脚本。
+    @router.get("/reports/v1/editor/assets/{asset_path:path}", include_in_schema=False)
+    async def read_office_static(asset_path: str) -> FileResponse:
+        static_root = root.resolve()
+        target = (static_root / asset_path).resolve()
+        if not target.is_relative_to(static_root) or not target.is_file():
+            raise HTTPException(status_code=404)
+        return FileResponse(target)
+
     @router.get("/reports/v1/native/{document_id}/{revision}", include_in_schema=False)
     async def native_page(document_id: str, revision: int, request: Request):
         await session_context(request, document_id, revision)
@@ -420,7 +406,6 @@ def create_native_editor_router(
             "contextSha256": context.digest(),
             "csrfToken": grants.csrf_token(request.cookies.get(NATIVE_SESSION_COOKIE, "")),
             "capabilities": session.capabilities,
-            "dataRefresh": await native_refresh_capability(editor, context),
             "aiEnabled": ai_enabled and (
                 context.format == "docx" and editor.docx_enabled
                 or context.format == "pdf" and editor.pdf_enabled and editor.pdf_text_enabled
@@ -435,38 +420,6 @@ def create_native_editor_router(
             "editingEnabled": editor.is_enabled(context.format),
             "pdfTextEnabled": editor.pdf_text_enabled and editor.pdf_enabled and context.format == "pdf",
         }
-
-    @router.post("/reports/v1/native/{document_id}/{revision}/api/recalculations")
-    async def native_refresh_submit(document_id: str, revision: int, request: Request, payload: NativeRefreshRequest):
-        _, context = await session_context(request, document_id, revision, write=True)
-        try:
-            return await start_native_refresh(editor, context, payload)
-        except ReportingError as error:
-            raise _error(error) from None
-
-    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/by-request/{request_id}")
-    async def native_refresh_request_status(document_id: str, revision: int, request_id: str, request: Request):
-        _, context = await session_context(request, document_id, revision)
-        try:
-            return await native_refresh_status(editor, context, request_id=request_id)
-        except ReportingError as error:
-            raise _error(error) from None
-
-    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/{task_id}")
-    async def native_refresh_task_status(document_id: str, revision: int, task_id: str, request: Request):
-        _, context = await session_context(request, document_id, revision)
-        try:
-            return await native_refresh_status(editor, context, task_id=task_id)
-        except ReportingError as error:
-            raise _error(error) from None
-
-    @router.get("/reports/v1/native/{document_id}/{revision}/api/recalculations/{task_id}/delivery")
-    async def native_refresh_task_delivery(document_id: str, revision: int, task_id: str, request: Request):
-        _, context = await session_context(request, document_id, revision)
-        try:
-            return await native_refresh_delivery(editor, context, task_id)
-        except ReportingError as error:
-            raise _error(error) from None
 
     @router.get("/reports/v1/native/{document_id}/{revision}/api/file")
     async def native_file(document_id: str, revision: int, request: Request):

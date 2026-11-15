@@ -70,7 +70,7 @@ async def client_fixture(tmp_path):
     source=template();key=bind_native_workspace(publication.workspace,context.scope)
     await publication.workspace.awrite_bytes(key,context.source_file.path,source,overwrite=True)
     context=context.model_copy(update={'source_file':context.source_file.model_copy(update={'size':len(source),'sha256':hashlib.sha256(source).hexdigest()})})
-    editor=NativeEditorService(publication.workspace,publication.repository,publication.editor_grants,report_editor=None,docx_enabled=True)
+    editor=NativeEditorService(publication.workspace,publication.repository,publication.editor_grants,docx_enabled=True)
     editor.context_for_session=AsyncMock(return_value=context)
     raw,_=await editor.grants.issue(context,capabilities=editor.capabilities(context));token,_=await editor.grants.exchange(raw)
     app=FastAPI();app.include_router(create_native_editor_router(editor.grants,editor=editor,cookie_secure=False,allowed_origin='http://test'))

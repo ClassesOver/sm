@@ -12,7 +12,7 @@ from agno.tools import Toolkit
 from openpyxl.utils.cell import get_column_letter
 from pydantic import Field
 
-from ..reporting.contract import StrictModel
+from ..office.contract import StrictModel
 from .workbook_ai_tools import WorkbookAIToolkit, _bounds
 
 

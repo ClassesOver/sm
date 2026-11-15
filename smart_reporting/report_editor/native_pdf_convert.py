@@ -6,12 +6,19 @@ import subprocess
 
 from loguru import logger
 
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
+from ..office.artifacts import ArtifactFile
 from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.delivery.pdf_native import convert_pdf_office
 from ..reporting.models import ReportingError
 from ._file_identity import read_verified_file
-from .native_models import NativeArtifacts, NativeEditorContext, NativeIssue, NativeSource, NativeValidation, native_digest
+from .native_models import (
+    NativeArtifacts,
+    NativeEditorContext,
+    NativeIssue,
+    NativeSource,
+    NativeValidation,
+    native_digest,
+)
 
 
 async def convert_office(editor, context, *, expected_sha256: str, request_id: str, output_format: str = 'pptx'):

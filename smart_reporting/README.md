@@ -1,6 +1,7 @@
-# AgentOS Coding 与 Reporting 服务
+# Office 文档服务
 
-本包提供 Coding Agent、Reporting Workflow、PostgreSQL 持久化和按 thread 隔离的本地工作区。应用不安装浏览器聊天 interface。
+本包提供 Office 四格式（DOCX、XLSX、PPTX、PDF）原生在线编辑、文件内 AI、管理后台、PostgreSQL 持久化
+和按身份隔离的本地工作区。报告工作流、Reporting MCP、Coding Agent 与旧报告编辑器已退役。
 
 ## 启动
 
@@ -13,145 +14,31 @@ AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.app
 `reporting-db` 向宿主机发布 `127.0.0.1:55432`，与默认 `AGENT_DB_URL` 一致。容器内的
 AgentOS 仍通过服务名 `reporting-db:5432` 连接。
 
-主应用保留：
+主应用提供：
 
-- AgentOS 原生 Agent API 仅公开 `smart-reporting`，同时支持普通对话和智能报表。
-- Reporting Workflow 不直接注册为 AgentOS 原生 Workflow；报表运行统一由
-  `smart-reporting` facade 驱动，以共享 thread 独占与终态清理契约。
-- `smart-reporting` 的报表请求支持与 CLI 相同的自然语言或 `ReportRequestEnvelope` JSON 输入。
-- `GET /ready` 服务就绪检查。
-- `/workspace/*` 工作区文件接口。
-- `/reports/v1/download/*` PDF/Word 公开 bearer 下载接口，链接默认 30 天有效。
-- `/reports/v1/editor/*` 发布后报告编辑 Page、受控图片和同源编辑 API。
+- `GET /ready` 服务就绪检查（含已开启 Office 能力所需的引擎检查）。
+- `/reports/v1/native/*` Office 原生编辑页、读取模型、预览、保存/导出、文件内 AI 与下载。
+- `/reports/v1/native/import` 四格式上传导入（需 Workspace capability）。
+- `/reports/v1/download/*` 已签发报告与 Office 产物的 bearer 下载。
+- `/management/*` 管理后台（数据源、目录、表授权、指标、统计口径、业务知识、系统配置）。
+- 旧编辑入口 `/reports/v1/editor|slides|workbooks/*` 统一返回 `410`。
 
-通用 AgentOS Console 的 run 请求可不携带 Workspace 请求头，此时沿用原生
-`user_id/session_id`，且不会生成默认 Odoo 身份。Odoo 集成请求必须同时使用
-`X-Workspace-Thread` 和 `X-Workspace-Capability`；Workspace 请求始终要求这两个请求头，
-公开报告下载仅校验 URL 中的 bearer grant。Capability 必须携带并绑定 Odoo `database`、`user`、`company`、
-`odoo_session` 和 `thread`；服务端会用验签后的 `user/thread` 覆盖 AgentOS run 请求中的
-`user_id/session_id`。签名密钥由 `AGENT_WORKSPACE_HMAC_SECRET` 配置。
+Odoo 集成请求使用 `X-Workspace-Thread` 和 `X-Workspace-Capability`；Capability 绑定 Odoo
+`database`、`user`、`company`、`odoo_session` 和 `thread`，签名密钥由
+`AGENT_WORKSPACE_HMAC_SECRET` 配置。公开下载只校验 URL 中的 bearer grant。
 
-中台进度接口 `/extensions/dingyi/process/v1/*` 沿用 AgentOS 原生认证，不需要
-Odoo Workspace capability，也不新增必填配置。Process 查询限定到
-`smart-reporting` owner，用户的会话访问权限由中台代理校验。
-未配置 AgentOS 认证时，进度接口也沿用服务默认的开放访问模式。
+## 模块
 
-## Reporting MCP
+- `office/`：Office 中立能力——编辑授权与会话、产物身份、结构化候选 Agent、Office 模型
+  （`create_office_model`）与复杂场景编码任务（`office/codex.py`，Agno `CodexAgent`）。
+- `report_editor/`：Office 原生编辑器后端与前端，见 [report_editor/README.md](report_editor/README.md)。
+- `management/`：管理后台与 Alembic 迁移。
+- `reporting/`：保留的共用实现——四格式引擎桥接（`delivery/`、`*_engine/`）、数据源查询
+  （`data_source/`）、结构化输出执行器、业务知识检索与语义基础模型。
+- `.importlinter` 约束 Office 不得（含间接）依赖已退役模块，测试 `test_office_import_boundaries` 执行该检查。
 
-AgentOS 在同一服务内以 Streamable HTTP 暴露 `/mcp`。生产服务关闭其余 Agno 通用工具，只发布
-Reporting Workflow 的 `run_reporting_workflow`，并通过原生生命周期工具
-`continue_run`、`cancel_run` 继续或取消同一 run。`reporting_start`、`reporting_get`、
-`reporting_review`、`reporting_cancel` 是旧适配层协议，不在生产 `/mcp` 工具列表中。
-
-DSH 使用 `Authorization: Bearer <workspace capability>` 连接。Bearer 的 subject 是运行身份，
-授权范围固定为 `workflows:enterprise-reporting-workflow-v1:run`；调用方不能用工具参数取得其他
-Workflow 的运行权限。生产工具清单以 `/mcp` 的 `tools/list` 返回结果为准。
-
-DSH 的 MCP 配置只需指向 `http(s)://<reporting-host>/mcp`，transport 选择
-`streamable-http`。生产部署必须把客户端实际发送的 Host（含非默认端口）加入
-`AGENT_REPORTING_MCP_ALLOWED_HOSTS`，多个值用逗号分隔。未配置有效
-`AGENT_REPORTING_MCP_ALLOWED_HOSTS` 时仅允许 Agno 内置的 localhost Host；未配置有效
-`AGENT_WORKSPACE_HMAC_SECRET` 时 Bearer 验证失败关闭。
-
-`run_reporting_workflow` 的必填参数是 `message`：可以直接传自然语言报表要求，也可以传符合 v1
-`ReportRequestEnvelope` 的 JSON 字符串；可选的 `session_id` 用于把运行绑定到既有会话。结果中的
-`run_id`、`session_id` 和 `workflow_id` 是后续生命周期调用的句柄，不应自行拼接或解析。
-
-Workflow 暂停等待审核时，结果会带回尚未解决的 `requirements`。调用
-`continue_run` 时原样提交结果中的 `run_id`、`session_id`，设置
-`workflow_id="enterprise-reporting-workflow-v1"`，并在对应 requirement 中填写确认或反馈字段。
-需要终止运行时调用 `cancel_run`，提交 `run_id`、`session_id` 和同一 `workflow_id`。当前生产 MCP
-不提供 URL 附件物化或独立状态轮询工具；运行状态与暂停要求由上述原生工具结果返回。
-
-AgentOS 中的 Reporting 正常发布时只将 PDF 和 Word 持久化到 PostgreSQL，并签发默认 30 天有效的
-公开 bearer 下载授权。发布结果同时返回 `editor.openUrl`：可重复打开的编辑 grant 兑换为
-HttpOnly、SameSite=Lax 的编辑会话 Cookie，并重定向到不含 token 的报告 Page。编辑页可另行签发
-绑定当前修订版、有效期 30 天的分享编辑链接。所有 URL 都基于
-`AGENT_REPORT_PUBLIC_BASE_URL` 生成。过期授权会被删除，无有效授权引用的产物在 24 小时安全窗口后
-分批回收。Reporting CLI 不启动 HTTP 服务，只返回 PDF/Word 的 Workspace 相对路径、大小和 SHA-256。
-
-### 交互式 Coding Agent V1
-
-分析补证和可视化脚本使用单一交互式 Coding Agent，在当前正式 Reporting Workspace 内多轮执行：
-
-- `write_script` 和 `run` 通过 Responses API free-form custom tool 接收原始源码或探索性代码片段；
-- `write_script` 在宿主机使用 Ruff（Python 3.12、100 列）格式化合法源码后保存，返回 `formatted`、`warnings` 和保存内容的哈希；语法错误草稿或格式化失败时保留原稿，源码总大小和 AST 大字面量检查仍生效，单行长度不作为拒绝条件；路径策略（未授权字面量路径、目录推导调用、`__file__`）与 `run_script` 同一契约，在写入阶段即拒绝；
-- `read_script`、`restart_code_mode`、`run_script` 和 `submit_script` 使用普通 function tool；
-- 每个 coding task 独享 Agent、Toolkit、任务绑定和 CodeMode session，不创建临时 Workspace；
-- 可按当前 Workspace 检索项目文档、规范和已验收成功的修复知识；
-- LSP 工具通过当前 Workspace 的 `python-lsp-server` stdio 进程提供诊断、hover、定义、引用和文档符号，请求可携带 `expectedSourceSha256` 做版本门禁；
-- `submit_script` 只接受最近一次成功执行且脚本/声明输出哈希未变化的执行回执。
-
-正式 Python 脚本只能通过 `write_script` 写入，并必须经过 `write_script → run_script → submit_script`；探索性 `run` 不会保存或替代正式脚本，也不会直接产生阶段交接回执。
-
-`run` 在 Agno CodeMode 的任务级持久 Python 会话执行原始 cell，支持表达式结果和
-以 `%%bash` 为第一行的 Bash cell，跨调用保留 Python 变量与导入；它不提供 JavaScript 工具编排。
-原始 Bash 命令不能直接当 Python cell 传入；需要把命令放在 `%%bash` 后，或使用正式脚本的
-`run_script`。`run` 与 `write_script`
-会在执行或保存前拒绝整个输入为单字段 `data` / `code` / `source` 且内部为可识别代码的
-包装（包括嵌套包装），返回 `report_code_input_wrapped`，提示重新发送原始代码。
-普通字典数据仍可使用；协议层保留原始 custom 输入用于回放，不自动解包执行。
-
-Knowledge 索引位于 `REPORTING_HOST_WORKSPACE_ROOT/knowledge/index.sqlite3`，动态修复只在领域验收成功后记录，并按 Workspace 隔离。LSP 进程由执行上下文统一管理，进程不可用时仅返回软告警。
-
-### 报告编辑 Page
-
-报告 Page 使用 Milkdown Crepe 即时编辑权威 Markdown。已发布 revision 永不原地覆盖；人工修改保存到
-对应 revision 的 `draft/`，并通过 SHA-256 CAS 防止并发覆盖。导出会创建新的 revision，重新执行现有
-PDF/Word 渲染与验收，然后返回新的下载链接和编辑链接。`[[section:*]]` 在页面中隐藏，
-`[[citation:*]]` 显示为只读“引用”标签；原始 HTML 和脚本只作为文本处理，报告图片只能从当前 job
-登记且大小、SHA-256 未变化的 PNG/JPEG 资源读取。
-
-选中文字后可使用 Crepe 官方 AI feature 进行“润色表达”“精简内容”“扩写说明”或“专业报告语气”
-改写。模型响应通过同源 FastAPI 接口流式返回，并先进入 Diff Review，由用户接受或拒绝；AI 不会
-自动保存或导出。空选区、自由 prompt、超长选区以及包含 section/citation 协议标记的选区会在模型调用
-前拒绝。浏览器不接触模型 API Key，服务端复用现有 Reporting Agno/OpenAI-compatible 模型配置。
-
-编辑器静态资源不提交到 Git。Dockerfile 使用 Node 22 构建阶段执行 `npm ci` 和 `npm run build`，运行
-镜像只复制构建后的 `smart_reporting/report_editor/static`。本地开发可在
-`smart_reporting/report_editor/frontend` 目录运行 `npm ci`、`npm test` 和 `npm run build`。
-
-编辑器增强包括：服务端 revision 历史与分页读取、历史差异和草稿恢复、CAS 保存冲突的本地/远端对比、
-本地草稿恢复、章节拖拽与键盘排序、文档搜索替换、结构和图片说明软告警、离线待同步提示、阅读进度、
-专注模式、移动端“更多”菜单、PDF/Word 导出设置以及安全的导出链接复制。历史恢复只写入当前 draft，
-不会覆盖已发布 revision。
-
-报告图表统一使用 Matplotlib 生成 PNG/JPEG 静态图片。
-PDF/Word 仍只使用静态图，不接受任意 JavaScript 或编辑器内图片上传。导出设置通过受控 job context 传递，
-PDF/Word 渲染器仍以现有 reporting 页面契约为最终验收依据。
-
-## CLI
-
-Reporting CLI：
-
-```bash
-AGENT_ENV_FILE=.env .venv/bin/python -m smart_reporting.reporting.cli
-```
-
-宿主运行 CLI 时先使用 `uv sync --frozen` 安装 `uv.lock` 中的依赖。Debian/Ubuntu 的系统渲染依赖
-与根目录 `Dockerfile` 保持一致：
-
-```bash
-sudo apt-get install -y fontconfig fonts-liberation fonts-noto-cjk \
-  libcairo2 libmagic1 libpango-1.0-0 libpangoft2-1.0-0 shared-mime-info \
-  graphviz librsvg2-bin pandoc poppler-utils qpdf \
-  libreoffice-calc libreoffice-impress libreoffice-writer
-```
-
-`pypandoc` 不附带 Pandoc 可执行文件。启动前确认 `pandoc`、`soffice`、`pdftoppm` 和 `pdfinfo`
-均在 PATH 中。图表、文档依赖在 `pyproject.toml` 中约束，更新时同时重建 `uv.lock`。
-当前 profiling 依赖仍要求 pandas `<3`，因此保持 pandas 2.3.3、NumPy 2.3.5。
-项目还预装统计分析、绘图和格式处理库，包括 SciPy、statsmodels、SymPy、Seaborn、
-adjustText、Altair、Bokeh、Plotnine、PyArrow、DuckDB、XlsxWriter、python-pptx、
-ReportLab、pdfplumber、PyMuPDF、pikepdf 和 CairoSVG；宿主与应用镜像使用同一 `uv.lock`。
-Coding Agent 收到预装环境说明后直接使用任务允许的库，仅在实际执行出错时诊断依赖，
-避免每个分析任务重复查询包版本或字体。分析并发度和 thinking 策略不因此改变。
-宿主绘图可设置 `MATPLOTLIBRC="$PWD/docker/matplotlibrc"`，复用镜像的 Agg
-后端与 Noto CJK 默认字体。`MPLCONFIGDIR` 默认使用 `/tmp/reporting-matplotlib`，
-`REPORTING_HOST_WORKSPACE_ROOT` 默认使用 `/tmp/smart-reporting-workspaces`；两者均可由环境变量覆盖。
-
-服务仅提供 Reporting 产品入口，通过顶层 Workflow 编排数据准备、分析、章节生成、PDF/Word 双格式
-验收和发布。
+系统渲染依赖与根目录 `Dockerfile` 保持一致（LibreOffice、Pandoc、Poppler、qpdf、Noto CJK 字体等）。
+宿主绘图可设置 `MATPLOTLIBRC="$PWD/docker/matplotlibrc"`；图表只使用 Matplotlib 静态 PNG/JPEG。
 
 ## 配置
 
@@ -161,38 +48,19 @@ Coding Agent 收到预装环境说明后直接使用任务允许的库，仅在�
 | --- | --- |
 | `OPENAI_API_KEY` | 模型 API 密钥 |
 | `OPENAI_BASE_URL` | OpenAI-compatible API 地址 |
-| `AGENT_MODEL_VLLM_REASONING` | 经 vLLM 提供模型时设为 `true`，使用标准 reasoning 参数 |
-| `AGENT_MODEL_VLLM_THINKING_BUDGET` | vLLM 已配置 `--reasoning-config` 时设为 `true`，Chat 才发送 `thinking_token_budget`；默认 `false`，原生 Responses 始终不传预算 |
-| `AGENT_MODEL_LITELLM_PROXY` | vLLM Chat 前置 LiteLLM Proxy 时设为 `true`：allowlist 原生 `reasoning_effort`；启用硬预算后，`thinking_token_budget` 经 LiteLLM 二层 `extra_body` 透传 |
-| `AGENT_MODEL_FAST` | Reporting fast 档模型，默认 `qwen3.6-35b-a3b` |
-| `AGENT_MODEL_STANDARD` | Reporting standard 档模型，默认 `deepseek-v4-flash-0731` |
-| `AGENT_MODEL_STRONG` | Reporting strong 档模型，默认 `deepseek-v4-flash-0731` |
-| `AGENT_MODEL_FAST_STRUCTURED_MODE` | fast 档结构化协议：`json_schema`（默认）或 `json_object` |
-| `AGENT_MODEL_STANDARD_STRUCTURED_MODE` | standard 档结构化协议：`json_schema`（默认）或 `json_object` |
-| `AGENT_MODEL_STRONG_STRUCTURED_MODE` | strong 档结构化协议：`json_schema`（默认）或 `json_object` |
-| `AGENT_MODEL_STRUCTURED_STRICT` | 是否对 JSON Schema 启用 strict；默认 `true`，兼容端点不支持时可设为 `false` |
+| `AGENT_MODEL_FAST` / `AGENT_MODEL_STANDARD` / `AGENT_MODEL_STRONG` | 模型档位，Office AI 默认使用标准档 |
+| `AGENT_MODEL_*_STRUCTURED_MODE` | 各档结构化协议：`json_schema`（默认）或 `json_object` |
+| `AGENT_MODEL_STRUCTURED_STRICT` | 是否对 JSON Schema 启用 strict；兼容端点不支持时可设为 `false` |
+| `AGENT_MODEL_VLLM_REASONING` / `AGENT_MODEL_VLLM_THINKING_BUDGET` / `AGENT_MODEL_LITELLM_PROXY` | vLLM 与 LiteLLM 兼容参数 |
 | `AGENT_DB_URL` | AgentOS PostgreSQL 连接 |
-| `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 签名密钥 |
-| `AGENT_REPORTING_MCP_ALLOWED_HOSTS` | Reporting `/mcp` 接受的 Host 白名单，生产环境必须显式配置 |
-| `AGENT_REPORT_PUBLIC_BASE_URL` | PDF/Word 下载和 `editor.openUrl` 使用的公开同源基地址；生产环境使用 HTTPS |
-| `AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS` | 编辑器导出（渲染 + 验收）后台任务的服务端超时，默认 1200 秒，最大 3600；导出以后台任务运行、编辑器轮询结果，不受网关读超时影响，超时或服务关闭时整组终止渲染进程 |
-| `AGENT_REPORT_CODING_ENABLE_THINKING` | Reporting 阶段 Agent thinking 开关（兼容配置名） |
-| `AGENT_REPORT_ENABLE_THINKING` | Reporting planner thinking 开关 |
-| `AGENT_REPORT_ENABLE_VISION` | 图表视觉审查开关 |
-| `AGENT_REPORT_DATA_SOURCES_DIR` | Reporting 数据源配置目录 |
+| `AGENT_WORKSPACE_HMAC_SECRET` | Workspace capability 与授权签名密钥 |
+| `AGENT_REPORT_PUBLIC_BASE_URL` | 下载与编辑链接的公开同源基地址；生产环境使用 HTTPS |
+| `AGENT_NATIVE_DOCX_ENABLED` / `_PDF_ENABLED` / `_PDF_TEXT_ENABLED` / `_UPLOAD_ENABLED` / `_AI_ENABLED` | Office 能力灰度开关 |
+| `AGENT_OFFICE_CODEX_ENABLED` | 复杂场景编码任务开关（默认关闭） |
+| `AGENT_OFFICE_CODEX_BASE_URL` / `AGENT_OFFICE_CODEX_MODEL` | 编码任务的 Responses 端点与模型；留空沿用 `OPENAI_BASE_URL` 与标准档 |
+| `AGENT_MANAGEMENT_CREDENTIAL_KEYS` | 数据源凭据加密密钥（`key-id:Fernet-key`） |
 
-## Reporting 依赖诊断
-
-诊断接口检查服务端配置的 `REPORT_STARROCKS_DSN`、`AGENT_REPORT_METADATA_URL`，不接受调用方传入连接参数，也不返回连接信息、凭据或上游响应正文：
-
-```bash
-curl -X POST \
-  http://127.0.0.1:33046/diagnostics/reporting-dependencies
-```
-
-两个依赖均正常时返回 HTTP 200；任一依赖未配置或检查失败时返回 HTTP 503，并在 `checks` 中返回稳定错误码和耗时。
-元数据服务返回非成功响应时还会提供纯数字 `httpStatus`，但不会透传响应正文。
-该接口不要求 Token；生产环境应通过防火墙或反向代理限制访问来源。
+已退役的报告配置项若仍保存在管理端系统配置中，读取时忽略并记录告警，不阻断启动。
 
 ## 验证
 

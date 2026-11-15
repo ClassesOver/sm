@@ -11,16 +11,16 @@ from urllib.parse import unquote
 import pytest
 from docx import Document
 
+from smart_reporting.office.artifacts import ArtifactFile
+from smart_reporting.office.editor_grants import (
+    InMemoryReportEditorRepository,
+    ReportEditorGrantService,
+)
 from smart_reporting.report_editor.native_models import (
     NativeEditorContext,
     NativeRevision,
     NativeScope,
 )
-from smart_reporting.report_editor.service import (
-    InMemoryReportEditorRepository,
-    ReportEditorGrantService,
-)
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.delivery.publishing import (
     ReportArtifactPersistenceService,
     ReportDownloadGrantService,
@@ -187,8 +187,9 @@ async def test_native_save_failure_keeps_actual_word_download(publication, monke
 
 @pytest.mark.anyio
 async def test_native_recorded_revision_uses_authorized_user_and_keeps_download(publication):
-    from lxml import etree
     from zipfile import ZipFile
+
+    from lxml import etree
 
     namespaces = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
     from smart_reporting.report_editor.native import bind_native_workspace

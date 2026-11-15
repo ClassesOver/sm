@@ -16,7 +16,7 @@ from smart_reporting.report_editor.native_ai import NativeAIService, _NativeAIJo
 from smart_reporting.report_editor.native_ai_api import create_native_ai_router
 from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
 from smart_reporting.report_editor.native_models import NativeEditorContext, NativeScope
-from smart_reporting.report_editor.service import (
+from smart_reporting.office.editor_grants import (
     InMemoryReportEditorRepository,
     ReportEditorGrantService,
     token_hash,
@@ -25,7 +25,7 @@ from smart_reporting.report_editor.slides_native_ai import NativeSlidesAIService
 from smart_reporting.report_editor.slides_native_ai_api import create_native_slides_ai_router
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.report_editor.workbook_native_ai_api import create_native_workbook_ai_router
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
     ReportingWorkspaceRouter,
@@ -70,7 +70,6 @@ async def test_regular_accept_rechecks_authority_after_preview(tmp_path, format,
         workspace,
         repository,
         grants,
-        report_editor=None,
         docx_enabled=True,
         pdf_enabled=True,
         office_enabled=True,

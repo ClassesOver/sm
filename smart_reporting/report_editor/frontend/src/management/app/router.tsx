@@ -14,7 +14,6 @@ const Sources = lazy(() => import('../features/sources/list'))
 const Detail = lazy(() => import('../features/sources/detail'))
 const Editor = lazy(() => import('../features/sources/editor'))
 const Password = lazy(() => import('../features/auth/password'))
-const ReportIssues = lazy(() => import('../features/issues/page'))
 const Policies = lazy(() => import('../features/policies/page'))
 const Metrics = lazy(() => import('../features/metrics/page'))
 const Knowledge = lazy(() => import('../features/knowledge/page'))
@@ -41,8 +40,6 @@ function Boundary() {
               ? '业务指标'
             : location.pathname.startsWith('/statistical-policies')
               ? '统计口径'
-            : location.pathname.startsWith('/report-issues')
-              ? '报告问题'
                 : location.pathname.startsWith('/account')
                 ? '修改密码'
                 : location.pathname === '/sources'
@@ -109,7 +106,6 @@ export function makeRouter() {
               { path: 'sources/:sourceId', element: <Detail /> },
               { path: 'sources/:sourceId/view', element: <Detail /> },
               { path: 'sources/:sourceId/edit', element: <Editor /> },
-              { path: 'report-issues', element: <ReportIssues /> },
               { path: 'statistical-policies', element: <Policies /> },
               { path: 'metrics', element: <Metrics /> },
               { path: 'knowledge', element: <Knowledge /> },

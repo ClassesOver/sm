@@ -10,7 +10,7 @@ from pptx import Presentation
 from pptx.oxml.ns import qn
 
 from smart_reporting.report_editor.native_office import inspect_office, patch_office
-from smart_reporting.report_editor.slides import ReportSlidesEditorService, _validate_structure_edits
+from smart_reporting.report_editor.pptx_engine import PptxEngine, _validate_structure_edits
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_office import presentation_bytes
 
@@ -95,4 +95,4 @@ def test_invalid_equation_flag_rejected_before_engine(value):
 
 def test_direct_bridge_also_rejects_nonboolean_equation_marker():
     with pytest.raises(ReportingError, match='textbox_wordart_invalid'):
-        ReportSlidesEditorService._run_engine(presentation_bytes(), 'edit', text_boxes=[equation(equation='yes')])
+        PptxEngine._run_engine(presentation_bytes(), 'edit', text_boxes=[equation(equation='yes')])

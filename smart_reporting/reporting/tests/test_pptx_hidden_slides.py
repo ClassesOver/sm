@@ -64,7 +64,7 @@ def test_bool_hidden_records_forward_to_engine():
 
 @pytest.mark.parametrize('record', [{'slideIndex': 3, 'hidden': True}, {'slideIndex': 0, 'hidden': 'true'}])
 def test_direct_engine_rejects_invalid_hidden_records(record):
-    from smart_reporting.report_editor.slides import ReportSlidesEditorService
+    from smart_reporting.report_editor.pptx_engine import PptxEngine as ReportSlidesEditorService
     from smart_reporting.reporting.models import ReportingError
     with pytest.raises(ReportingError, match="hidden_slides_invalid"):
         ReportSlidesEditorService._run_engine(fixture_bytes(), 'edit', hidden_slides=[record])

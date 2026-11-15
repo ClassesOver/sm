@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.report_editor.native_models import NativeEditorContext, NativeScope
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.task_execution.models import TaskExecutionScope
 
 

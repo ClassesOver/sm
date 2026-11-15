@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -37,27 +36,6 @@ def test_render_service_reuses_verified_bytes(tmp_path: Path):
     rendered = render_pptx_tree(FIXTURE.read_bytes())
     assert len(rendered['slides']) >= 2
     assert rendered['slides'][0]['nodes']
-
-
-
-@pytest.mark.anyio
-async def test_render_preview_edits_use_original_engine_without_persisting(monkeypatch):
-    from smart_reporting.report_editor.slides import ReportSlidesEditorService
-
-    service = ReportSlidesEditorService(state_repository=None, workspace_registry=None, workspace=None)
-    content = FIXTURE.read_bytes()
-    inspected = service._run_engine(content, 'inspect')
-    first = next(item for item in inspected['slides'][0]['elements'] if item['editable'] and item['text'].strip())
-    async def context(_session):
-        return SimpleNamespace(revision=1, pptx_sha256='a' * 64)
-    async def verified(_context):
-        return content
-    monkeypatch.setattr(service, 'context_for_session', context)
-    monkeypatch.setattr(service, '_read_verified_pptx', verified)
-    rendered = await service.render_tree_for_session(None, {'expectedSha256': 'a' * 64, 'edits': [{'slideIndex': 0, 'elementId': first['id'], 'text': '实时画布文字'}]})
-    node = next(item for item in rendered['slides'][0]['nodes'] if item['sourceId'] == first['id'])
-    assert '实时画布文字' in ''.join(run['text'] for line in node['text']['lines'] for run in line['runs'])
-    assert FIXTURE.read_bytes() == content
 
 
 @pytest.mark.parametrize('payload', [

@@ -173,4 +173,4 @@ SHA-256 为 `550d5f6bfa6e5a02ee6900ef601f62ebfee9e651e773bff183f6955bb3583561`�
 
 ## 2026-11-11 默认页眉页脚编辑与透视全部刷新增量
 
-参照固定 GenOffice f8c17004fb730df11f0f743164ffd8b4281bb38c。page-setup.ts 对 odd header/footer 使用命名空间和直属节点 span 定位，保留 first/even、属性与未编辑半部；复用 escapeCellText 保留 OOXML 转义字面量。pivot-expand.ts 按源 xlsx-pivot-expand.ts 的 resolveRelTarget 语义支持根绝对包路径，relayout 关系未解析时明确失败。此次不新增包依赖或 @sheets-web 引用；旧包名与历史来源保留，未声称替换完整引擎。源码哈希更新于 UPSTREAM-PATCHES-SHA256.json，验收分别见 ../../report_editor/NATIVE_XLSX_HEADER_FOOTER_EDITOR_ACCEPTANCE.md 与 ../../../docs/parity/2026-11-11-workbook-pivot-refresh.md。
+参照固定 GenOffice f8c17004fb730df11f0f743164ffd8b4281bb38c。page-setup.ts 对 odd header/footer 使用命名空间和直属节点 span 定位，保留 first/even、属性与未编辑半部；复用 escapeCellText 保留 OOXML 转义字面量。pivot-expand.ts 按源 xlsx-pivot-expand.ts 的 resolveRelTarget 语义支持根绝对包路径，relayout 关系未解析时明确失败。此次不新增包依赖或 @sheets-web 引用；旧包名与历史来源保留，未声称替换完整引擎。源码哈希更新于 UPSTREAM-PATCHES-SHA256.json，验收分别见 ../../../docs/archive/office-acceptance/NATIVE_XLSX_HEADER_FOOTER_EDITOR_ACCEPTANCE.md 与 ../../../docs/parity/2026-11-11-workbook-pivot-refresh.md。

@@ -1,8 +1,6 @@
 """原生修订保存与交付；身份可读的文件不受验收/登记附加故障阻断。"""
 
 from __future__ import annotations
-from .native_xlsx_threads import xlsx_thread_actor
-from .native_pdf_contract import PDF_CONFIRMATION_KINDS,PDF_RECEIPT_KINDS,pdf_review_issues
 
 import asyncio
 import hashlib
@@ -16,7 +14,7 @@ from urllib.parse import quote
 from loguru import logger
 from pydantic import Field
 
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
+from ..office.artifacts import ArtifactFile
 from ..reporting.delivery.docx_native import patch_docx
 from ..reporting.delivery.office_engine import libreoffice_to_pdf, run_office_engine
 from ..reporting.delivery.pdf_native import patch_pdf, patch_pdf_with_receipt
@@ -35,6 +33,8 @@ from .native_models import (
     NativeValidation,
     native_digest,
 )
+from .native_pdf_contract import PDF_CONFIRMATION_KINDS, PDF_RECEIPT_KINDS, pdf_review_issues
+from .native_xlsx_threads import xlsx_thread_actor
 
 
 class _SavedReceipt(NativeModel):

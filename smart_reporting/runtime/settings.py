@@ -190,16 +190,12 @@ class AgentSettings:
     log_file_backup_count: int
     debug: bool
     cors_allowed_origins: tuple[str, ...]
-    reporting_mcp_allowed_hosts: tuple[str, ...]
     database_url: str
-    skills_dir: str | None
-    report_data_sources_dir: str | None
     report_metadata_url: str | None
     report_metadata_token: str | None
     report_public_base_url: str | None
     workspace_hmac_secret: str
     reporting_host_workspace_root: str
-    enable_tool_result_compression: bool
     enable_session_summaries: bool
     report_phase_enable_thinking: bool
     report_phase_temperature: float
@@ -208,59 +204,28 @@ class AgentSettings:
     report_enable_thinking: bool
     report_planner_reasoning_effort: ReportReasoningEffort
     report_planner_thinking_budget: int
-    report_enable_vision: bool
-    report_vision_model: str
     tracing_enabled: bool
     report_context_token_budget: int
     report_output_token_reserve: int
-    report_analysis_concurrency: int
-    report_section_concurrency: int
-    reporting_execution_mode: str
-    report_section_whole_generation: bool = True
-    report_lineage_registration_enabled: bool = True
-    report_lineage_panel_enabled: bool = True
-    report_lineage_download_enabled: bool = True
-    report_lineage_drilldown_enabled: bool = True
-    report_lineage_export_sources_enabled: bool = True
-    report_standard_supplemental_enabled: bool = True
-    # 单个可视化章节的墙钟截止（秒）：超时后不再开启新的修复或 fresh attempt，
-    # 直接零图降级，保证最难主题也能在报告总时限内交付。
-    report_visualization_section_deadline_seconds: int = 900
-    # 全部可视化章节共享的墙钟预算（秒），从报告分析阶段开始计时；单章截止取
-    # 本章上限与报告剩余预算的较小值，避免多出图章节累加越过报告总时限。
-    report_visualization_total_deadline_seconds: int = 2400
     model_fast_structured_mode: str = "json_schema"
     model_standard_structured_mode: str = "json_schema"
     model_strong_structured_mode: str = "json_schema"
     model_structured_strict: bool = True
-    # 编辑器导出同步执行渲染与验收两次报表运行时调用（各自上限 600 秒）；网关/反向
-    # 代理的读超时必须不小于该值，否则请求会先于服务端被切断。
-    report_editor_export_timeout_seconds: int = 1200
     # 原生编辑按能力独立灰度；未完成部署与验收前不自动开放。
     native_docx_enabled: bool = False
     native_pdf_enabled: bool = False
     native_ai_enabled: bool = False
     native_pdf_text_enabled: bool = False
     native_upload_enabled: bool = False
-    # 编辑器 AI 改图（设计稿 docs/superpowers/specs/2026-10-25-report-editor-ai-chart-edit-design.md）：
-    # 默认开启；显式关闭可隐藏入口，未配置视觉审查模型时提示不可用。
-    report_editor_chart_ai_enabled: bool = True
-    # 每会话（用户）每小时改图次数上限。
-    report_editor_chart_ai_hourly_limit: int = 20
-    # 单次改图墙钟超时（秒），超时取消并返回原因，原图不受影响。
-    report_editor_chart_ai_timeout_seconds: int = 180
-    # 编辑器 AI 改表与预制表模板；默认开启，可按环境显式关闭。
-    report_editor_table_ai_enabled: bool = True
-    report_slides_image_model: str = "qwen-image-plus"
-    report_editor_table_ai_hourly_limit: int = 20
-    report_editor_table_ai_timeout_seconds: int = 120
-    # 报表完成时返回给调用方的 markdown 模板；未设置时使用默认紧凑格式。
-    # 可用变量：{report_title}、{editor_url}、{pdf_url}、{word_url}、{actions}
-    report_completion_template: str | None = None
+    # Office 复杂场景编码任务（CodexAgent）：需在部署镜像实测沙箱写入边界后再开启。
+    office_codex_enabled: bool = False
+    # 留空时沿用 OPENAI_BASE_URL / 标准模型；端点须支持 OpenAI Responses 协议。
+    office_codex_base_url: str = ""
+    office_codex_model: str = ""
+    office_codex_timeout_seconds: int = 600
     # 编辑器前端静态目录；镜像把构建产物放在源码 bind mount 之外，避免被宿主目录覆盖。
     report_editor_static_dir: str | None = None
     platform_settings: PlatformSettings | None = None
-    report_configuration_mode: Literal["database"] = "database"
     report_delivery_settings: ReportDeliverySettings = field(default_factory=ReportDeliverySettings)
     report_build_identity: BuildIdentity | None = None
     # 仅由已核验的数据库启动加载器写入，不读取同名环境变量。
@@ -313,26 +278,6 @@ class AgentSettings:
             raise ValueError(
                 "AGENT_REPORT_OUTPUT_TOKEN_RESERVE 必须小于 AGENT_REPORT_CONTEXT_TOKEN_BUDGET"
             )
-        report_analysis_concurrency = _positive_int(
-            values,
-            "AGENT_REPORT_ANALYSIS_CONCURRENCY",
-            5,
-            maximum=5,
-        )
-        report_section_concurrency = _positive_int(
-            values,
-            "AGENT_REPORT_SECTION_CONCURRENCY",
-            1,
-            maximum=5,
-        )
-        reporting_execution_mode = (
-            values.get("AGENT_REPORT_CODING_EXECUTION_MODE", "parallel").strip().lower()
-        )
-        if reporting_execution_mode not in {"sequential", "parallel"}:
-            raise ValueError("AGENT_REPORT_CODING_EXECUTION_MODE 必须是 sequential 或 parallel")
-        configuration_mode = values.get("AGENT_REPORT_CONFIGURATION_MODE", "database").strip().lower()
-        if configuration_mode != "database":
-            raise ValueError("AGENT_REPORT_CONFIGURATION_MODE 仅支持 database，旧文件业务配置已停用")
         from ..reporting.host_workspace import validate_host_workspace_root
 
         reporting_host_workspace_root = str(
@@ -383,17 +328,7 @@ class AgentSettings:
             log_file_backup_count=_positive_int(values, "AGENT_LOG_FILE_BACKUP_COUNT", 5),
             debug=_flag(values.get("AGENT_DEBUG")),
             cors_allowed_origins=origins,
-            reporting_mcp_allowed_hosts=tuple(
-                item.strip()
-                for item in values.get("AGENT_REPORTING_MCP_ALLOWED_HOSTS", "").split(",")
-                if item.strip()
-            ),
             database_url=database_url_from_environment(values),
-            skills_dir=values.get("AGENT_SKILLS_DIR"),
-            report_data_sources_dir=(
-                values.get("AGENT_REPORT_DATA_SOURCES_DIR", "").strip() or None
-            ),
-            report_configuration_mode=cast(Literal["database"], configuration_mode),
             report_delivery_settings=ReportDeliverySettings.from_env(values),
             report_build_identity=_report_build_identity(values),
             report_metadata_url=_report_metadata_url(values),
@@ -401,9 +336,6 @@ class AgentSettings:
             report_public_base_url=_report_public_base_url(values),
             workspace_hmac_secret=values.get("AGENT_WORKSPACE_HMAC_SECRET", ""),
             reporting_host_workspace_root=reporting_host_workspace_root,
-            enable_tool_result_compression=_flag(
-                values.get("AGENT_ENABLE_TOOL_RESULT_COMPRESSION"), default=True
-            ),
             enable_session_summaries=_flag(
                 values.get("AGENT_ENABLE_SESSION_SUMMARIES"), default=True
             ),
@@ -426,97 +358,19 @@ class AgentSettings:
             report_planner_thinking_budget=_positive_int(
                 values, "AGENT_REPORT_PLANNER_THINKING_BUDGET", 8192, maximum=131072
             ),
-            report_enable_vision=_flag(values.get("AGENT_REPORT_ENABLE_VISION"), default=False),
-            report_vision_model=(
-                values.get("AGENT_REPORT_VISION_MODEL", DEFAULT_REPORT_VISION_MODEL_ID).strip()
-                or DEFAULT_REPORT_VISION_MODEL_ID
-            ),
             tracing_enabled=_flag(values.get("AGENT_TRACING_ENABLED")),
             report_context_token_budget=report_context_token_budget,
             report_output_token_reserve=report_output_token_reserve,
-            report_analysis_concurrency=report_analysis_concurrency,
-            report_section_concurrency=report_section_concurrency,
-            report_section_whole_generation=_flag(
-                values.get("AGENT_REPORT_SECTION_WHOLE_GENERATION"), default=True
-            ),
-            report_lineage_registration_enabled=_flag(
-                values.get("AGENT_REPORT_LINEAGE_REGISTRATION_ENABLED"), default=True
-            ),
-            report_lineage_panel_enabled=_flag(
-                values.get("AGENT_REPORT_LINEAGE_PANEL_ENABLED"), default=True
-            ),
-            report_lineage_download_enabled=_flag(
-                values.get("AGENT_REPORT_LINEAGE_DOWNLOAD_ENABLED"), default=True
-            ),
-            report_lineage_drilldown_enabled=_flag(
-                values.get("AGENT_REPORT_LINEAGE_DRILLDOWN_ENABLED"), default=True
-            ),
-            report_lineage_export_sources_enabled=_flag(
-                values.get("AGENT_REPORT_LINEAGE_EXPORT_SOURCES_ENABLED"), default=True
-            ),
-            report_standard_supplemental_enabled=_flag(
-                values.get("AGENT_REPORT_STANDARD_SUPPLEMENTAL_ENABLED"), default=True
-            ),
-            reporting_execution_mode=reporting_execution_mode,
-            report_editor_export_timeout_seconds=_positive_int(
-                values,
-                "AGENT_REPORT_EDITOR_EXPORT_TIMEOUT_SECONDS",
-                1200,
-                maximum=3600,
-            ),
             native_docx_enabled=_flag(values.get("AGENT_REPORT_EDITOR_DOCX_ENABLED", values.get("AGENT_NATIVE_DOCX_ENABLED"))),
             native_pdf_enabled=_flag(values.get("AGENT_REPORT_EDITOR_PDF_ENABLED", values.get("AGENT_NATIVE_PDF_ENABLED"))),
             native_ai_enabled=_flag(values.get("AGENT_REPORT_EDITOR_AI_ENABLED", values.get("AGENT_NATIVE_AI_ENABLED"))),
             native_pdf_text_enabled=_flag(values.get("AGENT_REPORT_EDITOR_PDF_TEXT_ENABLED", values.get("AGENT_NATIVE_PDF_TEXT_ENABLED"))),
             native_upload_enabled=_flag(values.get("AGENT_REPORT_EDITOR_UPLOAD_ENABLED", values.get("AGENT_NATIVE_UPLOAD_ENABLED"))),
-            report_editor_chart_ai_enabled=_flag(
-                values.get("AGENT_REPORT_EDITOR_CHART_AI_ENABLED"), default=True
-            ),
-            report_editor_chart_ai_hourly_limit=_positive_int(
-                values,
-                "AGENT_REPORT_EDITOR_CHART_AI_HOURLY_LIMIT",
-                20,
-                maximum=1000,
-            ),
-            report_editor_chart_ai_timeout_seconds=_positive_int(
-                values,
-                "AGENT_REPORT_EDITOR_CHART_AI_TIMEOUT_SECONDS",
-                180,
-                maximum=900,
-            ),
-            report_editor_table_ai_enabled=_flag(
-                values.get("AGENT_REPORT_EDITOR_TABLE_AI_ENABLED"), default=True
-            ),
-            report_slides_image_model=(
-                values.get("AGENT_REPORT_SLIDES_IMAGE_MODEL", "qwen-image-plus").strip()
-                or "qwen-image-plus"
-            ),
-            report_editor_table_ai_hourly_limit=_positive_int(
-                values,
-                "AGENT_REPORT_EDITOR_TABLE_AI_HOURLY_LIMIT",
-                20,
-                maximum=1000,
-            ),
-            report_editor_table_ai_timeout_seconds=_positive_int(
-                values,
-                "AGENT_REPORT_EDITOR_TABLE_AI_TIMEOUT_SECONDS",
-                120,
-                maximum=900,
-            ),
-            report_visualization_section_deadline_seconds=_positive_int(
-                values,
-                "AGENT_REPORT_VISUALIZATION_SECTION_DEADLINE_SECONDS",
-                900,
-                maximum=7200,
-            ),
-            report_visualization_total_deadline_seconds=_positive_int(
-                values,
-                "AGENT_REPORT_VISUALIZATION_TOTAL_DEADLINE_SECONDS",
-                2400,
-                maximum=14400,
-            ),
-            report_completion_template=(
-                values.get("AGENT_REPORT_COMPLETION_TEMPLATE", "").strip() or None
+            office_codex_enabled=_flag(values.get("AGENT_OFFICE_CODEX_ENABLED")),
+            office_codex_base_url=values.get("AGENT_OFFICE_CODEX_BASE_URL", "").strip(),
+            office_codex_model=values.get("AGENT_OFFICE_CODEX_MODEL", "").strip(),
+            office_codex_timeout_seconds=_positive_int(
+                values, "AGENT_OFFICE_CODEX_TIMEOUT_SECONDS", 600, maximum=3600
             ),
             report_editor_static_dir=(
                 values.get("AGENT_REPORT_EDITOR_STATIC_DIR", "").strip() or None

@@ -22,11 +22,10 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-from agno.media import Image
-from agno.tools.function import ToolResult
 from agno.tools.workspace import Workspace
 
 from ..async_utils import complete_cleanup
+from ..office.workspace_scope import WorkspaceScope as ReportingWorkflowScope
 from ..workspace import (
     MAX_DOWNLOAD_BYTES,
     MAX_PATCH_FILES,
@@ -37,7 +36,6 @@ from ..workspace import (
     validate_workspace_content,
 )
 from .models import ReportingError
-from .workflow.scope import ReportingWorkflowScope
 
 
 def validate_host_workspace_root(root: str | Path) -> Path:
@@ -749,10 +747,6 @@ class HostReportingWorkspace:
                 results.append({"path": relative, "missing": True})
         return results
 
-    async def inspect_chart_file(self, thread_id: str, path: str) -> dict[str, Any]:
-        from .workspace import inspect_report_chart_file
-
-        return await inspect_report_chart_file(self, thread_id=thread_id, path=path)
 
     async def aapply_changes(self, thread_id: str, changes: list[dict[str, Any]]) -> dict[str, Any]:
         if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_PATCH_FILES:
@@ -917,24 +911,6 @@ class HostReportingWorkspace:
             results.append(result)
         return {"files": results, "operations": len(results)}
 
-    async def aview_image(self, thread_id: str, path: str) -> ToolResult:
-        inspection = await self.inspect_chart_file(thread_id, path)
-        content = await self.read_limited_regular_file(
-            thread_id,
-            path,
-            max_bytes=inspection["size"],
-        )
-        return ToolResult(
-            content="loaded",
-            images=[
-                Image(
-                    content=content,
-                    mime_type=inspection["mediaType"],
-                    format=inspection["extension"].lstrip("."),
-                )
-            ],
-        )
-
 
 class ReportingWorkspaceRegistry:
     """按可信 workspace key 复用当前进程内的 Reporting Workspace。"""
@@ -1071,11 +1047,6 @@ class ReportingWorkspaceRouter:
     async def abatch_hash_files(self, thread_id: str, paths: list[str]) -> list[dict[str, Any]]:
         return await self.workspace(thread_id).abatch_hash_files(thread_id, paths)
 
-    async def inspect_chart_file(self, thread_id: str, path: str) -> dict[str, Any]:
-        return await self.workspace(thread_id).inspect_chart_file(thread_id, path)
-
-    async def aview_image(self, thread_id: str, path: str) -> ToolResult:
-        return await self.workspace(thread_id).aview_image(thread_id, path)
 
     async def aensure_directory(self, thread_id: str, path: str) -> None:
         await self.workspace(thread_id).aensure_directory(thread_id, path)

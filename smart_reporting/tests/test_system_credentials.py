@@ -33,47 +33,6 @@ async def context(auth_context, monkeypatch):
     return SystemConfigurationService(auth, startup), token, repo
 
 
-async def test_replacement_is_encrypted_referenced_and_only_effective_after_restart(context):
-    from smart_reporting.management.repository import audit_events, system_credentials
-    from smart_reporting.runtime.system_configuration import load_system_configuration
-
-    service, token, repo = context
-    await service.detail(token)
-    saved = await service.replace_credential(token, 'OPENAI_API_KEY', 'replacement-secret', 1)
-    assert saved['version'] == 2
-    detail = await service.detail(token)
-    reference = detail['draft']['document']['credentials']['OPENAI_API_KEY']
-    assert 'replacement-secret' not in str(detail)
-    assert any(change['path'] == 'credentials.OPENAI_API_KEY' for change in detail['changes'])
-    async with repo.engine.connect() as connection:
-        row = (await connection.execute(select(system_credentials))).mappings().one()
-        audits = (await connection.execute(select(audit_events))).mappings().all()
-    assert row['reference'] == reference
-    assert 'replacement-secret' not in str(row) + str(audits)
-    assert CredentialVault().decrypt(row['key_id'], row['ciphertext'].encode()) == 'replacement-secret'
-    assert service.startup.openai_api_key == 'deployment-secret'
-    assert (await asyncio.to_thread(load_system_configuration, service.startup)).settings.openai_api_key == 'deployment-secret'
-    await service.publish(token, 2)
-    loaded = await asyncio.to_thread(load_system_configuration, service.startup)
-    assert loaded.settings.openai_api_key == 'replacement-secret'
-    assert loaded.state.issue is None
-    assert 'OPENAI_API_KEY' in loaded.state.managed_keys
-    from smart_reporting.management.models import INSTANCE_SCOPE
-    from smart_reporting.management.runtime import ManagedConfigurationProvider
-    from smart_reporting.management.scopes import ScopeService
-
-    provider = ManagedConfigurationProvider(ScopeService(service.auth), CredentialVault(), startup_settings=loaded.settings)
-    snapshot = await provider.register_run('credential-task', INSTANCE_SCOPE, user_id='user', thread_id='thread', entrypoint='cli')
-    assert snapshot['systemRevision'] == 1
-    assert 'replacement-secret' not in str(snapshot)
-    assert 'OPENAI_API_KEY' not in snapshot['systemValues']
-    assert (await service.replace_credential(token, 'OPENAI_API_KEY', 'second-secret', 2))['version'] == 3
-    await service.publish(token, 3)
-    await service.restore_draft(token, 1, 3)
-    await service.publish(token, 4)
-    assert (await asyncio.to_thread(load_system_configuration, service.startup)).settings.openai_api_key == 'replacement-secret'
-
-
 @pytest.mark.parametrize('key,secret,version', [('AGENT_DB_URL', 'secret', 1), ('OPENAI_API_KEY', '', 1),
     ('OPENAI_API_KEY', 'has\nnewline', 1), ('OPENAI_API_KEY', 'secret', 99)])
 async def test_invalid_replacement_does_not_change_draft(context, key, secret, version):

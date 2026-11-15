@@ -16,7 +16,8 @@ from uuid import uuid4
 from loguru import logger
 from pydantic import Field, ValidationError
 
-from ..reporting.contract import StrictModel
+from ..office.contract import StrictModel
+from ..office.editor_grants import ReportEditorSession
 from ..reporting.models import ReportingError
 from ..reporting.structured_output.execution import (
     ReportingStructuredOutputExecutor,
@@ -24,7 +25,6 @@ from ..reporting.structured_output.execution import (
 )
 from .agent_event_streams import AgentEventLog, bind_agent_event_log, event_stream_response
 from .native_models import NativeEditorContext, native_digest
-from .service import ReportEditorSession
 
 
 class NativeAIOperation(StrictModel):
@@ -847,9 +847,9 @@ class NativeAIService:
 
 
 def create_native_ai_service(model: Any, editor: Any, *, enabled: bool = False) -> NativeAIService:
-    from ..reporting.agent import create_reporting_generator_agent
+    from ..office.structured_agents import create_structured_candidate_agent
 
-    agent = create_reporting_generator_agent(
+    agent = create_structured_candidate_agent(
         model=model,
         output_schema=NativeAIProposal,
         name="native-document-ai",

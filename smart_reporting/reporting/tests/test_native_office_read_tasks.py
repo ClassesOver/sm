@@ -11,6 +11,11 @@ from openpyxl import Workbook
 from pptx import Presentation
 from pptx.util import Inches
 
+from smart_reporting.office.artifacts import ArtifactFile
+from smart_reporting.office.editor_grants import (
+    InMemoryReportEditorRepository,
+    ReportEditorGrantService,
+)
 from smart_reporting.report_editor.native import NativeEditorService, bind_native_workspace
 from smart_reporting.report_editor.native_models import (
     NATIVE_MEDIA,
@@ -18,11 +23,6 @@ from smart_reporting.report_editor.native_models import (
     NativeScope,
 )
 from smart_reporting.report_editor.native_office import inspect_office
-from smart_reporting.report_editor.service import (
-    InMemoryReportEditorRepository,
-    ReportEditorGrantService,
-)
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
     ReportingWorkspaceRouter,
@@ -55,8 +55,7 @@ async def office_sample(request, tmp_path):
     await workspace.awrite_bytes(bind_native_workspace(workspace, scope), context.source_file.path, content)
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
     editor = NativeEditorService(workspace, SimpleNamespace(get_revision=AsyncMock(
-        return_value=SimpleNamespace(status='saved', context=context))), grants,
-        report_editor=None, office_enabled=True)
+        return_value=SimpleNamespace(status='saved', context=context))), grants, office_enabled=True)
     raw, _ = await grants.issue(context, capabilities=editor.capabilities(context))
     _, session = await grants.exchange(raw)
     model = inspect_office(kind, content)

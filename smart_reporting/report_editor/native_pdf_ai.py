@@ -14,7 +14,7 @@ from agno.agent import Agent
 from pydantic import Field
 from pypdf import PdfReader
 
-from ..reporting.contract import StrictModel
+from ..office.contract import StrictModel
 from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.delivery.pdf_native import inspect_pdf
 from ..reporting.models import ReportingError

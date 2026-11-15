@@ -8,19 +8,22 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 from uuid import uuid4
 
 from loguru import logger
 from pydantic import Field
 
-from ..reporting.contract import StrictModel
+from ..office.contract import StrictModel
+from ..office.editor_grants import ReportEditorSession
 from ..reporting.models import ReportingError
 from ..reporting.structured_output.execution import (
     ReportingStructuredOutputExecutor,
     StructuredOutputCallBudget,
 )
-from .service import ReportEditorContext, ReportEditorSession
+
+if TYPE_CHECKING:
+    from .service import ReportEditorContext
 
 _MAX_INSTRUCTION_CHARS = 2_000
 _MAX_DECK_CONTEXT_CHARS = 48_000
@@ -259,10 +262,10 @@ class ReportSlidesAIService:
 
 
 def create_report_slides_ai_service(model: Any, slides: Any) -> ReportSlidesAIService:
-    # reporting.agent 冷启动会经 runtime 导入编辑器，在实际创建时再加载以免循环导入。
-    from ..reporting.agent import create_reporting_generator_agent
+    # 在实际创建时再加载 Agno Agent 依赖，避免模块导入期的循环引用。
+    from ..office.structured_agents import create_structured_candidate_agent
 
-    agent = create_reporting_generator_agent(
+    agent = create_structured_candidate_agent(
         model=model,
         output_schema=SlidesAIProposal,
         name="report-slides-ai-planner",

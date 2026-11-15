@@ -6,7 +6,7 @@ from pypdf import PdfReader
 
 from smart_reporting.report_editor.native import NativeEditorService, bind_native_workspace
 from smart_reporting.report_editor.native_models import NativeEditorContext
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
 from smart_reporting.reporting.tests.test_pdf_native_text_edits import source_pdf, text_operation
@@ -19,7 +19,7 @@ async def fixture(tmp_path, *, text_enabled=True):
     content=source_pdf();key=bind_native_workspace(publication.workspace,old.scope)
     await publication.workspace.awrite_bytes(key,'native/source.pdf',content)
     context=NativeEditorContext(documentId='document',revision=1,scope=old.scope,format='pdf',origin='upload',sourceFile=ArtifactFile(path='native/source.pdf',size=len(content),sha256=hashlib.sha256(content).hexdigest(),mediaType='application/pdf'))
-    editor=NativeEditorService(publication.workspace,publication.repository,publication.editor_grants,report_editor=None,pdf_enabled=True,pdf_text_enabled=text_enabled,publication=publication)
+    editor=NativeEditorService(publication.workspace,publication.repository,publication.editor_grants,pdf_enabled=True,pdf_text_enabled=text_enabled,publication=publication)
     return editor,context,content,downloads
 
 @pytest.mark.anyio

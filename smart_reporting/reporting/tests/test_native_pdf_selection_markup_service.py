@@ -38,8 +38,8 @@ async def test_selection_markup_preview_and_download_do_not_require_text_editing
 async def test_saved_markup_removal_preview_download_and_stale_identity_without_text_flag(tmp_path):
     import hashlib
 
+    from smart_reporting.office.artifacts import ArtifactFile
     from smart_reporting.report_editor.native import bind_native_workspace
-    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
     from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf
     from smart_reporting.reporting.tests.test_pdf_markup_removal import removal
 
@@ -68,8 +68,8 @@ async def test_saved_markup_removal_preview_download_and_stale_identity_without_
 async def test_saved_note_edit_preview_save_and_download_without_text_flag(tmp_path):
     import hashlib
 
+    from smart_reporting.office.artifacts import ArtifactFile
     from smart_reporting.report_editor.native import bind_native_workspace
-    from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
     from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf
     from smart_reporting.reporting.tests.test_pdf_saved_notes import note_operation
 

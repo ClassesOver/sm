@@ -5,7 +5,8 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
-SHA256_PATTERN = r"^[0-9a-f]{64}$"
+from ...office.contract import SHA256_PATTERN as SHA256_PATTERN
+
 FIELD_REF_PATTERN = (
     r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\."
     r"[A-Za-z_][A-Za-z0-9_$]{0,127}\."

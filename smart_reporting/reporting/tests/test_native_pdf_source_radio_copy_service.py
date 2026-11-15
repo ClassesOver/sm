@@ -6,7 +6,7 @@ from pypdf import PdfReader
 from reportlab.pdfgen import canvas
 from smart_reporting.report_editor.native import bind_native_workspace
 from smart_reporting.report_editor.native_models import NativeEditorContext
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.delivery.pdf_native import inspect_pdf, patch_pdf
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_pdf_text_service import fixture

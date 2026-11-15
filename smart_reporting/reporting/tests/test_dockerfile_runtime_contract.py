@@ -17,7 +17,7 @@ def test_editor_build_has_genoffice_sources_at_the_frontend_relative_path():
     assert engine in dockerfile
     assert frontend in dockerfile
     engine_copy = dockerfile.index("COPY smart_reporting/reporting/slides_engine/packages ./packages")
-    build = dockerfile.index("RUN npm run build && npm run build:slides")
+    build = dockerfile.index("RUN npm run build && npm run build:management")
     assert engine_copy < dockerfile.index(frontend) < build
     assert "/runtime/reporting-slides-engine /opt/reporting-slides-engine" in dockerfile
     assert "/build/smart_reporting/report_editor/static /opt/report-editor-static" in dockerfile

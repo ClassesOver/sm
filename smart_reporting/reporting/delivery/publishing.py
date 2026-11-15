@@ -39,10 +39,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from ...office.contract import SHA256_PATTERN
 from ...workspace import (
     MAX_DOWNLOAD_BYTES,
 )
-from ..contract import SHA256_PATTERN
 from ..models import ReportingError
 
 DOWNLOAD_GRANT_TTL = timedelta(days=30)

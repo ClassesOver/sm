@@ -25,8 +25,8 @@ from smart_reporting.report_editor.native_models import NATIVE_MEDIA, NativeEdit
 from smart_reporting.report_editor.native_office_read_tasks import NativeOfficeReadService
 from smart_reporting.report_editor.native_slides_read_ai import AgnoNativeSlidesReadPlanner
 from smart_reporting.report_editor.native_workbook_read_ai import AgnoNativeWorkbookReadPlanner
-from smart_reporting.report_editor.service import InMemoryReportEditorRepository, ReportEditorGrantService
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.editor_grants import InMemoryReportEditorRepository, ReportEditorGrantService
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.host_workspace import ReportingWorkspaceRegistry, ReportingWorkspaceRouter
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
 
@@ -67,7 +67,7 @@ async def create_app(directory: Path, port: int) -> FastAPI:
             return None
 
     grants = ReportEditorGrantService(InMemoryReportEditorRepository(), secret='g' * 32)
-    editor = NativeEditorService(workspace, ScopedRepository(), grants, report_editor=None, office_enabled=False)
+    editor = NativeEditorService(workspace, ScopedRepository(), grants, office_enabled=False)
 
     def tool(identity, name, arguments):
         return ModelResponse(tool_calls=[{'id': identity, 'type': 'function',

@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-from copy import deepcopy
 from io import BytesIO
 from uuid import uuid4
 
@@ -12,9 +11,9 @@ import pytest
 from openpyxl import Workbook
 from sqlalchemy import delete
 
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.report_editor.native_models import NativeArtifacts
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.models import ReportingError
 from smart_reporting.reporting.tests.test_native_pdf_extract import extract_fixture
 from smart_reporting.reporting.tests.test_workbook_native_ai import proposal

@@ -7,10 +7,10 @@ from types import SimpleNamespace
 import pytest
 from agno.models.response import ModelResponse
 
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.report_editor.native import bind_native_workspace
 from smart_reporting.report_editor.native_word_read_ai import AgnoNativeWordReadPlanner
 from smart_reporting.report_editor.native_word_read_tasks import NativeWordReadService
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
 from smart_reporting.reporting.delivery.docx_native import inspect_docx
 from smart_reporting.reporting.tests.test_docx_comment_reply import modern_source
 from smart_reporting.reporting.tests.test_docx_comment_text_host import operation

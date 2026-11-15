@@ -1,6 +1,6 @@
 import pytest
 from pydantic import ValidationError
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.office.artifacts import ArtifactFile
 
 @pytest.mark.parametrize('mime',[
 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

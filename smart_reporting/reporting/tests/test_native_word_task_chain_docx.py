@@ -102,7 +102,7 @@ async def chain(tmp_path, word_repository, request):
         await connection.execute(text('TRUNCATE report_native_documents_v1 CASCADE'))
     publication.repository = native_repository
     editor = NativeEditorService(publication.workspace, publication.repository, publication.editor_grants,
-        report_editor=None, docx_enabled=True, publication=publication)
+        docx_enabled=True, publication=publication)
     transport = getattr(request, 'param', SyntheticMcpTransport)()
     def scope_factory(context, task_id):
         return TaskExecutionScope(task_id, context.scope.user_id, context.scope.thread_id,
@@ -555,7 +555,7 @@ async def test_channel_invitation_delegates_to_word_mcp_and_editor_saves(
     from smart_reporting.report_channel_word import ChannelWordDraft, ReportChannelWordAssistant
     from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
     from smart_reporting.report_editor.native_models import NativeScope
-    from smart_reporting.report_editor.service import token_hash
+    from smart_reporting.office.editor_grants import token_hash
 
     _, database = word_repository
     channels = ReportChannelRepository(database.async_engine)
@@ -882,7 +882,7 @@ async def test_old_executor_cancel_after_pg_takeover_must_not_cancel_new_claim(c
 
 async def restart_projection(chain):
     from smart_reporting.report_editor.native_api import NATIVE_SESSION_COOKIE
-    from smart_reporting.report_editor.service import token_hash
+    from smart_reporting.office.editor_grants import token_hash
 
     # New service/projection maps; persisted task and receipt remain sole authority.
     ai = NativeAIService(chain.editor, planner=object(), enabled=True,

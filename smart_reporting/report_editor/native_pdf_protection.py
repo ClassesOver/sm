@@ -6,12 +6,18 @@ import subprocess
 
 from loguru import logger
 
-from ..reporting.delivery.artifacts_v1 import ArtifactFile
+from ..office.artifacts import ArtifactFile
 from ..reporting.delivery.office_engine import run_office_engine
 from ..reporting.delivery.pdf_native import protect_pdf as protect_pdf_bytes
 from ..reporting.models import ReportingError
 from ._file_identity import read_verified_file
-from .native_models import NativeArtifacts,NativeEditorContext,NativeIssue,NativeValidation,native_digest
+from .native_models import (
+    NativeArtifacts,
+    NativeEditorContext,
+    NativeIssue,
+    NativeValidation,
+    native_digest,
+)
 
 
 async def protect_pdf(editor,context,*,request_id,expected_sha256,user_password,owner_password,permissions):

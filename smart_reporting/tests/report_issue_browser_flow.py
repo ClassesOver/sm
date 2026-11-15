@@ -8,7 +8,7 @@ from pathlib import Path
 import uvicorn
 
 
-async def run_management_browser(app, config, output, *, script='smoke/management-issue-postgres-smoke.mjs'):
+async def run_management_browser(app, config, output, *, script: str):
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0))
     listener.listen()

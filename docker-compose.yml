@@ -24,7 +24,6 @@ services:
       - "33046:7777"
     environment:
       AGENT_OS_WORKERS: "1"
-      AGENT_REPORTING_MCP_ALLOWED_HOSTS: ${AGENT_REPORTING_MCP_ALLOWED_HOSTS:-}
       # PPTX/XLSX 引擎与 LibreOffice 子进程的并发上限；留空按 CPU 数的一半（1–4）。
       AGENT_REPORTING_OFFICE_ENGINE_CONCURRENCY: ${AGENT_REPORTING_OFFICE_ENGINE_CONCURRENCY:-}
       AGNO_TELEMETRY: "false"
@@ -40,7 +39,6 @@ services:
       AGENT_WORKSPACE_HMAC_SECRET: ${AGENT_WORKSPACE_HMAC_SECRET:?必须设置}
       AGENT_SKILLS_DIR: /opt/agent-skills
       TIKTOKEN_CACHE_DIR: /opt/tiktoken-cache
-      AGENT_REPORT_DATA_SOURCES_DIR: /run/agentos/reporting
       AGENT_REPORT_METADATA_URL: ${AGENT_REPORT_METADATA_URL:-}
       AGENT_REPORT_METADATA_TOKEN: ${AGENT_REPORT_METADATA_TOKEN:-}
       AGENT_REPORT_PUBLIC_BASE_URL: ${AGENT_REPORT_PUBLIC_BASE_URL:-}
@@ -59,10 +57,6 @@ services:
         source: ${AGENT_TIKTOKEN_CACHE_DIR:-./data/tiktoken-cache}
         target: /opt/tiktoken-cache
       - ${AGENT_REPORT_WORKSPACE_DIR:-./data/reporting-workspaces}:/var/lib/reporting-workspaces
-      - type: bind
-        source: ${AGENT_REPORT_DATA_SOURCES_DIR:-./deploy/agentos/reporting}
-        target: /run/agentos/reporting
-        read_only: true
     depends_on:
       reporting-db:
         condition: service_healthy

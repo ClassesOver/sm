@@ -1,6 +1,6 @@
 """上传工作簿/演示文稿沿用原生独立修订和非阻断交付。"""
-from io import BytesIO
 import hashlib
+from io import BytesIO
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,10 +8,11 @@ from openpyxl import Workbook, load_workbook
 from pptx import Presentation
 from pptx.util import Inches
 
+from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.report_editor.native import bind_native_workspace
-from smart_reporting.report_editor.native_models import NativeEditorContext, NATIVE_MEDIA
-from smart_reporting.reporting.delivery.artifacts_v1 import ArtifactFile
+from smart_reporting.report_editor.native_models import NATIVE_MEDIA, NativeEditorContext
 from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
+
 
 @pytest.fixture
 def anyio_backend(): return 'asyncio'
@@ -26,7 +27,9 @@ async def test_office_native_save_keeps_download_when_validation_fails(tmp_path,
         operations=[{'kind':'applyCellEdits','edits':[{'sheetName':'Sheet','row':0,'column':0,'writeValue':True,'cell':{'value':'修改后'}}]}]
     else:
         deck=Presentation();slide=deck.slides.add_slide(deck.slide_layouts[6]);box=slide.shapes.add_textbox(Inches(1),Inches(1),Inches(3),Inches(1));box.text='原文';deck.save(stream)
-        from smart_reporting.report_editor.slides import ReportSlidesEditorService
+        from smart_reporting.report_editor.pptx_engine import (
+            PptxEngine as ReportSlidesEditorService,
+        )
         info=ReportSlidesEditorService._run_engine(stream.getvalue(),'inspect')
         element=info['slides'][0]['elements'][0]
         operations=[{'kind':'editSlides','edits':[{'slideIndex':0,'elementId':element['id'],'text':'修改后'}]}]
@@ -53,14 +56,15 @@ async def test_office_native_save_keeps_download_when_validation_fails(tmp_path,
 @pytest.mark.parametrize('format',['xlsx','pptx'])
 async def test_office_native_http_session_download_survives_disabled_editing(tmp_path,format):
     from fastapi import FastAPI
-    from httpx import AsyncClient,ASGITransport
+    from httpx import ASGITransport, AsyncClient
+
     from smart_reporting.report_editor.native import NativeEditorService
     from smart_reporting.report_editor.native_api import create_native_editor_router
     from smart_reporting.report_editor.native_import import NativeImportService
     from smart_reporting.reporting.tests.test_native_editor_api import Repository
     publication,old,downloads=await create_publication(tmp_path)
     repository=Repository();publication.repository=repository
-    editor=NativeEditorService(publication.workspace,repository,publication.editor_grants,report_editor=None,office_enabled=True,publication=publication)
+    editor=NativeEditorService(publication.workspace,repository,publication.editor_grants,office_enabled=True,publication=publication)
     stream=BytesIO()
     if format=='xlsx': book=Workbook();book.active['A1']='original';book.save(stream)
     else: deck=Presentation();slide=deck.slides.add_slide(deck.slide_layouts[6]);slide.shapes.add_textbox(Inches(1),Inches(1),Inches(2),Inches(1)).text='original';deck.save(stream)

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..reporting.contract import SHA256_PATTERN
+from ..office.contract import SHA256_PATTERN
 from ..reporting.models import ReportingError
 from .native_ai_api import _ai_error
 from .native_api import NATIVE_SESSION_COOKIE, _csrf

@@ -15,7 +15,6 @@ from sqlalchemy import select
 from .auth import AdminAuthService
 from .models import AdminAccount, AdminSessionInvalid, ManagementError
 from .repository import audit_events
-from .scopes import ScopeService
 from .settings import ManagementSettings
 
 SESSION_COOKIE = "report_management_session"
@@ -70,7 +69,7 @@ class PasswordInput(BaseModel):
 
 
 
-def create_management_router(auth: AdminAuthService, settings: ManagementSettings, *, report_runtime=None, startup_settings=None, system_configuration_state=None) -> APIRouter:
+def create_management_router(auth: AdminAuthService, settings: ManagementSettings, *, startup_settings=None, system_configuration_state=None) -> APIRouter:
     router = APIRouter(route_class=ManagementRoute, tags=["management"])
 
     async def require_admin(request: Request) -> AdminAccount:
@@ -191,24 +190,12 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
             "nextCursor": rows[limit - 1]["id"] if len(rows) > limit else None,
         }
 
-    scopes = ScopeService(auth)
-
-
-
     router.include_router(protected)
     if startup_settings is not None:
         from .configuration_api import create_configuration_router
 
         router.include_router(create_configuration_router(auth, settings, startup_settings,
             system_configuration_state=system_configuration_state))
-    from .report_bases import ReportBasisService
-    from .report_issue_reviews import ReportIssueReviewService
-    from .report_issue_reviews_api import create_report_issue_reviews_router
-
-    router.include_router(create_report_issue_reviews_router(
-        ReportIssueReviewService(ReportBasisService(scopes)), settings, report_runtime=report_runtime,
-    ))
-
     def page():
         path = settings.static_dir / "management.html" if settings.static_dir else None
         if path is None or not path.is_file():
@@ -254,7 +241,6 @@ def create_management_router(auth: AdminAuthService, settings: ManagementSetting
     @router.get("/management/knowledge", include_in_schema=False)
     @router.get("/management/system-configuration", include_in_schema=False)
     @router.get("/management/preferences", include_in_schema=False)
-    @router.get("/management/report-issues", include_in_schema=False)
     @router.get("/management/account/password", include_in_schema=False)
     async def management_page(request: Request):
         try:

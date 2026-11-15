@@ -10,7 +10,7 @@ from typing import Any
 from agno.agent import Agent
 from pydantic import Field, model_validator
 
-from ..reporting.contract import StrictModel
+from ..office.contract import StrictModel
 from ..reporting.models import ReportingError
 from .native_word_notes_ai import (
     NOTE_OPERATION_FIELDS,

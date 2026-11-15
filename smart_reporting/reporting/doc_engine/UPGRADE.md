@@ -205,7 +205,7 @@ PDF.js 静态资源、上传模块、中文 PDF 实际改字探针和全开关 r
 镜像内 11 个原生 Python 模块 SHA-256 均与本地一致；再次断网通过全部 11 项
 readiness 检查，DOCX/XLSX/PPTX 实际编辑并独立回读通过，PDF 实际中文替换
 探针通过。未部署。灰度及回滚步骤见
-[原生 Office 接入指南](../../report_editor/NATIVE_EDITING.md)。
+[原生 Office 接入指南](../../../docs/archive/office-acceptance/NATIVE_EDITING.md)。
 
 追加移动端 Word 导出验收：390×844 触屏 Chromium 中编辑合成文档后直接导出，
 修订 2 由修订 1 派生。Word/PDF 签名下载均为 HTTP 200，哈希与回执相符，
@@ -258,7 +258,7 @@ The adapter reuses the unchanged fixed GenOffice run/relationship serializer;
 original unstyled links are marked for plain preservation before paragraph
 regeneration, including untouched fragments. Unsupported metadata grouping and
 linked-source text replacements fail explicitly. No vendored engine file changed.
-See report_editor/NATIVE_WORD_LINK_ACCEPTANCE.md for targeted, independent and
+See docs/archive/office-acceptance/NATIVE_WORD_LINK_ACCEPTANCE.md for targeted, independent and
 packed-runtime/browser evidence and remaining limitations.
 
 
@@ -314,7 +314,7 @@ sound/ext、音频及关系字节。vendor 未改。普通来源及固定 Morph 
 未建模 MC/效果/重复容器显式只读，UI/草稿/强制后端请求共同执行。
 批量 ApplyAll gate 不放宽。29 个不同新文件用例、20 个已有批量用例、
 浏览器下载独立读取，以及 Node22 只读断网包三个定向用例通过；两份生产
-构建和预算通过。详见 `report_editor/NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`。
+构建和预算通过。详见 `docs/archive/office-acceptance/NATIVE_PPTX_TRANSITION_PRESERVATION_ACCEPTANCE.md`。
 原 upstream setter 的历史丢失探针仍有效；未声称桌面/播放/完整镜像通过。
 
 
@@ -324,7 +324,7 @@ pdf-lib CropBox 原语与 PDF.js 逆变换；不改 vendor。绝对来源坐标�
 实际下载/pypdf、ASGI组合、Node22断网只读与两份生产构建通过。32项本地
 SHA核对中同时校正一条历史测试过期记录；SOURCE清单不变。独立bridge tsc
 仍有六项已有桌面类型声明缺失，与HEAD对照零新增，不记作干净通过。详见
-`report_editor/NATIVE_PDF_CROP_ACCEPTANCE.md`；全页裁切/其他Page命令和桌面/
+`docs/archive/office-acceptance/NATIVE_PDF_CROP_ACCEPTANCE.md`；全页裁切/其他Page命令和桌面/
 完整镜像/生产身份仍未验收，开关关闭。
 
 
@@ -332,7 +332,7 @@ SHA核对中同时校正一条历史测试过期记录；SOURCE清单不变。�
 PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步历史，异常/
 取消/超预算不保留半批结果，准备期间阻止重入。后端/vendor/运行包不变。
 混合尺寸/方向/UserUnit 与实际下载、pypdf 回读见
-`report_editor/NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`；不累计前阶段后端验收为新增，
+`docs/archive/office-acceptance/NATIVE_PDF_CROP_ALL_ACCEPTANCE.md`；不累计前阶段后端验收为新增，
 其他 Page 命令、桌面和完整镜像仍未完成，开关关闭。
 
 
@@ -342,7 +342,7 @@ PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步�
 探针保留。真实写回预览使用输出页边界，服务不依赖文字开关；签发代码
 未改。35个新文件用例、40个受影响文件用例、53个PDF前端检查、新服务
 及既有文字服务检查、浏览器下载/pypdf、Node22两例和最终构建预算通过。
-详见 `report_editor/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`；独立bridge tsc仍
+详见 `docs/archive/office-acceptance/NATIVE_PDF_PAGE_SIZE_ACCEPTANCE.md`；独立bridge tsc仍
 有六项基线桌面声明问题，零新增，不视作完整镜像/桌面验收，开关关闭。
 
 
@@ -351,7 +351,7 @@ PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步�
 支持四类型、多行、源颜色、待保存切换、回放与实际输出预览。已保存标注
 移除仍明确禁用，读取不完整来源拒绝。44新文件/40受影响文件、14新前端/
 52受影响前端、新服务/四既有服务、Chromium/pypdf及Node22两例通过；
-详见 `report_editor/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`。整体差异
+详见 `docs/archive/office-acceptance/NATIVE_PDF_SELECTION_MARKUP_ACCEPTANCE.md`。整体差异
 与真实签名依赖分别见 ALIGNMENT_STATUS 和 SIGNING_WEB_DESIGN 文档，不将
 禁用项、设计或缺服务的路径算作完成。开关关闭。
 
@@ -360,7 +360,7 @@ PDF.js 逆变换生成既有严格 cropPage；全部预备成功才提交一步�
 Ctrl/Meta滚轮及原生DOM内容锚点接通；文件、草稿及后端运行包不变。源码
 核对补列遗漏的批注侧栏/比较/附件并明确禁用，不计完成。7项定向前端
 检查、只读Chromium视图/真实滚轮/打印媒体隔离/源字节相等与两份构建预算
-通过，详见 `report_editor/NATIVE_PDF_VIEW_ACCEPTANCE.md`。阅读位置持久化、
+通过，详见 `docs/archive/office-acceptance/NATIVE_PDF_VIEW_ACCEPTANCE.md`。阅读位置持久化、
 完整快捷键/行布局及整体源功能仍未完成，开关关闭。
 
 
@@ -371,7 +371,7 @@ Ctrl/Meta滚轮及原生DOM内容锚点接通；文件、草稿及后端运行�
 34个相关前端、2个服务、2个受影响来源用例及Chromium/pypdf通过；Node22
 断网只读验证移除、无字体时改字跳过仍保留移除、伪造请求无产物。两份
 构建和预算、33项本地SHA通过；独立bridge仍有六项基线诊断。证据见
-`report_editor/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`，保留失败迭代，
+`docs/archive/office-acceptance/NATIVE_PDF_MARKUP_REMOVAL_ACCEPTANCE.md`，保留失败迭代，
 不声称完整镜像/桌面/生产或全PDF对齐；开关关闭。
 
 
@@ -379,7 +379,7 @@ Ctrl/Meta滚轮及原生DOM内容锚点接通；文件、草稿及后端运行�
 保留上游/本地SHA和变更声明；逐处框/计数、大小写/全词、循环导航、
 快捷键与原稿/实际预览页身份映射接通。删除/重排与异步预览重建有
 浏览器检查，八个新定向/七个受影响前端检查通过；后端和运行包未变。
-详见 `report_editor/NATIVE_PDF_SEARCH_ACCEPTANCE.md`，不把OCR、浮动栏、
+详见 `docs/archive/office-acceptance/NATIVE_PDF_SEARCH_ACCEPTANCE.md`，不把OCR、浮动栏、
 复杂字形精确几何或完整镜像/桌面/生产对齐计作完成，开关关闭。
 
 
@@ -390,7 +390,7 @@ getForm先删XFA导致后续能力检查漏读，原始XFA提前检查保护便�
 尺寸和表单。23新文件/7受影响文件、38前端、3服务、Chromium/独立pypdf、
 最终字节重放和Node22断网只读4场景通过；两份构建/预算、33项SHA及Ruff
 通过，独立bridge六项基线诊断无新增。证据见
-`report_editor/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`，线程/回复/复杂源和
+`docs/archive/office-acceptance/NATIVE_PDF_SAVED_NOTES_ACCEPTANCE.md`，线程/回复/复杂源和
 完整镜像/桌面/生产仍未完成，开关关闭。
 
 
@@ -399,7 +399,7 @@ getForm先删XFA导致后续能力检查漏读，原始XFA提前检查保护便�
 接通。13新+38受影响前端检查、新浏览器指针放置/过期控件/只读/页历史/
 保存重开及已有便签浏览器回归、独立pypdf保真、两份构建/实际预算通过。
 后端/运行包不变，未把旧Node22/SQL结果算新检查。详见
-`report_editor/NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`；pending-only实际预览/
+`docs/archive/office-acceptance/NATIVE_PDF_PENDING_NOTES_ACCEPTANCE.md`；pending-only实际预览/
 创建时间绑定、线程/回复和完整桌面/镜像/生产未完成，开关关闭。
 
 
@@ -409,13 +409,13 @@ getForm先删XFA导致后续能力检查漏读，原始XFA提前检查保护便�
 14新文件+2受影响文件、2漂移守卫、57前端、5服务、Chromium/独立pypdf
 和Node22断网只读5场景、两份构建/预算/Ruff/35项SHA通过；bridge六项
 基线诊断无新增。上游同一瞬时在不同时区输出不同字节的反例保留，
-详见 `report_editor/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`。线程/回复、
+详见 `docs/archive/office-acceptance/NATIVE_PDF_NOTE_PREVIEW_ACCEPTANCE.md`。线程/回复、
 完整侧栏/桌面/镜像/生产仍未完成，开关关闭。
 
 
 2026-11-09 Word 清除格式前置协议：本地 edit-docx bridge 的 formatParagraph/formatRange 接受 fontFamily/fontSize/color:null，移除直接属性及主题/复杂文字对应 XML；原样式引用保留以恢复继承。区间外 run 及其他属性保留。前端差分与 replay 同步支持，完整清除格式按钮尚未接通。80个相关前端测试、9个DOCX桥接测试、bridge bundle及定向源码tsc通过；未重复完整测试。审查独立主题字体/rtl/lang/bdr探针通过。
 
-2026-11-09 Word 清除所有格式续批：新增原子 clearParagraphFormatting（来源身份+UTF-16有序范围），选区去除 marks、默认样式恢复、标题转普通段、保留列表编号和多数覆盖规则；rawPPr 仅清源定义的直接段落属性，非目标属性保留。来源样式继承编号具体化。packages/docx-engine/src/generate.ts 的字体生成条件加入 eastAsiaFont，修复清除其他字体槽后仅剩东亚槽被漏写的问题。10项Python回读、6项新增前端、真实Chromium保存下载重开验收通过；完整边界见 report_editor/NATIVE_WORD_CLEAR_FORMATTING_ACCEPTANCE.md。表格/子编辑器/内联对象/同段混合修改仍缺，不代表全量对齐。
+2026-11-09 Word 清除所有格式续批：新增原子 clearParagraphFormatting（来源身份+UTF-16有序范围），选区去除 marks、默认样式恢复、标题转普通段、保留列表编号和多数覆盖规则；rawPPr 仅清源定义的直接段落属性，非目标属性保留。来源样式继承编号具体化。packages/docx-engine/src/generate.ts 的字体生成条件加入 eastAsiaFont，修复清除其他字体槽后仅剩东亚槽被漏写的问题。10项Python回读、6项新增前端、真实Chromium保存下载重开验收通过；完整边界见 docs/archive/office-acceptance/NATIVE_WORD_CLEAR_FORMATTING_ACCEPTANCE.md。表格/子编辑器/内联对象/同段混合修改仍缺，不代表全量对齐。
 
 
 2026-11-10 Word 来源注释标记后的原生输入：`parse.ts` 的既有 noteRef 分支复用
@@ -423,5 +423,5 @@ getForm先删XFA导致后续能力检查漏读，原始XFA提前检查保护便�
 和标记输出 XML 保留。桥接把同源 marker 样式继承为普通 text 时仅去掉 noteRef，
 普通生成器因而保留 superscript/rStyle 等受管属性。无第二次 ZIP/文档解析，
 不新增客户端 raw XML 协议。SOURCE.md 记录更新后的 parse.ts SHA-256。
-验收证据见 `report_editor/NATIVE_WORD_NOTE_REFERENCE_INPUT_ACCEPTANCE.md`；
+验收证据见 `docs/archive/office-acceptance/NATIVE_WORD_NOTE_REFERENCE_INPUT_ACCEPTANCE.md`；
 此项只修复可信来源继承，不表示复杂注释/任意内联编辑全面对齐。
