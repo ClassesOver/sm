@@ -1232,3 +1232,39 @@ async def _check_generation_write_access(sample_data, revoke_at_preview):
         assert planner.await_count == revoke_at_preview - 1
     finally:
         await ai.aclose()
+
+
+@pytest.mark.anyio
+async def test_pdf_ai_freezes_selection_before_awaiting_source_preview(pdf_sample, monkeypatch):
+    from contextlib import aclosing
+
+    from smart_reporting.report_editor.native_ai import NativeAIService
+
+    editor, context, session, model, _ = pdf_sample
+    target = pdf_ai_selection(model)
+    selection = [dict(target)]
+    preview_started = asyncio.Event()
+    continue_preview = asyncio.Event()
+    preview = editor.preview
+
+    async def delayed_preview(*args, **kwargs):
+        preview_started.set()
+        await continue_preview.wait()
+        return await preview(*args, **kwargs)
+
+    async def planner(prompt, **_kwargs):
+        assert "UNSELECTED SECRET" not in prompt
+        return pdf_ai_plan(target, "Amount due 700")
+
+    monkeypatch.setattr(editor, "preview", delayed_preview)
+    async with aclosing(NativeAIService(editor, planner=planner, enabled=True)) as ai:
+        pending = asyncio.create_task(ai.start_edit(session, instruction="润色",
+            expected_sha256=context.source_file.sha256, operations=[], selection=selection))
+        await asyncio.wait_for(preview_started.wait(), timeout=5)
+        selection[0].update(pdf_ai_selection(model, index=1))
+        continue_preview.set()
+        started = await pending
+        ready = await ai.wait_edit_status(session, started["editId"])
+        assert ready["status"] == "succeeded", ready
+        assert ready["proposal"]["operations"][0]["objectId"] == target["objectId"]
+        assert ready["proposal"]["skippedOperations"] == []

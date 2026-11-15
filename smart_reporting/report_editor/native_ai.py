@@ -226,6 +226,7 @@ class NativeAIService:
     ) -> dict[str, Any]:
         if self._closed:
             raise _invalid("native_ai_closed", "AI 候选服务已关闭。")
+        selection = deepcopy(selection)
         context = await self._context(session)
         if self._word_tasks_enabled(context):
             self.word_task_dispatcher.require_available()
