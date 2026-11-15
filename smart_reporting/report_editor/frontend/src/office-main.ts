@@ -1008,6 +1008,7 @@ root.addEventListener('click', event => {
   const data = button.dataset
   if (data.favoriteGroup !== undefined) {
     favoriteGroup = data.favoriteGroup
+    selectedFiles.clear()
     renderEntries()
     root.querySelector<HTMLButtonElement>(`[data-favorite-group="${CSS.escape(favoriteGroup)}"]`)?.focus()
     return
@@ -1095,6 +1096,7 @@ root.addEventListener('click', event => {
   }
   if (data.filter !== undefined) {
     filter = data.filter as Format | ''
+    selectedFiles.clear()
     root.querySelectorAll<HTMLButtonElement>('[data-filter]').forEach(control => control.classList.toggle('active', control.dataset.filter === filter))
     renderEntries()
     return
@@ -1107,10 +1109,15 @@ root.addEventListener('click', event => {
   }
   if (data.fileActions || data.folderActions) { manageOfficeItem(data); return }
   if (data.view) {
-    view = data.view as View; filter = ''; selectedTab = ''
+    view = data.view as View; filter = ''; favoriteGroup = ''; selectedTab = ''
+    selectedFiles.clear()
     if (view === 'ask') void loadKnowledge()
   }
-  if (data.folder) { view = 'folder'; folder = data.folder; filter = ''; expandOfficeFolderPath(folder) }
+  if (data.folder) {
+    view = 'folder'; folder = data.folder; filter = ''
+    selectedFiles.clear()
+    expandOfficeFolderPath(folder)
+  }
   if (data.collapse) {
     setFolderCollapsed(data.collapse, !collapsed.has(data.collapse))
   }
