@@ -398,7 +398,7 @@ it('exposes the native right-to-left view action with current direction', () => 
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
   const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-right-to-left"]')!
   expect(button.disabled).toBe(false)
-  expect(button.getAttribute('aria-pressed')).toBe('true')
+  expect(button.getAttribute('aria-checked')).toBe('true')
   button.click(); expect(command).toHaveBeenCalledWith('toggle-right-to-left')
   ribbon.dispose()
 })
@@ -411,10 +411,10 @@ it('toggles headings as a view action and reflects the current state', () => {
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
   const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-headings"]')!
   expect(button.disabled).toBe(false)
-  expect(button.getAttribute('aria-pressed')).toBe('true')
+  expect(button.getAttribute('aria-checked')).toBe('true')
   button.click(); expect(command).toHaveBeenCalledWith('toggle-headings')
   visible = false; ribbon.refreshState()
-  expect(button.getAttribute('aria-pressed')).toBe('false')
+  expect(button.getAttribute('aria-checked')).toBe('false')
   ribbon.dispose()
 })
 
@@ -1187,14 +1187,37 @@ it('offers GenOffice Notes commands in source order and dispatches only enabled 
   expect(onCommand.mock.calls).toEqual([['note-show-all'], ['note-pictures-pane-toggle']])
 })
 
+it('renders GenOffice Show as five checked view toggles in source order', () => {
+  const command = vi.fn()
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    editable: () => false, rotation: () => undefined,
+    gridlines: () => ({ visible: true, available: true }),
+    formulaBar: () => ({ visible: false, available: true }),
+    headings: () => ({ visible: true, available: true }),
+    rightToLeft: () => ({ active: false, available: true }),
+    crossHighlight: () => ({ active: true, available: true }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
+  const options = Array.from(document.querySelectorAll<HTMLButtonElement>('.workbook-ribbon-check-column-view [role="checkbox"]'))
+  expect(options.map(option => [option.getAttribute('aria-label'), option.getAttribute('aria-checked')])).toEqual([
+    ['网格线', 'true'], ['编辑栏', 'false'], ['标题', 'true'], ['从右到左', 'false'], ['突出显示活动行和列', 'true'],
+  ])
+  for (const button of options) {
+    expect(button.disabled).toBe(false)
+    button.click()
+    expect(command).toHaveBeenLastCalledWith(button.dataset.ribbonCommand)
+  }
+  ribbon.dispose()
+})
+
 it('renders GenOffice View controls with a live gridline toggle and explicit unavailable states', () => {
   document.body.innerHTML = '<main></main>'
   mountWorkbookRibbon(document.querySelector('main')!, vi.fn())
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
   const expected = new Map([
-    ['toggle-page-break-preview', '分页预览'], ['toggle-gridlines', '显示网格线'],
-    ['toggle-formula-bar', '编辑栏'], ['toggle-headings', '显示标题'],
+    ['toggle-page-break-preview', '分页预览'], ['toggle-gridlines', '网格线'],
+    ['toggle-formula-bar', '编辑栏'], ['toggle-headings', '标题'],
     ['toggle-right-to-left', '从右到左'], ['toggle-cross-highlight', '突出显示活动行和列'],
     ['zoom-reset', '100%'], ['zoom-to-selection', '缩放到选定区域'],
     ['zoom-in', '放大'], ['zoom-out', '缩小'],
@@ -1203,7 +1226,8 @@ it('renders GenOffice View controls with a live gridline toggle and explicit una
   ])
   for (const [id, label] of expected) {
     const button = buttons.find(candidate => candidate.dataset.ribbonCommand === id)
-    expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
+    const caption = button?.getAttribute('role') === 'checkbox' ? button.getAttribute('aria-label') : button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent
+    expect(caption, id).toBe(label)
   }
   expect(buttons.find(button => button.dataset.ribbonCommand === 'toggle-gridlines')?.disabled).toBe(false)
   for (const [id, reason] of [
@@ -1227,29 +1251,36 @@ it('dispatches the four GenOffice Freeze Panes choices and guards the selection-
     editable: () => editable, rotation: () => 0, hasSelection: () => selected,
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
-  const freeze = document.querySelector<HTMLSelectElement>('[data-ribbon-control="freeze-panes"]')!
-  expect([...freeze.options].slice(1).map(option => [option.value, option.textContent])).toEqual([
+  const freeze = document.querySelector<HTMLButtonElement>('[data-ribbon-control="freeze-panes"]')!
+  expect(freeze.tagName).toBe('BUTTON')
+  expect(freeze.getAttribute('aria-haspopup')).toBe('listbox')
+  const choices = () => Array.from(document.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="冻结窗格"] [role="option"]'))
+  expect(choices().map(option => [option.dataset.menuCommand, option.textContent])).toEqual([
     ['freeze-here', '在所选位置冻结窗格'], ['freeze-top-row', '冻结首行'],
     ['freeze-first-col', '冻结首列'], ['unfreeze', '取消冻结窗格'],
   ])
-  const select = (value: string) => {
-    freeze.value = value
-    freeze.dispatchEvent(new Event('change'))
-    expect(freeze.value).toBe('')
-  }
-  for (const option of [...freeze.options].slice(1)) {
-    select(option.value)
-    expect(command).toHaveBeenLastCalledWith(option.value)
+  for (const option of choices()) {
+    freeze.click()
+    option.click()
+    expect(command).toHaveBeenLastCalledWith(option.dataset.menuCommand)
+    expect(freeze.getAttribute('aria-expanded')).toBe('false')
   }
   selected = false; ribbon.refreshState()
-  expect(freeze.options[1]!.disabled).toBe(true)
-  select('freeze-here')
+  freeze.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
+  expect(choices()[0]!.disabled).toBe(true)
+  expect(document.activeElement).toBe(choices()[1])
+  choices()[0]!.click()
   expect(command).toHaveBeenCalledTimes(4)
-  select('freeze-top-row')
+  choices()[1]!.click()
   expect(command).toHaveBeenCalledTimes(5)
+  freeze.click()
+  choices()[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+  expect(freeze.getAttribute('aria-expanded')).toBe('false')
+  expect(document.activeElement).toBe(freeze)
+  freeze.click()
   editable = false; ribbon.refreshState()
   expect(freeze.disabled).toBe(true)
-  select('unfreeze')
+  expect(freeze.getAttribute('aria-expanded')).toBe('false')
   expect(command).toHaveBeenCalledTimes(5)
   ribbon.dispose()
 })
@@ -1314,12 +1345,19 @@ it('offers all source zoom presets and the full dialog while respecting view rea
   const dialog = document.querySelector<HTMLButtonElement>('[data-ribbon-command="zoom-open"]')!
   expect(dialog.disabled).toBe(false)
   dialog.click(); expect(command).toHaveBeenLastCalledWith('zoom-open')
-  const presets = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="zoom"]')!
-  expect([...presets.options].map(option => option.value)).toEqual(['', '50', '75', '100', '125', '150', '200'])
+  const presets = document.querySelector<HTMLButtonElement>('[data-ribbon-menu="zoom"]')!
+  expect(presets.tagName).toBe('BUTTON')
   expect(presets.disabled).toBe(false)
   expect(presets.getAttribute('aria-label')).toBe('缩放')
   expect(presets.title).toBe('缩放工作表')
   const group = presets.closest('.workbook-ribbon-group')!
+  const cover = presets.closest('.workbook-ribbon-large-menu')!
+  expect(cover.querySelector('.workbook-ribbon-icon svg')).toBeTruthy()
+  expect(cover.textContent).toContain('缩放')
+  for (const id of ['normal-view', 'toggle-page-break-preview', 'zoom-reset', 'zoom-to-selection']) {
+    expect(document.querySelector('[data-ribbon-command="' + id + '"]')?.classList.contains('workbook-ribbon-large')).toBe(true)
+  }
+  expect(document.querySelector('[data-ribbon-control="freeze-panes"]')?.closest('.workbook-ribbon-large-menu')).toBeTruthy()
   const buttons = Array.from(group.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]'))
   expect(buttons.slice(0, 2).map(button => button.dataset.ribbonCommand)).toEqual(['zoom-reset', 'zoom-to-selection'])
   const [reset, fit] = buttons
@@ -1327,9 +1365,15 @@ it('offers all source zoom presets and the full dialog while respecting view rea
   expect(reset!.title).toBe('重置缩放')
   expect(reset!.disabled).toBe(false)
   reset!.click(); expect(command).toHaveBeenLastCalledWith('zoom-reset')
-  presets.value = '125'; presets.dispatchEvent(new Event('change'))
+  presets.click()
+  const options = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="listbox"][aria-label="缩放"] [role="option"]'))
+  expect(options.map(option => option.textContent)).toEqual(['50%', '75%', '100%', '125%', '150%', '200%'])
+  options[3]!.click()
   expect(command).toHaveBeenLastCalledWith('zoom:125')
-  expect(presets.value).toBe('')
+  expect(presets.getAttribute('aria-expanded')).toBe('false')
+  presets.click()
+  document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+  expect(presets.getAttribute('aria-expanded')).toBe('false')
   ready = false; ribbon.refreshState()
   expect(dialog.disabled).toBe(true); expect(presets.disabled).toBe(true)
 })
@@ -1346,6 +1390,31 @@ it('toggles the active Univer worksheet gridlines without changing cell data', (
   expect(applyWorkbookRibbonCommand('toggle-gridlines', workbook)).toBe(true)
   expect(applyWorkbookRibbonCommand('toggle-gridlines', workbook)).toBe(true)
   expect(calls).toEqual([true, false])
+})
+
+it('renders GenOffice Page Layout viewing and printing in separate checked columns', () => {
+  const command = vi.fn()
+  let editable = true, showGridlines = true, showHeadings = false
+  const state: WorkbookPageSetupState = { margins: 'normal', printGridlines: false, printHeadings: true }
+  const ribbon = mountWorkbookRibbon(document.body, command, {
+    rotation: () => undefined, editable: () => editable, hasSelection: () => false, pageSetup: () => state,
+    gridlines: () => ({ visible: showGridlines, available: true }),
+    headings: () => ({ visible: showHeadings, available: true }),
+  })
+  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Page Layout"]')!.click()
+  const columns = Array.from(document.querySelectorAll<HTMLElement>('.workbook-ribbon-check-column'))
+  expect(columns.map(column => column.getAttribute('aria-label'))).toEqual(['网格线', '标题'])
+  const controls = columns.flatMap(column => Array.from(column.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')))
+  expect(controls.map(button => [button.dataset.ribbonCommand, button.getAttribute('aria-checked')])).toEqual([
+    ['toggle-gridlines', 'true'], ['print-gridlines', 'false'], ['toggle-headings', 'false'], ['print-headings', 'true'],
+  ])
+  for (const button of controls) button.click()
+  expect(command.mock.calls.flat()).toEqual(['toggle-gridlines', 'print-gridlines', 'toggle-headings', 'print-headings'])
+  showGridlines = false; showHeadings = true; state.printGridlines = true; editable = false; ribbon.refreshState()
+  expect(controls.map(button => [button.disabled, button.getAttribute('aria-checked')])).toEqual([
+    [false, 'false'], [true, 'true'], [false, 'true'], [true, 'true'],
+  ])
+  ribbon.dispose()
 })
 
 it('renders Page Layout dropdowns with the source option sets and dispatches their commands', () => {
@@ -1370,7 +1439,7 @@ it('renders Page Layout dropdowns with the source option sets and dispatches the
   expect([...fitWidth.options].map(option => option.value)).toEqual(['0', '1', '2', '3', '4', '5'])
   expect(fitWidth.value).toBe('2')
   expect(document.querySelector<HTMLSelectElement>('[data-ribbon-control="page-fit:height"]')!.value).toBe('0')
-  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.getAttribute('aria-pressed')).toBe('true')
+  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="print-gridlines"]')!.getAttribute('aria-checked')).toBe('true')
   const breaks = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="page-breaks"]')!
   breaks.value = 'page-breaks:reset'
   breaks.dispatchEvent(new Event('change', { bubbles: true }))
@@ -1557,10 +1626,10 @@ it('toggles the session formula bar on readonly and protected sheets while refle
   try {
     document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
     const button = document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-formula-bar"]')!
-    expect(button.disabled).toBe(false); expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(button.disabled).toBe(false); expect(button.getAttribute('aria-checked')).toBe('true')
     button.click(); expect(onCommand).toHaveBeenLastCalledWith('toggle-formula-bar')
     visible = false; ribbon.refreshState()
-    expect(button.getAttribute('aria-pressed')).toBe('false')
+    expect(button.getAttribute('aria-checked')).toBe('false')
     available = false; ribbon.refreshState(); expect(button.disabled).toBe(true)
     button.click(); expect(onCommand).toHaveBeenCalledTimes(1)
   } finally { ribbon.dispose() }
@@ -1626,8 +1695,8 @@ it('reflects cross-highlight reading preference and allows it on protected reado
  const controller=mountWorkbookRibbon(document.querySelector('main')!,run,{rotation:()=>undefined,editable:()=>false,crossHighlight:()=>({active,available}),protection:()=>({sheet:{protected:true},workbook:{locked:true}})})
  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="View"]')!.click()
  const button=document.querySelector<HTMLButtonElement>('[data-ribbon-command="toggle-cross-highlight"]')!
- expect(button.disabled).toBe(false);expect(button.getAttribute('aria-pressed')).toBe('false')
- button.click();expect(run).toHaveBeenCalledWith('toggle-cross-highlight');expect(button.getAttribute('aria-pressed')).toBe('true')
+ expect(button.disabled).toBe(false);expect(button.getAttribute('aria-checked')).toBe('false')
+ button.click();expect(run).toHaveBeenCalledWith('toggle-cross-highlight');expect(button.getAttribute('aria-checked')).toBe('true')
  available=false;controller.refreshState();expect(button.disabled).toBe(true)
  controller.dispose()
 })

@@ -179,8 +179,10 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
     async function showGrant() {
       area.replaceChildren()
       if (!select.value) return
-      const path = `/admin/workspaces/${enc(select.value)}/data-sources/${enc(id)}`
+      const spaceId = select.value
+      const path = `/admin/workspaces/${enc(spaceId)}/data-sources/${enc(id)}`
       const grant = await officeRequest<{ tables: string[] }>(path)
+      if (select.value !== spaceId) return
       if (access.publishedTables.length) {
         const selection = choices(access.publishedTables.map(key), grant.tables)
         area.append(selection.container, button('保存工作区授权', async () => {
@@ -190,6 +192,7 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
       } else {
         area.append(node('p', '尚无已发布的数据表，请先选择表范围并发布数据源。'))
       }
+      area.append(button('成员表权限', async () => memberLimits(id, spaceId)))
       if (grant.tables.length) {
         area.append(button('撤销此工作区授权', async () => {
           await officeRequest(path, 'PUT', { tables: [] })
@@ -236,18 +239,14 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
           output.replaceChildren(node('p', `返回 ${result.rows.length} 行，预览前 200 行。查询编号：${result.source.queryId}`), table)
         }), output)
       }
-      if (options.space.role === 'owner') section.append(button('成员表权限', async () => memberLimits(source.id)))
       content.append(section)
     }
   }
 
-  async function memberLimits(source: string, edits = new Map<string, Map<string, boolean>>()) {
-    const base = `/workspaces/${enc(options.space!.id)}`
-    const [members, limits] = await Promise.all([
-      officeRequest<{ items: { user: string; name: string }[] }>(`${base}/members`),
-      officeRequest<{ tables: string[]; items: { user: string; tables: string[] }[] }>(`${base}/data-sources/${enc(source)}/members`),
-    ])
-    content.replaceChildren(button('返回数据源', list), node('h3', '成员数据表权限'))
+  async function memberLimits(source: string, spaceId: string, edits = new Map<string, Map<string, boolean>>()) {
+    const base = `/admin/workspaces/${enc(spaceId)}`
+    const limits = await officeRequest<{ tables: string[]; items: { user: string; tables: string[] }[]; members: {user: string; name: string}[] }>(`${base}/data-sources/${enc(source)}/members`)
+    content.replaceChildren(button('返回工作区授权', () => grants(source)), node('h3', '成员数据表权限'))
     const memberSelections = new Map<string, { saved: string[]; values: () => string[] }>()
     async function updateMember(user: string, tables: string[] | null) {
       const path = `${base}/data-sources/${enc(source)}/members/${enc(user)}`
@@ -263,9 +262,9 @@ export async function showOfficeSources(host: HTMLElement, options: { admin: boo
         }
         if (changes.size) remaining.set(member, changes)
       }
-      await memberLimits(source, remaining)
+      await memberLimits(source, spaceId, remaining)
     }
-    for (const member of members.items) {
+    for (const member of limits.members) {
       const current = limits.items.find(item => item.user === member.user)
       const allowedTables = current ? limits.tables.filter(table => current.tables.includes(table)) : limits.tables
       const changes = edits.get(member.user)

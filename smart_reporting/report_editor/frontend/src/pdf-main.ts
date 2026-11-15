@@ -146,10 +146,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   root.addEventListener('keydown', event => {
     if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return
     if (event.target instanceof HTMLElement && event.target.closest('input,textarea,select,[contenteditable],dialog')) return
-    if (ordinaryImagePlacement()) {
+    if (ordinaryImagePlacement() || signaturePlacement()) {
       if (root.ownerDocument.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return
       event.preventDefault()
-      cancelImagePlacement()
+      if (signaturePlacement()) cancelSignaturePlacement()
+      else cancelImagePlacement()
       return
     }
     if (!(mode === 'draw' && drawShape === 'measure') && !measureRecalibrate) return
@@ -546,6 +547,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     unavailable: printUnavailable,
     print: pages => { void printPdf(pages).catch(showError) } })
   sourceCommand(printButton, 'home.print.print')
+  commandGroup.append(printButton)
   let searchOpen = false
   const findBar = documentElement('div', 'pdf-find-bar')
   findBar.hidden = true
@@ -729,12 +731,21 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   for (const command of PDF_VIEW_RIBBON_GROUPS[0].commands) { const control = [...viewNavigation.querySelectorAll<HTMLElement>('[data-source-command-id]')].find(node => node.dataset.sourceCommandId === command.id); if (control) viewNavigation.append(control) }
   const viewZoomGroup = ribbon.group('view', 'Page & Zoom')
   const viewPageInput = createPageInput('view.pageZoom.goToPage')
-  viewZoomGroup.append(viewPageInput.row)
+  const viewPageZoom = documentElement('div', 'pdf-view-page-zoom')
+  const viewZoomRow = documentElement('div', 'pdf-view-zoom-row')
+  const viewZoomValue = documentElement('output')
+  viewZoomValue.dataset.pdfViewZoom = ''
+  viewZoomValue.setAttribute('aria-label', pdfRibbonLabel('缩放'))
+  viewZoomValue.textContent = `${Math.round(scale * 100)}%`
+  viewPageZoom.append(viewPageInput.row, viewZoomRow)
+  viewZoomGroup.append(viewPageZoom)
   commandGroup = viewZoomGroup
   const syncZoomControls = () => {
     for (const option of [...homeZoom.options]) if (!PDF_ZOOM_STEPS.some(step => step === Number(option.value)) && Number(option.value) !== scale) option.remove()
     if (![...homeZoom.options].some(item => Number(item.value) === scale)) { const added = documentElement('option'); added.value = String(scale); added.textContent = `${Math.round(scale * 100)}%`; homeZoom.append(added) }
-    homeZoom.value = String(scale); zoomSlider.value = String(Math.round(scale * 100)); zoomValue.textContent = `${Math.round(scale * 100)}%`
+    homeZoom.value = String(scale)
+    zoomSlider.value = String(Math.round(scale * 100))
+    zoomValue.textContent = viewZoomValue.textContent = `${Math.round(scale * 100)}%`
   }
   const setZoom = (value: number, vx = 0, vy = 0, manual = true) => {
     let next: number
@@ -755,7 +766,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const viewFitWidth = button('适合宽度', () => fitScale('width'), false)
   const viewFitPage = button('适合页面', () => fitScale('page'), false)
   sourceCommand(viewFitWidth, 'view.pageZoom.fitWidth'); sourceCommand(viewFitPage, 'view.pageZoom.fitPage')
-  viewZoomGroup.append(zoomOut, zoomIn, viewFitWidth, viewFitPage)
+  viewZoomRow.append(zoomOut, viewZoomValue, zoomIn)
+  viewZoomGroup.append(viewFitWidth, viewFitPage)
   viewFitWidth.setAttribute('aria-keyshortcuts', 'Control+0 Meta+0')
   // GenOffice App.tsx reading shortcuts use the same commands as the ribbon.
   root.addEventListener('keydown', event => {
@@ -977,10 +989,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   annotateDrawGroup.append(redactTool, redactionFinder, clearRedaction, applyRedaction)
   // 固定源 SignatureDialog：手写（矢量笔迹）或键入（按所选字体栅格化为图像），再在页面上拖出放置区域。
   commandGroup = ribbon.group('annotate', 'Signature & Protection')
-  const signButton = button('签名', () => openSignature(), true)
+  const signButton = button('签名', () => {
+    if (signaturePlacement()) cancelSignaturePlacement()
+    else openSignature()
+  }, true)
   sourceCommand(signButton, 'annotate.signature.sign'); signButton.dataset.pdfDrawShape = 'signature'
   signButton.title = '签名：手写、键入或选择图片，可保存后复用；这是可视签名，不是证书数字签名'
-  drawButtons.set('signature' as PdfDrawingShape, signButton)
   const SIGN_COLOR: [number, number, number] = [...PDF_DRAW_COLORS[4]!.rgb]
   let pendingSignature: { paths: number[][]; width: number; height: number } | undefined
   const signatures = bindPdfSignatureDialog({owner:root.ownerDocument,scope:draft.identity.scope,
@@ -1012,6 +1026,19 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       }
     }
   })
+  function signaturePlacement() {
+    return mode === 'draw' && ((drawShape as string) === 'signature' && !!pendingSignature
+      || drawShape === 'image' && pendingImageIsSignature && !!pendingImage)
+  }
+  function cancelSignaturePlacement() {
+    imagePickGeneration++
+    pendingSignature = undefined
+    pendingImage = ''
+    pendingImageSize = undefined
+    pendingImageIsSignature = false
+    setMode('select')
+    status.textContent = '已取消放入签名'
+  }
   function signatureUnavailable() {
     return disposed || !document || locked || previewing || printing || previewDocument || !response.editingEnabled || draft.closed || draft.saving || mutationBlocked?.()
       ? '当前 PDF 正在读取、预览或保存，请稍后签名' : null
@@ -1163,18 +1190,31 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     } finally { cropApplying = false; updateControls() }
   }
   const sizeDialog = documentElement('dialog', 'pdf-layout-dialog pdf-crop-dialog pdf-size-dialog'); sizeDialog.setAttribute('aria-label', '页面尺寸')
-  const sizeTitle = documentElement('h3'); sizeTitle.textContent = '全部保留页的页面尺寸'
+  const sizeTitle = documentElement('h3'); sizeTitle.textContent = pdfRibbonLabel('页面尺寸')
+  const sizeScope = documentElement('p', 'pdf-size-scope')
   const sizeHint = documentElement('p'); sizeHint.textContent = '按原始整页等比缩放内容与批注并居中，保留显示方向；尺寸改变的页面重置裁切范围，尺寸已匹配的页面保持原样。保存会创建新修订；先查看实际写回预览。'
   const sizeError = documentElement('p'); sizeError.setAttribute('role', 'alert')
-  const sizeOptions = documentElement('fieldset'); sizeOptions.style.border = '0'
-  for (const paper of PDF_PAPER_SIZES) {
-    const choice = documentElement('button'); choice.type = 'button'; choice.textContent = paper.label
-    choice.addEventListener('click', () => { void applyPageSize(paper.label).catch(error => { sizeError.textContent = error instanceof Error ? error.message : String(error); showError(error) }) })
-    sizeOptions.append(choice)
-  }
+  const paperSizeRows = [PDF_PAPER_SIZES.slice(0, 3), PDF_PAPER_SIZES.slice(3)].map(papers => {
+    const row = documentElement('div', 'pdf-size-options')
+    for (const paper of papers) {
+      const choice = documentElement('button'); choice.type = 'button'; choice.textContent = paper.label
+      choice.addEventListener('click', () => { void applyPageSize(paper.label).catch(error => { sizeError.textContent = error instanceof Error ? error.message : String(error); showError(error) }) })
+      row.append(choice)
+    }
+    return row
+  })
   let sizeApplying = false
+  const sizeOptions = documentElement('fieldset')
+  const sizeActions = documentElement('div', 'pdf-layout-actions')
   const sizeCancel = documentElement('button'); sizeCancel.type = 'button'; sizeCancel.textContent = '取消'; sizeCancel.addEventListener('click', () => sizeDialog.close())
-  sizeOptions.append(sizeCancel); sizeDialog.append(sizeTitle, sizeHint, sizeError, sizeOptions); root.append(sizeDialog)
+  sizeActions.append(sizeCancel)
+  sizeOptions.append(...paperSizeRows, sizeActions)
+  sizeDialog.append(sizeTitle, sizeScope, sizeHint, sizeError, sizeOptions)
+  sizeDialog.addEventListener('close', () => {
+    const trigger = pageButtons.get('genoffice.pdf.page.size')
+    if (trigger?.closest('[role="tabpanel"]:not([hidden])')) trigger.focus()
+  })
+  root.append(sizeDialog)
   function pageSizeUnavailable() {
     if (model.capabilities?.pageSize !== true) return model.capabilities?.pageSizeReason ?? '当前 PDF 引擎未确认页面尺寸写回能力'
     if (draft.operations.some(op => ['cropPage', 'replaceText', 'replyNote', 'replyPendingNote'].includes(op.kind))) return '请先保存裁切、原位改字或回复并重开，再变更页面尺寸'
@@ -1182,7 +1222,10 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   }
   async function openPageSize() {
     if (sizeApplying || !document || locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled || pageSizeUnavailable()) return
-    sizeError.textContent = ''; sizeDialog.showModal()
+    sizeScope.textContent = pdfRibbonLabel('将所有页缩放到所选纸型（共 {total} 页）').replace('{total}', String(state().length))
+    sizeError.textContent = ''
+    sizeDialog.showModal()
+    paperSizeRows[0].querySelector('button')?.focus()
   }
   async function applyPageSize(preset: string) {
     if (sizeApplying || !sizeDialog.open || locked || previewing || printing || previewDocument || draft.closed || !response.editingEnabled || pageSizeUnavailable()) return
@@ -1201,6 +1244,11 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const layoutActions = documentElement('div', 'pdf-link-actions')
   layoutDialog.append(layoutTitle, layoutHint, layoutBody, layoutError, layoutActions); root.append(layoutDialog)
   const layoutCancel = documentElement('button'); layoutCancel.type = 'button'; layoutCancel.textContent = '取消'; layoutCancel.addEventListener('click', () => layoutDialog.close())
+  let layoutEntry: HTMLButtonElement | undefined
+  layoutDialog.addEventListener('close', () => {
+    if (layoutEntry && !disposed) focusRibbonEntry(layoutEntry)
+    layoutEntry = undefined
+  })
   function pageLayoutUnavailable(kind?: string) {
     if (!document || locked || previewing || printing || !!previewDocument || draft.closed || !response.editingEnabled) return '请先打开 PDF 并退出预览'
     if (draft.operations.length) return PDF_PAGE_LAYOUT_ALONE_REASON
@@ -1216,10 +1264,12 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     layoutDialog.close(); await refresh(); await previewDraft()
   }
   function openLayoutDialog(kind: 'mergePages' | 'splitPages') {
+    if (layoutDialog.open) return
     const reason = pageLayoutUnavailable(kind)
     if (reason) { status.textContent = reason; return }
     layoutError.textContent = ''; layoutBody.replaceChildren(); layoutActions.replaceChildren(layoutCancel)
     const total = state().length
+    layoutEntry = pageButtons.get('genoffice.pdf.page.' + kind)
     layoutDialog.setAttribute('aria-label', kind === 'mergePages' ? '合并页面' : '拆分页面')
     layoutTitle.textContent = kind === 'mergePages' ? '合并页面' : '拆分页面'
     const fail = (error: unknown) => { layoutError.textContent = error instanceof Error ? error.message : String(error) }
@@ -1227,31 +1277,56 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       layoutHint.textContent = `把每 N 个连续页面缩放排到一张纸上（共 ${total} 页）。纸张取第 1 页尺寸，2 合 1 时横向；批注、绘图与表单外观转为静态内容；交互、书签与附件不保留。保存为新修订，来源修订不变。`
       const countLabel = documentElement('label'); countLabel.textContent = '每张页数（2–16）'
       const count = documentElement('input'); count.inputMode = 'numeric'; count.value = '2'; count.setAttribute('aria-label', '每张页数'); countLabel.append(count)
-      const directionLabel = documentElement('label'); directionLabel.textContent = '排列顺序'
-      const direction = documentElement('select'); direction.setAttribute('aria-label', '排列顺序')
-      for (const [value, label] of [['vertical', '纵向（先上下，再左右）'], ['horizontal', '横向（先左右，再上下）']] as const) { const option = documentElement('option'); option.value = value; option.textContent = label; direction.append(option) }
-      directionLabel.append(direction)
+      const directionGroup = documentElement('fieldset', 'pdf-layout-directions')
+      const directionTitle = documentElement('legend'); directionTitle.textContent = '排列顺序'
+      directionGroup.append(directionTitle)
+      for (const [value, label] of [['horizontal', '横向（先左右，再上下）'], ['vertical', '纵向（先上下，再左右）']] as const) {
+        const direction = documentElement('input'); direction.type = 'radio'; direction.name = 'pdf-merge-direction'; direction.value = value
+        direction.checked = value === 'vertical'
+        const option = documentElement('label'); option.append(direction, label); directionGroup.append(option)
+      }
       const separatorLabel = documentElement('label', 'pdf-layout-check'); const separator = documentElement('input'); separator.type = 'checkbox'; separator.setAttribute('aria-label', '绘制分隔线')
       separatorLabel.append(separator, '绘制分隔线')
-      layoutBody.append(countLabel, directionLabel, separatorLabel)
+      layoutBody.append(countLabel, directionGroup, separatorLabel)
       const apply = documentElement('button'); apply.type = 'button'; apply.textContent = '确定'
-      apply.addEventListener('click', () => {
-        try {
-          const perSheet = Number(count.value.trim())
-          if (!/^\d+$/.test(count.value.trim()) || perSheet < 2 || perSheet > 16) throw new Error('每张页数须为 2–16 的整数')
-          void applyPageLayout(pdfMergePagesOperation(perSheet, direction.value as 'horizontal' | 'vertical', separator.checked)).catch(error => { fail(error); showError(error) })
-        } catch (error) { fail(error) }
+      function applyMerge() {
+        const perSheet = Number(count.value.trim())
+        if (!Number.isInteger(perSheet) || perSheet < 2 || perSheet > 16) {
+          count.setAttribute('aria-invalid', 'true')
+          fail(new Error('每张页数须为 2–16 的整数'))
+          count.focus()
+          return
+        }
+        const direction = directionGroup.querySelector<HTMLInputElement>('input:checked')?.value === 'horizontal' ? 'horizontal' : 'vertical'
+        void applyPageLayout(pdfMergePagesOperation(perSheet, direction, separator.checked)).catch(error => { fail(error); showError(error) })
+      }
+      apply.addEventListener('click', applyMerge)
+      count.addEventListener('input', () => {
+        count.removeAttribute('aria-invalid')
+        layoutError.textContent = ''
+      })
+      count.addEventListener('keydown', event => {
+        if (event.key !== 'Enter' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return
+        event.preventDefault()
+        applyMerge()
       })
       layoutActions.append(apply)
     } else {
-      layoutHint.textContent = `把每一页按显示方向均分为 2、4 或 9 页（共 ${total} 页），按可见范围分割，仍保留底层页面内容；含表单字段的来源暂不支持。保存为新修订，来源修订不变。`
+      // GenOffice Split Pages chooser: all N-up presets fill one row.
+      layoutHint.textContent = `将每页按网格切分为多页（共 ${total} 页）`
+      const choices = documentElement('div', 'pdf-layout-split-options')
       for (const perPage of [2, 4, 9]) {
-        const choice = documentElement('button'); choice.type = 'button'; choice.textContent = `拆成 ${perPage} 页`; choice.dataset.pdfSplitPages = String(perPage)
+        const choice = documentElement('button')
+        choice.type = 'button'; choice.textContent = `1 分 ${perPage}`; choice.dataset.pdfSplitPages = String(perPage)
         choice.addEventListener('click', () => { void applyPageLayout(pdfSplitPagesOperation(perPage)).catch(error => { fail(error); showError(error) }) })
-        layoutBody.append(choice)
+        choices.append(choice)
       }
+      const note = documentElement('p', 'pdf-measure-hint')
+      note.textContent = '每页按可见范围分割，保留底层内容。含表单字段的来源暂不支持。保存为新修订，来源修订不变。'
+      layoutBody.append(choices, note)
     }
     layoutDialog.showModal()
+    layoutBody.querySelector<HTMLElement>('input, [data-pdf-split-pages]')?.focus()
   }
   function displayViewport(original: PDFPageProxy, page: PdfPageIdentity, scale: number) {
     return previewDocument ? original.getViewport({ scale, rotation: page.rotation }) : pdfPageViewport(original, page, scale)
@@ -1425,7 +1500,6 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const insertImage = button('插入图像', openOrCancelImagePicker)
   sourceCommand(insertImage, 'edit.objects.insertImage'); insertImage.dataset.pdfDrawShape = 'image'
   insertImage.title = imageInsertTitle
-  drawButtons.set('image', insertImage)
   function canPickImage() {
     return !!document && !disposed && !locked && !previewing && !printing && !previewDocument
       && response.editingEnabled && !draft.closed && !draft.saving && !mutationBlocked?.()
@@ -1967,7 +2041,14 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   function setMode(next: typeof mode) { if (next !== 'draw' || drawShape !== 'measure') measureRecalibrate = false; if(next!=='text')textMove?.cancel(); if(next!=='staticFill')staticFill?.cancel(); if (next !== 'staticText') staticText?.cancel(); if (next !== 'draw' || drawShape !== 'polygon') cancelPolygon(); mode = next; noteInput.hidden = mode !== 'note'; root.dataset.pdfMode = mode; if (mode !== 'text') { reportedSelectionPage = ''; onSelectionChange?.([]) }; textPanel.hidden = mode !== 'text' || !!previewDocument;
     const textEditing = String(mode === 'text')
     homeTextEdit.setAttribute('aria-pressed', textEditing); textEditButton?.setAttribute('aria-pressed', textEditing)
-    for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact')); fillFormImage.setAttribute('aria-pressed', String(ordinaryImagePlacement())); syncDrawingCanvases(); syncLinkLayers() }
+    for (const [button, value] of [[select, 'select'], [note, 'note']] as const) button.setAttribute('aria-pressed', String(mode === value)); for (const [shape, tool] of drawButtons) tool.setAttribute('aria-pressed', String(mode === 'draw' && drawShape === shape)); root.querySelector('[data-pdf-redact-tool]')?.setAttribute('aria-pressed', String(mode === 'redact'))
+    const imagePlacement = String(ordinaryImagePlacement())
+    insertImage.setAttribute('aria-pressed', imagePlacement)
+    fillFormImage.setAttribute('aria-pressed', imagePlacement)
+    signButton.setAttribute('aria-pressed', String(signaturePlacement()))
+    syncDrawingCanvases()
+    syncLinkLayers()
+  }
   function canChangePendingDrawings() {
     return !disposed && !!document && !locked && !printing && !previewing && !previewDocument && response.editingEnabled && !draft.closed
   }
@@ -3488,6 +3569,17 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
     pdfAssistant = bindNativePDFAssistant(root, { api, draft,
       selection: () => textSelectionPage && selectedTextId ? [{ pageId: textSelectionPage, objectId: selectedTextId }] : [],
       onNavigate: pageId => jumpToPageForIdentity(pageId),
+      viewPageId: () => activeId || undefined,
+      onReadNavigate: async (target,current) => {
+        const before=activeId,epoch=generation
+        const {navigatePDFReadTarget}=await import('./pdf-ai-navigation')
+        if(before!==activeId || epoch!==generation)throw new Error('当前页面或文档已变化')
+        await navigatePDFReadTarget(target,{viewport,pages:state,currentPage:()=>activeId,pageNode:id=>pageNodes.get(id),current,
+          available:()=>!disposed && !!document && readingReady && mode==='select' && !searchRendering && epoch===generation && !locked && !previewing && !printing
+            && !previewDocument && !draft.closed && !draft.saving && pendingMutations===0 && !mutationBlocked?.()
+            && !staticText?.incompleteReason() && !hasUnstagedText(),
+          navigate:id=>jumpToPageForIdentity(id,'instant')})
+      },
     })
   }
   if(response.pdfFormAIEnabled&&response.editingEnabled){

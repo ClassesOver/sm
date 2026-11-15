@@ -170,6 +170,28 @@ it('clears only the selection hyperlinks through the draft and preserves cell co
   } finally { current.view?.dispose() }
 })
 
+it('writes Page Layout print flags independently from the Univer gridline view', async () => {
+  const source = await createBlankWorkbook(), draft = new NativeDraft(identity, store())
+  let output: Uint8Array | undefined
+  const current = await open(source, draft, async request => {
+    output = await applyWorkbookOperations(source, request.operations)
+    return { revision: 2, revisionRegistered: true, artifacts: { xlsx: { downloadUrl: '/layout.xlsx' } }, validation: { issues: [] } }
+  })
+  try {
+    expect(sheet().hasHiddenGridLines()).toBe(false)
+    grid.ribbon('toggle-gridlines')
+    await vi.waitFor(() => expect(sheet().hasHiddenGridLines()).toBe(true))
+    grid.ribbon('print-gridlines')
+    grid.ribbon('print-headings')
+    expect(sheet().hasHiddenGridLines()).toBe(true)
+    current.shell.save.click()
+    await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
+    expect((await readWorkbook(output!)).sheets[0]).toMatchObject({
+      showGridlines: false, printGridlines: true, printHeadings: true,
+    })
+  } finally { current.view?.dispose() }
+})
+
 it('routes GenOffice Freeze Panes commands, preserves source protection and writes the selected pane to XLSX', async () => {
   const source = await fixture(), draft = new NativeDraft(identity, store())
   let output: Uint8Array | undefined
@@ -356,9 +378,9 @@ it('protects after edits, blocks later edits, and locks the workbook structure',
   current.shell.save.click()
   await vi.waitFor(() => expect(current.shell.statusLabel.textContent).toContain('已保存修订 2'))
   const saved = await readWorkbook(downloaded!)
-  expect(saved.sheets[1]!.protection).toEqual({ protected: true, hasPassword: false })
+  expect(saved.sheets[1]!.protection).toMatchObject({ protected: true, hasPassword: false })
   expect(saved.sheets[1]!.cells.A1?.value).toBe('before')
-  expect(saved.sheets[0]!.protection).toEqual({ protected: true, hasPassword: false })
+  expect(saved.sheets[0]!.protection).toMatchObject({ protected: true, hasPassword: false })
   expect(saved.workbookProtection).toEqual({ lockStructure: true, hasPassword: false })
   current.view?.dispose()
 })

@@ -1,0 +1,24 @@
+.office-assistant-queue {
+  --border-subtle: var(--office-border-soft);
+  --color-bg-subtle: var(--office-tabbar);
+  --text-caption: 11px;
+  --color-text-secondary: var(--office-muted);
+  --color-text-primary: var(--office-ink);
+  --hover: var(--office-hover-bg);
+  --icon-muted: var(--office-muted);
+  --border: var(--office-border);
+  --canvas: var(--office-chrome);
+  --border-strong: var(--office-border-strong);
+  --accent: var(--office-accent);
+}
+
+.native-ai-panel .office-assistant-queue .ai-queue-strip button {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+}
+
+.native-ai-panel .office-assistant-queue .ai-queue-strip .ai-queue-toggle {
+  padding: 2px 4px;
+  font-size: var(--text-caption);
+}

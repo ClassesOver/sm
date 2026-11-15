@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { IconAiPanel, IconClose, IconNewChat, IconSparkle, IconStop } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { createImeEnterGuard } from './vendor/genoffice-docs/packages/ui/src/ime-enter'
 import './office-assistant-panel.css'
 
 export function createOfficeNewChatButton() {
@@ -18,6 +19,7 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   title: HTMLElement; help: HTMLElement; input: HTMLTextAreaElement
   start: HTMLButtonElement; cancel: HTMLButtonElement; close: HTMLButtonElement
   controls?: HTMLElement; scope?: HTMLSelectElement; headerAction?: HTMLButtonElement
+  queue?: HTMLElement; onQueue?(): void
   onClose?(): void
 }) {
   const {title,help,input,start,cancel,close,controls} = parts
@@ -45,6 +47,7 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
   start.querySelector('svg')?.remove();start.prepend(svg(IconSparkle))
   cancel.querySelector('svg')?.remove();cancel.prepend(svg(IconStop))
   const composer = document.createElement('div'); composer.className = 'office-assistant-composer'
+  if (parts.queue) composer.append(parts.queue)
   const inputLabel = input.closest('label')
   composer.append(inputLabel && !inputLabel.querySelector('select') ? inputLabel : input)
   actions.append(start,cancel);composer.append(actions)
@@ -55,6 +58,18 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
     event.preventDefault();body.scrollTop=event.key==='Home'?0:body.scrollHeight
   }
   body.addEventListener('keydown',readKeys)
+  // GenOffice AiPanel.tsx (f8c17004): follow replies within 48px of the end;
+  // preserve the reader's position when they scroll up. Model picker omitted.
+  let stickToBottom = true, panelDisposed = false
+  let followFrame: number | undefined
+  const onBodyScroll = () => { stickToBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 48 }
+  const resetFollowing = () => { stickToBottom = true }
+  const contentObserver = new MutationObserver(() => {
+    if (stickToBottom) body.scrollTop = body.scrollHeight
+  })
+  contentObserver.observe(body, {childList:true,subtree:true,characterData:true})
+  body.addEventListener('scroll',onBodyScroll,{passive:true})
+  parts.headerAction?.addEventListener('click',resetFollowing)
   for (const node of [...panel.childNodes]) if (node !== header) body.append(node)
   panel.append(toolbar,body,composer)
   // 部分控制器在绑定外壳后才挂载工具进度，仍归入中间滚动区。
@@ -72,30 +87,49 @@ export function bindOfficeAssistantPanel(panel: HTMLElement, parts: {
     const target = trigger?.isConnected ? trigger : fallback
     target?.focus({preventScroll:true})
   }
+  const ime = createImeEnterGuard()
+  input.addEventListener('compositionstart', ime.handleCompositionStart)
+  input.addEventListener('compositionend', ime.handleCompositionEnd)
   const onInputKey = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return
-    if (event.key === 'Escape' && !cancel.hidden && !cancel.disabled) {
-      event.preventDefault()
-      event.stopPropagation()
-      cancel.click()
-      return
-    }
+    if (event.defaultPrevented || ime.isImeConfirm(event)) return
     if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return
     event.preventDefault()
     event.stopPropagation()
-    if (!event.repeat && !start.disabled) start.click()
+    if (event.repeat) return
+    if (!start.disabled) start.click()
+    else if (!cancel.disabled && input.value.trim()) parts.onQueue?.()
   }
   input.addEventListener('keydown', onInputKey)
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return
-    event.preventDefault();event.stopPropagation();closePanel()
+    if (event.key !== 'Escape' || event.defaultPrevented || ime.isImeConfirm(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (event.repeat) return
+    if (!cancel.hidden && !cancel.disabled) cancel.click()
+    else closePanel()
   }
   close.addEventListener('click',closePanel);panel.addEventListener('keydown',onKeyDown)
   return {
+    beforeTask() { resetFollowing() },
     beforeOpen() {
       const active = document.activeElement
       if (active instanceof HTMLElement && active !== document.body && !panel.contains(active)) trigger = active
+      if (followFrame !== undefined) cancelAnimationFrame(followFrame)
+      followFrame = requestAnimationFrame(() => { followFrame=undefined; if (!panelDisposed && !panel.hidden && stickToBottom) body.scrollTop = body.scrollHeight })
     },
-    dispose() {observer.disconnect();close.removeEventListener('click',closePanel);panel.removeEventListener('keydown',onKeyDown);input.removeEventListener('keydown',onInputKey);body.removeEventListener('keydown',readKeys)},
+    dispose() {
+      panelDisposed = true
+      if (followFrame !== undefined) cancelAnimationFrame(followFrame)
+      contentObserver.disconnect()
+      body.removeEventListener('scroll', onBodyScroll)
+      parts.headerAction?.removeEventListener('click', resetFollowing)
+      observer.disconnect()
+      close.removeEventListener('click', closePanel)
+      panel.removeEventListener('keydown', onKeyDown)
+      input.removeEventListener('keydown', onInputKey)
+      input.removeEventListener('compositionstart', ime.handleCompositionStart)
+      input.removeEventListener('compositionend', ime.handleCompositionEnd)
+      body.removeEventListener('keydown', readKeys)
+    },
   }
 }

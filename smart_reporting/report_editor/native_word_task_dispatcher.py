@@ -198,8 +198,6 @@ class WordTaskDispatcher:
             return
 
     async def _execute_claim(self, ref, task_session, *, shutdown_requested=None, authorization_check=None):
-        if shutdown_requested is None:
-            shutdown_requested = lambda: False
         task_id = ref.scope.external_run_id
         session_reference = ref.word_input.binding.server_session_reference
         bridge = None

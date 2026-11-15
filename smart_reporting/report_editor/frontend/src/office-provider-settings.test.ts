@@ -45,3 +45,25 @@ it('测试使用未保存草稿并冻结编辑，返回后不把测试当成保�
   expect(dirty).toHaveBeenLastCalledWith(true)
   expect((getByLabelText(host,'API Key') as HTMLInputElement).value).toBe('draft-key')
 })
+
+it('未填写模型时仍可保存停用，启用时继续要求模型', async () => {
+  const {mountOfficeProviderSettings} = await import('./office-provider-settings')
+  const host = document.body.appendChild(document.createElement('div'))
+  const configuration = {...base, provider: 'custom', model: '', baseUrl: 'https://example.com/v1', hasKey: false}
+  const saved: {enabled: boolean; model: string}[] = []
+  vi.stubGlobal('fetch', async (_url: string, options: RequestInit) => {
+    if (options.method === 'GET') return Response.json({settings: {chatModel: configuration}, catalog: {chatModel: [{id: 'custom', label: 'Custom', model: '', baseUrl: configuration.baseUrl}]}, credentialStorageAvailable: true})
+    saved.push(JSON.parse(String(options.body)))
+    return Response.json({...configuration, version: 2})
+  })
+  await mountOfficeProviderSettings(host, {capabilities: ['chatModel'], onDirty() {}, onBusy() {}})
+  const checkbox = getByLabelText(host, '启用对话模型') as HTMLInputElement
+  checkbox.click()
+  getByRole(host, 'button', {name: '保存对话模型'}).click()
+  expect(saved).toEqual([])
+  checkbox.click()
+  getByRole(host, 'button', {name: '保存对话模型'}).click()
+  await vi.waitFor(() => expect(saved).toHaveLength(1))
+  expect(saved[0]).toMatchObject({enabled: false, model: ''})
+  await vi.waitFor(() => expect(host.textContent).toContain('已保存'))
+})

@@ -886,12 +886,18 @@ export async function createDocxEditorView(shell: EditorShell, options: {
   const split = createDocxSplitPane({host:host.querySelector<HTMLElement>('.docx-document-stack')!,editor,
     onVisibilityChange:()=>{editor.commands.setMeta('native-view-state',true)},onError:reportError})
   const view = createDocxViewCommands({ root: host, scroller: host.querySelector<HTMLElement>('.editor-scroll')!, page: editor.view.dom,
-    pageSize: () => { const current = docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection)); return { width: px(current.pageWidth), height: px(current.pageHeight) } },
+    pageSize: () => {
+      const current = docxSectionSettingsWithPatch(sectionAnchors[activeSection]!.settings, sectionValues(activeSection))
+      return { width: px(current.pageWidth), height: px(current.pageHeight), textWidth: px(current.pageWidth - current.marginLeft - current.marginRight) }
+    },
     reading:{setActive(active){if(!ready||editor.isDestroyed){readingMode=active;return}flushPendingEdits();readingMode=active;editor.setEditable(context.editingEnabled&&!active&&!documentToolModels.protection?.contentLocked&&!saving&&!draft.saving&&!draft.closed,false);pendingHfEditor?.setEditable(editor.isEditable)}},
     pageColor:()=>effectiveDocxPageColor(nativeOperations(),pageColorModel),
     story:{setActive:active=>{if(!editor.isDestroyed)editor.commands.setStoryViewActive(active)}},
     onViewChange:()=>{if(!ready)return;if(readingMode)options.onSelectionChange?.([]);webMode=view.mode==='web'||view.mode==='story';columnLayoutReady=false;currentColumnLayout=null;scheduleColumns();ruler.refresh();navigation.refresh();editor.commands.setMeta('native-view-state',true)},
-    onPaginationPreview: showPaginationPreview, onZoomChange: () => { ruler.refresh(); navigation.refresh(); split.refreshLayout() }, navigation, outline, gridlines, ruler, split })
+    onPaginationPreview: showPaginationPreview, onZoomChange: () => {
+      ruler.refresh(); navigation.refresh(); split.refreshLayout()
+      if (ready && !editor.isDestroyed) editor.commands.setMeta('native-view-state', true)
+    }, navigation, outline, gridlines, ruler, split })
   const legacyHeaderFooter: DocxHeaderFooterController | undefined = hfModel ? {
     get editable() { return context.editingEnabled && !readingMode && !saving && !draft.saving && !draft.closed },
     anchor: hfAnchor,
@@ -1274,6 +1280,7 @@ export async function createDocxEditorView(shell: EditorShell, options: {
     },
   } : undefined, watermarkModel ? {
     current: () => effectiveDocxWatermark(nativeOperations(), watermarkModel),
+    hasSourcePicture: () => watermarkModel.picture && !nativeOperations().some(operation => operation.kind === 'setWatermark'),
     source: watermarkModel,
     reason: () => saving || draft.saving || draft.closed || !context.editingEnabled ? '当前文档不可编辑或正在保存' : watermarkModel.editable ? null : watermarkModel.readOnlyReason ?? '此文档的水印不能修改',
     snapshot: () => JSON.stringify([editor.getJSON(), nativeOperations(), activeSection]),

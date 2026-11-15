@@ -290,10 +290,10 @@ it('localizes visible slide ribbon tabs, groups and controls in Simplified Chine
   expect(host.querySelector('[data-command="addSlide"]')?.textContent).toContain('新建幻灯片')
   expect(host.querySelector('[data-command="insertTable"] svg')).not.toBeNull()
   expect(host.querySelector('[data-command="insertTable"]')?.textContent).toContain('表格')
-  const transition = host.querySelector<HTMLSelectElement>('[data-command="transition"]')!
-  expect(transition.options[0].textContent).toBe('无')
-  expect(transition.options[1].textContent).toBe('平滑')
-  expect(transition.options[1].value).toBe('morph')
+  const transitions = host.querySelectorAll<HTMLButtonElement>('[data-command="transition"]')
+  expect(transitions[0].textContent).toBe('无')
+  expect(transitions[1].textContent).toBe('平滑')
+  expect(transitions[1].dataset.transitionEffect).toBe('morph')
   ribbon.setContext('table')
   expect(host.querySelector('[data-ribbon-tab="tableDesign"]')?.textContent).toBe('表格设计')
   expect(host.querySelector('[aria-label="表格样式"]')).not.toBeNull()
@@ -643,12 +643,18 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   const ribbon = createSlidesNativeRibbon(host, { onAction })
   const transitionGroup = host.querySelector<HTMLElement>('[aria-label="Transition to This Slide"]')!
   const timingGroup = host.querySelector<HTMLElement>('[aria-label="Timing"]')!
-  const transition = transitionGroup.querySelector<HTMLSelectElement>('[data-command="transition"]')!
+  const transitions = [...transitionGroup.querySelectorAll<HTMLButtonElement>('[data-command="transition"]')]
   const applyAll = timingGroup.querySelector<HTMLButtonElement>('[data-source-action="onTransition"]')!
   const animationTab = host.querySelector<HTMLButtonElement>('[data-ribbon-tab="animations"]')!
 
-  expect(transition.dataset.sourceAction).toBe('onTransition')
-  expect(transition.options.length).toBe(12)
+  expect(transitions.map(button => button.dataset.transitionEffect)).toEqual(['none', 'morph', 'fade', 'push', 'wipe', 'split', 'circle', 'cover', 'pull', 'dissolve', 'zoom', 'random'])
+  expect(transitions.every(button => button.dataset.sourceAction === 'onTransition' && !!button.querySelector('svg'))).toBe(true)
+  ribbon.setTransitionEditEnabled(true)
+  transitions[1].click()
+  expect(onAction).toHaveBeenCalledWith('transition', 'morph')
+  ribbon.setValue('transition', 'morph')
+  expect(transitions.filter(button => button.getAttribute('aria-pressed') === 'true')).toEqual([transitions[1]])
+  expect(applyAll.querySelector('svg')).not.toBeNull()
   expect(timingGroup.querySelector('[data-command="transitionDuration"]')).toBeNull()
   expect(timingGroup.querySelector('[data-command="transitionSound"]')).toBeNull()
   expect(applyAll.disabled).toBe(true)
@@ -664,15 +670,28 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   animationTab.click()
   const animationPanel = host.querySelector<HTMLElement>('[data-ribbon-panel="animations"]')!
   const animationGroup = animationPanel.querySelector<HTMLElement>('[aria-label="Animation"]')!
-  const animationCommands = [...animationPanel.querySelectorAll<HTMLElement>('[data-command]')]
+  const advancedGroup = animationPanel.querySelector<HTMLElement>('[aria-label="Advanced Animation"]')!
+  const animationCommands = [...animationPanel.querySelectorAll<HTMLElement>('[data-command]:not([data-animation-effect])')]
   expect(animationCommands.map(control => control.dataset.command)).toEqual([
-    'animationPreview', 'animationNone', 'animationEffect', 'animationDirection',
-    'addAnimation', 'toggleAnimationPane', 'animationByParagraph',
+    'animationPreview', 'animationNone',
     'motionPathRight', 'motionPathDown', 'motionPathDiagonal', 'motionPathCircle', 'motionPathZigzag',
+    'animationEffect', 'animationDirection', 'addAnimation', 'toggleAnimationPane', 'animationByParagraph',
     'animationTrigger', 'animationDuration', 'animationDelay',
   ])
-  expect(animationGroup.querySelector('[data-source-action="onApplyAnimation"]')).not.toBeNull()
-  expect(animationGroup.querySelector<HTMLElement>('[data-source-action="onAddAnimation"]')?.dataset.command).toBe('addAnimation')
+  const effects = [...animationGroup.querySelectorAll<HTMLButtonElement>('[data-animation-effect]')]
+  expect(effects.map(button => button.dataset.animationEffect)).toEqual(['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'mediaPlay', 'mediaPause', 'mediaStop'])
+  expect(effects.every(button => button.disabled && button.dataset.sourceAction === 'onApplyAnimation' && !!button.querySelector('svg'))).toBe(true)
+  ribbon.setAnimationGallery('shape', 'flyIn')
+  expect(animationGroup.querySelector('[data-animation-effect][aria-pressed="true"]')).toBe(effects[2])
+  effects[2].click()
+  expect(onAction).toHaveBeenCalledWith('applyAnimationEffect', 'flyIn')
+  expect(effects[19].disabled).toBe(true)
+  ribbon.setAnimationGallery('media', 'mediaPlay')
+  expect(effects[2].disabled).toBe(true)
+  expect(effects[19].disabled).toBe(false)
+  ribbon.setLocked(true); expect(effects[19].disabled).toBe(true)
+  ribbon.setLocked(false); expect(effects[19].disabled).toBe(false)
+  expect(advancedGroup.querySelector<HTMLElement>('[data-command="addAnimation"]')?.dataset.sourceAction).toBe('onAddAnimation')
   expect(animationPanel.querySelector<HTMLElement>('[data-source-action="onAnimTiming"]')?.dataset.command).toBe('animationTrigger')
   expect(animationPanel.querySelector('[data-command="animationPreview"]')?.getAttribute('data-unavailable')).toBeNull()
   // 整页动画序列接通后：无、动画窗格、按段与五条动作路径均可用，并派发各自命令
@@ -684,13 +703,62 @@ it('tracks the pinned GenOffice transition and animation actions against native 
   }
   expect(animationPanel.querySelector<HTMLElement>('[data-command="motionPathZigzag"]')?.dataset.sourceAction).toBe('onApplyMotionPath')
   ribbon.setValue('toggleAnimationPane', 'true'); ribbon.setValue('animationByParagraph', 'true')
-  expect(animationGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('aria-pressed')).toBe('true')
-  expect(animationGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('aria-pressed')).toBe('true')
+  expect(advancedGroup.querySelector('[data-command="toggleAnimationPane"]')?.getAttribute('aria-pressed')).toBe('true')
+  expect(advancedGroup.querySelector('[data-command="animationByParagraph"]')?.getAttribute('aria-pressed')).toBe('true')
 
-  transition.value = 'wipe'
-  transition.dispatchEvent(new Event('change', { bubbles: true }))
+  transitions.find(button => button.dataset.transitionEffect === 'wipe')!.click()
   expect(onAction).toHaveBeenCalledWith('transition', 'wipe')
   ribbon.dispose()
+})
+
+it('folds Motion Paths before Animation and keeps the original controls working in the flyout', () => {
+  let resize: () => void = () => {}
+  const disconnect = vi.fn()
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback: () => void) { resize = callback }
+    observe() {}
+    disconnect = disconnect
+  })
+  const host = document.body.appendChild(document.createElement('div')), onAction = vi.fn()
+  const ribbon = createSlidesNativeRibbon(host, { onAction })
+  try {
+    const panel = host.querySelector<HTMLElement>('[data-ribbon-panel="animations"]')!
+    const paths = panel.querySelector<HTMLButtonElement>('[data-animation-collapse="motionPaths"]')!
+    const effects = panel.querySelector<HTMLButtonElement>('[data-animation-collapse="animation"]')!
+    const pulse = panel.querySelector<HTMLButtonElement>('[data-animation-effect="pulse"]')!
+    let width = 1200
+    Object.defineProperty(panel, 'clientWidth', { get: () => width })
+    for (const group of panel.children) {
+      const button = group.querySelector<HTMLButtonElement>('[data-animation-collapse]')
+      const inlineWidth = button === effects ? 650 : button === paths ? 200 : 100
+      Object.defineProperty(group, 'offsetWidth', { get: () => button && !button.hidden ? 80 : inlineWidth })
+    }
+    host.querySelector<HTMLButtonElement>('[data-ribbon-tab="animations"]')!.click()
+    expect(paths.hidden && effects.hidden).toBe(true)
+    width = 1080; resize()
+    expect(paths.hidden).toBe(false)
+    expect(effects.hidden).toBe(true)
+    width = 640; resize()
+    expect(effects.hidden).toBe(false)
+    ribbon.setAnimationGallery('shape', 'pulse')
+    paths.click()
+    expect(paths.getAttribute('aria-expanded')).toBe('true')
+    effects.click()
+    expect(paths.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(pulse)
+    pulse.click()
+    expect(onAction).toHaveBeenCalledWith('applyAnimationEffect', 'pulse')
+    pulse.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(effects.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(effects)
+    width = 1200; resize()
+    expect(paths.hidden && effects.hidden).toBe(true)
+    expect(pulse.parentElement?.getAttribute('data-ribbon-group')).toBe('Animation')
+  } finally {
+    ribbon.dispose()
+    vi.unstubAllGlobals()
+  }
+  expect(disconnect).toHaveBeenCalledOnce()
 })
 
 it('uses source paragraph formatting actions, spacing presets and Enter-only point inputs with target and lock gates', () => {
@@ -770,7 +838,7 @@ it('exposes all pinned list options, picture bullet picking and conditional avai
 it('retains source transition editability across lock/unlock independently of Apply to All', () => {
   const host = document.createElement('div'); document.body.append(host)
   const ribbon = createSlidesNativeRibbon(host, { onAction: vi.fn() })
-  const select = host.querySelector<HTMLSelectElement>('[data-command="transition"]')!
+  const select = host.querySelector<HTMLButtonElement>('[data-transition-effect="wipe"]')!
   expect(select.disabled).toBe(true)
   ribbon.setTransitionEditEnabled(true); expect(select.disabled).toBe(false)
   ribbon.setLocked(true); expect(select.disabled).toBe(true)
@@ -860,6 +928,17 @@ it('enables the Shape Format fill and outline controls with their source actions
   host.querySelector<HTMLButtonElement>('[data-command="shapeNoOutline"]')!.click()
   expect(onAction).toHaveBeenCalledWith('shapeFill', '#2e7d32')
   expect(onAction).toHaveBeenCalledWith('shapeNoOutline')
+  const stylesMenu = host.querySelector<HTMLButtonElement>('[data-command="shapeStyleMenu"]')!
+  expect(stylesMenu.dataset.sourceAction).toBe('onShapeStyle')
+  outlineMenu.click()
+  stylesMenu.click()
+  expect(outlineMenu.getAttribute('aria-expanded')).toBe('false')
+  const styles = host.querySelectorAll<HTMLButtonElement>('[data-shape-style-preset]')
+  expect(styles).toHaveLength(32)
+  expect(styles[24].getAttribute('aria-label')).toBe('#FFFFFF / #5A5A5A (dash)')
+  styles[24].click()
+  expect(onAction).toHaveBeenCalledWith('shapeStylePreset', 24)
+  expect(stylesMenu.getAttribute('aria-expanded')).toBe('false')
   const change = host.querySelector<HTMLButtonElement>('button[data-command="changeShape"]')!
   expect(change.disabled).toBe(false)
   change.click()

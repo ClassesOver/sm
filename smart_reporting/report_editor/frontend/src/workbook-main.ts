@@ -1603,6 +1603,17 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
           (error: unknown) => { feedback.textContent = (error as Error).message }).finally(() => { rtlBusy = false; ribbon.refreshState?.() })
         return
       }
+      if (command === 'toggle-gridlines') {
+        if (!formulaBarAvailable()) return
+        const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+        if (!sheet) return
+        const hidden = !sheet.hasHiddenGridLines()
+        sheet.setHiddenGridlines(hidden)
+        if (editable()) markDirty()
+        feedback.textContent = hidden ? '已隐藏网格线。' : '已显示网格线。'
+        ribbon.refreshState()
+        return
+      }
       if (command === 'toggle-headings') {
         if (!formulaBarAvailable() || headingsBusy) return
         headingsBusy = true
@@ -2689,6 +2700,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       },
       crossHighlight: () => ({ active: crossHighlightVisible, available: formulaBarAvailable() }),
       formulaBar: () => ({ visible: formulaBar.visible(), available: formulaBarAvailable() }),
+      gridlines: () => {
+        const sheet = runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()
+        return { visible: !(sheet?.hasHiddenGridLines() ?? false), available: !!sheet && formulaBarAvailable() }
+      },
       headings: () => ({ visible: runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet().getConfig().rowHeader.hidden !== 1, available: formulaBarAvailable() && !headingsBusy }),
       rightToLeft: () => ({ active: runtime.univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheet().getConfig().rightToLeft === 1, available: formulaBarAvailable() && !rtlBusy }),
       formatPainterActive: () => formatPainterActive(runtime),

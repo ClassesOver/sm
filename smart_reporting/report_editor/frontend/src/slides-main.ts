@@ -40,6 +40,7 @@ import { requestJson } from './api-request'
 import type { mountSlidesCanvas } from './slides-canvas'
 import type { DrawRect } from './vendor/genoffice-slides/draw-shape'
 import { isOutlineDash, type ShapeStroke } from '../../../reporting/slides_engine/bridge/pptx-outline'
+import { isShapeFill, type ShapeFill } from '../../../reporting/slides_engine/bridge/pptx-shape-fill'
 import { nextPreset, notchStep, prevPreset } from './slides-view-zoom'
 import { createWheelPager, createZoomWheelClassifier } from './docx-view-wheel'
 import type { createSlidesSorter } from './slides-view-modes'
@@ -58,7 +59,7 @@ import { mountSlidesGuides } from './slides-guides'
 import { showSlidesSettingsDialog } from './slides-settings-dialog'
 import { formatClock } from './vendor/genoffice/renderer/slideshow-utils'
 import { equationTextBox, openSlidesEquationDialog } from './slides-equation'
-import { EFFECT_LABELS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
+import { EFFECT_LABELS, MOTION_PATHS, SEQUENCE_EFFECTS, TRIGGER_LABELS, appendAnimation, defaultAnimationDuration, deleteSequenceItem, initialSequence, itemElementId, motionPathAnimation, moveSequenceItem, patchSequenceTiming, removeElementAnimations, resolvedItem, sequenceUnchanged, stepNumbers, validateSequence, type SequenceEffect, type SequenceItem, type SourceAnimation } from './slides-animation-sequence'
 import { isPortrait, matchSlideSizePreset, presetSize, SLIDE_SIZE_PRESETS, MIN_SLIDE_EMU, MAX_SLIDE_EMU, type SlideSizePreset } from './vendor/genoffice-slides/slide-size'
 import { openSlidesFindReplace } from './slides-find-replace'
 import { pickSlideImage, prepareSlideImage } from './slides-native-images'
@@ -104,8 +105,8 @@ type TextBoxEdit = { slideIndex: number; text: string; geometry: { x: number; y:
 type AnimationDirection = 'top' | 'bottom' | 'left' | 'right'
 type AnimationEdit = { slideIndex: number; elementId: string; effect: AnimationEffect; trigger: AnimationTrigger; durationMs: number; delayMs: number; direction?: AnimationDirection; append?: true }
 /** 固定源 Shape Format 填充/轮廓（setFill / setStroke） */
-type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: string; stroke?: ShapeStroke | null }
-type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number }; flipH?: boolean; flipV?: boolean; draftKey?: string; fill?: string; stroke?: ShapeStyleEdit['stroke'] }
+type ShapeStyleEdit = { slideIndex: number; elementId: string; fill?: ShapeFill; stroke?: ShapeStroke | null }
+type ShapeEdit = { slideIndex: number; kind: string; geometry: { x: number; y: number; width: number; height: number }; flipH?: boolean; flipV?: boolean; draftKey?: string; fill?: ShapeFill; stroke?: ShapeStyleEdit['stroke'] }
 type SlidesPreviewSlide = RenderSlide & {
   slideIndex: number; slideIdentity?: string; mediaSources?: SlideMediaSource[]; modelSources?: ModelSource[]
   draftShapeSources?: { draftKey: string; sourceId: string }[]
@@ -318,6 +319,9 @@ let rehearsalDialog: HTMLDialogElement | undefined
 let showOpening = false
 let animationPreviewOverlay: { dispose(): void } | undefined
 let animationPreviewGeneration = 0
+let animationHoverOverlay: { dispose(): void } | undefined
+let animationHoverGeneration = 0
+let animationHoverSlide: (() => RenderSlide) | undefined
 const pendingGroup = (slideIndex: number) => groupEdits.some(item => item.slideIndex === slideIndex)
 const pictureCrops: NonNullable<SlideChanges['pictureCrops']> = []
 const pictureOpacities: NonNullable<SlideChanges['pictureOpacities']> = []
@@ -592,6 +596,11 @@ function paragraphCount(element: DeckElement) {
 function sourceAnimations(): SourceAnimation[] { return isNewSlide(selectedSlide) ? [] : deck.slides[selectedSlide]?.animations ?? [] }
 /** 新增页保存重开前没有可寻址对象，不能编辑动画。 */
 function animationUnavailable() { return locked() || isNewSlide(selectedSlide) || selectedObjects.size!==1 }
+function animationGalleryTarget(element: DeckElement | undefined) {
+  if (!element || isNewSlide(selectedSlide) || selectedObjects.size !== 1) return null
+  if (element.mediaKind) return 'media'
+  return element.editable && ['text', 'shape'].includes(element.type) ? 'shape' : null
+}
 /** 当前页的动画列表：已有整页序列则用它，否则由来源动画与尚未保存的逐条修改推导（不写入草稿）。 */
 function currentSequence(): SequenceItem[] {
   return animationSequences.get(selectedSlide) ?? initialSequence(sourceAnimations(), animationEdits.filter(item => item.slideIndex === selectedSlide).map(({ slideIndex: _slideIndex, ...rest }) => rest))
@@ -1142,6 +1151,8 @@ function renderCanvas() {
   backgroundPane?.update(backgroundPaneSlide(),backgroundPaneKey(),locked())
   mediaPlayback?.dispose();mediaPlayback=undefined
   animationPreviewOverlay?.dispose()
+  nativeRibbon?.cancelAnimationHover()
+  animationHoverSlide = undefined
   renderSlideSorter()
   const source = renderTree?.slides.find(item => item.slideIndex === selectedSlide)
   geometryPane?.setPictureSource(editKey(selectedSlide,selectedElement),source?.nodes.find(node=>node.sourceId===selectedElement),pictureReplacements.some(item=>item.slideIndex===selectedSlide&&item.elementId===selectedElement))
@@ -1179,12 +1190,15 @@ function renderCanvas() {
   })
   renderMediaControls(source)
   modelControls?.update()
+  const projectedSlide = {...slide,nodes:listedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}
+  const projectedEdits = [...[...edits.values()].filter(item => item.slideIndex === selectedSlide),
+    ...draftShapes.map(shape => ({ elementId: draftShapeId(shape.draftKey!), geometry: shape.geometry }))]
+  animationHoverSlide = () => applyCanvasEdits(projectedSlide, projectedEdits)
   canvas.update({
-    slide: {...slide,nodes:listedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
+    slide: projectedSlide, selectedId: selectedElement, selectedIds:[...selectedObjects],
     selectableIds: new Set(locked()?[]:slideAt(selectedSlide).elements.filter(item=>!deletions.has(editKey(selectedSlide,item.id))).map(item=>item.id)),
     editableIds: new Set(locked() || pendingGroup(selectedSlide) ? [] : slideAt(selectedSlide).elements.filter(item => (item.editable || item.arrangeEditable || item.type === 'draftShape') && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
-    edits: [...[...edits.values()].filter(item => item.slideIndex === selectedSlide),
-      ...draftShapes.map(shape => ({ elementId: draftShapeId(shape.draftKey!), geometry: shape.geometry }))],
+    edits: projectedEdits,
     shapeDrawing: !locked() && slidesViewMode === 'normal' ? shapeDrawing : undefined,
     onMediaPlayback: id => playMedia(id),
     onSelect: (id, additive) => {
@@ -1764,9 +1778,46 @@ async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow, mod
   finally { showOpening=false }
 }
 
+/** Fixed source animation-actions.ts hoverPreviewAnimation using the current editor canvas. */
+async function previewHoveredAnimation(effect: string | null) {
+  const generation = ++animationHoverGeneration
+  animationHoverOverlay?.dispose()
+  if (!effect || disposed || locked() || slidesViewMode !== 'normal' || animationPreviewOverlay
+    || showOverlay || cropOverlay || !animationHoverSlide) return
+  const target = currentElement()
+  if (!target || animationGalleryTarget(target) !== 'shape') return
+  const slide = animationHoverSlide()
+  const hasTarget = (nodes: RenderSlide['nodes']): boolean => nodes.some(node =>
+    (!node.decoration && node.sourceId === target.id) || (node.type === 'group' && hasTarget(node.children)))
+  if (!hasTarget(slide.nodes)) return
+  const isPath = Object.hasOwn(MOTION_PATHS, effect)
+  if (!isPath && (!SEQUENCE_EFFECTS.includes(effect as SequenceEffect) || effect === 'motionPath' || effect.startsWith('media'))) return
+  try {
+    const [{ openSlidesAnimationPreview }, { previewAnimationItems }, { animGalleryItem }] = await Promise.all([
+      import('./slides-animation-preview'), import('./slides-animation-preview-model'), import('./vendor/genoffice/renderer/animation-play'),
+    ])
+    if (generation !== animationHoverGeneration || disposed || locked() || slidesViewMode !== 'normal'
+      || animationPreviewOverlay || showOverlay || cropOverlay || currentElement()?.id !== target.id) return
+    // The original canvas content stays in place and provides the preview's geometry and zoom.
+    const page = slideContent()
+    if (!page || canvasHost.hidden) return
+    const item = isPath ? motionPathAnimation(target.id, effect) : {
+      elementId: target.id, ...animGalleryItem(effect as SequenceEffect),
+      trigger: 'onClick' as const, durationMs: defaultAnimationDuration(effect), delayMs: 0,
+    }
+    const { items } = previewAnimationItems([item], [], [target.id])
+    animationHoverOverlay = openSlidesAnimationPreview(page, {
+      slide, items, hover: true, onClose: () => { animationHoverOverlay = undefined },
+    })
+  } catch {
+    // Hover is optional feedback. Explicit preview retains its own error handling.
+  }
+}
+
 /** 固定源编辑画布 Preview：读取同一原生草稿的渲染快照及来源+草稿动画，不提交修改。 */
 async function startAnimationPreview() {
   if (!nativeDraft || disposed || locked() || showOverlay || cropOverlay) return
+  nativeRibbon?.cancelAnimationHover()
   const opener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
   if (slidesViewMode === 'sorter' || slidesViewMode === 'reading') await setSlidesViewMode('normal')
   animationPreviewOverlay?.dispose()
@@ -2190,7 +2241,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
     || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId &&
       (['text', 'shape'].includes(element.type) || (item.fill === undefined && pictureOutlineEnabled(element))))
     || Object.keys(item).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || (item.fill === undefined && item.stroke === undefined)
-    || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || !validStroke(item.stroke))) throw new Error('草稿中的形状样式无效；原草稿已保留')
+    || (item.fill !== undefined && !isShapeFill(item.fill)) || !validStroke(item.stroke))) throw new Error('草稿中的形状样式无效；原草稿已保留')
   const restoredSmartArts = changes.smartArts ?? []
   if (!Array.isArray(restoredSmartArts) || restoredSmartArts.length > 50 || restoredSmartArts.some(item => !item || Object.keys(item).sort().join() !== 'items,layout,slideIndex' || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
     || !SMARTART_GALLERY.some(entry => entry.layout === item.layout) || !Array.isArray(item.items) || item.items.length < 1 || item.items.length > SMARTART_MAX_ITEMS || item.items.some(text => typeof text !== 'string' || text.length > 200))) throw new Error('草稿中的新增 SmartArt 无效；原草稿已保留')
@@ -2243,7 +2294,7 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
     !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length ||
     restoredDeleted.includes(item.slideIndex) || !SHAPE_PRESETS.includes(item.kind) ||
     ((item.fill !== undefined || item.stroke !== undefined) && LINE_SHAPE_KINDS.includes(item.kind)) ||
-    (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) ||
+    (item.fill !== undefined && !isShapeFill(item.fill)) ||
     !validStroke(item.stroke) ||
     !item.geometry || (LINE_SHAPE_KINDS.includes(item.kind)
       ? !(item.geometry.width >= 0 && item.geometry.height >= 0 && (item.geometry.width > 0 || item.geometry.height > 0))
@@ -2615,6 +2666,10 @@ function renderInspector() {
     nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
   }
   nativeRibbon?.setValue('animationEffect', animationEffect.value)
+  const galleryTarget = animationGalleryTarget(element)
+  nativeRibbon?.setAnimationGallery(galleryTarget, galleryTarget
+    ? currentSequence().find(item => itemElementId(item, sourceAnimations()) === element?.id)?.effect ?? ''
+    : '')
   nativeRibbon?.setValue('animationTrigger', animationTrigger.value)
   nativeRibbon?.setValue('animationDuration', animationDuration.value)
   nativeRibbon?.setValue('animationDelay', animationDelay.value)
@@ -2846,6 +2901,7 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
   imageExportAvailable: !!nativeDraft,
   nameWithAiAvailable: !!(namingController && saveAsActions),
   onAssistant: sharedShell?.onAssistant ?? (sharedShell?.nativeAI ? () => nativeAIHost?.open() : undefined),
+  onAnimationHover: effect => { void previewHoveredAnimation(effect) },
   onAction(command, value) {
     if (command === 'openFile') {
       if (!loading && !locked() && !mutationPending) openFileDialog?.open()
@@ -3053,7 +3109,9 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         } else patch.borderPreset=command === 'tableAllBorders' ? 'all' : 'none'
         tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview(); break
       }
+      case 'shapeStylePreset':
       case 'shapeFill':
+      case 'shapeFillGradient':
       case 'shapeNoFill':
       case 'shapeOutline':
       case 'shapeOutlineWidth':
@@ -3170,7 +3228,12 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         break
       case 'transition':
         if (transitionEditUnavailable()) { statusMessage.textContent = transitionEditUnavailable()!; break }
-        if (SLIDE_TRANSITIONS.includes(value as SlideTransition) && order.includes(selectedSlide)) { transitionEdits.set(selectedSlide, value as SlideTransition); markDirty() }
+        if (SLIDE_TRANSITIONS.includes(value as SlideTransition) && order.includes(selectedSlide)) {
+          transitionEdits.set(selectedSlide, value as SlideTransition)
+          transitionSelect.value = String(value)
+          nativeRibbon?.setValue('transition', transitionSelect.value)
+          markDirty()
+        }
         break
       case 'applyTransitionAll': {
         const effect = transitionEdits.get(selectedSlide) ?? deck?.slides[selectedSlide]?.transition ?? 'none'
@@ -3301,6 +3364,22 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
         for (let index = animationEdits.length - 1; index >= 0; index--) if (animationEdits[index]!.slideIndex === selectedSlide && animationEdits[index]!.elementId === target.id) animationEdits.splice(index, 1)
         updateSequence(items => removeElementAnimations(items, sourceAnimations(), target.id))
         if (before === currentSequence().length) statusMessage.textContent = '所选对象没有动画'
+        break
+      }
+      case 'applyAnimationEffect': {
+        const target = currentElement(), targetType = animationGalleryTarget(target)
+        if (!target || !targetType || animationUnavailable() || typeof value !== 'string'
+          || value === 'motionPath' || !SEQUENCE_EFFECTS.includes(value as SequenceEffect)
+          || value.startsWith('media') !== (targetType === 'media')) break
+        const source = sourceAnimations()
+        const count = animationByParagraph && targetType === 'shape' ? paragraphCount(target) : 0
+        updateSequence(items => {
+          const kept = removeElementAnimations(items, source, target.id)
+          if (kept.length + Math.max(1, count) > 500) throw new Error('动画序列已达到 500 项，请减少动画后重试')
+          selectedAnimationRow = -1
+          return appendAnimation(kept, { elementId: target.id, effect: value as SequenceEffect,
+            trigger: 'onClick', durationMs: defaultAnimationDuration(value), delayMs: 0 }, count)
+        })
         break
       }
       case 'motionPathRight': case 'motionPathDown': case 'motionPathDiagonal': case 'motionPathCircle': case 'motionPathZigzag': {
@@ -3594,7 +3673,8 @@ function renderStructurePending() {
   }
   for (const [key, style] of shapeStyleEdits) {
     const name = deck.slides[style.slideIndex]?.elements.find(element => element.id === style.elementId)?.name || style.elementId
-    const parts = [style.fill === 'none' ? '无填充' : style.fill ? `填充 ${style.fill}` : '', style.stroke === null ? '无轮廓' : style.stroke ? `轮廓 ${style.stroke.color} ${style.stroke.widthPt} 磅` : ''].filter(Boolean)
+    const fill = style.fill === 'none' ? '无填充' : typeof style.fill === 'object' ? '渐变填充' : style.fill ? `填充 ${style.fill}` : ''
+    const parts = [fill, style.stroke === null ? '无轮廓' : style.stroke ? `轮廓 ${style.stroke.color} ${style.stroke.widthPt} 磅` : ''].filter(Boolean)
     row(`第 ${order.indexOf(style.slideIndex) + 1} 页 · ${name} · ${parts.join('、')}`, () => shapeStyleEdits.delete(key))
   }
   for (const [index, table] of tableEdits.entries()) row(`第 ${order.indexOf(table.slideIndex) + 1} 页 · 表格 ${table.rows}×${table.cols}`, () => tableEdits.splice(index, 1))

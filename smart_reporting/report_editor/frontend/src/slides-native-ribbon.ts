@@ -3,6 +3,9 @@ import { bindOfficeRibbonScroll } from './office-ribbon-scroll'
 import { SLIDES_TABLE_PRESETS } from './slides-table-presets'
 import { TABLE_SHADING_COLORS } from './vendor/genoffice-slides/components/table-shading-colors'
 import { SLIDE_TRANSITIONS } from './slides-transitions'
+import { AnimEffectIcon, IconAnimStar, IconPathDiagonal } from './vendor/genoffice-slides/components/icons'
+import { EFFECT_LABELS, MOTION_PATHS, type SequenceEffect } from './slides-animation-sequence'
+import { IconApplyAll, IconTransCircle, IconTransCover, IconTransDissolve, IconTransFade, IconTransMorph, IconTransNone, IconTransPull, IconTransPush, IconTransRandom, IconTransSplit, IconTransWipe, IconTransZoom } from './vendor/genoffice-slides/components/icons'
 import { SMARTART_GALLERY } from './vendor/genoffice-slides/components/smartart-gallery-data'
 import { CHART_GALLERY } from './vendor/genoffice-slides/components/chart-gallery-data'
 import { WORDART_PRESETS } from './vendor/genoffice-docs/packages/ui/src/wordart-presets'
@@ -23,11 +26,68 @@ import { createNativeChartGallery, type NativeChartGalleryState } from './slides
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 import iconTransparency from './vendor/genoffice-slides/components/icon-transparency.png'
 import iconCrop from './vendor/genoffice-slides/components/icon-crop.png'
-import { IconFillColor, IconPageBorders } from './vendor/genoffice-slides/components/icons'
+import { IconFillColor, IconPageBorders, IconShapeStyle } from './vendor/genoffice-slides/components/icons'
+import { RIBBON_SHAPE_STYLES } from './vendor/genoffice-slides/components/shape-style-presets'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import { ShapePreview } from './vendor/genoffice-docs/packages/ui/src/shape-gallery'
 import { STANDARD_COLORS, THEME_COLORS, THEME_COLOR_SHADES } from './vendor/genoffice-slides/ui/color-picker'
 import { OUTLINE_DASHES } from '../../../reporting/slides_engine/bridge/pptx-outline'
+import type { ShapeGradient } from '../../../reporting/slides_engine/bridge/pptx-shape-fill'
+
+// Fixed GenOffice Ribbon.tsx ShapeFillMenu gradient presets.
+function mixHex(from: string, to: string, t: number): string {
+  const pf = parseInt(from.slice(1), 16)
+  const pt = parseInt(to.slice(1), 16)
+  const ch = (shift: number) => {
+    const a = (pf >> shift) & 255
+    const b = (pt >> shift) & 255
+    return Math.round(a + (b - a) * t)
+  }
+  return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0').toUpperCase()}`
+}
+
+function createShapeGradientPresets(localize: (label: string) => string, onPick: (fill: string | ShapeGradient) => void) {
+  const details = document.createElement('details')
+  const summary = document.createElement('summary')
+  summary.textContent = localize('Gradient')
+  const entries = document.createElement('div')
+  details.append(summary, entries)
+  const directions = [
+    { angleDeg: 90, radial: false, css: 'linear-gradient(180deg', label: 'Linear Down' },
+    { angleDeg: 0, radial: false, css: 'linear-gradient(90deg', label: 'Linear Right' },
+    { angleDeg: 45, radial: false, css: 'linear-gradient(135deg', label: 'Linear Diagonal' },
+    { angleDeg: 0, radial: true, css: 'radial-gradient(circle', label: 'From Center' },
+  ] as const
+  const render = (base: string) => {
+    const none = document.createElement('button')
+    none.type = 'button'
+    none.textContent = localize('No Gradient')
+    none.onclick = () => onPick(base)
+    entries.replaceChildren(none)
+    const variants = [
+      { from: mixHex(base, '#FFFFFF', 0.7), to: base, label: 'Light Variations' },
+      { from: base, to: mixHex(base, '#000000', 0.5), label: 'Dark Variations' },
+    ]
+    for (const variant of variants) {
+      const heading = document.createElement('div')
+      heading.textContent = localize(variant.label)
+      const row = document.createElement('div')
+      row.className = 'slides-fill-gradients'
+      for (const direction of directions) {
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.dataset.shapeFillGradient = variant.label + ':' + direction.label
+        button.title = localize(direction.label)
+        button.setAttribute('aria-label', localize(variant.label) + ' · ' + button.title)
+        button.style.backgroundImage = `${direction.css}, ${variant.from}, ${variant.to})`
+        button.onclick = () => onPick({ from: variant.from, to: variant.to, angleDeg: direction.angleDeg, radial: direction.radial })
+        row.append(button)
+      }
+      entries.append(heading, row)
+    }
+  }
+  return { details, render }
+}
 
 /**
  * Native web subset of GenOffice Slides Ribbon at f8c17004fb730df11f0f743164ffd8b4281bb38c.
@@ -50,6 +110,8 @@ export interface NativeSlidesRibbon {
   setAIEditEnabled(enabled: boolean, reason?: string): void
   setTransitionEditEnabled(enabled: boolean, reason?: string): void
   setTransitionApplyAllEnabled(enabled: boolean, reason?: string): void
+  setAnimationGallery(target: 'shape' | 'media' | null, effect: string): void
+  cancelAnimationHover(): void
   setLocked(locked: boolean): void
   dispose(): void
 }
@@ -58,6 +120,27 @@ type RibbonGlyph = ComponentType<{ size?: number }>
 type Control = { id: string; label: string; kind?: 'button' | 'toggle' | 'select' | 'color' | 'number' | 'font' | 'spacing'; options?: string[]; optionLabels?: string[]; caption?: string; icon?: Parameters<typeof createElement>[0]; sourceIcon?: RibbonGlyph; sourceActionId?: string; unavailable?: string }
 type Group = { label: string; controls: Control[] }
 type Tab = { id: string; label: string; groups: Group[]; context?: NativeSlidesContext }
+
+// Pinned GenOffice Slides Ribbon.tsx transition gallery and English ribbon labels.
+const transitionCards = {
+  none: ['None', IconTransNone], morph: ['Morph', IconTransMorph], fade: ['Fade', IconTransFade],
+  push: ['Push', IconTransPush], wipe: ['Wipe', IconTransWipe], split: ['Split', IconTransSplit],
+  circle: ['Circle', IconTransCircle], cover: ['Cover', IconTransCover], pull: ['Uncover', IconTransPull],
+  dissolve: ['Dissolve', IconTransDissolve], zoom: ['Zoom', IconTransZoom], random: ['Random', IconTransRandom],
+} as const
+
+// Pinned GenOffice Slides Ribbon.tsx ANIM_EFFECTS order and English locale labels.
+const animationCards = [
+  ['appear', 'Appear'], ['fade', 'Fade'], ['flyIn', 'Fly In'], ['wipe', 'Wipe'],
+  ['wipeDown', 'Wipe Down'], ['splitIn', 'Split'], ['bounce', 'Bounce'], ['flipIn', 'Flip'],
+  ['zoom', 'Zoom'], ['pulse', 'Pulse'], ['spin', 'Spin'], ['grow', 'Grow/Shrink'],
+  ['teeter', 'Teeter'], ['disappear', 'Disappear'], ['fadeOut', 'Fade Out'], ['flyOut', 'Fly Out'],
+  ['wipeOut', 'Wipe Out'], ['shrink', 'Shrink & Turn'], ['zoomOut', 'Zoom Out'],
+  ['mediaPlay', 'Play'], ['mediaPause', 'Pause'], ['mediaStop', 'Stop'],
+] as const satisfies ReadonlyArray<readonly [SequenceEffect, string]>
+const animationCardChineseLabels: Partial<Record<SequenceEffect, string>> = {
+  flipIn: '翻转式', shrink: '缩小旋转', mediaPlay: '播放', mediaPause: '暂停', mediaStop: '停止',
+}
 
 const noWrite = (operation: string) => `${operation} 尚无受支持的 editSlides 写回操作。`
 const PICTURE_TRANSPARENCY_PRESETS = ['0', '15', '30', '50', '65', '80', '95']
@@ -201,18 +284,13 @@ const tabs: Tab[] = [
     ] },
   ] },
   { id: 'transitions', label: 'Transitions', groups: [
-    { label: 'Transition to This Slide', controls: [{ id: 'transition', label: 'Effect', kind: 'select', sourceActionId: 'onTransition', options: [...SLIDE_TRANSITIONS] }] },
-    { label: 'Timing', controls: [{ id: 'applyTransitionAll', label: 'Apply to All', sourceActionId: 'onTransition' }] },
+    { label: 'Transition to This Slide', controls: [] },
+    { label: 'Timing', controls: [{ id: 'applyTransitionAll', label: 'Apply to All', sourceIcon: IconApplyAll, sourceActionId: 'onTransition' }] },
   ] },
   { id: 'animations', label: 'Animations', groups: [
     { label: 'Preview', controls: [{ id: 'animationPreview', label: 'Preview', sourceActionId: 'onAnimPreview' }] },
     { label: 'Animation', controls: [
       { id: 'animationNone', label: 'None', sourceActionId: 'onApplyAnimation' },
-      { id: 'animationEffect', label: 'Effect', kind: 'select', sourceActionId: 'onApplyAnimation', options: ['appear', 'fade', 'flyIn', 'wipe', 'wipeDown', 'splitIn', 'bounce', 'flipIn', 'zoom', 'pulse', 'spin', 'grow', 'teeter', 'disappear', 'fadeOut', 'flyOut', 'wipeOut', 'shrink', 'zoomOut', 'mediaPlay', 'mediaPause', 'mediaStop'] },
-      { id: 'animationDirection', label: 'Direction', kind: 'select', options: ['top', 'bottom', 'left', 'right'] },
-      { id: 'addAnimation', label: 'Add Animation', sourceActionId: 'onAddAnimation' },
-      { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane' },
-      { id: 'animationByParagraph', label: 'By Paragraph', sourceActionId: 'onToggleAnimByParagraph' },
     ] },
     { label: 'Motion Paths', controls: [
       { id: 'motionPathRight', label: 'Line Right', sourceActionId: 'onApplyMotionPath' },
@@ -220,6 +298,13 @@ const tabs: Tab[] = [
       { id: 'motionPathDiagonal', label: 'Diagonal', sourceActionId: 'onApplyMotionPath' },
       { id: 'motionPathCircle', label: 'Circle', sourceActionId: 'onApplyMotionPath' },
       { id: 'motionPathZigzag', label: 'Zigzag', sourceActionId: 'onApplyMotionPath' },
+    ] },
+    { label: 'Advanced Animation', controls: [
+      { id: 'animationEffect', label: 'Effect', kind: 'select', sourceActionId: 'onAddAnimation', options: animationCards.map(([kind]) => kind) },
+      { id: 'animationDirection', label: 'Direction', kind: 'select', options: ['top', 'bottom', 'left', 'right'] },
+      { id: 'addAnimation', label: 'Add Animation', sourceActionId: 'onAddAnimation' },
+      { id: 'toggleAnimationPane', label: 'Animation Pane', sourceActionId: 'onToggleAnimPane' },
+      { id: 'animationByParagraph', label: 'By Paragraph', sourceActionId: 'onToggleAnimByParagraph' },
     ] },
     { label: 'Timing', controls: [
       { id: 'animationTrigger', label: 'Trigger', kind: 'select', sourceActionId: 'onAnimTiming', options: ['onClick', 'withPrev', 'afterPrev'] },
@@ -273,6 +358,7 @@ const tabs: Tab[] = [
   { id: 'shapeFormat', label: 'Shape Format', context: 'shape', groups: [
     { label: 'Shapes', controls: [{ id: 'changeShape', label: 'Change Shape', sourceActionId: 'onChangeShape' }] },
     { label: 'Size', controls: [{ id: 'shapeGeometry', label: 'Position and Size' }] },
+    { label: 'Shape Styles', controls: [] },
     { label: 'Fill', controls: [
       { id: 'shapeFill', label: 'Fill', caption: '颜色', kind: 'color', sourceActionId: 'onShapeFill' },
       { id: 'shapeNoFill', label: 'No Fill', sourceActionId: 'onShapeFill' },
@@ -287,7 +373,7 @@ const tabs: Tab[] = [
   { id: 'model3dFormat', label: '3D Model', context: 'model3d', groups: [{ label: 'Views', controls: [{ id: 'model3dView', label: '3D View', unavailable: noWrite('3D 视角') }] }] },
 ]
 
-function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOpen: () => void) {
+function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOpen: () => void, afterClose?: () => void) {
   const menu = document.createElement('div')
   menu.className = 'slides-ribbon-popover'
   menu.setAttribute('popover', 'manual')
@@ -304,6 +390,7 @@ function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOp
     menu.hidePopover?.()
     menu.hidden = true
     trigger.setAttribute('aria-expanded', 'false')
+    afterClose?.()
     if (focus) trigger.focus()
   }
   const open = () => {
@@ -316,7 +403,7 @@ function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOp
     menu.style.left = Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8)) + 'px'
     menu.style.top = Math.max(8, Math.min(anchor.bottom + 4, innerHeight - box.height - 8)) + 'px'
     dismiss = installPopoverDismiss(close, { inside: () => [trigger, menu] })
-    const first = menu.querySelector<HTMLElement>('[aria-pressed="true"]') ?? menu.querySelector<HTMLElement>('input, button')
+    const first = menu.querySelector<HTMLElement>('[aria-pressed="true"]:not(:disabled)') ?? menu.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)')
     first?.focus({ preventScroll: true })
   }
   trigger.onclick = () => menu.hidden ? open() : close()
@@ -335,6 +422,7 @@ function createRibbonPopover(trigger: HTMLButtonElement, label: string, beforeOp
 
 export function createSlidesNativeRibbon(host: HTMLElement, options: {
   onAction: NativeSlidesAction
+  onAnimationHover?: (effect: string | null) => void
   onAssistant?: () => void
   pdfExportAvailable?: boolean
   saveAsAvailable?: boolean
@@ -394,7 +482,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   let transitionEditReason: string | undefined
   const updateTransitionEdit = () => {
     for (const control of controls.get('transition') ?? []) {
-      ;(control as HTMLSelectElement).disabled = locked || !transitionEditReady
+      ;(control as HTMLButtonElement).disabled = locked || !transitionEditReady
       control.title = transitionEditReady ? '更改视觉转场效果；保留原速度、换片、声音及扩展设置' : transitionEditReason ?? '请先打开已核验的演示文稿'
     }
   }
@@ -406,7 +494,50 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       button.title = transitionApplyAllReady ? '将当前页转场效果应用到全部保留页面；各页自动换片时间保留' : transitionApplyAllReason ?? '请先打开可编辑的演示文稿；一次最多支持 500 页'
     }
   }
+  let animationTarget: 'shape' | 'media' | null = null
+  let appliedAnimation = ''
+  let animationHoverTimer: number | undefined
+  let animationHoveredButton: HTMLButtonElement | undefined
+  const animationFlyouts: Array<{ group: HTMLElement; trigger: HTMLButtonElement; close(): void; setCollapsed(value: boolean): void; inlineWidth: number; foldedWidth: number }> = []
+  let updateAnimationLayout: (() => void) | undefined
+  const cancelAnimationHover = () => {
+    if (!animationHoveredButton) return
+    window.clearTimeout(animationHoverTimer)
+    animationHoverTimer = undefined
+    animationHoveredButton = undefined
+    options.onAnimationHover?.(null)
+  }
+  const bindAnimationHover = (button: HTMLButtonElement, effect: string) => {
+    if (!options.onAnimationHover) return
+    button.addEventListener('mouseenter', () => {
+      cancelAnimationHover()
+      if (locked || button.disabled || activeTab !== 'animations' || animationTarget !== 'shape') return
+      animationHoveredButton = button
+      animationHoverTimer = window.setTimeout(() => {
+        animationHoverTimer = undefined
+        if (animationHoveredButton === button) options.onAnimationHover?.(effect)
+      }, 350)
+    })
+    button.addEventListener('mouseleave', () => {
+      if (animationHoveredButton === button) cancelAnimationHover()
+    })
+    button.addEventListener('pointerdown', cancelAnimationHover)
+    button.addEventListener('click', cancelAnimationHover, true)
+  }
+  const updateAnimationGallery = () => {
+    for (const element of controls.get('applyAnimationEffect') ?? []) {
+      const button = element as HTMLButtonElement
+      const kind = button.dataset.animationEffect!
+      button.disabled = locked || !animationTarget || (kind.startsWith('media') !== (animationTarget === 'media'))
+      button.setAttribute('aria-pressed', String(kind === appliedAnimation))
+    }
+    for (const button of controls.get('animationNone') ?? []) (button as HTMLButtonElement).disabled = locked || !animationTarget
+  }
   const selectTab = (id: string) => {
+    if (id !== 'animations') {
+      cancelAnimationHover()
+      for (const flyout of animationFlyouts) flyout.close()
+    }
     if (id !== 'chartDesign') chartGallery?.close()
     if (id !== 'pictureFormat') closePictureMenus()
     if (id !== 'shapeFormat') closeShapeFormatMenus()
@@ -419,6 +550,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       button.tabIndex = selected ? 0 : -1
       panels.get(tab.id)!.hidden = !selected
     }
+    if (id === 'animations') updateAnimationLayout?.()
   }
   for (const tab of tabs) {
     const button = document.createElement('button')
@@ -465,28 +597,72 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       heading.textContent = groupLabel
       group.append(heading)
       let controlHost: HTMLElement = group
+      if (tab.id === 'transitions' && groupDefinition.label === 'Transition to This Slide') {
+        group.classList.add('slides-transition-gallery')
+        controls.set('transition', SLIDE_TRANSITIONS.map(kind => {
+          const [english, icon] = transitionCards[kind]
+          const translated = localize(kind)
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.dataset.command = 'transition'
+          button.dataset.sourceAction = 'onTransition'
+          button.dataset.transitionEffect = kind
+          button.setAttribute('aria-pressed', 'false')
+          button.innerHTML = renderToStaticMarkup(reactElement(icon, { size: 24 }))
+          button.append(document.createTextNode(translated === kind ? english : translated))
+          button.addEventListener('click', () => {
+            if (!locked && transitionEditReady) options.onAction('transition', kind)
+          })
+          group.append(button)
+          return button
+        }))
+      }
       const pictureOutline = tab.id === 'pictureFormat' && groupDefinition.label === 'Outline'
       const shapeFill = tab.id === 'shapeFormat' && groupDefinition.label === 'Fill'
       const shapeOutline = tab.id === 'shapeFormat' && groupDefinition.label === 'Outline'
-      if (pictureOutline || shapeFill || shapeOutline) {
+      const shapeStyle = tab.id === 'shapeFormat' && groupDefinition.label === 'Shape Styles'
+      if (pictureOutline || shapeFill || shapeOutline || shapeStyle) {
         const trigger = document.createElement('button')
         trigger.type = 'button'
         trigger.disabled = locked || pictureOutline
-        const id = pictureOutline ? 'pictureOutlineMenu' : shapeFill ? 'shapeFillMenu' : 'shapeOutlineMenu'
+        const id = pictureOutline ? 'pictureOutlineMenu' : shapeFill ? 'shapeFillMenu' : shapeStyle ? 'shapeStyleMenu' : 'shapeOutlineMenu'
         trigger.dataset.command = id
-        trigger.dataset.sourceAction = shapeFill ? 'onShapeFill' : 'onPictureStroke'
-        trigger.innerHTML = renderToStaticMarkup(reactElement(shapeFill ? IconFillColor : IconPageBorders, { size: 15 }))
+        trigger.dataset.sourceAction = shapeFill ? 'onShapeFill' : shapeStyle ? 'onShapeStyle' : 'onPictureStroke'
+        trigger.innerHTML = renderToStaticMarkup(reactElement(shapeFill ? IconFillColor : shapeStyle ? IconShapeStyle : IconPageBorders, { size: 15 }))
         trigger.append(document.createTextNode(groupLabel + ' ▾'))
         controls.set(id, [trigger])
+        let updateGradients: (() => void) | undefined
         const { menu, close } = createRibbonPopover(trigger, groupLabel, () => {
           if (pictureOutline) pictureTransparency?.close()
           else {
             closeShapeFormatMenus(id)
             closeShapeGalleries()
           }
+          updateGradients?.()
         })
         group.append(trigger, menu)
         controlHost = menu
+        if (shapeStyle) {
+          const grid = document.createElement('div')
+          grid.className = 'slides-shape-style-grid'
+          RIBBON_SHAPE_STYLES.forEach((preset, index) => {
+            const swatch = document.createElement('button')
+            swatch.type = 'button'
+            swatch.dataset.shapeStylePreset = String(index)
+            swatch.style.backgroundColor = preset.fill
+            swatch.style.borderColor = preset.stroke
+            swatch.style.borderStyle = preset.dash ? 'dashed' : 'solid'
+            swatch.setAttribute('aria-label', preset.fill + ' / ' + preset.stroke + (preset.dash ? ' (' + preset.dash + ')' : ''))
+            swatch.setAttribute('aria-pressed', 'false')
+            swatch.addEventListener('click', () => {
+              if (trigger.disabled || menu.hidden || swatch.disabled) return
+              close(true)
+              options.onAction('shapeStylePreset', index)
+            })
+            grid.append(swatch)
+          })
+          menu.append(grid)
+        }
         if (shapeFill) {
           const appendSwatches = (colors: readonly { hex: string; name: string }[]) => {
             const grid = document.createElement('div')
@@ -519,6 +695,18 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           appendSwatches(THEME_COLOR_SHADES.flat().map(hex => ({ hex, name: '#' + hex })))
           addHeading('Standard Colors')
           appendSwatches(STANDARD_COLORS)
+          const gradients = createShapeGradientPresets(localize, value => {
+            if (trigger.disabled || menu.hidden) return
+            close(true)
+            if (typeof value === 'string') options.onAction('shapeFill', value)
+            else options.onAction('shapeFillGradient', value)
+          })
+          menu.append(gradients.details)
+          updateGradients = () => {
+            gradients.details.open = false
+            const color = menu.querySelector<HTMLInputElement>('[data-command="shapeFill"]')?.dataset.gradientBase
+            gradients.render(color || '#4472C4')
+          }
         }
         if (pictureOutline) closePictureOutline = close
         else shapeFormatMenus.set(id, close)
@@ -712,6 +900,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
           if (locked) (element as HTMLButtonElement).disabled = true
         }
         if (control.sourceActionId) element.dataset.sourceAction = control.sourceActionId
+        if (element instanceof HTMLButtonElement && Object.hasOwn(MOTION_PATHS, control.id)) bindAnimationHover(element, control.id)
         if (!element.title) element.title = localizedLabel
         if (control.id === 'openFile' && !unavailable) element.setAttribute('aria-keyshortcuts', 'Control+O Meta+O')
         if (control.id === 'saveAs' && !unavailable) element.setAttribute('aria-keyshortcuts', 'Control+Shift+S Meta+Shift+S')
@@ -735,6 +924,59 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         } else if (control.id === 'shapeNoFill') controlHost.prepend(element)
         else controlHost.append(element)
       }
+      if (tab.id === 'animations' && groupDefinition.label === 'Animation') {
+        group.classList.add('slides-effect-gallery')
+        controls.set('applyAnimationEffect', animationCards.map(([kind, label]) => {
+          const button = document.createElement('button')
+          button.type = 'button'
+          button.dataset.command = 'applyAnimationEffect'
+          button.dataset.sourceAction = 'onApplyAnimation'
+          button.dataset.animationEffect = kind
+          if (!kind.startsWith('media')) bindAnimationHover(button, kind)
+          button.innerHTML = renderToStaticMarkup(reactElement(AnimEffectIcon, { kind, size: 24 }))
+          button.append(document.createTextNode(document.documentElement.lang.toLowerCase().startsWith('zh')
+            ? animationCardChineseLabels[kind] ?? EFFECT_LABELS[kind] ?? label : label))
+          button.addEventListener('click', () => {
+            if (!button.disabled) options.onAction('applyAnimationEffect', kind)
+          })
+          group.append(button)
+          return button
+        }))
+      }
+      if (tab.id === 'animations' && ['Animation', 'Motion Paths'].includes(groupDefinition.label)) {
+        const animation = groupDefinition.label === 'Animation'
+        const items = [...group.children].filter(item => item !== heading)
+        const trigger = document.createElement('button')
+        trigger.type = 'button'
+        trigger.dataset.animationCollapse = animation ? 'animation' : 'motionPaths'
+        trigger.disabled = locked
+        trigger.hidden = true
+        trigger.innerHTML = renderToStaticMarkup(reactElement(animation ? IconAnimStar : IconPathDiagonal, { size: 24 }))
+        trigger.append(document.createTextNode(groupLabel + ' ▾'))
+        const { menu, close } = createRibbonPopover(trigger, groupLabel, () => {
+          for (const flyout of animationFlyouts) if (flyout.trigger !== trigger) flyout.close()
+        }, cancelAnimationHover)
+        menu.classList.add('slides-animation-collapsed-flyout')
+        group.append(trigger, menu)
+        const flyout: typeof animationFlyouts[number] = { group, trigger, close, inlineWidth: 0, foldedWidth: 88, setCollapsed(value) {
+          if (value === !trigger.hidden) return
+          const focused = document.activeElement
+          const restore = items.find(item => item === focused || item.contains(focused))
+          cancelAnimationHover()
+          close()
+          trigger.hidden = !value
+          if (value) menu.append(...items)
+          else for (const item of items) group.insertBefore(item, trigger)
+          if (value && restore) trigger.focus({ preventScroll: true })
+          else if (!value && (restore || focused === trigger)) {
+            const target = restore ?? items.find(item => item instanceof HTMLButtonElement && !item.disabled)
+            if (target instanceof HTMLElement) target.focus({ preventScroll: true })
+          }
+        } }
+        // Source collapse priority is Motion Paths before Animation.
+        if (animation) animationFlyouts.push(flyout)
+        else animationFlyouts.unshift(flyout)
+      }
       if (tab.id === 'chartDesign' && groupDefinition.label === 'Chart Styles') {
         chartGallery = createNativeChartGallery(group, (command, value) => options.onAction(command, value))
         chartGallery.setLocked(locked)
@@ -746,11 +988,39 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
   }
   root.prepend(tablist)
   host.prepend(root)
+  const animationPanel = panels.get('animations')!
+  // Fixed source Ribbon.tsx COLLAPSE_ORDER and fitCount with 8px unfolding hysteresis.
+  updateAnimationLayout = () => {
+    if (animationPanel.hidden || !animationPanel.clientWidth) return
+    const style = getComputedStyle(animationPanel)
+    const available = animationPanel.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0)
+    let fullWidth = [...animationPanel.children].reduce((width, group) => width + (group as HTMLElement).offsetWidth, 0)
+    const savings = animationFlyouts.map(flyout => {
+      if (flyout.trigger.hidden) flyout.inlineWidth = flyout.group.offsetWidth
+      else flyout.foldedWidth = flyout.group.offsetWidth
+      const saving = Math.max(0, flyout.inlineWidth - flyout.foldedWidth)
+      if (!flyout.trigger.hidden) fullWidth += saving
+      return saving
+    })
+    const fitCount = (width: number) => {
+      let needed = fullWidth, count = 0
+      while (count < savings.length && needed > width) needed -= savings[count++]!
+      return count
+    }
+    const current = animationFlyouts.filter(flyout => !flyout.trigger.hidden).length
+    const fit = fitCount(available)
+    const next = fit >= current ? fit : Math.min(fitCount(available - 8), current)
+    animationFlyouts.forEach((flyout, index) => flyout.setCollapsed(index < next))
+  }
+  const animationLayoutObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateAnimationLayout) : undefined
+  animationLayoutObserver?.observe(animationPanel)
+  for (const group of animationPanel.children) animationLayoutObserver?.observe(group)
   selectTab(activeTab)
   updateTextFormattingState()
   updateSlideOrientationState()
   updateTransitionApplyAll()
   updateTransitionEdit()
+  updateAnimationGallery()
   updateCommentEdit()
   updateAIEdit()
 
@@ -785,6 +1055,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     setAIEditEnabled(enabled, reason) { aiEditReady = enabled; aiEditReason = reason; updateAIEdit() },
     setTransitionEditEnabled(enabled, reason) { transitionEditReady = enabled; transitionEditReason = reason; updateTransitionEdit() },
     setTransitionApplyAllEnabled(enabled, reason) { transitionApplyAllReady = enabled; transitionApplyAllReason = reason; updateTransitionApplyAll() },
+    setAnimationGallery(target, effect) {
+      if (target !== animationTarget) cancelAnimationHover()
+      animationTarget = target; appliedAnimation = effect; updateAnimationGallery()
+    },
+    cancelAnimationHover,
     setSlideOrientationEnabled(enabled) {
       hasWritableSlideSize = enabled
       updateSlideOrientationState()
@@ -802,6 +1077,7 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setValue(command, value, hint) {
       for (const element of controls.get(command) ?? []) {
+        if (command === 'transition') element.setAttribute('aria-pressed', String(element.dataset.transitionEffect === value))
         if (command === 'pictureOutlineWidth') for (const button of element.querySelectorAll<HTMLButtonElement>('[data-outline-width]')) {
           button.setAttribute('aria-pressed', String(button.dataset.outlineWidth === value))
         }
@@ -854,6 +1130,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
     },
     setLocked(value) {
       locked = value
+      for (const flyout of animationFlyouts) flyout.trigger.disabled = value
+      if (value) {
+        cancelAnimationHover()
+        for (const flyout of animationFlyouts) flyout.close()
+      }
       if (value) { closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus() }
       chartGallery?.setLocked(value)
       for (const elements of controls.values()) for (const element of elements) {
@@ -867,10 +1148,11 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
       updateSlideOrientationState()
       updateTransitionApplyAll()
       updateTransitionEdit()
+      updateAnimationGallery()
       updateCommentEdit()
       updateAIEdit()
     },
-    dispose() { chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
+    dispose() { animationLayoutObserver?.disconnect(); for (const flyout of animationFlyouts) flyout.close(); cancelAnimationHover(); chartGallery?.dispose(); closePictureMenus(); closeShapeGalleries(); closeShapeFormatMenus(); disposeScroll(); root.remove() },
   }
 
   function updateTextFormattingState() {

@@ -2,7 +2,7 @@ import { appendOfficeAnswer } from './office-answer'
 import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel, createOfficeNewChatButton } from './office-assistant-panel'
 /** 只读 PDF Agno 助手；写入仍走独立候选、预览与显式采纳链。 */
-import type { createNativeApi, NativePDFReadAction, NativePDFReadTask } from './native-api'
+import type { createNativeApi, NativePDFReadAction, NativePDFReadTask, NativePDFNavigation } from './native-api'
 import type { NativeDraft } from './native-draft'
 import { createPdfRibbonIcon } from './pdf-ribbon-icons'
 import { mountNativeAIProgress } from './native-ai-progress'
@@ -12,6 +12,8 @@ type Options = {
   draft: NativeDraft
   selection: () => {pageId: string; objectId: string}[]
   onNavigate: (pageId: string) => void
+  viewPageId?: () => string | undefined
+  onReadNavigate?: (target: NativePDFNavigation, current: () => boolean) => Promise<void>
 }
 const labels: Record<NativePDFReadAction, string> = {ask:'PDF 问答',summarize:'AI 总结',keyPoints:'AI 关键要点',reviewSummary:'AI 总结审阅'}
 export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
@@ -64,17 +66,40 @@ export function bindNativePDFAssistant(root: HTMLElement, options: Options) {
   }
   async function run() {
     if(disposed || busy || action==='ask' && !input.value.trim()) return
+    panelView.beforeTask()
     const instruction = input.value.trim()
     const question = action === 'ask' ? instruction : [(labels[action]), instruction].filter(Boolean).join(' · ')
     const turn=++generation, operations=structuredClone(options.draft.operations), selection=structuredClone(options.selection())
     const snapshot=JSON.stringify({operations,selection})
+    const viewPageId=options.onReadNavigate ? options.viewPageId?.() : undefined
     const requestId=crypto.randomUUID();busy=true;hasTurn=true
     status.textContent='正在读取已核验 PDF';update()
     try {
-      const task=await tasks.run({clientRequestId:requestId,action,instruction,previousTaskId:action==='ask' && previous?.snapshot===snapshot ? previous.taskId : undefined,expectedSha256:options.draft.identity.sourceSha256,operations,selection},requestId,(started,signal)=>progress.start(options.api.pdfAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
+      const task=await tasks.run({clientRequestId:requestId,action,instruction,previousTaskId:action==='ask' && previous?.snapshot===snapshot ? previous.taskId : undefined,expectedSha256:options.draft.identity.sourceSha256,operations,selection,...(viewPageId ? {viewPageId} : {})},requestId,(started,signal)=>progress.start(options.api.pdfAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
       if(!task || turn!==generation || disposed) return
       if(snapshot!==JSON.stringify({operations:options.draft.operations,selection:options.selection()})) { status.textContent='草稿或选区已变化，请重新阅读。';return }
-      if(task.status==='completed' && task.result) { previous={taskId:task.taskId,snapshot};display(task.result,question);status.textContent='阅读完成，文档与草稿未修改。' }
+      if(task.status==='completed' && task.result) {
+        if(task.result.sourceSha256 && task.result.sourceSha256!==options.draft.identity.sourceSha256)throw new Error('PDF 回答来源已变化')
+        previous={taskId:task.taskId,snapshot};display(task.result,question)
+        let navigationStatus=''
+        if(task.result.navigation) {
+          try {
+            if(!viewPageId || !options.onReadNavigate)throw new Error('当前视图不支持定位')
+            if(options.viewPageId?.()!==viewPageId)throw new Error('当前页面已变化，定位未执行')
+            const current=()=>turn===generation && !disposed && !panel.hidden && !options.draft.closed && !options.draft.saving
+              && snapshot===JSON.stringify({operations:options.draft.operations,selection:options.selection()})
+            if(!current())throw new Error('任务或文档状态已变化')
+            await options.onReadNavigate(task.result.navigation,current)
+            if(!current())return
+            navigationStatus=`已定位到第 ${task.result.navigation.page} 页。`
+          } catch(error) {
+            if(turn!==generation || disposed)return
+            navigationStatus='定位未完成：'+(error instanceof Error ? error.message : 'PDF 定位失败')+'。'
+          }
+        }
+        if(turn!==generation || disposed)return
+        status.textContent='阅读完成，文档与草稿未修改。'+navigationStatus
+      }
       else status.textContent=task.error?.message ?? (task.status==='cancelled' ? '任务已取消' : 'PDF AI 未返回有效回答')
     } catch(error) { if(turn===generation && !disposed) status.textContent=error instanceof Error ? error.message : 'PDF AI 阅读失败' }
     finally { if(turn===generation) { busy=false;tasks.release();progress.stop();update() } }

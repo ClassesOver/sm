@@ -51,6 +51,7 @@ export function bindNativeAI(container: HTMLElement, options: {
   const tasks = new OfficeAssistantController({start:options.api.aiStart,status:options.api.aiStatus,cancel:options.api.aiCancel,cancelRequest:options.api.aiCancelRequest,id:(value: NativeAIJob)=>value.editId,running:(value: NativeAIJob)=>value.status==='running'})
   let noteBeforeText: string | undefined
   let wordTarget: string | undefined
+  // Report-channel handoffs must preserve the trusted draft scope.
   let presetScope: 'selection' | 'document' | undefined, presetStale=false
   let activeRequestId: string | undefined
   const currentWordTarget = () => JSON.stringify({instruction:input.value.trim(),selection,operations:options.draft.operations})
@@ -90,6 +91,7 @@ export function bindNativeAI(container: HTMLElement, options: {
     if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) return
     try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
     if (!editable() || busy || accepting || presetStale || !selection.length || !input.value.trim()) {update();return}
+    panelView?.beforeTask()
     const turn = ++generation
     const instruction=input.value.trim(), selected=structuredClone(selection)
     if(options.format==='docx')wordTarget=JSON.stringify({instruction,selection:selected,operations:options.draft.operations})
@@ -130,7 +132,7 @@ export function bindNativeAI(container: HTMLElement, options: {
     finally { if (turn === generation) { busy = false; update() } }
   }
   accept.onclick = async () => {
-    if (!editable() || busy || accepting || job?.status !== 'succeeded' || job.accepted) return
+    if (!editable() || busy || accepting || job?.status !== 'succeeded' || job.accepted === true) return
     try { options.view.flushPendingEdits?.() } catch(error) {status.textContent=error instanceof Error ? error.message : '未保存输入同步失败';return}
     if(!editable() || busy || accepting || presetStale) {update();return}
     if(options.format==='docx' && wordTarget!==currentWordTarget()) {clearCandidate();status.textContent='修改要求、选区或草稿已变化，请重新生成建议。';update();return}

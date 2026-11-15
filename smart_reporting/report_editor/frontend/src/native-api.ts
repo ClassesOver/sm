@@ -103,12 +103,15 @@ export interface NativeWordReadTask {
   }
   error?: {code: string; message: string}
 }
+export type NativePDFNavigation = {page:number;pageId:string}
 export type NativePDFReadAction = 'ask' | 'summarize' | 'keyPoints' | 'reviewSummary'
 export interface NativePDFReadTask {
   taskId: string
   clientRequestId: string
   status: 'running' | 'completed' | 'failed' | 'cancelled'
   result?: {
+    navigation?: NativePDFNavigation
+    sourceSha256?: string
     answer: string
     coverage?: { pageCount?: number; fullyReadPages?: number[]; scopeReadComplete?: boolean; annotationsReadComplete?: boolean }
     citations?: {pageNumber: number | null; pageId: string | null; sourceSha256?: string; originalPageNumber?: number | null; originalPageId?: string | null; effectivePageNumber?: number; effectivePageId?: string; effectiveSha256?: string}[]
@@ -261,7 +264,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     pdfReviewEvents: nativeAIProgressListener(`${base}/ai/review`),
     pdfReviewAccept: async (id: string, payload: NativePreviewRequest & {snapshotSha256: string}, signal?: AbortSignal): Promise<{operations: NativeOperation[]; previewDigest: string; appliedOperationIndices: number[]; skippedOperations: NativeSkippedOperation[]}> => (await request('ai/review/' + encodeURIComponent(id) + '/accept', payload, signal)).json(),
     pdfReviewCancel: async (clientRequestId: string): Promise<NativePDFReviewJob> => (await request('ai/review/cancel', {clientRequestId})).json(),
-    officeAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativeOfficeReadAction | 'fileName'; nameLocale?: SlidesNameLocale; instruction: string; previousTaskId?: string; selection: NativeOfficeReadSelection; viewSelection?: NativeWorkbookViewSelection}, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/start', payload, signal)).json(),
+    officeAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativeOfficeReadAction | 'fileName'; nameLocale?: SlidesNameLocale; instruction: string; previousTaskId?: string; viewPageId?: string; selection: NativeOfficeReadSelection; viewSelection?: NativeWorkbookViewSelection}, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/start', payload, signal)).json(),
     officeAIStatus: async (id: string, signal?: AbortSignal): Promise<NativeOfficeReadTask> => (await request('ai/office-read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     officeAIEvents: nativeAIProgressListener(`${base}/ai/office-read`),
     officeAICancel: async (clientRequestId: string): Promise<NativeOfficeReadTask> => (await request('ai/office-read/cancel', {clientRequestId})).json(),
@@ -269,7 +272,7 @@ export function createNativeApi(documentId: string, revision: number, csrfToken?
     wordAIStatus: async (id: string, signal?: AbortSignal): Promise<NativeWordReadTask> => (await request('ai/word-read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     wordAIEvents: nativeAIProgressListener(`${base}/ai/word-read`),
     wordAICancel: async (clientRequestId: string): Promise<NativeWordReadTask> => (await request('ai/word-read/cancel', {clientRequestId})).json(),
-    pdfAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativePDFReadAction; instruction: string; previousTaskId?: string; selection: {pageId: string; objectId: string}[]}, signal?: AbortSignal): Promise<NativePDFReadTask> => (await request('ai/read/start', payload, signal)).json(),
+    pdfAIStart: async (payload: NativePreviewRequest & {clientRequestId: string; action: NativePDFReadAction; instruction: string; previousTaskId?: string; viewPageId?: string; selection: {pageId: string; objectId: string}[]}, signal?: AbortSignal): Promise<NativePDFReadTask> => (await request('ai/read/start', payload, signal)).json(),
     pdfAIStatus: async (id: string, signal?: AbortSignal): Promise<NativePDFReadTask> => (await request('ai/read/' + encodeURIComponent(id) + '?waitMs=20000', undefined, signal)).json(),
     pdfAIEvents: nativeAIProgressListener(`${base}/ai/read`),
     pdfAICancel: async (clientRequestId: string): Promise<NativePDFReadTask> => (await request('ai/read/cancel', {clientRequestId})).json(),

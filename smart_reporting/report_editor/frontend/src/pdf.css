@@ -8,6 +8,8 @@
 .pdf-crop-dialog label { display: flex; justify-content: space-between; gap: 16px; }
 .pdf-crop-dialog input { width: 100px; }
 .pdf-crop-dialog p { line-height: 1.6; }
+.pdf-size-options { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:8px 0; }
+.pdf-size-options button { flex:1 0 5ch; }
 
 .pdf-pending-markup { position: absolute; box-sizing: border-box; pointer-events: none; }
 /* 待应用涂黑：深色半透明标记 + 红框（文档内容色，保存后由引擎写成纯黑块）。 */
@@ -228,6 +230,11 @@
 .pdf-static-text-dialog button { min-height: 34px; padding: 4px 12px; margin-right: 8px; font: inherit; }
 .native-pdf-editor[data-pdf-mode=staticText] .pdf-page-content { cursor: text; }
 .pdf-layout-body { display: flex; flex-wrap: wrap; gap: 8px; flex-direction: column; }
+.pdf-layout-split-options { display: flex; gap: 8px; }
+.pdf-layout-split-options > button { flex: 1; }
+.pdf-layout-directions { display:flex; flex-wrap:wrap; gap:8px 16px; margin:0; padding:4px 0; border:0; }
+.pdf-layout-directions label { display:flex; gap:6px; align-items:center; }
+.pdf-layout-dialog .pdf-layout-directions input[type=radio] { inline-size:auto; min-height:0; padding:0; accent-color:var(--office-accent); }
 .pdf-layout-body > button { min-height: var(--office-control-height); padding: 0 12px; border: 1px solid var(--office-border-strong); border-radius: var(--office-radius); background: #fff; color: var(--office-ink); font: inherit; cursor: pointer; }
 .pdf-layout-body > button:hover { background: var(--office-hover-bg); border-color: var(--office-hover-border); }
 .pdf-layout-body > button:focus-visible { outline: 2px solid var(--office-focus-ring); outline-offset: 1px; }

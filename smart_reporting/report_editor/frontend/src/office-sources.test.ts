@@ -41,7 +41,7 @@ it.each([403, 409])('clears query results and reloads table access after HTTP %s
   expect(host.querySelector('[role=status]')?.textContent).toContain('数据源授权或版本已变化')
 })
 
-it('shows the effective member table scope after saving and restoring inheritance', async () => {
+it('admin manages member table scope from workspace grants and preserves other drafts', async () => {
   Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
     configurable: true, value: function (this: HTMLDialogElement) { this.open = true },
   })
@@ -55,18 +55,21 @@ it('shows the effective member table scope after saving and restoring inheritanc
       return Response.json({})
     }
     if (url.endsWith('/sales/members')) {
-      return Response.json({ tables, items: memberTables === null ? [] : [{ user: 'member', tables: memberTables }] })
+      return Response.json({ tables, members: [{ user: 'member', name: '成员' }, { user: 'other', name: '另一位成员' }], items: memberTables === null ? [] : [{ user: 'member', tables: memberTables }] })
     }
     if (url.endsWith('/members')) return Response.json({
       items: [{ user: 'member', name: '成员' }, { user: 'other', name: '另一位成员' }],
     })
-    return Response.json({ items: [{ id: 'sales', name: '销售', available: true, tables }] })
+    if (url.endsWith('/admin/workspaces')) return Response.json({ items: [{id: 'team', name: '团队'}] })
+    if (url.endsWith('/table-access')) return Response.json({publishedTables: [{database: 'db', name: 'orders'}, {database: 'db', name: 'items'}]})
+    if (url.endsWith('/data-sources/sales')) return Response.json({tables})
+    return Response.json({ items: [{ source_id: 'sales', name: '销售', database: 'db', publishedRevision: 1 }], nextCursor: null })
   })
   const host = document.body.appendChild(document.createElement('div'))
-  await showOfficeSources(host, { admin: false, space: {
-    id: 'team', name: '团队', role: 'owner', personal_user: null, archived: false,
-  } })
+  await showOfficeSources(host, { admin: true })
   const click = (label: string) => [...host.querySelectorAll('button')].find(button => button.textContent === label)!.click()
+  click('工作区授权')
+  await vi.waitFor(() => expect([...host.querySelectorAll('button')].some(button => button.textContent === '成员表权限')).toBe(true))
   click('成员表权限')
   await vi.waitFor(() => expect(host.textContent).toContain('继承工作区范围 · 2 张表'))
   const boxes = (member: string) => {
@@ -82,4 +85,16 @@ it('shows the effective member table scope after saving and restoring inheritanc
   await vi.waitFor(() => expect(host.textContent).not.toContain('自定义范围 · 无可访问表'))
   expect(boxes('另一位成员').map(box => box.checked)).toEqual([false, true])
   expect(updates).toEqual([[], null])
+})
+
+
+it('workspace ownership does not expose member data-source administration', async () => {
+  Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+    configurable: true, value(this: HTMLDialogElement) { this.open = true },
+  })
+  vi.stubGlobal('fetch', async () => Response.json({items: [{id: 'sales', name: '销售', available: true, tables: ['db.orders']}]}))
+  const host = document.body.appendChild(document.createElement('div'))
+  await showOfficeSources(host, {admin: false, space: {id: 'team', name: 'Team', role: 'owner', personal_user: null, archived: false}})
+  expect(host.textContent).not.toContain('成员表权限')
+  expect(host.textContent).toContain('执行查询')
 })

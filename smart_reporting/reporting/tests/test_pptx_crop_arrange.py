@@ -242,6 +242,19 @@ def test_arranging_a_shape_updates_attached_connector_and_preserves_untouched_sl
                 assert before.read(path) == after.read(path), path
 
 
+def test_shape_gradient_presets_roundtrip_and_can_be_replaced_by_solid_fill():
+    content, _ = _presentation(connected=True)
+    target = _target(content, '右形状')
+    fill = {'from': '#E97132', 'to': '#753919', 'angleDeg': 45, 'radial': False}
+    edited = _patch(content, shapeStyles=[{'slideIndex': 0, 'elementId': target['id'], 'fill': fill}])
+    updated = _target(edited, '右形状')
+    assert updated['brushSource']['shape']['fill'] == fill
+    shape = next(item for item in Presentation(BytesIO(edited)).slides[0].shapes if item.name == '右形状')
+    assert shape._element.xpath('./p:spPr/a:gradFill/a:lin[@ang="2700000"]')
+    solid = _patch(edited, shapeStyles=[{'slideIndex': 0, 'elementId': updated['id'], 'fill': '#607080'}])
+    assert _target(solid, '右形状')['brushSource']['shape']['fill'] == '#607080'
+
+
 def test_crop_rejects_invalid_rect_identity_unsafe_sources_and_same_target_replacement():
     content, _ = _presentation()
     target = _target(content)

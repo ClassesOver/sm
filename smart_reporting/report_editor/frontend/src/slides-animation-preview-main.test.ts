@@ -3,7 +3,12 @@ import { createEditorShell } from './shell'
 import { createSlidesEditorView } from './slides-main'
 import { NativeDraft } from './native-draft'
 
-vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: () => ({ update() {}, destroy() {} }) }))
+vi.mock('./slides-canvas', () => ({ mountSlidesCanvas: (host: HTMLElement) => {
+  const page = document.createElement('div')
+  page.className = 'konvajs-content'
+  host.append(page)
+  return { update() {}, destroy() { page.remove() } }
+} }))
 vi.mock('react-konva', async () => {
   const React = await import('react')
   const container = ({ children }: any) => React.createElement('div', null, children)
@@ -66,4 +71,43 @@ it('重复启动只接纳最后一次快照，销毁活动播放器不留下叠�
   expect(shell.editor.querySelectorAll('.slides-animation-preview')).toHaveLength(1)
   view.dispose(); views.splice(views.indexOf(view), 1)
   expect(shell.editor.querySelector('.slides-animation-preview')).toBeNull()
+})
+
+it.each(['[data-animation-effect="pulse"]', '[data-command="motionPathRight"]'])('动画悬停复用当前画布且不写入草稿或夺走焦点 %s', async selector => {
+  const { shell, draft, request } = await fixture()
+  await vi.waitFor(() => expect(shell.editor.querySelector('.konvajs-content')).not.toBeNull())
+  shell.editor.querySelector<HTMLButtonElement>('[data-ribbon-tab="animations"]')!.click()
+  const card = shell.editor.querySelector<HTMLButtonElement>(selector)!
+  expect(card.disabled).toBe(false)
+  card.focus()
+  const before = request.mock.calls.length
+  card.dispatchEvent(new MouseEvent('mouseenter'))
+  expect(shell.editor.querySelector('.slides-animation-hover-preview')).toBeNull()
+  await vi.waitFor(() => expect(shell.editor.querySelector('.konvajs-content > .slides-animation-hover-preview')).not.toBeNull(), { timeout: 5000 })
+  expect(document.activeElement).toBe(card)
+  expect(request.mock.calls.length).toBe(before)
+  expect(draft.operations).toEqual([])
+  card.dispatchEvent(new MouseEvent('mouseleave'))
+  expect(shell.editor.querySelector('.slides-animation-hover-preview')).toBeNull()
+})
+
+it('切换功能区或离开卡片取消尚未触发的悬停预览', async () => {
+  const { shell, draft } = await fixture()
+  await vi.waitFor(() => expect(shell.editor.querySelector('.konvajs-content')).not.toBeNull())
+  const animations = shell.editor.querySelector<HTMLButtonElement>('[data-ribbon-tab="animations"]')!
+  const home = shell.editor.querySelector<HTMLButtonElement>('button[data-ribbon-tab="home"]')!
+  const card = shell.editor.querySelector<HTMLButtonElement>('[data-animation-effect="pulse"]')!
+  vi.useFakeTimers()
+  try {
+    animations.click()
+    card.dispatchEvent(new MouseEvent('mouseenter'))
+    vi.advanceTimersByTime(349)
+    card.dispatchEvent(new MouseEvent('mouseleave'))
+    await vi.advanceTimersByTimeAsync(1)
+    card.dispatchEvent(new MouseEvent('mouseenter'))
+    home.click()
+    await vi.advanceTimersByTimeAsync(350)
+    expect(shell.editor.querySelector('.slides-animation-hover-preview')).toBeNull()
+    expect(draft.operations).toEqual([])
+  } finally { vi.useRealTimers() }
 })

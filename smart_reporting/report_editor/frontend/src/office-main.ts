@@ -56,6 +56,7 @@ const knowledgeInputs = new Map<string, string>()
 const knowledgePending = new Map<string, AbortController>()
 const knowledgeAttachments = new Map<string, string[]>()
 let accountGeneration = 0
+let spacesRequest = 0
 const knowledgeGeneration = new Map<string, number>()
 
 const paths = {
@@ -132,13 +133,18 @@ function installLibrary(result: OfficeLibrary) {
 }
 
 async function refreshSpaces() {
-  spaces = (await officeRequest<{ items: OfficeSpace[] }>('/workspaces')).items
+  const account = accountGeneration
+  const request = ++spacesRequest
+  const result = await officeRequest<{ items: OfficeSpace[] }>('/workspaces')
+  if (account !== accountGeneration || request !== spacesRequest) return
+  spaces = result.items
   if (!spaces.some(item => item.id === currentSpace)) currentSpace = spaces[0]?.id ?? ''
   await refreshLibrary()
 }
 
 function clearAccount() {
   accountGeneration += 1
+  busy = false
   applyOfficeTheme('system')
   setOfficeAssistantIdentity(null)
   for (const frame of tabs.values()) frame.remove()
@@ -166,15 +172,18 @@ window.addEventListener('genoffice-session-expired', () => {
 })
 
 async function start() {
-  accountGeneration += 1
+  const account = ++accountGeneration
   try {
-    currentUser = await officeSession()
-    const preferenceAccount = accountGeneration
-    await loadOfficePreferences(() => preferenceAccount === accountGeneration)
+    const user = await officeSession()
+    if (account !== accountGeneration) return
+    currentUser = user
+    await loadOfficePreferences(() => account === accountGeneration)
+    if (account !== accountGeneration) return
     await refreshSpaces()
+    if (account !== accountGeneration) return
     status = ''
-  } catch (error) { status = error instanceof Error ? error.message : 'Office 登录失败。' }
-  render()
+  } catch (error) { if (account === accountGeneration) status = error instanceof Error ? error.message : 'Office 登录失败。' }
+  if (account === accountGeneration) render()
 }
 
 function showLogin() {
@@ -188,18 +197,22 @@ function showLogin() {
   const submit = form.querySelector('button')!
   form.onsubmit = async event => {
     event.preventDefault()
+    if (submit.disabled) return
     submit.disabled = true
+    const account = ++accountGeneration
     try {
-      currentUser = await loginOffice(Object.fromEntries(new FormData(form)) as Record<string, string>)
-      accountGeneration += 1
-      const preferenceAccount = accountGeneration
-      await loadOfficePreferences(() => preferenceAccount === accountGeneration)
+      const user = await loginOffice(Object.fromEntries(new FormData(form)) as Record<string, string>)
+      if (account !== accountGeneration) return
+      currentUser = user
+      await loadOfficePreferences(() => account === accountGeneration)
+      if (account !== accountGeneration) return
       await refreshSpaces()
+      if (account !== accountGeneration) return
       status = ''
       dialog.close()
       render()
     } catch (error) {
-      dialog.querySelector('p')!.textContent = error instanceof Error ? error.message : '登录失败。'
+      if (account === accountGeneration) dialog.querySelector('p')!.textContent = error instanceof Error ? error.message : '登录失败。'
     } finally { submit.disabled = false }
   }
   root.append(dialog)
@@ -901,12 +914,13 @@ async function importBatch(files: File[], destination: string, attach?: (id: str
 
 async function withImport(operation: () => Promise<void>) {
   if (busy) return
+  const account = accountGeneration
   busy = true
   status = '正在打开文件…'
   render()
-  try { await operation(); status = '' }
-  catch (error) { status = error instanceof Error ? error.message : '文件打开失败。' }
-  finally { busy = false; render() }
+  try { await operation(); if (account === accountGeneration) status = '' }
+  catch (error) { if (account === accountGeneration) status = error instanceof Error ? error.message : '文件打开失败。' }
+  finally { if (account === accountGeneration) { busy = false; render() } }
 }
 
 function manageOfficeItem(data: DOMStringMap, mode?: OfficeFileAction) {
@@ -1352,27 +1366,35 @@ root.addEventListener('click', event => {
     return
   }
   if (data.action === 'logout') {
+    const account = accountGeneration
     void withImport(async () => {
       await officeRequest('/logout', 'POST')
-      clearAccount()
+      if (account === accountGeneration) { clearAccount(); status = ''; render() }
     })
     return
   }
   if (data.action === 'users' || data.action === 'members') {
+    const account = accountGeneration
     if (currentUser) void showOfficeAdministration(root, {
       user: currentUser,
       space: data.action === 'members' ? spaces.find(item => item.id === currentSpace) : undefined,
-      onChanged: async () => { await refreshSpaces(); render() },
+      onChanged: async () => {
+        if (account !== accountGeneration) return
+        await refreshSpaces()
+        if (account === accountGeneration) render()
+      },
     })
     return
   }
   if (data.action === 'new-space') {
+    const account = accountGeneration
     const name = prompt('团队工作区名称')?.trim()
     if (!name) return
     const owner = prompt('工作区负责人用户 ID', currentUser!.user)?.trim()
     if (!owner) return
     void withImport(async () => {
       const created = await officeRequest<OfficeSpace>('/workspaces', 'POST', { name, owner })
+      if (account !== accountGeneration) return
       currentSpace = created.id
       await refreshSpaces()
     })

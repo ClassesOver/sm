@@ -120,6 +120,7 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
   }
   async function start(translation = false) {
     if (disposed || busy || accepting || options.locked() || !instruction.value.trim()) return
+    panelView.beforeTask()
     if (activeRequestId) void tasks.cancel().catch(() => {})
     const turn = ++generation
     requestInput = inputIdentity()

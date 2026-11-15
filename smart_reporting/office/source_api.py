@@ -128,12 +128,14 @@ def mount_source_routes(router, actor, office, vault, metadata_client=None):
     async def query(space: str, source: str, body: SourceQuery, identity=Depends(actor)):
         return await run(runtime.query, identity, space, source, body.sql)
 
-    @router.put("/workspaces/{space}/data-sources/{source}/members/{user}")
+    @router.put("/workspaces/{space}/data-sources/{source}/members/{user}", include_in_schema=False)
+    @router.put("/admin/workspaces/{space}/data-sources/{source}/members/{user}")
     async def limit_member(space: str, source: str, user: str, body: MemberSourceLimit,
                            identity=Depends(actor)):
         await office.limit_source_member(identity, space, source, user, body.tables)
         return {"updated": True}
 
-    @router.get("/workspaces/{space}/data-sources/{source}/members")
+    @router.get("/workspaces/{space}/data-sources/{source}/members", include_in_schema=False)
+    @router.get("/admin/workspaces/{space}/data-sources/{source}/members")
     async def read_limits(space: str, source: str, identity=Depends(actor)):
         return await office.source_member_limits(identity, space, source)

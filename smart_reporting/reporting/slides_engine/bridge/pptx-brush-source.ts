@@ -1,7 +1,8 @@
-import {isConnectorXml,type SlideElement,type TextRun} from '@genoffice/pptx-engine'
+import {isConnectorXml,patchElementFill,type SlideElement,type TextRun} from '@genoffice/pptx-engine'
 import { isOutlineDash, type ShapeStroke } from './pptx-outline'
+import { isShapeGradient, shapeFillPatch, type ShapeFill } from './pptx-shape-fill'
 type Text={fontSizePt?:number;fontFamily?:string;color?:string;bold?:boolean;italic?:boolean;underline?:boolean}
-type Shape={fill?:string;stroke?:ShapeStroke|null}
+type Shape={fill?:ShapeFill;stroke?:ShapeStroke|null}
 export type BrushSource={supported:boolean;text?:Text;align?:'left'|'center'|'right'|'justify';shape?:Shape;reason?:string}
 const hex=(value:unknown):value is string=>typeof value==='string'&&/^#[0-9a-f]{6}$/i.test(value)
 /** 只摘要已解析模型，所有非空正文 run 一致且明确的字段才可复制。 */
@@ -30,6 +31,17 @@ export function inspectBrushSource(element:SlideElement):BrushSource{
  if(!element.useBgFill&&!element.fillOverlay){
   if(element.fill?.type==='none')shape.fill='none'
   else if(element.fill?.type==='solid'&&hex(element.fill.color))shape.fill=element.fill.color.toUpperCase()
+  else if (element.fill?.type === 'gradient') {
+    const fill = element.fill
+    const gradient = {
+      from: fill.stops[0]?.color.toUpperCase(), to: fill.stops[1]?.color.toUpperCase(),
+      angleDeg: (fill.angle ?? 0) / 60000, radial: fill.path === 'circle',
+    }
+    // Re-open exact shapes emitted by the existing writer; extended gradients stay read-only.
+    if (isShapeGradient(gradient) && patchElementFill(element.anchor.originalXml, shapeFillPatch(gradient)) === element.anchor.originalXml) {
+      shape.fill = gradient
+    }
+  }
  }
  const stroke=element.stroke
  // width/color回写会重建整条线。模型未表达algn等XML属性，故只接受显式简单RGB线，

@@ -575,6 +575,23 @@ class NativeAIService:
             ],
         }
 
+    async def _while_job_authorized(self, job: _NativeAIJob, work: Awaitable[Any]) -> Any:
+        if job.authorization_check is None:
+            return await work
+        pending = asyncio.ensure_future(work)
+        try:
+            while True:
+                done, _ = await asyncio.wait({pending}, timeout=0.5)
+                await self._require_job_authorization(job)
+                if done:
+                    return await pending
+        finally:
+            if not pending.done():
+                pending.cancel()
+            # Preserve the authorization/cancellation error even if a dependency
+            # raises while shutting down or returns a late result after cancel.
+            await asyncio.gather(pending, return_exceptions=True)
+
     async def _run_job(
         self,
         job: _NativeAIJob,
@@ -593,23 +610,18 @@ class NativeAIService:
             if job.status != "running":
                 return
             if job.word_task_reference is not None:
-                dispatch_options = {}
-                if job.authorization_check is not None:
-                    dispatch_options['authorization_check'] = job.authorization_check
-                # 服务级撤销防护：即使派发器自身的逐工具复查被长运行调用延迟，
-                # 授权撤销也会立即取消在途执行，迟到的依赖结果不会成为候选。
-                planned = await asyncio.wait_for(
-                    self._while_job_authorized(job, self.word_task_dispatcher.execute(
-                        job.word_task_reference, shutdown_requested=lambda: self._closed,
-                        **dispatch_options,
-                    )),
-                    timeout=self.timeout_seconds,
+                execution = self.word_task_dispatcher.execute(
+                    job.word_task_reference, shutdown_requested=lambda: self._closed,
+                    **({"authorization_check": job.authorization_check}
+                       if job.authorization_check is not None else {}),
                 )
+                planned = await self._while_job_authorized(job, asyncio.wait_for(
+                    execution, timeout=self.timeout_seconds))
             else:
-                planned = await asyncio.wait_for(
+                planned = await self._while_job_authorized(job, asyncio.wait_for(
                     self._plan_with_events(job, prompt, selected, format=context.format),
                     timeout=self.timeout_seconds,
-                )
+                ))
             if job.status != "running":
                 return
             if planned is None:
@@ -738,23 +750,6 @@ class NativeAIService:
         if job.authorization_check is not None and not await job.authorization_check():
             raise _invalid("native_permission_denied", "频道编辑授权已撤销。")
 
-    async def _while_job_authorized(self, job: _NativeAIJob, work: Awaitable[Any]) -> Any:
-        if job.authorization_check is None:
-            return await work
-        pending = asyncio.ensure_future(work)
-        try:
-            while True:
-                done, _ = await asyncio.wait({pending}, timeout=0.5)
-                await self._require_job_authorization(job)
-                if done:
-                    return await pending
-        finally:
-            if not pending.done():
-                pending.cancel()
-            # Preserve the authorization/cancellation error even if a dependency
-            # raises while shutting down or returns a late result after cancel.
-            await asyncio.gather(pending, return_exceptions=True)
-
     async def wait_edit_status(
         self, session: ReportEditorSession, edit_id: str, *, wait_ms: int = 20000
     ) -> dict[str, Any]:
@@ -835,6 +830,9 @@ class NativeAIService:
                 raise _invalid("native_permission_denied", "原生会话权限已变化。")
             if job.status != "succeeded" or job.proposal is not proposal or self._closed:
                 raise _invalid("native_ai_not_ready", "AI 候选已取消，未加入草稿。")
+        await self._require_job_authorization(job)
+        if job.status != "succeeded" or job.proposal is not proposal or self._closed:
+            raise _invalid("native_ai_not_ready", "AI 候选已失效。")
         job.accepted = True
         logger.bind(
             format=context.format, document_id=context.document_id, revision=context.revision,

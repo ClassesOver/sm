@@ -26,7 +26,7 @@ function operation(kind:string):NativeOperation{
 }
 beforeEach(()=>{localStorage.clear();vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT',true);vi.stubGlobal('IntersectionObserver',class{observe(){}disconnect(){}unobserve(){}});vi.spyOn(HTMLCanvasElement.prototype,'getContext').mockReturnValue({} as CanvasRenderingContext2D);Object.defineProperty(HTMLDialogElement.prototype,'showModal',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=true})});Object.defineProperty(HTMLDialogElement.prototype,'close',{configurable:true,value:vi.fn(function(this:HTMLDialogElement){this.open=false;this.dispatchEvent(new Event('close'))})})})
 afterEach(()=>{views.splice(0).forEach(view=>view.dispose());document.body.replaceChildren();vi.restoreAllMocks();vi.unstubAllGlobals();for(const name of ["showModal","close"] as const){const descriptor=dialogDescriptors[name];if(descriptor)Object.defineProperty(HTMLDialogElement.prototype,name,descriptor);else Reflect.deleteProperty(HTMLDialogElement.prototype,name)}})
-async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;signatureTargets?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
+async function fixture(options:{restored?:NativeOperation;capabilities?:Record<string,boolean>;editingEnabled?:boolean;pages?:number;noFormFields?:boolean;detachSource?:boolean;sourceSize?:number;attachments?:boolean;staticFills?:boolean;digitalSignatures?:boolean;text?:string;savedThread?:boolean;exportPages?:number;requiredField?:boolean;navigationFields?:boolean;widgetNavigation?:boolean;signatureTargets?:boolean;flushForFileOperation?:()=>Promise<NativeSaveResponse|undefined>}={}){
  pdfMock.pages=options.exportPages??options.pages??1;pdfMock.detach=options.detachSource??false;pdfMock.text=options.text??'';pdfMock.printed=[]
  const notes=options.savedThread?[
   { annotationId:'4'.repeat(64), expectedAnnotationSha256:'5'.repeat(64), sourceRef:'10R', contents:'root', editable:true, removable:false, replyable:true, removalReason:'关联回复' },
@@ -44,6 +44,7 @@ async function fixture(options:{restored?:NativeOperation;capabilities?:Record<s
   widgets:[{pageIndex,rect:[30,200,150,230]}],
  })): []
  const model={sourceSha256,pages:Array.from({length:options.exportPages??1},(_,index)=>({pageId:'sha256:'+sourceSha256+':page:'+index,index,rotation:0,mediaBox:{x:0,y:0,width:300,height:400},cropBox:{x:0,y:0,width:300,height:400},notesReadSafe:true,notes})),formFields:[{name:'existing',kind:'text',value:options.requiredField?'':'Alice',editable:true,fieldId:'f'.repeat(64),expectedFieldSha256:'1'.repeat(64)},...(options.navigationFields?[{name:'locked',kind:'text',value:'Locked',editable:false,fieldId:'2'.repeat(64),expectedFieldSha256:'3'.repeat(64)},{name:'secondary',kind:'text',value:'Second',editable:true,fieldId:'4'.repeat(64),expectedFieldSha256:'5'.repeat(64)}]:[]),...signatureFields.map(field=>({...field,kind:'signature',value:null,editable:false}))],signatureFields,formDesignWidgets:[widget],existingImages:[image],capabilities:{createFormField:true,editFormFieldRequired:true,editExistingImage:true,...options.capabilities}}
+ if(options.noFormFields){model.formFields=[];model.formDesignWidgets=[]}
  const staticModel=options.staticFills?{staticFormFills:[{id:'saved-fill',kind:'text',pageIndex:0,rect:[30,100,150,124],text:'已保存填写',fontSize:14,color:'#111111',align:'left',editable:true,expectedImageSha256:'9'.repeat(64)}]}:{}
  const attachmentModel=options.attachments?{attachmentsEditable:true,attachments:[{key:'stored',name:'keep.txt',description:'保留附件',size:3,contentSha256:'b'.repeat(64),attachmentId:'c'.repeat(64),expectedAttachmentSha256:'d'.repeat(64)}]}:{}
  const api={exportImages:vi.fn(async()=>{throw new Error('test request observed')}),file:async()=>new Uint8Array(options.sourceSize??2).buffer,preview:vi.fn(async()=>({sourceSha256,model:{...model,...attachmentModel,...staticModel,...(options.digitalSignatures?{digitalSignatures:[],signatureVerification:{scope:"basic-integrity-only",trustPolicy:"none",readable:true,issues:[],revocationChecked:false,timestampsVerified:false}}:{})}})),previewFile:vi.fn(async()=>new Uint8Array([3,4]).buffer)} as unknown as ReturnType<typeof createNativeApi>
@@ -429,6 +430,68 @@ it.each([false,true])('document properties close restores a visible entry or cur
  const close=panel.querySelector<HTMLButtonElement>('[data-metadata-cancel]');expect(close).not.toBeNull();close!.focus();close!.click()
  expect(panel.open).toBe(false);expect(document.activeElement).toBe(changed?tab:entry);expect(f.draft.operations).toEqual([])
 })
+it('submits merger settings with Enter and the selected source direction radio', async () => {
+ const f=await fixture({pages:3});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
+ const open=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.mergePages"]')!
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="合并页面"]') ?? f.root.querySelector<HTMLDialogElement>('dialog:has(.pdf-layout-body)')!
+ open.focus();open.click()
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ const count=dialog.querySelector<HTMLInputElement>('[aria-label="每张页数"]')!
+ const enter=(options:KeyboardEventInit={})=>count.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true,...options}))
+ const horizontal=dialog.querySelector<HTMLInputElement>('input[type=radio][value=horizontal]')!
+ const vertical=dialog.querySelector<HTMLInputElement>('input[type=radio][value=vertical]')!
+ expect(document.activeElement).toBe(count)
+ expect(vertical.checked).toBe(true);horizontal.click();expect(vertical.checked).toBe(false)
+ dialog.querySelector<HTMLInputElement>('input[type=checkbox]')!.click()
+ count.value='1';enter({isComposing:true});expect(count.hasAttribute('aria-invalid')).toBe(false)
+ enter();expect(count.getAttribute('aria-invalid')).toBe('true');expect(dialog.open).toBe(true)
+ count.value='3';count.dispatchEvent(new Event('input',{bubbles:true}));expect(count.hasAttribute('aria-invalid')).toBe(false)
+ enter()
+ const operation={kind:'mergePages',perSheet:3,direction:'horizontal',separator:true}
+ await vi.waitFor(()=>expect(f.draft.operations).toEqual([operation]))
+ expect(document.activeElement).toBe(open)
+ await vi.waitFor(()=>expect(f.api.preview).toHaveBeenCalledWith(expect.objectContaining({operations:[operation]}),expect.anything()))
+})
+it('offers one source row for splitting every page into 2, 4 or 9 pages', async () => {
+ const f=await fixture({exportPages:3,noFormFields:true});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
+ const open=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.splitPages"]')!
+ open.focus();open.click()
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog:has(.pdf-layout-body)')!
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ expect(dialog.getAttribute('aria-label')).toBe('拆分页面')
+ expect(dialog.textContent).toContain('将每页按网格切分为多页（共 3 页）')
+ const choices=[...dialog.querySelectorAll<HTMLButtonElement>('.pdf-layout-split-options button')]
+ expect(choices.map(button=>button.textContent)).toEqual(['1 分 2','1 分 4','1 分 9'])
+ expect(document.activeElement).toBe(choices[0])
+ choices[1]!.click()
+ const operation={kind:'splitPages',perPage:4}
+ await vi.waitFor(()=>expect(f.draft.operations).toEqual([operation]))
+ expect(document.activeElement).toBe(open)
+ await vi.waitFor(()=>expect(f.api.preview).toHaveBeenCalledWith(expect.objectContaining({operations:[operation]}),expect.anything()))
+})
+it('shows the source paper presets and applies the chosen size to the current page set', async () => {
+ const f=await fixture({pages:3,capabilities:{pageSize:true}});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
+ const open=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.size"]')!
+ const dialog=f.root.querySelector<HTMLDialogElement>('.pdf-size-dialog')!
+ open.focus();open.click()
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ expect(dialog.querySelector('.pdf-size-scope')?.textContent).toContain('3')
+ const rows=[...dialog.querySelectorAll('.pdf-size-options')]
+ expect(rows.map(row=>[...row.querySelectorAll('button')].map(button=>button.textContent))).toEqual([['A3','A4','A5'],['Letter','Legal']])
+ expect(document.activeElement?.textContent).toBe('A3')
+ dialog.querySelector<HTMLButtonElement>('.pdf-layout-actions > button')!.click()
+ expect(dialog.open).toBe(false)
+ expect(document.activeElement).toBe(open)
+ expect(f.draft.operations).toEqual([])
+ open.click()
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ rows[1].querySelector<HTMLButtonElement>('button:last-child')!.click()
+ await vi.waitFor(()=>expect(f.draft.operations).toEqual([{kind:'setPageSize',preset:'Legal'}]))
+ await vi.waitFor(()=>expect(f.api.preview).toHaveBeenCalledWith(expect.objectContaining({operations:[{kind:'setPageSize',preset:'Legal'}]}),expect.anything()))
+})
 it('navigation shows current page identity after refresh without changing the draft',async()=>{
  const f=await fixture(),view=await f.create();await view.refresh()
  expect(f.root.querySelector('.pdf-thumbnail')?.getAttribute('aria-current')).toBe('page')
@@ -447,6 +510,7 @@ it('switches between the source single and double page controls while keeping fi
  const spread=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.navigation.pageSpread"]')!
  const fit=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.pageZoom.fitWidth"]')!
  const zoom=f.root.querySelector<HTMLSelectElement>('.pdf-zoom')!
+ const readout=f.root.querySelector<HTMLOutputElement>('[data-pdf-view-zoom]')!
  const rows=()=>[...viewport.querySelectorAll('.pdf-page-row')].map(row=>row.children.length)
  expect(spread.getAttribute('aria-pressed')).toBe('false')
  expect(spread.querySelector('svg')?.children).toHaveLength(2)
@@ -458,18 +522,39 @@ it('switches between the source single and double page controls while keeping fi
  fit.click()
  await vi.waitFor(()=>expect(Number(zoom.value)).toBeGreaterThan(1.5))
  const singleZoom=Number(zoom.value)
+ expect(readout.textContent).toBe(`${Math.round(singleZoom*100)}%`)
  spread.click()
  await vi.waitFor(()=>expect(rows()).toEqual([2,1]))
  expect(spread.getAttribute('aria-pressed')).toBe('true')
  expect(spread.querySelector('svg')?.children).toHaveLength(1)
  expect(Number(zoom.value)).toBeLessThan(singleZoom)
+ expect(readout.textContent).toBe(`${Math.round(Number(zoom.value)*100)}%`)
  expect(viewport.querySelector<HTMLElement>('.pdf-page.is-active')?.dataset.pageId).toBe(selected)
  spread.click()
  await vi.waitFor(()=>expect(rows()).toEqual([1,1,1]))
  expect(spread.getAttribute('aria-pressed')).toBe('false')
  expect(spread.querySelector('svg')?.children).toHaveLength(2)
  expect(Number(zoom.value)).toBeCloseTo(singleZoom)
+ expect(readout.textContent).toBe(`${Math.round(singleZoom*100)}%`)
  expect(viewport.querySelector<HTMLElement>('.pdf-page.is-active')?.dataset.pageId).toBe(selected)
+ expect(f.draft.operations).toEqual([])
+})
+it('places the PDF zoom readout between the View controls and shares manual zoom with the status bar',async()=>{
+ const f=await fixture({editingEnabled:false});await f.create()
+ const readout=f.root.querySelector<HTMLOutputElement>('[data-pdf-view-zoom]')!
+ const out=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.pageZoom.zoomOut"]')!
+ const plus=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.pageZoom.zoomIn"]')!
+ const slider=f.root.querySelector<HTMLInputElement>('.pdf-view-status input[type=range]')!
+ expect(readout.previousElementSibling).toBe(out)
+ expect(readout.nextElementSibling).toBe(plus)
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="view"]')!.click()
+ const start=Number(slider.value)
+ plus.click()
+ await vi.waitFor(()=>expect(Number(slider.value)).toBeGreaterThan(start))
+ expect(readout.textContent).toBe(slider.value+'%')
+ out.click()
+ await vi.waitFor(()=>expect(Number(slider.value)).toBe(start))
+ expect(readout.textContent).toBe(slider.value+'%')
  expect(f.draft.operations).toEqual([])
 })
 it('thumbnail selection and outline navigation keep the paper selection on the same page identity',async()=>{
@@ -685,7 +770,7 @@ it('signs the active visible form signature field without asking for a placement
  expect(document.querySelector('.pdf-sign-target-dialog')).toBeNull()
  expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('Second signature')
 })
-it('signature dialog imports a normalized image and starts image placement',async()=>{
+it.each(['ribbon','Escape'])('visual signature image belongs to the Sign command until placement or %s cancellation',async(cancelWith)=>{
  const close=vi.fn(),drawImage=vi.fn(),f=await fixture();await f.create()
  vi.stubGlobal('createImageBitmap',vi.fn(async()=>({width:3200,height:800,close})))
  vi.stubGlobal('Image',class{naturalWidth=3200;naturalHeight=800;onload:(()=>void)|null=null;onerror:(()=>void)|null=null;set src(_value:string){queueMicrotask(()=>this.onload?.())}})
@@ -705,7 +790,14 @@ it('signature dialog imports a normalized image and starts image placement',asyn
  await act(async()=>dialog.querySelector<HTMLButtonElement>('.pdf-modal-btn.primary')!.click())
  expect(document.querySelector('.pdf-signature-source-dialog')).toBeNull();expect(f.root.dataset.pdfMode).toBe('draw')
  expect(f.root.querySelector('.pdf-editor-message')?.textContent).toContain('请在页面上拖出签名放置区域');expect(close).toHaveBeenCalledOnce()
- expect(f.root.querySelector<HTMLButtonElement>('[data-pdf-draw-shape="image"]')?.getAttribute('aria-pressed')).toBe('true')
+ expect(sign.getAttribute('aria-pressed')).toBe('true')
+ expect(f.root.querySelector<HTMLButtonElement>('[data-pdf-draw-shape="image"]')?.getAttribute('aria-pressed')).toBe('false')
+ if (cancelWith === 'ribbon') sign.click()
+ else f.root.querySelector<HTMLElement>('.pdf-document-pages')!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))
+ await vi.waitFor(()=>expect(f.root.dataset.pdfMode).toBe('select'))
+ expect(sign.getAttribute('aria-pressed')).toBe('false')
+ expect(document.querySelector('.pdf-signature-source-dialog')).toBeNull()
+ expect(f.draft.operations).toEqual([])
 })
 it('signature image ignores stale decoder completions and reports current decode errors',async()=>{
  const f=await fixture();await f.create();const pending=new Map<string,{resolve:(value:{width:number;height:number;close:()=>void})=>void;reject:(reason?:unknown)=>void}>()

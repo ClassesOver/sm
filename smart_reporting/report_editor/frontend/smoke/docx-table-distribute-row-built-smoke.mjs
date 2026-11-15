@@ -161,7 +161,7 @@ try {
     return {downloaded,actual}
   }
   const distribute=async()=>{assert.equal(await controls('table-distribute-rows').isEnabled(),true);const before=await rowStyles();await controls('table-distribute-rows').click();await page.waitForFunction(before=>JSON.stringify([...document.querySelector('[role="textbox"][aria-label="Word 文档编辑区"] table').querySelectorAll('tr')].map(row=>[row.getAttribute('style'),row.className]))!==before,JSON.stringify(before));await page.waitForFunction(()=>Object.keys(localStorage).some(key=>key.startsWith('native-editor-draft:')&&localStorage.getItem(key).includes('distributeTableRows')));return before}
-  const setZoom=async value=>{await page.locator('[data-tab-id="view"]').click();await controls('view-缩放').click();const dialog=page.getByRole('dialog',{name:'Word 显示比例',exact:true});await dialog.getByLabel('显示比例（%）',{exact:true}).fill(String(value));await dialog.getByRole('button',{name:'应用',exact:true}).click();await dialog.waitFor({state:'hidden'})}
+  const setZoom=async value=>{await page.locator('[data-tab-id="view"]').click();await controls('view-缩放').click();const dialog=page.getByRole('dialog',{name:'Word 显示比例',exact:true});await dialog.getByLabel('显示比例（%）',{exact:true}).fill(String(value));await dialog.getByRole('button',{name:'确定',exact:true}).click();await dialog.waitFor({state:'hidden'})}
   const outputs=[]
   for(const [i,zoom] of [100,150,75].entries()){
     const revision=1+i*10,path=join(temporary,`revision-${revision}.docx`)

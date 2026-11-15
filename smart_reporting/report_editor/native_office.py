@@ -61,7 +61,7 @@ _XLSX_FIELDS = {
     'applyTableAdditions': {'additions'}, 'applyTableEdits': {'edits'}, 'refreshPivotCaches': {'sheetName'},
     'applyPivotLayoutExpansions': {'updates', 'controlRequest'}, 'expandPivotOutputs': {'expansions'},
     'upsertPivotControl': {'request'}, 'removePivotControl': {'request'},
-    'applyDefinedNames': {'plan'}, 'protectSheet': {'sheetName', 'protect'},
+    'applyDefinedNames': {'plan'}, 'protectSheet': {'sheetName', 'protect', 'allow'},
     'setSheetEditableRanges': {'sheetName', 'ranges'},
     'protectWorkbookStructure': {'lockStructure'}, 'setThemePart': {'themePath', 'state'},
     'sortRange': {'sheetName', 'spec'},
@@ -562,8 +562,14 @@ def _pptx_arguments(operation: dict[str, Any]) -> dict[str, Any]:
         raise ValueError('native_office_operations_invalid')
     def valid_shape_colors(item):
         fill, stroke = item.get('fill'), item.get('stroke')
+        gradient = (
+            isinstance(fill, dict) and set(fill) == {'angleDeg', 'from', 'radial', 'to'}
+            and all(isinstance(fill[key], str) and _HEX_COLOR.fullmatch(fill[key]) for key in ('from', 'to'))
+            and type(fill['radial']) is bool and type(fill['angleDeg']) is int
+            and fill['angleDeg'] in ((0,) if fill['radial'] else (0, 45, 90))
+        )
         return (
-            ('fill' not in item or fill == 'none' or isinstance(fill, str) and _HEX_COLOR.fullmatch(fill))
+            ('fill' not in item or fill == 'none' or isinstance(fill, str) and _HEX_COLOR.fullmatch(fill) or gradient)
             and (stroke is None or (
                 isinstance(stroke, dict) and {'color', 'widthPt'} <= set(stroke) <= {'color', 'widthPt', 'dash'}
                 and isinstance(stroke['color'], str) and _HEX_COLOR.fullmatch(stroke['color'])
@@ -837,7 +843,10 @@ def patch_office(format: str, content: bytes, operations: list[dict[str, Any]], 
                 if not isinstance(kind, str) or kind not in _XLSX_FIELDS:
                     raise ValueError('native_office_operations_invalid')
                 allowed = {'kind', *_XLSX_FIELDS[kind]}
-                if kind == 'applySheetOutline':
+                if kind == 'protectSheet':
+                    if not {'kind', 'sheetName', 'protect'} <= set(operation) <= allowed:
+                        raise ValueError('native_office_operations_invalid')
+                elif kind == 'applySheetOutline':
                     if not {'kind', 'sheetName'} <= set(operation) <= allowed:
                         raise ValueError('native_office_operations_invalid')
                 elif kind == 'applyTableSource':

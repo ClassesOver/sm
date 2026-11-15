@@ -1,6 +1,14 @@
 import { appendOfficeAnswer } from './office-answer'
 import { OfficeAssistantController } from './office-assistant-controller'
 import { bindOfficeAssistantPanel, createOfficeNewChatButton } from './office-assistant-panel'
+import { createElement as reactElement, useLayoutEffect } from 'react'
+import { flushSync } from 'react-dom'
+import { createRoot } from 'react-dom/client'
+import { AiQueueStrip } from './vendor/genoffice-docs/packages/ui/src/AiQueueStrip'
+import { useChatRunQueue, type ChatRunQueue } from './vendor/genoffice-docs/packages/ui/src/chat-run-queue'
+import { AI_QUEUE_LABELS } from './vendor/genoffice-docs/packages/ui/src/strings-ai-queue'
+import './vendor/genoffice-docs/packages/ui/src/ai-queue-strip.css'
+import './native-office-assistant-queue.css'
 /** Office 阅读与编辑候选分开；回答不会写入草稿。 */
 import { createElement, MessageCircle, FileText, ListChecks, Sparkles, X, CircleStop } from 'lucide'
 import type { createNativeApi, NativeOfficeReadAction, NativeOfficeReadTask, NativeOfficeReadContext, NativeWorkbookNavigation } from './native-api'
@@ -14,6 +22,22 @@ type Options = {
   navigate?: (target: NativeWorkbookNavigation, current: () => boolean) => Promise<void>
   context: (scope: 'document' | 'selection') => Promise<NativeOfficeReadContext>
 }
+type ReadMessageMeta = { action: NativeOfficeReadAction; scope: 'document' | 'selection' }
+
+function OfficeReadQueue({busy, submit, publish}: {
+  busy: boolean
+  submit: (text: string, meta: ReadMessageMeta) => boolean
+  publish: (queue: ChatRunQueue<ReadMessageMeta>) => void
+}) {
+  const queue=useChatRunQueue({busy,submit})
+  useLayoutEffect(() => { publish(queue) },[publish,queue])
+  return reactElement(AiQueueStrip,{
+    items:queue.queued,labels:AI_QUEUE_LABELS.zh,paused:queue.paused,maxLength:2000,
+    onTogglePause:queue.togglePaused,onUpdate:queue.update,onMove:queue.move,
+    onRemove:queue.remove,onClear:queue.clear,
+  })
+}
+
 const actions = {ask: ['文档问答', MessageCircle], summarize: ['总结文档 / 选区', FileText], keyPoints: ['提取关键要点', ListChecks]} as const
 export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   const formatLabel=options.format==='xlsx' ? 'Excel' : 'PPT'
@@ -35,11 +59,42 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
   panel.append(title,help,controls,scope,input,start,cancel,close,status,transcript);root.append(panel)
   const progress=mountNativeAIProgress(panel)
   const reset = createOfficeNewChatButton()
-  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,headerAction:reset})
+  const queueHost=document.createElement('div')
+  queueHost.className='office-assistant-queue'
+  const panelView = bindOfficeAssistantPanel(panel,{title,help,input,start,cancel,close,controls,scope,headerAction:reset,queue:queueHost,onQueue:enqueue})
   const tasks = new OfficeAssistantController({start:options.api.officeAIStart,status:options.api.officeAIStatus,cancelRequest:options.api.officeAICancel,id:(task: NativeOfficeReadTask)=>task.taskId,running:(task: NativeOfficeReadTask)=>task.status==='running'})
   let action: NativeOfficeReadAction='ask', generation=0,busy=false,disposed=false,hasTurn=false
   let previous: {taskId: string; snapshot: string} | undefined
-  function update() {reset.hidden=!hasTurn;start.disabled=busy || action==='ask' && !input.value.trim();cancel.disabled=!busy;scope.disabled=busy;for(const [index,item] of actionButtons.entries()){item.disabled=busy;item.setAttribute('aria-pressed',String(Object.keys(actions)[index]===action))}}
+  const queueRoot=createRoot(queueHost)
+  let queue: ChatRunQueue<ReadMessageMeta>
+  let renderedBusy: boolean | undefined
+  const publishQueue=(value: ChatRunQueue<ReadMessageMeta>)=>{queue=value}
+  const defaultPlaceholder=input.placeholder
+  function renderQueue() {
+    if (renderedBusy===busy) return
+    renderedBusy=busy
+    queueRoot.render(reactElement(OfficeReadQueue,{busy,submit,publish:publishQueue}))
+  }
+  function update() {
+    reset.hidden=!hasTurn;start.disabled=busy || action==='ask' && !input.value.trim();cancel.disabled=!busy;scope.disabled=busy
+    for(const [index,item] of actionButtons.entries()){item.disabled=busy;item.setAttribute('aria-pressed',String(Object.keys(actions)[index]===action))}
+    input.placeholder=busy ? AI_QUEUE_LABELS.zh.queuePlaceholder : defaultPlaceholder
+    if (!disposed) renderQueue()
+  }
+  function messageMeta(): ReadMessageMeta {
+    return {action,scope:scope.value==='selection' ? 'selection' : 'document'}
+  }
+  function enqueue() {
+    if (!busy || !input.value.trim()) return
+    queue.enqueue(input.value,messageMeta())
+    input.value=''
+    update()
+  }
+  function submit(instruction: string, meta: ReadMessageMeta) {
+    if (disposed || busy || meta.action==='ask' && !instruction) return false
+    void run(instruction,meta)
+    return true
+  }
   function stop(message='任务已取消') {
     const turn=++generation;progress.reset();busy=false
     status.textContent=message;update()
@@ -54,25 +109,24 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
     for(const citation of result.citations ?? []){const note=document.createElement('p');note.textContent='引用：'+citation.label;evidence.append(note)}
     if(result.toolEvents?.length){const tools=document.createElement('p');tools.textContent='已执行工具：'+result.toolEvents.map(event=>nativeAIToolLabel(event.tool)).join(' → ');evidence.append(tools)}
   }
-  async function run() {
-    if(disposed || busy || action==='ask' && !input.value.trim())return
-    const instruction = input.value.trim()
+  async function run(instruction: string, {action,scope:messageScope}: ReadMessageMeta) {
+    panelView.beforeTask()
     const question = action === 'ask' ? instruction : [(actions[action][0]), instruction].filter(Boolean).join(' · ')
     const turn=++generation
     busy=true;hasTurn=true;update()
-    let captured: NativeOfficeReadContext
     try {
-      captured=await options.context(scope.value==='selection' ? 'selection' : 'document')
-      if(turn!==generation || disposed)return
-      if(scope.value==='selection' && (!captured.selection || Array.isArray(captured.selection) && !captured.selection.length))throw new Error('选区无法可靠对应来源，请重新选择有效内容。')
-    }catch(error){if(turn===generation && !disposed){busy=false;status.textContent=error instanceof Error ? error.message : '未保存编辑同步失败';update()}return}
-    const {operations,selection:selected,viewSelection}=structuredClone(captured)
-    const snapshot=JSON.stringify({operations,selection:selected,viewSelection}),requestId=crypto.randomUUID()
-    busy=true;progress.reset();status.textContent='正在读取 '+formatLabel+' 文档';update()
-    try {
+      let captured: NativeOfficeReadContext
+      try {
+        captured=await options.context(messageScope)
+        if(turn!==generation || disposed)return
+        if(messageScope==='selection' && (!captured.selection || Array.isArray(captured.selection) && !captured.selection.length))throw new Error('选区无法可靠对应来源，请重新选择有效内容。')
+      }catch(error){if(turn===generation && !disposed)status.textContent=error instanceof Error ? error.message : '未保存编辑同步失败';return}
+      const {operations,selection:selected,viewSelection}=structuredClone(captured)
+      const snapshot=JSON.stringify({operations,selection:selected,viewSelection}),requestId=crypto.randomUUID()
+      progress.reset();status.textContent='正在读取 '+formatLabel+' 文档'
       const task=await tasks.run({clientRequestId:requestId,action,instruction,previousTaskId:action==='ask' && previous?.snapshot===snapshot ? previous.taskId : undefined,expectedSha256:options.draft.identity.sourceSha256,operations,selection:selected,...(viewSelection && options.navigate && options.format==='xlsx' ? {viewSelection} : {})},requestId,(started,signal)=>progress.start(options.api.officeAIEvents,started.taskId,signal,()=>turn===generation && !disposed))
       if(!task || turn!==generation || disposed)return
-      const current=await options.context(scope.value==='selection' ? 'selection' : 'document')
+      const current=await options.context(messageScope)
       if(turn!==generation || disposed)return
       if(snapshot!==JSON.stringify(current)){progress.reset();status.textContent='草稿或选区已变化，请重新阅读。';return}
       if(task.status==='completed' && task.result){
@@ -99,12 +153,13 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
     panel.scrollIntoView?.({block:'nearest'})
     input.focus({preventScroll:true})
     if (busy && preset === 'ask') return
-    if (busy) stop()
+    if (busy) { queue.hold(); stop() }
     action = preset
     update()
-    if (preset !== 'ask') void run()
+    if (preset !== 'ask') submit(input.value.trim(),messageMeta())
   }
   reset.onclick = () => {
+    queue.clear()
     stop('')
     hasTurn = false
     previous = undefined
@@ -115,6 +170,8 @@ export function bindNativeOfficeAssistant(root: HTMLElement, options: Options) {
     input.focus({preventScroll:true})
   }
   input.oninput=update;scope.onchange=()=>{status.textContent=scope.value==='selection' ? '将读取编辑器当前真实选区；无效选区不会改为整篇阅读。' : '';update()}
-  start.onclick=()=>{void run()};cancel.onclick=()=>stop();update()
-  return {open,dispose(){if(disposed)return;panelView.dispose();stop();disposed=true;panel.remove()}}
+  start.onclick=()=>{submit(input.value.trim(),messageMeta())}
+  cancel.onclick=()=>{queue.hold();stop()}
+  flushSync(update)
+  return {open,dispose(){if(disposed)return;disposed=true;panelView.dispose();stop();queueRoot.unmount();panel.remove()}}
 }

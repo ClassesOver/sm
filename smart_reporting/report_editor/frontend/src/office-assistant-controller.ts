@@ -96,15 +96,13 @@ export class OfficeAssistantController<Input, Job> {
     this.requestId = ''; this.taskId = ''
     this.terminalObserved = false
     const turn = this.generation
-    // Retry older records without making cancellation of the current task
-    // depend on a previous server endpoint that may remain unresponsive.
     const earlier = [...this.cleanups.values()]
     const current = this.queueCleanup(requestId, taskId)
     const previous = earlier.filter(record => !current.includes(record))
-    if (current.length) void this.cleanupAll(previous).catch(() => {})
     const completion = this.cleanupAll(current.length ? current : previous).finally(() => {
       if (this.pendingCancel?.promise === completion) this.pendingCancel = undefined
     })
+    if (current.length) void this.cleanupAll(previous).catch(() => {})
     this.pendingCancel = { generation: turn, promise: completion }
     return completion
   }

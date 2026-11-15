@@ -71,9 +71,9 @@
 .docx-word-count-dialog [data-word-count-stats] dd { margin:0; font-variant-numeric:tabular-nums; }
 .docx-word-count-dialog [data-action="close"] { min-height:32px; padding:4px 12px; }
 @media(min-width:769px) {
-  :is(.docx-table-property-dialog,.docx-settings-dialog) label:not(:has(input[type=checkbox])), .docx-zoom-form label { display:grid; grid-template-columns:120px minmax(0,1fr); gap:6px 12px; align-items:center; }
+  :is(.docx-table-property-dialog,.docx-settings-dialog) label:not(:has(input[type=checkbox])) { display:grid; grid-template-columns:120px minmax(0,1fr); gap:6px 12px; align-items:center; }
   :is(.docx-table-property-dialog,.docx-settings-dialog) label > small { grid-column:2; color:var(--office-muted); }
-  :is(.docx-table-property-dialog,.docx-settings-dialog) :is(input:not([type=checkbox]),select,textarea), .docx-zoom-form input { min-height:32px; }
+  :is(.docx-table-property-dialog,.docx-settings-dialog) :is(input:not([type=checkbox]),select,textarea) { min-height:32px; }
   :is(.docx-table-property-dialog,.docx-settings-dialog) form > button { min-height:32px; padding:4px 12px; }
 }
 .docx-native .docx-tools { min-width:0; padding:0; background:var(--color-surface); border-bottom:1px solid var(--color-border); }
@@ -102,7 +102,6 @@
 .docx-native .docx-ribbon .rb-icon { display:inline-flex; flex:0 0 auto; width:var(--office-control-height); height:var(--office-control-height); align-items:center; justify-content:center; gap:2px; border:1px solid transparent; border-radius:var(--radius-sm); background:transparent; color:var(--color-ink-2); font:inherit; cursor:pointer; transition:background var(--motion-fast),border-color var(--motion-fast); }
 .docx-native .docx-ribbon .rb-icon svg { flex-shrink:0; max-width:24px; max-height:24px; }
 .docx-native .docx-ribbon .docx-source-command { width:auto; min-width:var(--office-control-height); padding-inline:6px; white-space:nowrap; }
-.docx-native .docx-source-home .ribbon-group-items:has(> [data-action="convert-pdf"]) { display:grid; grid-template-rows:repeat(2,var(--office-control-height)); grid-auto-flow:column; grid-auto-columns:max-content; }
 .docx-native .docx-source-home .ribbon-group-items:has(> [data-action="find"]) { display:flex; flex-direction:column; align-items:stretch; flex-wrap:nowrap; }
 .docx-native .docx-source-home .ribbon-group-items > [data-action="select"] { min-height:var(--office-control-height); padding:0 6px; color:var(--office-ink-2); }
 .docx-native .docx-ribbon .rb-icon:hover:not(:disabled),
@@ -138,15 +137,6 @@
 .docx-native .docx-ribbon :is(.docx-ribbon-highlight-palette,.docx-ribbon-shading-palette) { border:1px solid var(--color-border); border-radius:var(--radius-md); background:var(--color-surface); color:var(--color-ink); box-shadow:var(--shadow-popover); }
 .docx-native .docx-ribbon :is(.docx-ribbon-highlight-palette,.docx-ribbon-shading-palette) button:focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
 .docx-native .docx-view-status { display:block; padding:4px 14px; border-top:1px solid var(--color-border-soft); background:var(--color-bg-soft); color:var(--color-text-muted); font-size:var(--font-size-xs); text-align:right; }
-.docx-zoom-dialog { width:min(440px,calc(100vw - 32px)); box-sizing:border-box; }
-.docx-zoom-dialog h2 { margin:0 32px 18px 0; font-size:var(--font-size-lg); color:var(--color-ink); }
-.docx-zoom-form { display:grid; gap:12px; }
-.docx-zoom-form label { display:grid; gap:6px; color:var(--color-ink-2); font-size:var(--font-size-md); }
-.docx-zoom-form input { min-height:36px; width:100%; box-sizing:border-box; border:1px solid var(--color-border-strong); border-radius:var(--radius-sm); padding:6px 10px; font:inherit; background:var(--color-surface); color:var(--color-ink); }
-.docx-zoom-form p { margin:0; color:var(--color-text-muted); font-size:var(--font-size-sm); line-height:1.6; }
-.docx-zoom-form [role=alert] { color:var(--color-danger); }
-.docx-zoom-actions { display:flex; justify-content:flex-end; gap:8px; }
-.docx-zoom-dialog :is(button,input):focus-visible { outline:2px solid var(--color-focus); outline-offset:2px; }
 /* 查找沿用宿主内的非模态区域，所有内容通过面板滚动访问。 */
 .docx-native .docx-find-replace { --surface:var(--color-surface); --text:var(--color-ink); --border:var(--color-border); --text-secondary:var(--color-text-muted); display:block; position:relative; inset:auto; width:auto; max-width:100%; box-sizing:border-box; border:0; border-top:1px solid var(--color-border); border-radius:0; box-shadow:none; padding:8px 12px; background:var(--color-surface); color:var(--color-ink); font:inherit; font-size:var(--office-font-size); line-height:1.4; scrollbar-width:thin; scroll-padding:4px; }
 .docx-native .docx-find-replace[hidden],

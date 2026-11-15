@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
@@ -17,6 +18,11 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from reportlab.pdfgen.canvas import Canvas
 
+from smart_reporting.office.artifacts import ArtifactFile
+from smart_reporting.office.editor_grants import (
+    InMemoryReportEditorRepository,
+    ReportEditorGrantService,
+)
 from smart_reporting.report_editor.native import (
     NativeEditorService,
     bind_native_workspace,
@@ -26,11 +32,6 @@ from smart_reporting.report_editor.native_api import create_native_editor_router
 from smart_reporting.report_editor.native_models import NativeEditorContext, NativeScope
 from smart_reporting.report_editor.native_pdf_ai import create_native_pdf_read_planner
 from smart_reporting.report_editor.native_pdf_ai_tasks import NativePDFReadService
-from smart_reporting.office.editor_grants import (
-    InMemoryReportEditorRepository,
-    ReportEditorGrantService,
-)
-from smart_reporting.office.artifacts import ArtifactFile
 from smart_reporting.reporting.delivery.pdf_native import inspect_pdf
 from smart_reporting.reporting.host_workspace import (
     ReportingWorkspaceRegistry,
@@ -131,6 +132,22 @@ async def create_app(directory: Path, port: int, *, draft: bool = False) -> Fast
         ],
     )
     gate = {"blockNext": False, "blockedEntered": False, "blockedCancelled": False}
+    if os.environ.get("PDF_AI_NAVIGATION_SMOKE") == "1":
+        model.responses.insert(
+            1,
+            ModelResponse(
+                tool_calls=[
+                    {
+                        "id": "navigate",
+                        "type": "function",
+                        "function": {
+                            "name": "goto_page",
+                            "arguments": json.dumps({"page": 2}),
+                        },
+                    }
+                ]
+            ),
+        )
     actual_planner = create_native_pdf_read_planner(model)
     draft_fixtures = {}
     if draft:
@@ -234,9 +251,7 @@ async def create_app(directory: Path, port: int, *, draft: bool = False) -> Fast
         )
     )
     app.include_router(
-        create_native_ai_router(
-            grants, editor=editor, ai=None, pdf_read=ai, allowed_origin=origin
-        )
+        create_native_ai_router(grants, editor=editor, ai=None, pdf_read=ai, allowed_origin=origin)
     )
     static = Path(__file__).resolve().parents[2] / "static"
     app.mount("/reports/v1/editor/assets", StaticFiles(directory=static))

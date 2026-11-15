@@ -56,3 +56,66 @@ async def test_ai_sources_use_document_space_recheck_session_and_bound_output():
     finally:
         native_access.bind(SimpleNamespace(capabilities={}), None)
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['list', 'describe', 'query'])
+@pytest.mark.parametrize('disable_at', ['before', 'during'])
+async def test_existing_ai_tools_obey_live_company_integration_switch(operation, disable_at):
+    from smart_reporting.office.ai_sources import OfficeDataTools
+    from smart_reporting.office.repository import OfficeError
+    from smart_reporting.office.settings import DEFAULT_GLOBAL, OfficeSettings
+
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        admin = Identity('db', '1', '10')
+        await office.bootstrap(admin, 'Admin')
+        space = (await office.spaces(admin))[0]['id']
+        entry = await office.register_file(admin, space, None, 'A.docx', 'docx', 'doc', 1,
+                                          {'database': 'db', 'companyId': '1'})
+        actor = await office.authenticate(await office.create_session(admin))
+        session = SimpleNamespace(report_id='doc', capabilities={'office': dict(
+            database=actor.database, company=actor.company, user=actor.user,
+            version=actor.session_version, session=actor.session_reference, file=entry['id'])})
+        settings = OfficeSettings(office)
+        async def disable():
+            await settings.save(admin, {**DEFAULT_GLOBAL, 'integrationsEnabled': False}, 0,
+                                global_settings=True)
+        calls = []
+        class Sources:
+            async def available(self, *args):
+                calls.append('list')
+                if disable_at == 'during':
+                    await disable()
+                return [{'id': 'sales', 'tables': ['sales.orders']}]
+
+            async def describe(self, *args):
+                calls.append('describe')
+                if disable_at == 'during':
+                    await disable()
+                return {'columns': ['private_column']}
+
+            async def query(self, *args):
+                calls.append('query')
+                if disable_at == 'during':
+                    await disable()
+                return {'columns': ['value'], 'rows': [['private_result']], 'source': {'id': 'sales'}}
+
+        documents = OfficeDocuments(office, None, None, None)
+        documents.sources = Sources()
+        tools = OfficeDataTools(session, documents)
+        if disable_at == 'before':
+            await disable()
+        with pytest.raises(OfficeError) as error:
+            if operation == 'list':
+                await tools.list_office_data_sources()
+            elif operation == 'describe':
+                await tools.describe_office_data_source('sales', 'sales.orders')
+            else:
+                await tools.query_office_data_source('sales', 'SELECT value FROM sales.orders')
+        assert error.value.code == 'office_integrations_disabled'
+        assert calls == ([] if disable_at == 'before' else [operation])
+    finally:
+        await engine.dispose()

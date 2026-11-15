@@ -129,6 +129,7 @@ class NativePDFReadService:
         action: str,
         instruction: str,
         previous_task_id: str | None = None,
+        view_page_id: str | None = None,
     ):
         context = await self._context(session)
         request_id = self._request_id(client_request_id)
@@ -161,10 +162,15 @@ class NativePDFReadService:
             )
         ):
             raise ReportingError("native_ai_selection_invalid", "PDF 选区身份无效。")
+        if view_page_id is not None and (not isinstance(view_page_id, str) or not 1 <= len(view_page_id) <= 256):
+            raise ReportingError("native_ai_selection_invalid", "PDF 当前页面身份无效。")
         selected = [dict(item) for item in selection]
         reading = native_digest({"context": context.digest(), "operations": base, "selection": selected})
-        snapshot = native_digest({"reading": reading, "action": action, "instruction": instruction,
-                                  "previousTaskId": previous_task_id})
+        request_identity = {"reading": reading, "action": action, "instruction": instruction,
+                            "previousTaskId": previous_task_id}
+        if view_page_id is not None:
+            request_identity["viewPageId"] = view_page_id
+        snapshot = native_digest(request_identity)
         self._prune()
         scope = self._job_scope(session, context)
         key = (scope, request_id)
@@ -185,11 +191,11 @@ class NativePDFReadService:
         self._jobs[key] = job
         history = self._previous_reading(scope, previous_task_id, reading) if action == "ask" else ""
         job.task = asyncio.create_task(
-            self._run(job, session, context, base, selected, action, instruction, history)
+            self._run(job, session, context, base, selected, action, instruction, history, view_page_id)
         )
         return self._serialize(job)
 
-    async def _run(self, job, session, context, base, selected, action, instruction, history):
+    async def _run(self, job, session, context, base, selected, action, instruction, history, view_page_id=None):
         try:
             await job.event_log.emit("phase", label="正在读取 PDF")
             async with asyncio.timeout(self.timeout_seconds):
@@ -228,6 +234,7 @@ class NativePDFReadService:
                         selection=selected,
                         session_id=f"native-pdf-read:{job.task_id}",
                         user_id=context.scope.user_id,
+                        **({"view_page_id": view_page_id} if view_page_id is not None else {}),
                         **(
                             {"draft_projection": projection}
                             if projection is not None

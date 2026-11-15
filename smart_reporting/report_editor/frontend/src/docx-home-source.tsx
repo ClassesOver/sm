@@ -125,6 +125,10 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
   const [fontColorOpen, setFontColorOpen] = useState(false)
   const fontColorWrap = useRef<HTMLDivElement>(null)
   useDismissablePopover(fontColorOpen && editable, () => setFontColorOpen(false), { inside: () => [fontColorWrap.current], escape: true })
+  const [convertOpen, setConvertOpen] = useState(false)
+  const convertWrap = useRef<HTMLDivElement>(null)
+  const convertTrigger = useRef<HTMLButtonElement>(null)
+  useDismissablePopover(convertOpen && !!onExport, () => setConvertOpen(false), { inside: () => [convertWrap.current], escape: true })
   const [shadingOpen, setShadingOpen] = useState(false)
   const shadingWrap = useRef<HTMLDivElement>(null)
   const canShading = editable && !!shadingAvailable && !!onShading
@@ -170,7 +174,6 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
     inside: () => [spacingWrap.current],
     escape: true,
   })
-  const disabled = (action: string, label: string, glyph: ReactNode, reason = unavailable) => <button type="button" className="rb-icon docx-source-command" data-action={action} disabled title={`${label}：${reason}`} aria-label={`${label}，${reason}`}>{glyph}</button>
   const unavailableSourceAction = (id: string, action: string, label: string, reason: string) => <button type="button" className="rb-icon docx-source-command" data-action={action} data-source-action={id} disabled title={`${label}：${reason}`} aria-label={`${label}，${reason}`}><IconCaret size={10} /></button>
   const action = (id: string, label: string, children: ReactNode, onClick: () => void, pressed?: boolean, available = true, unavailableReason = '段落操作回调不可用') => (
     <button type="button" className={`rb-icon${pressed ? ' active' : ''}`} data-action={id} data-editable-action="true" disabled={!editable || !available} title={available ? label : `${label}：${unavailableReason}`} aria-label={available ? label : `${label}，${unavailableReason}`} aria-pressed={pressed} onClick={onClick}>{children}</button>
@@ -232,6 +235,25 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
         </svg>
       ), onPolish, polishUnavailable)}
     </>)}
+    <div className="ribbon-sep" />
+    {group(ribbonZh.ribbonConvert, <div className="rb-split-wrap" ref={convertWrap} onKeyDown={event=>{
+      if (!convertOpen || event.key !== 'Escape' || event.nativeEvent.isComposing) return
+      event.preventDefault(); event.stopPropagation(); setConvertOpen(false); convertTrigger.current?.focus()
+    }}>
+      <button type="button" ref={convertTrigger} className={`rb-big${convertOpen?' active':''}`} data-action="convert-menu"
+        title={ribbonZh.ribbonConvertTip} aria-expanded={convertOpen && !!onExport} aria-haspopup="menu"
+        disabled={!onExport} onClick={()=>setConvertOpen(value=>!value)}>
+        <span className="rb-big-icon"><IconConvert size={22} /><IconCaret /></span>
+        <span>{ribbonZh.ribbonConvert}</span>
+      </button>
+      {convertOpen && onExport && <div data-rb-panel="" className="spacing-menu paste-menu" role="menu" aria-label={ribbonZh.ribbonConvert}>
+        {([['pdf',ribbonZh.ribbonConvertPdf],['html',ribbonZh.ribbonConvertHtml],['markdown',ribbonZh.ribbonConvertMarkdown]] as const).map(([format,label])=>(
+          <button type="button" key={format} role="menuitem" data-action={`convert-${format}`} disabled={format==='pdf'&&!editable}
+            onClick={()=>{setConvertOpen(false);onExport(format)}}>{label}</button>
+        ))}
+        <button type="button" role="menuitem" data-action="export-images" disabled title={unavailable}>{ribbonZh.ribbonConvertImages}</button>
+      </div>}
+    </div>)}
     <div className="ribbon-sep" />
     {group(zh.ribbonGroupClipboard, <>
       <div className="rb-split-wrap rb-big-split" ref={pasteWrap}>
@@ -386,7 +408,6 @@ export function DocxHomeSource({ onExport, onAssistant, onDocumentSummary, docum
     {group(zh.ribbonGroupStyles, paragraphStyleControl ? <div ref={element => { if (element && paragraphStyleControl.parentElement !== element) element.append(paragraphStyleControl) }} /> : <button type="button" className="rb-big" disabled title={unavailable}>{zh.ribbonStyleNormal}</button>)}
     <div className="ribbon-sep" />
     {group(zh.ribbonGroupEditing, <>{(['find', 'replace'] as const).map(mode => <button key={mode} type="button" className="rb-icon docx-source-command" data-action={mode} data-source-action={mode} disabled={!onFindReplace} onClick={() => onFindReplace?.(mode)}>{mode === 'find' ? <IconSearch /> : <IconReplace />}{mode === 'find' ? '查找' : '替换'}</button>)}<button type="button" className="rb-small" data-action="select" data-source-action="select" title={ribbonZh.ribbonSelectAllTip} disabled={!onSelectAll} onClick={() => onSelectAll?.()}><IconSelectAll />{ribbonZh.ribbonSelectAll}</button><button type="button" className={`rb-icon${formattingMarksVisible ? ' active' : ''}`} data-action="formatting-marks" aria-label="显示/隐藏编辑标记" title="显示/隐藏编辑标记" aria-pressed={!!formattingMarksVisible} disabled={!onToggleFormattingMarks} onClick={() => onToggleFormattingMarks?.()}><IconPilcrow /></button></>)}
-    {group('转换', <><button type="button" className="rb-icon" data-action="convert-pdf" disabled={!onExport || !editable} title="转换为 PDF" onClick={()=>onExport?.('pdf')}><IconConvert/><span>PDF</span></button><button type="button" className="rb-icon" data-action="convert-html" disabled={!onExport} title="转换为 HTML" onClick={()=>onExport?.('html')}><IconConvert/><span>HTML</span></button><button type="button" className="rb-icon" data-action="convert-markdown" disabled={!onExport} title="转换为 Markdown" onClick={()=>onExport?.('markdown')}><IconConvert/><span>MD</span></button>{disabled('export-images', '导出图像', <><IconPicture /><span>IMG</span></>)}</>)}
     <div className="ribbon-sep" />
   </div>
 }

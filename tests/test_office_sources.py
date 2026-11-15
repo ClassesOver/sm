@@ -292,3 +292,43 @@ async def test_office_query_http_enforces_member_table_scope_before_database_exe
             assert executed == ['SELECT amount FROM db.allowed']
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('prefix', ['', '/admin'])
+async def test_member_source_permissions_require_company_admin_even_for_workspace_owner(prefix):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from smart_reporting.office.api import COOKIE, create_office_router, csrf_token
+
+    engine = create_async_engine('sqlite+aiosqlite://')
+    try:
+        office = OfficeRepository(engine)
+        await office.create_schema()
+        admin, owner, foreign = Identity('db', '1', 'admin'), Identity('db', '1', 'owner'), Identity('db', '2', 'admin')
+        await office.bootstrap(admin, 'Admin')
+        await office.provision(admin, owner.user, 'Owner')
+        await office.bootstrap(foreign, 'Foreign admin')
+        space = (await office.create_space(admin, 'Team', owner.user))['id']
+        await office.grant_source(admin, space, 'sales', ['db.allowed', 'db.private'])
+        app = FastAPI()
+        app.include_router(create_office_router(office, public_origin='http://test', source_vault=object()))
+        endpoint = f'/office/api{prefix}/workspaces/{space}/data-sources/sales/members'
+        for actor, expected in ((owner, 403), (foreign, 404), (admin, 200)):
+            token = await office.create_session(actor)
+            async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test', cookies={COOKIE: token}) as client:
+                headers = {'origin': 'http://test', 'x-csrf-token': csrf_token(token)}
+                result = await client.put(endpoint + '/owner', headers=headers, json={'tables': ['db.allowed']})
+                assert result.status_code == expected, result.text
+                listing = await client.get(endpoint)
+                assert listing.status_code == expected, listing.text
+                if expected == 200:
+                    assert listing.json()['members'] == [{'user': 'owner', 'name': 'Owner', 'role': 'owner'}]
+                    assert listing.json()['items'] == [{'user': 'owner', 'tables': ['db.allowed']}]
+                    forbidden = await client.put(endpoint + '/owner', headers=headers, json={'tables': ['db.foreign']})
+                    assert forbidden.status_code == 422
+                    assert (await client.put(endpoint + '/owner', headers=headers, json={'tables': None})).status_code == 200
+                    assert (await client.get(endpoint)).json()['items'] == []
+        assert await office.source_tables(owner, space, 'sales') == ['db.allowed', 'db.private']
+    finally:
+        await engine.dispose()

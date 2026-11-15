@@ -167,7 +167,9 @@ class AgnoNativeSlidesReadPlanner:
         if not content:
             return {'answer': ''}
         language = {'en': 'English', 'zh-CN': 'Simplified Chinese', 'zh-TW': 'Traditional Chinese'}[name_locale]
-        agent = Agent(name='native-slides-file-naming', model=deepcopy(self.model), tools=[],
+        from ..office.settings import native_model
+        model = await native_model(self.model)
+        agent = Agent(name='native-slides-file-naming', model=model, tools=[],
             retries=0, add_history_to_context=False, enable_session_summaries=False,
             markdown=False, telemetry=False, instructions=[
                 'Give this document a file name. Reply with the name only: no quotes, no extension, no path, no explanation.',

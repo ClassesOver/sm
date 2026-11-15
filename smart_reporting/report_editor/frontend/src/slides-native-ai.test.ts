@@ -42,7 +42,7 @@ it('refuses stale full drafts before acceptance without overwriting manual edits
 
 it('shows style-only candidates including explicit removal before adoption', async () => {
   const { host, api, apply, view, submit } = setup()
-  api.status.mockResolvedValueOnce({ editId: 'style', status: 'succeeded', snapshotSha256: 's'.repeat(64), proposal: {
+  api.status.mockResolvedValueOnce({ editId: 'candidate', status: 'succeeded', snapshotSha256: 's'.repeat(64), proposal: {
     summary: '标题样式', operations: [{ kind: 'editSlides', edits: [], textFormatting: [{ slideIndex: 0, elementId: 'title', fontSizePt: 24, color: '#123456', bold: false }] }],
   } } as never)
   submit()

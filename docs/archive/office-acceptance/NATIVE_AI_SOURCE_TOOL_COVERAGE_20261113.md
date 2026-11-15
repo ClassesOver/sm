@@ -72,6 +72,8 @@ XLSX `set_data_validation` 支持内联列表、同表范围列表、数值区�
 
 XLSX `add_conditional_format` 支持桌面源协议的八类规则。新增保留已有规则及优先级；`clear_conditional_formats` 清除指定工作表的全部可编辑规则，对含有无法安全移除的 Excel 扩展规则的工作表拒绝清除。数据条沿用网页引擎的基础 OOXML 格式，使用一个颜色。
 
+XLSX `protect_sheet` 支持设置或解除无密码工作表保护。已有的文件写入器按 Excel 的权限位保存可选择、筛选、排序和格式等允许操作。带密码工作表的保护设置仍不可修改，提案不会接收明文密码。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。
@@ -82,7 +84,7 @@ XLSX `add_conditional_format` 支持桌面源协议的八类规则。新增保�
 | `markup_text`、`reply_note`、`edit_text` | 部分语义经批注任务的 `propose_markup`、`propose_reply`、`propose_replace_text` 及原位选区候选表达；不是所有页面通用源编辑工具。 |
 | `delete_markup` | 已注册批注任务工具，限可信标注身份、相关页读取及明确删除要求。 |
 | `list_form_fields`、`apply_ops` | 已注册表单填值工具，限授权字段与实际引擎支持；不是全部页面、对象、表单设计操作。 |
-| `goto_page` | 未接独立 AI 页导航回执。 |
+| `goto_page` | 已接阅读助手的可信待定位回执与真实页面跳转，核验草稿页面映射、当前视图和实际可见性后确认；与助手 UI 同步验收，见[PDF 导航专项](NATIVE_PDF_AI_NAVIGATION_ACCEPTANCE_20261115.md)。桌面即时回执仍为网页异步适配。 |
 | `add_note`、`edit_note`、`delete_note` | 当前批注 planner 未完整注册；已有手工便签／草稿便签不作为这三工具完成证据。 |
 | `edit_block`、`move_text_block`、`insert_text`、`add_form_mark`、`list_inserted_text`、`edit_inserted_text`、`move_inserted_text`、`delete_inserted_text` | 当前原生 AI 未完整接入；需明确原文字块与新增 overlay 的身份及组合生命周期。 |
 | `image_search`、`generate_image`、`list_page_images`、`insert_image`、`transform_image`、`rotate_image`、`replace_image`、`flip_image`、`set_image_opacity`、`crop_image`、`remove_image_background`、`delete_image` | 当前原生 AI 未完整注册。已有手工图片能力仅能作为可复用引擎基础；素材来源、图像目标与候选必须分别授权。 |

@@ -6,22 +6,45 @@
 
 import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
 import { assemblePackage, createBufferEntrySource } from './zip'
-import { normalizeEditableRangeRef, readProtectedRanges, readSheetProtection } from './protection-read'
+import {
+  DEFAULT_SHEET_SELECTION_PERMISSIONS, normalizeEditableRangeRef, readProtectedRanges, readSheetProtection,
+  SHEET_PASSWORD_ATTRIBUTES, SHEET_PROTECTION_DEFAULT_ALLOWED, SHEET_PROTECTION_PERMISSIONS,
+} from './protection-read'
 
 export class SheetProtectionError extends Error {}
 
 const ELEMENT_PATTERN = /<sheetProtection\b[^>]*\/>|<sheetProtection\b[^>]*>\s*<\/sheetProtection>/
 
-export function applySheetProtection(worksheetXml: string, protect: boolean): string {
+export function applySheetProtection(worksheetXml: string, protect: boolean, allow?: Record<string, boolean>): string {
   const existing = worksheetXml.match(ELEMENT_PATTERN)
+  if (!existing && /<(?:[\w.-]+:)?sheetProtection\b/.test(worksheetXml)) {
+    throw new SheetProtectionError('Worksheet protection uses an unsupported XML layout.')
+  }
+  if (allow !== undefined &&
+      (!protect || Object.entries(allow).some(([key, value]) => !SHEET_PROTECTION_PERMISSIONS.includes(key) || typeof value !== 'boolean'))) {
+    throw new SheetProtectionError('Invalid worksheet protection permissions.')
+  }
+  if (existing && (!protect || allow !== undefined) && SHEET_PASSWORD_ATTRIBUTES.test(existing[0])) {
+    throw new SheetProtectionError('This sheet is protected with a password — changing its protection is not supported.')
+  }
   if (!protect) {
     if (!existing) return worksheetXml
-    if (/\b(?:password|hashValue)="/.test(existing[0])) {
-      throw new SheetProtectionError(
-        'This sheet is protected with a password — removing its protection is not supported.',
-      )
-    }
     return worksheetXml.replace(existing[0], '')
+  }
+  let element = '<sheetProtection sheet="1" objects="1" scenarios="1"/>'
+  if (allow !== undefined) {
+    const flags = SHEET_PROTECTION_PERMISSIONS.flatMap((permission) => {
+      const permitted = allow[permission] ?? DEFAULT_SHEET_SELECTION_PERMISSIONS.has(permission)
+      return permitted === SHEET_PROTECTION_DEFAULT_ALLOWED.has(permission) ? []
+        : [` ${permission}="${permitted ? '0' : '1'}"`]
+    })
+    element = `<sheetProtection sheet="1"${flags.join('')}/>`
+    if (existing) {
+      const updated = existing[0]
+        .replace(new RegExp(`\\s(?:sheet|${SHEET_PROTECTION_PERMISSIONS.join('|')})\\s*=\\s*(?:"[^"]*"|'[^']*')`, 'g'), '')
+        .replace('<sheetProtection', () => `<sheetProtection sheet="1"${flags.join('')}`)
+      return worksheetXml.replace(existing[0], () => updated)
+    }
   }
   if (existing) {
     if (/\bsheet="(?:1|true)"/.test(existing[0])) return worksheetXml
@@ -32,7 +55,6 @@ export function applySheetProtection(worksheetXml: string, protect: boolean): st
   }
   // Excel's defaults when protecting without a password. Schema order: the
   // element follows sheetData (and sheetCalcPr when present).
-  const element = '<sheetProtection sheet="1" objects="1" scenarios="1"/>'
   const anchor =
     worksheetXml.match(/<sheetCalcPr\b[^>]*\/?>/) ??
     worksheetXml.match(/<\/sheetData>|<sheetData\b[^>]*\/>/)
@@ -181,10 +203,11 @@ export async function protectSheet(
   sourceBytes: Uint8Array,
   sheetName: string,
   protect: boolean,
+  allow?: Record<string, boolean>,
 ): Promise<Uint8Array> {
   const source = await createBufferEntrySource(sourceBytes)
   const worksheetPath = await worksheetPathFor(source, sheetName)
-  const xml = applySheetProtection(await source.readText(worksheetPath), protect)
+  const xml = applySheetProtection(await source.readText(worksheetPath), protect, allow)
   return (await assemblePackage(sourceBytes, {
     replaced: new Map([[worksheetPath, xml]]),
     added: new Map(),

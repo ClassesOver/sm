@@ -299,10 +299,17 @@ class OfficeRepository:
                 spaces.c.company == actor.tenant).order_by(spaces.c.name))).mappings()
             return [dict(row) for row in rows]
 
+    async def _source_admin_space(self, connection, actor: Identity, space_id: str):
+        await self._user(connection, actor, admin=True)
+        exists = await connection.scalar(select(spaces.c.id).where(
+            spaces.c.id == space_id, spaces.c.company == actor.tenant))
+        if exists is None:
+            raise OfficeError("office_space_missing", "工作区不存在。", 404)
+
     async def limit_source_member(self, actor: Identity, space_id: str, source: str,
                                   user: str, tables: list[str] | None):
         async with self.transaction(actor) as connection:
-            await self._space(connection, actor, space_id, owner=True)
+            await self._source_admin_space(connection, actor, space_id)
             target = Identity(actor.database, actor.company, user)
             await self._user(connection, target)
             await self._space(connection, target, space_id)
@@ -411,13 +418,17 @@ class OfficeRepository:
 
     async def source_member_limits(self, actor: Identity, space_id: str, source: str):
         async with self.transaction(actor) as connection:
-            await self._space(connection, actor, space_id, owner=True)
+            await self._source_admin_space(connection, actor, space_id)
             granted = await connection.scalar(select(source_grants.c.tables).where(
                 source_grants.c.space == space_id, source_grants.c.source == source))
             rows = (await connection.execute(select(source_member_limits.c.user,
                 source_member_limits.c.tables).where(source_member_limits.c.space == space_id,
                 source_member_limits.c.source == source))).mappings()
-            return {"tables": granted or [], "items": [dict(row) for row in rows]}
+            limits = [dict(row) for row in rows]
+            membership = (await connection.execute(select(members.c.user, users.c.name, members.c.role).join(
+                users, (users.c.user == members.c.user) & (users.c.company == actor.tenant),
+            ).where(members.c.space == space_id))).mappings()
+            return {"tables": granted or [], "items": limits, "members": [dict(row) for row in membership]}
 
     async def source_tables(self, actor: Identity, space_id: str, source: str):
         async with self.transaction(actor) as connection:

@@ -17,13 +17,79 @@ from openpyxl.utils.datetime import CALENDAR_MAC_1904
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table
 
+from smart_reporting.report_editor.native import bind_native_workspace
 from smart_reporting.report_editor.native_models import NativeEditorContext
 from smart_reporting.report_editor.native_office import inspect_office, patch_office
 from smart_reporting.report_editor.workbook_ai import AgnoWorkbookProposalPlanner
 from smart_reporting.report_editor.workbook_ai_tools import WorkbookAIToolkit
 from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 from smart_reporting.reporting.tests.test_native_pdf_ai import ScriptedModel
+from smart_reporting.reporting.tests.test_native_publication_nonblocking import create_publication
 from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
+
+
+@pytest.mark.anyio
+async def test_source_sheet_protection_round_trips_excel_permission_flags():
+    book = Workbook()
+    book.active['A1'] = '=2+3'
+    book.create_sheet('Other').protection.enable()
+    stream = BytesIO()
+    book.save(stream)
+    source = stream.getvalue()
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source, operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    model = {'sheets': [{'name': 'Sheet'}, {'name': 'Other'}]}
+    tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([{
+        'op': 'protect_sheet', 'sheetId': 'Sheet', 'protected': True,
+        'allow': {'sort': True, 'autoFilter': True, 'selectLockedCells': False},
+    }], '保护工作表')
+    workbook = load_workbook(BytesIO(written))
+    protection = workbook['Sheet'].protection
+    assert protection.sheet and protection.selectLockedCells
+    assert not protection.sort and not protection.autoFilter and protection.insertRows
+    assert workbook['Sheet']['A1'].value == '=2+3' and workbook['Other'].protection.sheet
+    inspected = await asyncio.to_thread(inspect_office, 'xlsx', written)
+    reader = WorkbookAIToolkit(model=inspected, scope='workbook', selection={}, preview=preview)
+    protection = reader.read_sheet_features('Sheet')['features']['protection']
+    assert protection['protected'] and not protection['hasPassword']
+    assert protection['allow']['autoFilter'] and protection['allow']['sort']
+    assert not protection['allow']['selectLockedCells'] and not protection['allow']['insertRows']
+    scoped = WorkbookAIToolkit(model=inspected, scope='range', selection={'sheetName': 'Sheet'}, preview=preview)
+    assert scoped.read_sheet_features('Sheet')['features'] == {}
+
+    source = written
+    tools = WorkbookAIToolkit(model=model, scope='workbook', selection={}, preview=preview)
+    await tools.propose_operations([{
+        'op': 'protect_sheet', 'sheetId': 'Sheet', 'protected': False,
+    }], '取消工作表保护')
+    workbook = load_workbook(BytesIO(written))
+    assert not workbook['Sheet'].protection.sheet and workbook['Other'].protection.sheet
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('protected', [True, False])
+async def test_source_protection_rejects_existing_password_protected_sheet(protected):
+    book = Workbook()
+    book.active.protection.set_password('fixture-password')
+    stream = BytesIO()
+    book.save(stream)
+
+    async def preview(operations):
+        await asyncio.to_thread(patch_office, 'xlsx', stream.getvalue(), operations)
+        pytest.fail('Password-protected worksheet was changed')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    with pytest.raises(ValueError, match='native_office_operations_invalid'):
+        await tools.propose_operations([{
+            'op': 'protect_sheet', 'sheetId': 'Sheet', 'protected': protected,
+        }], '修改保护设置')
 
 
 @pytest.mark.anyio
@@ -787,7 +853,7 @@ async def test_workbook_tools_do_not_read_or_propose_outside_frozen_range():
 
 
 @pytest.mark.anyio
-async def test_workbook_tools_real_agno_loop_previews_complex_engine_ops_and_accepts_complete_draft():
+async def test_workbook_tools_real_agno_loop_previews_complex_engine_ops_and_accepts_complete_draft(tmp_path):
     workbook = Workbook()
     sheet = workbook.active
     for row in [['项目', '金额'], ['乙', 9], ['甲', 2]]:
@@ -833,7 +899,23 @@ async def test_workbook_tools_real_agno_loop_previews_complex_engine_ops_and_acc
     assert any('人工未保存' in str(m.content) for turn in model.seen for m in turn)
     accepted = await ai.accept_edit(None, job['editId'], expected_sha256=editor.context.source_file.sha256, operations=base, snapshot_sha256=result['snapshotSha256'])
     assert accepted['operations'][0] == base[0]
-    edited = await asyncio.to_thread(patch_office, 'xlsx', content, accepted['operations'])
+    publication, _, downloads = await create_publication(tmp_path)
+    context = editor.context
+    key = bind_native_workspace(publication.workspace, context.scope)
+    path = 'native/assistant-source.xlsx'
+    await publication.workspace.awrite_bytes(key, path, content)
+    context = context.model_copy(update={'source_file': context.source_file.model_copy(update={'path': path})})
+    saved = await publication.save_revision(
+        context, operations=accepted['operations'], request_id='save-workbook-ai',
+        expected_sha256=context.source_file.sha256,
+    )
+    assert saved['revisionRegistered'] is True
+    assert saved['revision'] == context.revision + 1
+    artifact = saved['artifacts']['xlsx']
+    raw_grant = artifact['downloadUrl'].split('/')[-2]
+    _, chunks = await downloads.stream(raw_grant, artifact='xlsx')
+    edited = b''.join([chunk async for chunk in chunks])
+    assert hashlib.sha256(edited).hexdigest() == artifact['sha256']
     reopened = load_workbook(BytesIO(edited))
     target = reopened.active
     assert [target['B2'].value, target['B3'].value] == [2, 9]
@@ -845,6 +927,7 @@ async def test_workbook_tools_real_agno_loop_previews_complex_engine_ops_and_acc
     assert target.tables['Items'].totalsRowShown is True
     assert target['A5'].value == '人工未保存'
     assert load_workbook(BytesIO(content)).active['B2'].value == 9
+    assert (await publication.workspace.afile_bytes(key, path))[0] == content
     with pytest.raises(Exception):
         await ai.accept_edit(None, job['editId'], expected_sha256=editor.context.source_file.sha256, operations=[], snapshot_sha256=result['snapshotSha256'])
     await ai.aclose()

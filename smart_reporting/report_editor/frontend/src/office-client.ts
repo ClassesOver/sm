@@ -15,6 +15,7 @@ export type OfficeLibrary = {
 }
 
 let csrf = ''
+let sessionGeneration = 0
 
 export class OfficeRequestError extends Error {
   constructor(message: string, readonly status: number) { super(message) }
@@ -23,11 +24,12 @@ export class OfficeRequestError extends Error {
 export function expireOfficeSession() {
   if (!csrf) return
   csrf = ''
+  sessionGeneration += 1
   window.dispatchEvent(new Event('genoffice-session-expired'))
 }
 
 export async function officeRequest<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
-  const session = csrf
+  const session = sessionGeneration
   const multipart = body instanceof FormData
   const response = await fetch(`/office/api${path}`, {
     method, credentials: 'same-origin', cache: 'no-store', signal,
@@ -37,7 +39,7 @@ export async function officeRequest<T>(path: string, method = 'GET', body?: unkn
     },
     body: body ? multipart ? body : JSON.stringify(body) : undefined,
   })
-  if (response.status === 401 && session === csrf && !(path === '/session' && method === 'POST')) {
+  if (response.status === 401 && session === sessionGeneration && !(path === '/session' && method === 'POST')) {
     expireOfficeSession()
   }
   const result = await response.json()
@@ -47,13 +49,17 @@ export async function officeRequest<T>(path: string, method = 'GET', body?: unkn
 }
 
 export async function officeSession() {
+  const session = sessionGeneration
   const result = await officeRequest<{ user: OfficeUser; csrfToken: string }>('/session')
+  if (session !== sessionGeneration) throw new DOMException('Office 会话已变化。', 'AbortError')
   csrf = result.csrfToken
   return result.user
 }
 
 export async function loginOffice(credentials: Record<string, string>) {
+  const session = ++sessionGeneration
   const result = await officeRequest<{ user: OfficeUser; csrfToken: string }>('/session', 'POST', credentials)
+  if (session !== sessionGeneration) throw new DOMException('Office 会话已变化。', 'AbortError')
   csrf = result.csrfToken
   return result.user
 }

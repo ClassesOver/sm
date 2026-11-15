@@ -2,7 +2,8 @@
 import json
 
 from .native_access import current
-from .repository import Identity
+from .repository import Identity, OfficeError
+from .settings import OfficeSettings
 
 
 class OfficeDataTools:
@@ -13,18 +14,25 @@ class OfficeDataTools:
         await self.documents.authorize(self.session)
         value = self.session.capabilities['office']
         actor = Identity(value['database'], value['company'], value['user'], value['version'], value['session'])
+        config = await OfficeSettings(self.documents.office).global_settings(actor, require_admin=False)
+        if not config['integrationsEnabled']:
+            raise OfficeError('office_integrations_disabled', '管理员已关闭数据源集成。', 403)
         entry = await self.documents.office.file(actor, value['file'])
         return actor, entry['space']
 
     async def list_office_data_sources(self) -> dict:
         """List database sources and tables currently granted to this document's workspace and user."""
         actor, space = await self.authority()
-        return {'items': await self.documents.sources.available(actor, space)}
+        items = await self.documents.sources.available(actor, space)
+        await self.authority()
+        return {'items': items}
 
     async def describe_office_data_source(self, source_id: str, table: str) -> dict:
         """Read columns and descriptions of one authorized database.table before constructing SQL."""
         actor, space = await self.authority()
-        return await self.documents.sources.describe(actor, space, source_id, table)
+        result = await self.documents.sources.describe(actor, space, source_id, table)
+        await self.authority()
+        return result
 
     async def query_office_data_source(self, source_id: str, sql: str) -> dict:
         """Run read-only SELECT against authorized tables; returns bounded data and query provenance."""

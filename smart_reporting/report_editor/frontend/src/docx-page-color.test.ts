@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom'
 import { createDocxRibbon } from './docx-ribbon'
 import { docxPageColorModel, docxPageColorOperations, effectiveDocxPageColor, withDocxPageColor } from './docx-page-color'
 import { docxNativeOperations } from './docx-native-history'
+import type { DocxWatermarkValue } from './docx-watermark'
 import { replayDocxOperations } from './docx-operations'
 
 const sha = 'a'.repeat(64)
@@ -61,10 +62,10 @@ describe('Design ▸ Page Color ribbon control', () => {
     const T = Node.create({ name: 'text', group: 'inline' })
     return new Editor({ element: host, editable, extensions: [Doc, P, T], content: { type: 'doc', content: [{ type: 'docParagraph', content: [{ type: 'text', text: 'x' }] }] } })
   }
-  const mount = (controls: Parameters<typeof createDocxRibbon>[19], editable = true) => {
+  const mount = (controls: Parameters<typeof createDocxRibbon>[19], editable = true, watermark?: Parameters<typeof createDocxRibbon>[20]) => {
     const editor = editorFor(editable)
     editors.push(editor)
-    const ribbon = createDocxRibbon(editor, editable, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, controls)
+    const ribbon = createDocxRibbon(editor, editable, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, controls, watermark)
     document.body.append(ribbon)
     ribbon.querySelector<HTMLButtonElement>('[data-tab-label="设计"]')!.click()
     return ribbon
@@ -90,6 +91,34 @@ describe('Design ▸ Page Color ribbon control', () => {
     expect(ribbon.querySelector(orange)!.getAttribute('aria-selected')).toBe('true')
     click('.gcp-auto')
     expect(apply).toHaveBeenLastCalledWith(null)
+  })
+
+  it('reflects styled watermarks and returns focus when the menu is dismissed', () => {
+    let current: DocxWatermarkValue | null = { text: '机密', opacity: 0.4 }
+    const ribbon = mount(undefined, true, {
+      source: { text: '机密', style: null, picture: false, mixed: false, editable: true, readOnlyReason: null, expectedHeadersSha256: sha },
+      current: () => current,
+      reason: () => null,
+      apply: value => { current = value },
+    })
+    const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="watermark"]')!
+    const preset = ribbon.querySelector<HTMLButtonElement>('[data-action="watermark-preset-机密"]')!
+    const remove = ribbon.querySelector<HTMLButtonElement>('[data-action="watermark-remove"]')!
+    expect(trigger.matches('.rb-big.active')).toBe(true)
+    expect(trigger.querySelectorAll('.rb-big-icon svg')).toHaveLength(2)
+    trigger.click()
+    expect(preset.getAttribute('aria-pressed')).toBe('true')
+    preset.focus()
+    preset.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(trigger)
+    trigger.click()
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    trigger.click()
+    remove.click()
+    expect(trigger.classList.contains('active')).toBe(false)
+    expect(remove.getAttribute('aria-pressed')).toBe('true')
   })
 
   it('is disabled with the reason for read-only sources or a read-only document and reports apply errors', () => {

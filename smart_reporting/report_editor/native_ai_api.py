@@ -28,6 +28,7 @@ class NativeAIStartPayload(_DraftPayload):
 
 
 class NativePDFReadPayload(_DraftPayload):
+    view_page_id: str | None = Field(default=None, alias="viewPageId", strict=True, min_length=1, max_length=256)
     client_request_id: str = Field(alias="clientRequestId", pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     action: Literal["ask", "summarize", "keyPoints", "reviewSummary"] = "ask"
     instruction: str = Field(default="", max_length=2000)

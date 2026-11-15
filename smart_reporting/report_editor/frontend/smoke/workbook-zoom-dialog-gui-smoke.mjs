@@ -106,8 +106,14 @@ try {
   await page.waitForFunction(()=>Object.keys(localStorage).some(k=>k.startsWith('native-editor-draft:')&&JSON.parse(localStorage.getItem(k)).operations?.some(op=>op.kind==='applyPageSetups'&&op.setups?.some(s=>s.zoomScale===101))))
   await page.keyboard.press('ArrowLeft');await page.waitForFunction(()=>document.querySelector('.workbook-footer-zoom [aria-label="缩放比例"]')?.textContent==='100%')
   const menu=page.locator('[data-ribbon-menu="zoom"]')
-  assert.deepEqual(await menu.locator('option').evaluateAll(xs=>xs.filter(x=>x.value).map(x=>x.value)),['50','75','100','125','150','200'])
-  for(const value of ['50','75','100','125','150','200']) { await menu.selectOption(value);await page.waitForFunction(v=>document.querySelector('.workbook-footer-zoom [aria-label="缩放比例"]')?.textContent===`${v}%`,value) }
+  const choices=page.getByRole('listbox',{name:'缩放',exact:true})
+  await menu.click()
+  assert.deepEqual(await choices.getByRole('option').allTextContents(),['50%','75%','100%','125%','150%','200%'])
+  for(const value of ['50','75','100','125','150','200']) {
+    await choices.getByRole('option',{name:value+'%',exact:true}).click()
+    await page.waitForFunction(v=>document.querySelector('.workbook-footer-zoom [aria-label="缩放比例"]')?.textContent===v+'%',value)
+    if(value!=='200') await menu.click()
+  }
   await open();await page.locator('[name="workbook-zoom-choice"][value="fit"]').check();await page.locator('[data-zoom-apply]').click()
   await page.waitForFunction(()=>document.querySelector('.workbook-feedback')?.textContent?.includes('缩放已调整为') && document.querySelector('.workbook-footer-zoom [aria-label="缩放比例"]')?.textContent!=='200%')
   const fitPercent=Number((await feedback()).match(/缩放已调整为 (\d+)%/)?.[1])
