@@ -302,3 +302,33 @@ async def test_xlsx_preview_rejects_entire_merged_range_including_anchor(address
     )
     with pytest.raises(ValueError, match="xlsx_preview_formula_or_merged_cell"):
         await XlsxLiteralPreviewEngine(source, propose).prepare(request)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("visibility", ["hidden", "veryHidden"])
+async def test_xlsx_preview_rejects_hidden_worksheet(visibility):
+    workbook = Workbook()
+    workbook.active.title = "Visible"
+    sheet = workbook.create_sheet("Hidden")
+    sheet["A1"] = "private value"
+    sheet.sheet_state = visibility
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    original = output.getvalue()
+    scope = DocumentScope(
+        "channel", "grant", "book", "1", hashlib.sha256(original).hexdigest(),
+        DocumentFormat.XLSX,
+    )
+
+    async def source(_):
+        return original
+
+    async def propose(_):
+        return ({"sheet": "Hidden", "range": "A1", "value": "changed"},)
+
+    request = DocumentCandidateRequest(
+        scope, "one", "Edit", ({"sheet": "Hidden", "range": "A1"},),
+    )
+    with pytest.raises(ValueError, match="xlsx_preview_hidden_sheet"):
+        await XlsxLiteralPreviewEngine(source, propose).prepare(request)
