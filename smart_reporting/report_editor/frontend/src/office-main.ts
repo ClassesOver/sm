@@ -219,12 +219,18 @@ function quickStart() {
     <button class="quick-card" data-action="browse" ${canWrite() ? '' : 'disabled'}><span class="open-icon">${icon('folder', 19)}</span><span><strong>打开本地文件</strong><small>.docx / .xlsx / .pptx / .pdf</small></span></button></div>`
 }
 
+function canSendKnowledge(draft: string) {
+  return Boolean(currentUser && currentSpace && draft.trim() && !busy &&
+    knowledgeConversations.has(currentSpace) && !knowledgePending.has(currentSpace))
+}
+
 function ask() {
   const turns = knowledgeTurns.get(currentSpace) ?? []
   const pending = knowledgePending.has(currentSpace)
   const conversation = conversationOf(currentSpace)
   const key = draftKey(currentSpace)
   const draft = knowledgeInputs.get(key) ?? ''
+  const canSend = canSendKnowledge(draft)
   const pendingQuestion = pending ? draft.trim() : ''
   const hasMessages = turns.length > 0 || Boolean(pendingQuestion)
   const conversations = knowledgeConversations.get(currentSpace) ?? []
@@ -256,7 +262,7 @@ function ask() {
       <textarea aria-label="向知识库提问" placeholder="问一个关于收藏文件的问题…" maxlength="8000" ${pending || !ready || !currentUser ? 'disabled' : ''}>${pending ? '' : escape(draft)}</textarea>
       <div><span class="kb-model">默认模型</span><button data-action="kb-attach" ${ready && canWrite() && !pending ? '' : 'disabled'} aria-label="添加附件">${icon('plus')}</button>
       ${pending ? '<button data-action="kb-stop" class="send">停止</button>' :
-        `<button data-action="kb-send" ${!ready || !currentUser ? 'disabled' : ''} class="send" aria-label="发送"><img alt="" src="${assets}send-enter-off.png"></button>`}</div>
+        `<button data-action="kb-send" ${canSend ? '' : 'disabled'} class="send" aria-label="发送"><img alt="" src="${assets}send-enter-${canSend ? 'on' : 'off'}.png"></button>`}</div>
     </div></div></section>`
 }
 
@@ -311,7 +317,7 @@ async function sendKnowledge() {
   const account = accountGeneration
   const key = draftKey(space), conversation = conversationOf(space)
   const question = (knowledgeInputs.get(key) ?? '').trim()
-  if (!space || !question || busy || !knowledgeConversations.has(space) || knowledgePending.has(space)) return
+  if (!canSendKnowledge(question)) return
   knowledgeGeneration.set(space, (knowledgeGeneration.get(space) ?? 0) + 1)
   const controller = new AbortController()
   knowledgePending.set(space, controller); status = ''; render()
@@ -1068,7 +1074,18 @@ root.addEventListener('click', event => {
 
 root.addEventListener('input', event => {
   if ((event.target as HTMLInputElement).type === 'search') searchDocuments(event.target as HTMLInputElement)
-  if ((event.target as HTMLElement).matches('.composer textarea')) knowledgeInputs.set(draftKey(currentSpace), (event.target as HTMLTextAreaElement).value)
+  const input = event.target
+  if (input instanceof HTMLTextAreaElement && input.matches('.composer textarea')) {
+    knowledgeInputs.set(draftKey(currentSpace), input.value)
+    const send = root.querySelector<HTMLButtonElement>('[data-action=kb-send]')
+    if (send) {
+      const disabled = !canSendKnowledge(input.value)
+      if (send.disabled !== disabled) {
+        send.disabled = disabled
+        send.querySelector('img')!.src = `${assets}send-enter-${disabled ? 'off' : 'on'}.png`
+      }
+    }
+  }
 })
 window.addEventListener('keydown', event => {
   if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.isComposing ||
