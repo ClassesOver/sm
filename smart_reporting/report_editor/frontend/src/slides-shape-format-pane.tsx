@@ -119,6 +119,11 @@ export function createSlidesShapeFormatPane<T extends Draft>(getContext: () => C
   }
   function syncRibbon() {
     const current = values(context)
+    const unavailableFill = locked || !!context.reason || context.element?.brushSource?.supported !== true || current.fill === undefined
+    for (const swatch of ribbonHost?.querySelectorAll<HTMLButtonElement>('[data-shape-fill-swatch]') ?? []) {
+      swatch.disabled = unavailableFill
+      swatch.setAttribute('aria-pressed', String(swatch.dataset.shapeFillSwatch === current.fill?.toUpperCase()))
+    }
     for (const [command,field,value] of [
       ['shapeFillMenu','fill',''], ['shapeFill','fill',current.fill === 'none' ? '' : current.fill], ['shapeNoFill','fill',''],
       ['shapeOutlineMenu','stroke',''], ['shapeOutline','stroke',current.stroke?.color], ['shapeNoOutline','stroke',''],

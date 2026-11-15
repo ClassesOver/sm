@@ -840,6 +840,13 @@ it('enables the Shape Format fill and outline controls with their source actions
   host.querySelector<HTMLButtonElement>('#slides-native-tab-shapeFormat')!.click()
   fillMenu.click()
   expect(fillMenu.getAttribute('aria-expanded')).toBe('true')
+  const swatches = [...host.querySelectorAll<HTMLButtonElement>('[data-shape-fill-swatch]')]
+  expect(swatches).toHaveLength(70)
+  expect(swatches[0]?.dataset.shapeFillSwatch).toBe('#FFFFFF')
+  swatches.find(swatch => swatch.dataset.shapeFillSwatch === '#E97132')!.click()
+  expect(onAction).toHaveBeenCalledWith('shapeFill', '#E97132')
+  expect(fillMenu.getAttribute('aria-expanded')).toBe('false')
+  fillMenu.click()
   expect(fill.disabled).toBe(false)
   expect([...width.querySelectorAll<HTMLButtonElement>('[data-outline-width]')].map(item => item.dataset.outlineWidth)).toEqual(['0.5', '1', '1.5', '2.25', '3', '4.5', '6'])
   fill.value = '#2e7d32'; fill.dispatchEvent(new Event('change'))

@@ -1,6 +1,7 @@
 import { SLIDES_AI_TRANSLATE_TARGETS } from './slides-ai-presets'
 
 const simplifiedChineseLabels: Record<string, string> = {
+  'Theme Colors': '主题颜色', 'Standard Colors': '标准颜色',
   'Line Style': '线型', 'Solid Line': '实线', 'Dashed Line': '虚线', 'Dotted Line': '点线', 'Dash-Dot Line': '点划线',
   mediaPlay:'播放媒体',mediaPause:'暂停媒体',mediaStop:'停止媒体',
   'Outline View': '大纲视图', 'Reading View': '阅读视图',

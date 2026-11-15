@@ -26,7 +26,8 @@ import { applyDocxCase, docxCaseUnavailable } from './docx-case'
 import type { CaseMode } from './vendor/genoffice-docs/apps/docs/src/renderer/editor/case-transform'
 import { applyParagraphBorders, paragraphBorders, paragraphBordersTarget } from './docx-borders'
 import { applyParagraphHighlight, highlightTarget, selectedHighlight, textFormattingRange } from './docx-highlight'
-import { applyParagraphShading, paragraphShading, paragraphShadingTarget, DOCX_SHADING_COLORS } from './docx-shading'
+import { applyParagraphShading, paragraphShading, paragraphShadingTarget } from './docx-shading'
+import { DocxPageColorSource } from './docx-page-color-source'
 import { applyDocxCellShading, docxCellShadingUnavailable, selectedDocxCellFill } from './docx-cell-shading'
 import { DocxTableShadingSource } from './docx-table-shading-source'
 import { createParagraphStyleControl } from './docx-styles'
@@ -189,6 +190,8 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   let closeSpecialIndent: (() => void) | undefined
   const contextTabs = new Map<string, HTMLButtonElement>()
   const body = document.createElement('div')
+  const pageColorElement = document.createElement('div')
+  let pageColorRoot: ReturnType<typeof createRoot> | undefined
   const tableShading = document.createElement('div')
   let tableShadingRoot: ReturnType<typeof createRoot> | undefined
   const tableShadingReason = () => !editable || !editor.isEditable
@@ -716,28 +719,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
           continue
         }
         if (id === 'design' && label === '页面颜色' && pageColor) {
-          // 固定源 RibbonColorPalette：主题色 + 标准色 + “无颜色”；色块与单元格底纹共用同一组固定源颜色。
-          const wrap = document.createElement('div'), trigger = document.createElement('button'), palette = document.createElement('div'), bar = document.createElement('span')
-          wrap.className = 'rb-split-wrap'
-          trigger.type = 'button'; trigger.className = 'rb-icon docx-ribbon-command docx-page-color-trigger'; trigger.dataset.action = 'page-color'
-          trigger.setAttribute('aria-label', label); trigger.setAttribute('aria-expanded', 'false'); trigger.setAttribute('aria-haspopup', 'true')
-          bar.className = 'docx-page-color-bar'; trigger.append(document.createTextNode(label), bar)
-          palette.className = 'color-palette docx-page-color-palette'; palette.hidden = true; palette.dataset.rbPanel = ''
-          palette.setAttribute('role', 'group'); palette.setAttribute('aria-label', '页面颜色')
-          wrap.addEventListener('mousedown', event => event.preventDefault())
-          trigger.addEventListener('click', () => { palette.hidden = !palette.hidden; trigger.setAttribute('aria-expanded', String(!palette.hidden)) })
-          for (const fill of [...DOCX_SHADING_COLORS, null]) {
-            const swatch = document.createElement('button')
-            swatch.type = 'button'; swatch.className = fill ? 'color-swatch color-highlight-swatch' : 'color-none color-highlight-none'
-            swatch.dataset.action = `page-color-${fill ?? 'none'}`; swatch.setAttribute('aria-label', fill ? `页面颜色 #${fill}` : '无页面颜色')
-            if (fill) swatch.style.background = `#${fill}`; else swatch.textContent = '无颜色'
-            swatch.addEventListener('click', () => {
-              try { pageColor.apply(fill) } catch (error) { reportError?.(error) }
-              palette.hidden = true; trigger.setAttribute('aria-expanded', 'false'); syncPageColor()
-            })
-            palette.append(swatch)
-          }
-          wrap.append(trigger, palette); items.append(wrap)
+          items.append(pageColorElement)
           continue
         }
         if (actionId === 'table-cell-shading') {
@@ -1037,6 +1019,10 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
   const setActive = (id: string) => {
+    if (id !== 'design' && pageColorRoot) {
+      pageColorRoot.unmount()
+      pageColorRoot = undefined
+    }
     cellBorderControls?.dispose()
     cellBorderControls = undefined
     if (id !== 'tableDesign' && tableShadingRoot) {
@@ -1418,14 +1404,17 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   ribbon.append(body)
   /** 页面颜色按钮：可用性、提示与当前色条随编辑状态和草稿刷新。 */
   function syncPageColor() {
-    const trigger = body.querySelector<HTMLButtonElement>('[data-action="page-color"]')
-    if (!trigger || !pageColor) return
+    if (!pageColor || !body.contains(pageColorElement)) return
     const reason = !editable || !editor.isEditable ? '当前文档不可编辑或正在保存' : pageColor.reason()
-    const current = pageColor.current()
-    trigger.disabled = reason !== null
-    trigger.title = reason ?? `页面颜色：${current ? `#${current}` : '无颜色'}`
-    trigger.querySelector<HTMLElement>('.docx-page-color-bar')!.style.background = current ? `#${current}` : 'transparent'
-    for (const swatch of body.querySelectorAll<HTMLButtonElement>('[data-action^="page-color-"]')) swatch.setAttribute('aria-pressed', String(swatch.dataset.action === `page-color-${current ?? 'none'}`))
+    pageColorRoot ??= createRoot(pageColorElement)
+    flushSync(() => pageColorRoot!.render(createElement(DocxPageColorSource, {
+      current:pageColor.current(), reason,
+      onPick:color => {
+        if (!editable || !editor.isEditable || pageColor.reason()) return
+        try { pageColor.apply(color) } catch (error) { reportError?.(error) }
+        syncPageColor()
+      },
+    })))
   }
   /** 水印按钮：可用性、提示与菜单选中项随编辑状态和草稿刷新。 */
   function syncPageBorders() {
@@ -1544,7 +1533,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     closeSpecialIndent?.()
     closeFontDialog?.()
     closeParagraphDialog?.()
-    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount(); pictureWrapRoot?.unmount(); tableSizeRoot?.unmount(); tableShadingRoot?.unmount()
+    homeRoot.unmount(); insertRoot.unmount(); layoutRoot?.unmount(); headerFooterRoot?.unmount(); pictureSizeRoot?.unmount(); pictureWrapRoot?.unmount(); tableSizeRoot?.unmount(); tableShadingRoot?.unmount(); pageColorRoot?.unmount()
     editor.off('destroy', dispose)
   }
   editor.on('destroy', dispose)

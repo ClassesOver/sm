@@ -26,6 +26,7 @@ import iconCrop from './vendor/genoffice-slides/components/icon-crop.png'
 import { IconFillColor, IconPageBorders } from './vendor/genoffice-slides/components/icons'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 import { ShapePreview } from './vendor/genoffice-docs/packages/ui/src/shape-gallery'
+import { STANDARD_COLORS, THEME_COLORS, THEME_COLOR_SHADES } from './vendor/genoffice-slides/ui/color-picker'
 import { OUTLINE_DASHES } from '../../../reporting/slides_engine/bridge/pptx-outline'
 
 /**
@@ -486,6 +487,39 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
         })
         group.append(trigger, menu)
         controlHost = menu
+        if (shapeFill) {
+          const appendSwatches = (colors: readonly { hex: string; name: string }[]) => {
+            const grid = document.createElement('div')
+            grid.className = 'slides-fill-swatches'
+            for (const { hex, name } of colors) {
+              const button = document.createElement('button')
+              const color = '#' + hex
+              button.type = 'button'
+              button.dataset.shapeFillSwatch = color
+              button.title = name
+              button.setAttribute('aria-label', name === color ? color : name + ' ' + color)
+              button.setAttribute('aria-pressed', 'false')
+              button.style.backgroundColor = color
+              button.onclick = () => {
+                if (trigger.disabled || menu.hidden) return
+                close(true)
+                options.onAction('shapeFill', color)
+              }
+              grid.append(button)
+            }
+            menu.append(grid)
+          }
+          const addHeading = (label: string) => {
+            const heading = document.createElement('div')
+            heading.textContent = localize(label)
+            menu.append(heading)
+          }
+          addHeading('Theme Colors')
+          appendSwatches(THEME_COLORS)
+          appendSwatches(THEME_COLOR_SHADES.flat().map(hex => ({ hex, name: '#' + hex })))
+          addHeading('Standard Colors')
+          appendSwatches(STANDARD_COLORS)
+        }
         if (pictureOutline) closePictureOutline = close
         else shapeFormatMenus.set(id, close)
         menu.addEventListener('click', event => {
@@ -698,7 +732,8 @@ export function createSlidesNativeRibbon(host: HTMLElement, options: {
             label.append(status)
           }
           controlHost.append(label)
-        } else controlHost.append(element)
+        } else if (control.id === 'shapeNoFill') controlHost.prepend(element)
+        else controlHost.append(element)
       }
       if (tab.id === 'chartDesign' && groupDefinition.label === 'Chart Styles') {
         chartGallery = createNativeChartGallery(group, (command, value) => options.onAction(command, value))

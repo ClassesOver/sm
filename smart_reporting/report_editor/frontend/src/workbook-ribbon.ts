@@ -1287,7 +1287,7 @@ export function mountWorkbookRibbon(
     const pasteSpecial = body.querySelector<HTMLSelectElement>('[data-ribbon-menu="paste-special"]')
     if (pasteSpecial) {
       pasteSpecial.disabled = !editable || !selected
-      pasteSpecial.title = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : '选择性粘贴'
+      pasteSpecial.title = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : '仅粘贴值、公式或格式'
     }
     const themeState = view.theme?.()
     for (const kind of ['elements', 'layout', 'colors', 'grouping'] as const) {
@@ -1602,16 +1602,6 @@ export function mountWorkbookRibbon(
         color.addEventListener('input', () => { if (!color.disabled) borderColor = color.value })
         section.append(border, color)
       }
-      if (active === 'Home' && group.title === '剪贴板') {
-        // 固定源粘贴分体按钮的下拉：选中后回弹到菜单标题（同页面布局动作下拉）。
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.setAttribute('aria-label', '选择性粘贴'); select.dataset.ribbonMenu = 'paste-special'
-        const title = document.createElement('option'); title.value = ''; title.textContent = '选择性粘贴'
-        select.append(title, ...PASTE_SPECIAL_CHOICES.map(choice => { const option = document.createElement('option'); option.value = choice.value; option.textContent = choice.label; return option }))
-        const dialogOption=document.createElement('option');dialogOption.value='paste-special-open';dialogOption.textContent='选择性粘贴…';select.append(dialogOption)
-        select.addEventListener('change', () => { const value = select.value; select.value = ''; if (value && !select.disabled) onCommand(value as RibbonCommand) })
-        section.append(select)
-      }
       if (active === 'Home' && group.title === '数字') {
         const select = document.createElement('select')
         select.className = 'workbook-ribbon-select workbook-ribbon-number-format'
@@ -1753,6 +1743,28 @@ export function mountWorkbookRibbon(
           button.addEventListener('click', event => { if (!button.disabled && !captureError) { if (item.command === 'format:custom-open') onCommand(item.command, target); else if (item.command === 'format-painter') onCommand(event.detail >= 2 ? 'format-painter:dblclick' : 'format-painter'); else onCommand(item.command!) } })
         }
         section.append(button)
+      }
+      if (active === 'Home' && group.title === '剪贴板') {
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span')
+        icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true')
+        icon.innerHTML = workbookCommandIcon('', '📑') ?? ''
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'
+        select.setAttribute('aria-label', '选择性粘贴')
+        select.dataset.ribbonMenu = 'paste-special'
+        select.append(new Option('选择性粘贴', ''),
+          ...PASTE_SPECIAL_CHOICES.map(({ value, label }) => new Option(label, value)),
+          new Option('选择性粘贴…', 'paste-special-open'))
+        select.addEventListener('change', () => {
+          const value = select.value
+          select.value = ''
+          if (value && !select.disabled) onCommand(value as RibbonCommand)
+        })
+        wrapper.append(icon, select)
+        section.querySelector('[data-ribbon-command="paste"]')!.after(wrapper)
       }
       if (active === 'Chart Design') {
         const menus = group.title === '图表布局'

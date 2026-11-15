@@ -133,6 +133,11 @@ it('changes, formats and deletes an unsaved drawn shape using its insertion iden
   const fill=app.shell.editor.querySelector<HTMLInputElement>('[data-command="shapeFill"]')!
   app.command('shapeFillMenu').click()
   expect(app.command('shapeFillMenu').getAttribute('aria-expanded')).toBe('true')
+  const orange=app.shell.editor.querySelector<HTMLButtonElement>('[data-shape-fill-swatch="#E97132"]')!
+  orange.click()
+  await vi.waitFor(()=>expect(draft.operations[0]?.shapes).toEqual([{...inserted,kind:'hexagon',fill:'#E97132'}]))
+  app.command('shapeFillMenu').click()
+  expect(orange.getAttribute('aria-pressed')).toBe('true')
   expect(fill.disabled).toBe(false)
   fill.value='#12ab34'
   fill.dispatchEvent(new Event('change',{bubbles:true}))

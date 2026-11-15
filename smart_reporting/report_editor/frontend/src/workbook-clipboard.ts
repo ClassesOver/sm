@@ -2,11 +2,11 @@
 /// Univer 官方 sheet 命令，撤销与普通粘贴一致；保存由值/样式/列宽差分写回。
 export type PasteSpecialKind = 'value' | 'formula' | 'format' | 'col-width' | 'besides-border'
 export const PASTE_SPECIAL_CHOICES: ReadonlyArray<{ value: `paste-special:${PasteSpecialKind}`; label: string; univerCommand: string }> = [
-  { value: 'paste-special:value', label: '仅粘贴值', univerCommand: 'sheet.command.paste-value' },
-  { value: 'paste-special:formula', label: '仅粘贴公式', univerCommand: 'sheet.command.paste-formula' },
-  { value: 'paste-special:format', label: '仅粘贴格式', univerCommand: 'sheet.command.paste-format' },
-  { value: 'paste-special:col-width', label: '粘贴列宽', univerCommand: 'sheet.command.paste-col-width' },
-  { value: 'paste-special:besides-border', label: '无边框粘贴', univerCommand: 'sheet.command.paste-besides-border' },
+  { value: 'paste-special:value', label: '仅值', univerCommand: 'sheet.command.paste-value' },
+  { value: 'paste-special:formula', label: '仅公式', univerCommand: 'sheet.command.paste-formula' },
+  { value: 'paste-special:format', label: '仅格式', univerCommand: 'sheet.command.paste-format' },
+  { value: 'paste-special:col-width', label: '仅列宽', univerCommand: 'sheet.command.paste-col-width' },
+  { value: 'paste-special:besides-border', label: '边框除外', univerCommand: 'sheet.command.paste-besides-border' },
 ]
 /// 剪贴板命令 → Univer 官方命令 id（copy/cut/paste 注册在共享 UI 命令 id 上）。
 export const CLIPBOARD_COMMANDS: Readonly<Record<string, string>> = {

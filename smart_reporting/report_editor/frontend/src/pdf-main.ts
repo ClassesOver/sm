@@ -710,10 +710,15 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const pageSpreadToggle = button('双页视图', () => {
     twoPageView = !twoPageView
     viewport.dataset.spread = twoPageView ? 'two' : 'single'
-    pageSpreadToggle.textContent = pdfRibbonLabel(twoPageView ? '单页视图' : '双页视图')
+    const label = pdfRibbonLabel(twoPageView ? '单页视图' : '双页视图')
+    pageSpreadToggle.querySelector('span')!.textContent = label
+    pageSpreadToggle.querySelector('svg')!.replaceWith(createPdfRibbonIcon(twoPageView ? 'singlePage' : 'pageSpread', 18))
+    pageSpreadToggle.title = label
     pageSpreadToggle.setAttribute('aria-pressed', String(twoPageView))
-    void refresh().catch(showError)
-  }, false)
+    return refresh()
+  }, false, 'pageSpread')
+  pageSpreadToggle.title = pdfRibbonLabel('双页视图')
+  pageSpreadToggle.setAttribute('aria-pressed', 'false')
   sourceCommand(pageSpreadToggle, 'view.navigation.pageSpread')
   const nightToggle = button('夜间模式', () => {
     const enabled = !viewport.classList.contains('pdf-night')

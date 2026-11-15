@@ -220,6 +220,36 @@ it('dispatches source automatic font color and no fill alongside the color picke
   ribbon.dispose()
 })
 
+it('offers GenOffice clipboard order and its six Paste Special choices', () => {
+  const command = vi.fn()
+  let editable = true
+  const ribbon = mountWorkbookRibbon(document.body, command, { rotation: () => 0, editable: () => editable })
+  const menu = document.querySelector<HTMLSelectElement>('[data-ribbon-menu="paste-special"]')!
+  const group = menu.closest('.workbook-ribbon-group')!
+  expect(Array.from(group.querySelectorAll<HTMLElement>('[data-ribbon-menu], [data-ribbon-command]'), control =>
+    control.dataset.ribbonMenu ?? control.dataset.ribbonCommand)).toEqual(['paste', 'paste-special', 'cut', 'copy', 'format-painter'])
+  expect(menu.title).toBe('仅粘贴值、公式或格式')
+  expect(menu.parentElement?.querySelector('svg')).not.toBeNull()
+  expect(Array.from(menu.options, option => [option.value, option.text])).toEqual([
+    ['', '选择性粘贴'], ['paste-special:value', '仅值'], ['paste-special:formula', '仅公式'],
+    ['paste-special:format', '仅格式'], ['paste-special:col-width', '仅列宽'],
+    ['paste-special:besides-border', '边框除外'], ['paste-special-open', '选择性粘贴…'],
+  ])
+  for (const option of Array.from(menu.options).slice(1)) {
+    menu.value = option.value
+    menu.dispatchEvent(new Event('change'))
+    expect(command).toHaveBeenLastCalledWith(option.value)
+    expect(menu.value).toBe('')
+  }
+  editable = false; ribbon.refreshState()
+  expect(menu.disabled).toBe(true)
+  menu.value = 'paste-special:value'
+  menu.dispatchEvent(new Event('change'))
+  expect(command).toHaveBeenCalledTimes(6)
+  expect(group.querySelector<HTMLButtonElement>('[data-ribbon-command="copy"]')?.disabled).toBe(false)
+  ribbon.dispose()
+})
+
 it('routes Insert Screenshot only when display capture and editing are available', () => {
   const onCommand = vi.fn()
   const open = (editable: boolean) => {

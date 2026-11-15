@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Editor, Node } from '@tiptap/core'
+import { flushSync } from 'react-dom'
 import { createDocxRibbon } from './docx-ribbon'
 import { docxPageColorModel, docxPageColorOperations, effectiveDocxPageColor, withDocxPageColor } from './docx-page-color'
 import { docxNativeOperations } from './docx-native-history'
@@ -8,7 +9,8 @@ import { replayDocxOperations } from './docx-operations'
 const sha = 'a'.repeat(64)
 const model = docxPageColorModel({ color: null, editable: true, readOnlyReason: null, expectedBackgroundSha256: sha })!
 
-afterEach(() => { document.body.replaceChildren() })
+const editors: Editor[] = []
+afterEach(() => { editors.splice(0).forEach(editor=>editor.destroy()); document.body.replaceChildren() })
 
 describe('Word page colour draft (pinned Design ▸ Page Color)', () => {
   it('normalises source models and rejects malformed ones', () => {
@@ -61,6 +63,7 @@ describe('Design ▸ Page Color ribbon control', () => {
   }
   const mount = (controls: Parameters<typeof createDocxRibbon>[19], editable = true) => {
     const editor = editorFor(editable)
+    editors.push(editor)
     const ribbon = createDocxRibbon(editor, editable, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, [], undefined, undefined, undefined, undefined, undefined, undefined, controls)
     document.body.append(ribbon)
     ribbon.querySelector<HTMLButtonElement>('[data-tab-label="设计"]')!.click()
@@ -73,15 +76,19 @@ describe('Design ▸ Page Color ribbon control', () => {
     const ribbon = mount({ current: () => current, reason: () => null, apply })
     const trigger = ribbon.querySelector<HTMLButtonElement>('[data-action="page-color"]')!
     expect(trigger.disabled).toBe(false); expect(trigger.title).toBe('页面颜色：无颜色')
-    const swatches = [...ribbon.querySelectorAll<HTMLButtonElement>('[data-action^="page-color-"]')]
-    expect(swatches.map(item => item.dataset.action!.slice('page-color-'.length))).toEqual(['FFFFFF', '000000', 'E7E6E6', '0E2841', '156082', 'E97132', '196B24', '0F9ED5', 'A02B93', '4EA72E', 'C00000', 'FF0000', 'FFC000', 'FFFF00', '92D050', '00B050', '00B0F0', '0070C0', '002060', '7030A0', 'none'])
-    trigger.click(); expect(trigger.getAttribute('aria-expanded')).toBe('true')
-    ribbon.querySelector<HTMLButtonElement>('[data-action="page-color-FFC000"]')!.click()
+    const click = (selector:string) => flushSync(()=>ribbon.querySelector<HTMLButtonElement>(selector)!.click())
+    const orange = '.gcp-standard-row [aria-label="橙色"]'
+    flushSync(()=>trigger.click()); expect(trigger.getAttribute('aria-expanded')).toBe('true')
+    expect(ribbon.querySelectorAll('.gcp-theme-base [role="gridcell"]')).toHaveLength(10)
+    expect(ribbon.querySelectorAll('.gcp-standard-row [role="gridcell"]')).toHaveLength(10)
+    expect(ribbon.querySelectorAll('.gcp-theme-shades [role="gridcell"]').length).toBeGreaterThan(10)
+    click(orange)
     expect(apply).toHaveBeenLastCalledWith('FFC000')
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
     expect(trigger.title).toBe('页面颜色：#FFC000')
-    expect(ribbon.querySelector('[data-action="page-color-FFC000"]')!.getAttribute('aria-pressed')).toBe('true')
-    ribbon.querySelector<HTMLButtonElement>('[data-action="page-color-none"]')!.click()
+    flushSync(()=>trigger.click())
+    expect(ribbon.querySelector(orange)!.getAttribute('aria-selected')).toBe('true')
+    click('.gcp-auto')
     expect(apply).toHaveBeenLastCalledWith(null)
   })
 

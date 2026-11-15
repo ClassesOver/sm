@@ -1,5 +1,5 @@
 /** Browser-safe icon subset adapted from GenOffice PDF icons.tsx at f8c17004fb730df11f0f743164ffd8b4281bb38c. */
-export type PdfRibbonIconName = 'sparkles' | 'download' | 'undo' | 'redo' | 'highlight' | 'note' | 'rotateLeft' | 'rotateRight' | 'deletePage' | 'fitWidth' | 'fitPage' | 'thumbnails' | 'print' | 'search' | 'formKeep' | 'previousField' | 'nextField'
+export type PdfRibbonIconName = 'sparkles' | 'download' | 'undo' | 'redo' | 'highlight' | 'note' | 'rotateLeft' | 'rotateRight' | 'deletePage' | 'fitWidth' | 'fitPage' | 'thumbnails' | 'print' | 'search' | 'formKeep' | 'previousField' | 'nextField' | 'pageSpread' | 'singlePage'
 
 const paths: Record<PdfRibbonIconName, string[]> = {
   sparkles: ['m12 3 2.7 6.3L21 12l-6.3 2.7L12 21l-2.7-6.3L3 12l6.3-2.7z', 'M20 2v4', 'M18 4h4'],
@@ -19,6 +19,8 @@ const paths: Record<PdfRibbonIconName, string[]> = {
   nextField: ['M7.5 4.5h9A1.5 1.5 0 0 1 18 6v12a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 18V6a1.5 1.5 0 0 1 1.5-1.5Z', 'M9.5 8 13.5 12 9.5 16'],
   // GenOffice PDF IconFieldKeep.
   formKeep: ['M5 4h8a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 13 11H5a1.5 1.5 0 0 1-1.5-1.5v-4A1.5 1.5 0 0 1 5 4Z', 'M11 13h8a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 19 20h-8a1.5 1.5 0 0 1-1.5-1.5v-4A1.5 1.5 0 0 1 11 13Z', 'M17 6.5h3.5M18.75 4.75v3.5'],
+  pageSpread: ['M5.5 6h4.5a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H5.5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z', 'M14 6h4.5a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H14a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z'],
+  singlePage: ['M7.96 4.5h8.08a1.15 1.15 0 0 1 1.15 1.15v12.7a1.15 1.15 0 0 1-1.15 1.15H7.96a1.15 1.15 0 0 1-1.15-1.15V5.65A1.15 1.15 0 0 1 7.96 4.5Z'],
   search: ['M16.7 10.6a6.1 6.1 0 1 1-12.2 0 6.1 6.1 0 0 1 12.2 0z', 'm15.3 15.3 4.2 4.2'],
 }
 

@@ -438,6 +438,40 @@ it('navigation shows current page identity after refresh without changing the dr
  expect(f.root.querySelectorAll('.pdf-outline header button[data-pdf-outline-editable]')).toHaveLength(1)
  expect(f.draft.operations).toEqual([])
 })
+it('switches between the source single and double page controls while keeping fit width and selection', async () => {
+ const f=await fixture({pages:3,editingEnabled:false});await f.create()
+ const viewport=f.root.querySelector<HTMLElement>('.pdf-document-pages')!
+ Object.defineProperty(viewport,'clientWidth',{value:650})
+ Object.defineProperty(viewport,'clientHeight',{value:800})
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="view"]')!.click()
+ const spread=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.navigation.pageSpread"]')!
+ const fit=f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.view.pageZoom.fitWidth"]')!
+ const zoom=f.root.querySelector<HTMLSelectElement>('.pdf-zoom')!
+ const rows=()=>[...viewport.querySelectorAll('.pdf-page-row')].map(row=>row.children.length)
+ expect(spread.getAttribute('aria-pressed')).toBe('false')
+ expect(spread.querySelector('svg')?.children).toHaveLength(2)
+ expect(rows()).toEqual([1,1,1])
+ const cards=[...viewport.querySelectorAll<HTMLElement>('.pdf-page')]
+ cards[1].scrollIntoView=vi.fn()
+ cards[1].querySelector<HTMLButtonElement>('.pdf-page-label')!.click()
+ const selected=cards[1].dataset.pageId
+ fit.click()
+ await vi.waitFor(()=>expect(Number(zoom.value)).toBeGreaterThan(1.5))
+ const singleZoom=Number(zoom.value)
+ spread.click()
+ await vi.waitFor(()=>expect(rows()).toEqual([2,1]))
+ expect(spread.getAttribute('aria-pressed')).toBe('true')
+ expect(spread.querySelector('svg')?.children).toHaveLength(1)
+ expect(Number(zoom.value)).toBeLessThan(singleZoom)
+ expect(viewport.querySelector<HTMLElement>('.pdf-page.is-active')?.dataset.pageId).toBe(selected)
+ spread.click()
+ await vi.waitFor(()=>expect(rows()).toEqual([1,1,1]))
+ expect(spread.getAttribute('aria-pressed')).toBe('false')
+ expect(spread.querySelector('svg')?.children).toHaveLength(2)
+ expect(Number(zoom.value)).toBeCloseTo(singleZoom)
+ expect(viewport.querySelector<HTMLElement>('.pdf-page.is-active')?.dataset.pageId).toBe(selected)
+ expect(f.draft.operations).toEqual([])
+})
 it('thumbnail selection and outline navigation keep the paper selection on the same page identity',async()=>{
  const f=await fixture({pages:2});await f.create()
  f.root.querySelectorAll<HTMLElement>('.pdf-page').forEach(card=>{card.scrollIntoView=vi.fn()})
