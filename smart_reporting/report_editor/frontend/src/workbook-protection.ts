@@ -68,8 +68,13 @@ function sameFilterRange(range: FilterRange, other: Partial<FilterRange> | undef
     && range.startColumn === other.startColumn && range.endColumn === other.endColumn
 }
 
+// Protection checks only the filter range; criteria values belong to the filter adapter.
+type FilterRangeSheet = {
+  getFilter(): Pick<NonNullable<ReturnType<FilterSheet['getFilter']>>, 'getRange'> | null
+}
+
 export function protectedFilterAllowed(source: WorkbookModel['sheets'][number] | undefined,
-  sheet: FilterSheet | undefined, commandId: string, params: unknown): boolean {
+  sheet: FilterRangeSheet | undefined, commandId: string, params: unknown): boolean {
   if (!/^sheet\.command\.(set-filter-criteria|clear-filter-criteria|re-calc-filter)$/.test(commandId)) return false
   const permitted = permittedFilterRange(source), live = sheet?.getFilter?.()?.getRange()
   if (!permitted || !live || permitted.startRow !== live.getRow() || permitted.startColumn !== live.getColumn()
