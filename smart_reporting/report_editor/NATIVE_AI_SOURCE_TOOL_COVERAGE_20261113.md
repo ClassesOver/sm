@@ -62,6 +62,8 @@ XLSX `refresh_pivot` 接到按工作表限定的原生刷新。透视表从操�
 
 XLSX `set_row_height` 和 `set_col_width` 在整簿授权下复用原生尺寸写入器。行号从 1 开始，列号使用字母，省略 `count` 时只调整一行或一列。尺寸按源执行器取整到像素。网页版 XLSX 写入器最多保存 255 字符列宽，对应 1790 像素，源 DSL 接受的超限值会明确拒绝。
 
+XLSX `find_replace` 在授权范围内按顺序重放，支持区分大小写和整格匹配。原生引擎扫描最多 200,000 格的范围，仅改写匹配的已有文本，保留单元格样式，并跳过公式、数字、布尔值和 Excel 错误值。富文本匹配后写回纯文本，沿用源操作语义。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。

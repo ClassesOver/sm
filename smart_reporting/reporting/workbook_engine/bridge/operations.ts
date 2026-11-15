@@ -18,7 +18,7 @@ import { applyChartSource } from './chart-sources'
 import { applyTableSource } from './table-source'
 import { applyNoteSource } from '../packages/xlsx-engine/src/notes'
 import { pivotTablePathsOnSheet } from '../packages/xlsx-engine/src/pivot-refresh'
-import { clearCellRange } from '../packages/xlsx-engine/src/workbook-write'
+import { clearCellRange, replaceRangeText } from '../packages/xlsx-engine/src/workbook-write'
 import { parseAddress } from '../packages/xlsx-engine/src/cell-address'
 import { normalizeLinkTarget } from '../packages/xlsx-engine/src/hyperlink-target'
 import { cellHyperlinkState, readPackageSheetHyperlinks } from '../packages/xlsx-engine/src/hyperlink-write'
@@ -116,6 +116,15 @@ export async function applyWorkbookOperations(bytes: Uint8Array, operations: rea
         const parsed = z.object({kind: z.literal('clearCellRange'), sheetName: z.string().min(1).max(31),
           range: z.string().max(32)}).strict().parse(op)
         bytes = await clearCellRange(bytes, parsed.sheetName, parsed.range)
+        break
+      }
+      case 'replaceRangeText': {
+        const { sheetName, range, ...search } = z.object({
+          kind: z.literal('replaceRangeText'), sheetName: z.string().min(1).max(31),
+          range: z.string().max(24), find: z.string().min(1).max(32767), replace: z.string().max(255),
+          matchCase: z.boolean(), wholeCell: z.boolean(),
+        }).strict().parse(op)
+        bytes = await replaceRangeText(bytes, sheetName, range, search)
         break
       }
       case 'applySheetMerges': bytes = await applySheetMerges(bytes, op.sheetName, op.ranges); break

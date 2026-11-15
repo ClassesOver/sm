@@ -8,10 +8,10 @@ import type { WorkbookRichRun, WorkbookStyleEdit } from './edit-schemas'
 import { sha256Hex } from './sha256'
 import { spillsDynamicArray, withFutureFunctionMarkers } from './future-functions'
 import { StylesheetEditor } from './styles-write'
-import { parseSheetElements, resolveWorksheetPath } from './workbook-read'
+import { parseSheetElements, readCellText, readSharedStrings, resolveWorksheetPath } from './workbook-read'
 import { materializeEditedSharedFormulas } from './shared-formulas'
 import { assemblePackage, createBufferEntrySource, type EntrySource, type MutationPlan } from './zip'
-import { escapeXmlAttribute, escapeCellText, escapeXmlText, readXmlAttribute } from './xml'
+import { decodeCellText, escapeRegExp, escapeXmlAttribute, escapeCellText, escapeXmlText, readXmlAttribute } from './xml'
 
 /// One cell rewrite. `writeValue: false` = style-only edit.
 export interface CellEdit {
@@ -462,6 +462,58 @@ export async function clearCellRange(sourceBytes: Uint8Array, sheetName: string,
   if (recalc !== workbook) replaced.set(workbookPath, recalc)
   return (await assemblePackage(sourceBytes, {replaced, added: new Map(), addedBinary: new Map(),
     removedEntries: [], addedEntries: [], touchedEntries: [...replaced.keys()]})).buffer
+}
+
+/** Applies source find_replace to text cells in the current replayed package. */
+export async function replaceRangeText(
+  bytes: Uint8Array, sheetName: string, range: string,
+  search: { find: string; replace: string; matchCase: boolean; wholeCell: boolean },
+): Promise<Uint8Array> {
+  const bounds = parseRange(range)
+  if (bounds.endRow >= 1048576 || bounds.endColumn >= 16384 || rangeCellCount(bounds) > 200000) {
+    throw new Error('workbook_ai_find_replace_range_invalid')
+  }
+  const source = await createBufferEntrySource(bytes)
+  const workbookPath = 'xl/workbook.xml'
+  const workbook = await source.readText(workbookPath)
+  const path = await findWorksheetPath(source, workbook, sheetName)
+  const [xml, strings] = await Promise.all([source.readText(path), readSharedStrings(source)])
+  const { find, replace, matchCase, wholeCell } = search
+  const needle = matchCase ? find : find.toLowerCase()
+  const pattern = matchCase ? undefined : new RegExp(escapeRegExp(find), 'gi')
+  const updated = xml.replace(/<sheetData\b[^>]*>([\s\S]*?)<\/sheetData>/, sheetData =>
+    sheetData.replace(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g, (cell, attrs: string, body?: string) => {
+      if (!body || /<f\b/.test(body)) return cell
+      const type = readXmlAttribute(attrs, 't')
+      if (type !== 's' && type !== 'inlineStr' && type !== 'str') return cell
+      const address = readXmlAttribute(attrs, 'r')
+      if (!address) return cell
+      const { row, column } = parseAddress(address)
+      if (row < bounds.startRow || row > bounds.endRow || column < bounds.startColumn || column > bounds.endColumn) return cell
+      const raw = body.match(/<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/)?.[1]
+      const text = type === 'inlineStr' ? readCellText(body)
+        : raw === undefined ? undefined : type === 's' ? strings[Number(raw)] : decodeCellText(raw)
+      if (text === undefined) return cell
+      const haystack = matchCase ? text : text.toLowerCase()
+      let next: string
+      if (wholeCell) {
+        if (haystack.replace(/^ +| +$/g, '') !== needle.trim()) return cell
+        next = replace
+      } else {
+        if (!haystack.includes(needle)) return cell
+        next = pattern ? text.replace(pattern, () => replace) : text.split(find).join(replace)
+      }
+      if (next === text) return cell
+      if (next.length > 32767) throw new Error('workbook_ai_find_replace_text_too_long')
+      return serializeStyledCell(address, { value: next }, readXmlAttribute(attrs, 's'))
+    }),
+  )
+  if (updated === xml) return bytes
+  const replaced = new Map([[path, updated]])
+  const recalc = ensureFullCalcOnLoad(workbook)
+  if (recalc !== workbook) replaced.set(workbookPath, recalc)
+  return (await assemblePackage(bytes, { replaced, added: new Map(), addedBinary: new Map(),
+    removedEntries: [], addedEntries: [], touchedEntries: [...replaced.keys()] })).buffer
 }
 
 /// Whole-file SHA-256 (identity gate for in-place saves: the bytes opened

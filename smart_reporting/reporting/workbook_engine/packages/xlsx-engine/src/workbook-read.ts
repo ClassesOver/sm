@@ -218,13 +218,17 @@ export async function resolveWorksheetPath(
   return `xl/${target.replace(/^\.\//, '')}`
 }
 
-async function readSharedStrings(source: EntrySource): Promise<readonly string[]> {
+export function readCellText(body: string): string {
+  return [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)]
+    .map((match) => decodeCellText(match[1] ?? ''))
+    .join('')
+}
+
+export async function readSharedStrings(source: EntrySource): Promise<readonly string[]> {
   if (!(await source.has('xl/sharedStrings.xml'))) return []
   const xml = await source.readText('xl/sharedStrings.xml')
   return [...xml.matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g)].map((itemMatch) =>
-    [...(itemMatch[1] ?? '').matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)]
-      .map((textMatch) => decodeCellText(textMatch[1] ?? ''))
-      .join(''),
+    readCellText(itemMatch[1] ?? ''),
   )
 }
 
@@ -246,10 +250,7 @@ function parseWorksheetCells(worksheetXml: string, sharedStrings: readonly strin
     }
     const type = readXmlAttribute(attributes, 't')
     if (type === 'inlineStr') {
-      const text = [...body.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g)]
-        .map((textMatch) => decodeCellText(textMatch[1] ?? ''))
-        .join('')
-      cells[address] = { value: text, styleIndex }
+      cells[address] = { value: readCellText(body), styleIndex }
       continue
     }
     const rawValue = body.match(/<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/)?.[1]

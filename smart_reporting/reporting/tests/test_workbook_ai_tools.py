@@ -24,6 +24,49 @@ from smart_reporting.reporting.tests.test_workbook_native_ai import Editor
 
 
 @pytest.mark.anyio
+async def test_source_find_replace_uses_replayed_text_and_preserves_other_cell_types():
+    book = Workbook()
+    book.active.append(['OLD.old.', '= "old."', 42, '#N/A', ' old. ', 'OLDz', 'outside old.'])
+    book.active['A1'].font = Font(bold=True)
+    book.active['C1'].number_format = '"old."0'
+    source = BytesIO()
+    book.save(source)
+    written = None
+
+    async def preview(operations):
+        nonlocal written
+        written = await asyncio.to_thread(patch_office, 'xlsx', source.getvalue(), operations)
+        return {'draftSha256': hashlib.sha256(written).hexdigest()}
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='workbook',
+                              selection={}, preview=preview)
+    await tools.propose_operations([
+        {'op': 'set_cell', 'sheetId': 'Sheet', 'address': 'A2', 'value': 'old.'},
+        {'op': 'find_replace', 'sheetId': 'Sheet', 'range': 'A1:F2', 'find': '#N/A', 'replace': 'error'},
+        {'op': 'find_replace', 'sheetId': 'Sheet', 'range': 'A1:F2', 'find': 'OLD.',
+         'replace': '$&', 'wholeCell': True},
+        {'op': 'find_replace', 'sheetId': 'Sheet', 'range': 'A1:F33333', 'find': 'old.', 'replace': 'new'},
+    ], '替换文本')
+    sheet = load_workbook(BytesIO(written)).active
+    assert [cell.value for cell in sheet[1]] == ['newnew', '= "old."', 42, '#N/A', '$&', 'OLDz', 'outside old.']
+    assert sheet['A2'].value == '$&' and sheet['A1'].font.bold and sheet['D1'].data_type == 'e'
+
+
+@pytest.mark.anyio
+async def test_source_find_replace_rejects_a_range_outside_the_authorized_selection():
+    async def preview(_):
+        pytest.fail('Out-of-scope replacement reached preview')
+
+    tools = WorkbookAIToolkit(model={'sheets': [{'name': 'Sheet'}]}, scope='range', preview=preview,
+                              selection={'sheetName': 'Sheet', 'startRow': 0, 'endRow': 1,
+                                         'startColumn': 0, 'endColumn': 0})
+    with pytest.raises(ValueError, match='selection_mismatch'):
+        await tools.propose_operations([
+            {'op': 'find_replace', 'sheetId': 'Sheet', 'range': 'A1:B2', 'find': 'old', 'replace': 'new'},
+        ], '替换选区文本')
+
+
+@pytest.mark.anyio
 async def test_source_axis_dimensions_round_trip_through_xlsx():
     book = Workbook()
     book.active['A1'] = '=2+3'

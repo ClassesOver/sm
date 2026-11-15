@@ -87,6 +87,12 @@ export function mountWorkbookNativeAI(host: HTMLElement, options: { api: Workboo
         const item = document.createElement('li')
         item.textContent = `${operation.sheetName}!${operation.range} · 清空值和公式，保留格式`
         list.append(item)
+      } else if (operation.kind === 'replaceRangeText') {
+        const item = document.createElement('li')
+        const mode = operation.wholeCell ? '整格匹配' : '部分匹配'
+        const casing = operation.matchCase ? '区分大小写' : '忽略大小写'
+        item.textContent = `${operation.sheetName}!${operation.range} · ${JSON.stringify(operation.find)} → ${JSON.stringify(operation.replace)}（${mode}，${casing}）`
+        list.append(item)
       } else {
         const item = document.createElement('li'); item.textContent = '结构化候选：' + operation.kind + ' · ' + JSON.stringify(operation); list.append(item)
       }

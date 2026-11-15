@@ -126,12 +126,12 @@ class NativeWorkbookAIService(DurableNativeCandidateService):
     @staticmethod
     def _within_selection(candidate, selection):
         for operation in candidate:
-            if operation['kind'] == 'clearCellRange':
+            if operation['kind'] in {'clearCellRange', 'replaceRangeText'}:
                 r0, r1, c0, c1 = clear_range_bounds(operation.get('range'))
                 if (operation.get('sheetName') != selection['sheetName']
                         or not selection['startRow'] <= r0 <= r1 <= selection['endRow']
                         or not selection['startColumn'] <= c0 <= c1 <= selection['endColumn']):
-                    raise _invalid("native_ai_selection_mismatch", "候选清空范围超出授权选区。")
+                    raise _invalid("native_ai_selection_mismatch", "候选操作范围超出授权选区。")
                 continue
             if operation["kind"] != "applyCellEdits" or not operation.get("edits"):
                 raise _invalid("native_ai_selection_mismatch", "选区模式仅允许范围内单元格值、公式和格式候选。")

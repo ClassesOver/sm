@@ -78,15 +78,19 @@ async def test_native_xlsx_ai_rejects_outside_range_and_cancels_before_receipt()
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize('kind', ['clearCellRange', 'replaceRangeText'])
 @pytest.mark.parametrize(('target', 'status'), [
     ('A1:B1200', 'succeeded'), ('A1:C1200', 'failed'), ('A1:B1201', 'failed'),
 ])
-async def test_large_clear_candidate_obeys_native_selection(target, status):
+async def test_range_value_candidate_obeys_native_selection(kind, target, status):
     from smart_reporting.report_editor.workbook_native_ai import NativeWorkbookAIService
 
     async def planner(*_args, **_kwargs):
+        arguments = {'sheetName': 'Sheet', 'range': target}
+        if kind == 'replaceRangeText':
+            arguments.update(find='旧数据', replace='新数据', matchCase=False, wholeCell=False)
         return WorkbookAIProposal.model_validate({'summary': '清空旧数据', 'operations': [{
-            'kind': 'clearCellRange', 'arguments': {'sheetName': 'Sheet', 'range': target},
+            'kind': kind, 'arguments': arguments,
         }]})
 
     editor = Editor()
