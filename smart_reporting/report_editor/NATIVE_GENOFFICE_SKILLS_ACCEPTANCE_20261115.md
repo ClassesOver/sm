@@ -34,3 +34,5 @@ WorkbookAIToolkit.load_guide现在支持全部11个源guide：writing、formatti
 - 目标Ruff和git diff --check通过。按受影响范围分批验证，没有重复完整项目测试。ScriptedModel/本地SQLite和合成文件证据不算真实provider/生产数据库/浏览器整链验收。
 
 所有源工具的实际执行、CLI与桌面能力、技能选择/安装UI仍按既有差距清单推进。本批全量复制与技能读取接线不提升为四格式工具全量完成声明。
+
+同步远端2bfaf68e（新增原生超链接等）后，源layout指南的本地补充和新DSL完整保留，技能模块及其余接线入口未发生行为冲突。重新执行全部20项新专项、Word认证MCP两变体和首页知识planner策略，共23项通过（12.67秒）；Ruff及diff检查通过。
