@@ -1,0 +1,46 @@
+name: Report channel frontend integration
+
+on:
+  push:
+    branches:
+      - review/report-channel-acp
+    paths:
+      - "smart_reporting/report_editor/frontend/src/native-ai.ts"
+      - "smart_reporting/report_editor/frontend/src/native-api.ts"
+      - "smart_reporting/report_editor/frontend/src/office-assistant-controller.ts"
+      - "smart_reporting/report_editor/frontend/src/native-ai.test.ts"
+      - "smart_reporting/report_editor/frontend/src/office-assistant-controller.test.ts"
+      - ".github/workflows/report-channel-frontend.yml"
+  pull_request:
+    paths:
+      - "smart_reporting/report_editor/frontend/src/native-ai.ts"
+      - "smart_reporting/report_editor/frontend/src/native-api.ts"
+      - "smart_reporting/report_editor/frontend/src/office-assistant-controller.ts"
+      - "smart_reporting/report_editor/frontend/src/native-ai.test.ts"
+      - "smart_reporting/report_editor/frontend/src/office-assistant-controller.test.ts"
+      - ".github/workflows/report-channel-frontend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: smart_reporting/report_editor/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: smart_reporting/report_editor/frontend/package-lock.json
+      - name: Install locked frontend dependencies
+        run: npm ci --no-audit --no-fund
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+      - name: Focused Word task and channel integration tests
+        run: npx vitest run src/native-ai.test.ts src/office-assistant-controller.test.ts --reporter=verbose
