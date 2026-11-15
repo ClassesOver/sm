@@ -1002,6 +1002,33 @@ it('opens GenOffice Table Layout Select and Delete command menus with current ca
   } finally {editor.destroy()}
 })
 
+it('shows the GenOffice Table Layout AutoFit mode and commits the selected option', () => {
+  const host=document.body.appendChild(document.createElement('div'))
+  const editor=new Editor({element:host,extensions:[Doc,Paragraph,Table,Text],content:{type:'doc',content:[{type:'docTable',content:[{type:'docParagraph',content:[{type:'text',text:'内容'}]}]}]}})
+  let active='table-autofit-fixed'
+  const run=vi.fn((action:string)=>{
+    active=action
+    editor.view.dispatch(editor.state.tr.setMeta('table-autofit',true))
+  })
+  const ribbon=createDocxRibbon(editor,true,undefined,undefined,undefined,[],{reason:()=>null,run,active:action=>action===active})
+  document.body.append(ribbon)
+  try {
+    editor.commands.setNodeSelection(0)
+    ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
+    const command=(name:string)=>ribbon.querySelector<HTMLButtonElement>(`[data-action="${name}"]`)!
+    const trigger=command('table-autofit-menu')
+    expect(trigger.querySelector('small')?.textContent).toContain('固定列宽')
+    trigger.click()
+    const options=Array.from(trigger.parentElement!.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'))
+    expect(options.map(option=>option.dataset.action)).toEqual(['table-autofit-contents','table-autofit-window','table-autofit-fixed'])
+    expect(options.map(option=>option.getAttribute('aria-checked'))).toEqual(['false','false','true'])
+    command('table-autofit-window').click()
+    expect(run).toHaveBeenCalledExactlyOnceWith('table-autofit-window')
+    expect(trigger.querySelector('small')?.textContent).toContain('窗口')
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  } finally {editor.destroy()}
+})
+
 it.each([false, true])('commits the Layout right-indent field with section settings=%s through an anchored DOCX operation', withSection => {
   const host = document.createElement('div')
   document.body.append(host)

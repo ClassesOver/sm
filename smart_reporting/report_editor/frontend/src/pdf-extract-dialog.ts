@@ -98,16 +98,21 @@ export function bindPdfExtractDialog(options: {
       if (!disposed && dialog.open && token === generation) { dialog.setAttribute('aria-busy', 'false'); apply.disabled = false; input.disabled = false }
     }
   }
+  function showDialog(preferredPage?: number) {
+    if (disposed || busy || dialog.open || options.unavailable()) return false
+    generation++; dialog.setAttribute('aria-busy', 'false'); apply.disabled = false; input.disabled = false
+    if (preferredPage !== undefined || !input.value) input.value = String(preferredPage ?? options.currentPage())
+    if (cached) show(cached); else { setMessage(''); links.replaceChildren() }
+    opener = owner.activeElement instanceof HTMLElement ? owner.activeElement : null
+    dialog.showModal(); input.focus()
+    return true
+  }
   return {
-    open(preferredPage?: number) {
-      if (disposed || busy || dialog.open) return
-      const reason = options.unavailable()
-      if (reason) return
-      generation++; dialog.setAttribute('aria-busy', 'false'); apply.disabled = false; input.disabled = false
-      if (preferredPage !== undefined || !input.value) input.value = String(preferredPage ?? options.currentPage())
-      if (cached) show(cached); else { setMessage(''); links.replaceChildren() }
-      opener = owner.activeElement instanceof HTMLElement ? owner.activeElement : null
-      dialog.showModal(); input.focus()
+    open(preferredPage?: number) { showDialog(preferredPage) },
+    extractPage(page: number) {
+      if (!showDialog(page)) return
+      body.focus()
+      void submit()
     },
     dispose() { if (disposed) return; disposed = true; generation++; releaseFocusTrap(); dialog.remove() },
   }

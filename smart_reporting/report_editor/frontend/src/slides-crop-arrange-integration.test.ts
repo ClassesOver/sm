@@ -17,7 +17,7 @@ const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5
     { id: 'two', type: 'shape', name: '二', text: '二', editable: true, deletable: true, arrangeEditable: true, geometry: geometry(200, 90) },
     { id: 'three', type: 'shape', name: '三', text: '', editable: true, deletable: true, arrangeEditable: true, geometry: geometry(400, 150) },
     { id: 'picture', type: 'picture', name: '图片', text: '', editable: false, deletable: true, arrangeEditable: true, pictureCropEditable: true,
-      pictureOpacityEditable: true, pictureTransform: { rot: 0, flipH: false, flipV: false }, pictureReplaceable: true, pictureSha256: 'b'.repeat(64), pictureSize: 68, srcRect: null, geometry: geometry(40, 200, 200, 100) },
+      pictureOutlineEditable: true, pictureOpacityEditable: true, pictureTransform: { rot: 0, flipH: false, flipV: false }, pictureReplaceable: true, pictureSha256: 'b'.repeat(64), pictureSize: 68, srcRect: null, geometry: geometry(40, 200, 200, 100) },
   ] },
   { slideIndex: 1, elements: [{ id: 'other', type: 'text', name: '其他页', text: '其他页', editable: true, arrangeEditable: true, geometry: geometry(40, 40) }] },
 ] }
@@ -41,6 +41,34 @@ async function open(operations: Record<string, unknown>[] = []) {
   }
   return { view, shell, draft, request, command, choose }
 }
+
+it('stages and clears picture outlines from the Picture Format ribbon', async () => {
+  const app = await open()
+  try {
+    const object = app.shell.editor.querySelector<HTMLSelectElement>('#object-select')!
+    object.value = 'picture'
+    object.dispatchEvent(new Event('change', { bubbles: true }))
+    const color = app.shell.editor.querySelector<HTMLInputElement>('[data-command="pictureOutlineColor"]')!
+    expect(color.disabled).toBe(false)
+    color.value = '#123456'
+    color.dispatchEvent(new Event('change', { bubbles: true }))
+    const width = app.shell.editor.querySelector<HTMLSelectElement>('[data-command="pictureOutlineWidth"]')!
+    expect([...width.options].map(option => option.value)).toEqual(['0.5', '1', '1.5', '2.25', '3', '4.5', '6'])
+    width.value = '2.25'
+    width.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(app.draft.operations[0]?.shapeStyles).toEqual([
+      { slideIndex: 0, elementId: 'picture', stroke: { color: '#123456', widthPt: 2.25 } },
+    ])
+    app.command('pictureNoOutline').click()
+    expect(app.draft.operations[0]?.shapeStyles).toEqual([{ slideIndex: 0, elementId: 'picture', stroke: null }])
+    app.shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
+    expect(app.draft.operations[0]?.shapeStyles).toEqual([
+      { slideIndex: 0, elementId: 'picture', stroke: { color: '#123456', widthPt: 2.25 } },
+    ])
+  } finally {
+    app.view.dispose()
+  }
+})
 
 it('多选排列保留文字与非目标编辑，一次撤销恢复整批并可保存', async () => {
   const app = await open([{ kind: 'editSlides', edits: [{ slideIndex: 0, elementId: 'one', text: '已改文字' }], order: [0, 1] }])

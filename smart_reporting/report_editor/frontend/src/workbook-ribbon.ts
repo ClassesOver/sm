@@ -457,8 +457,6 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('插入列', 'insert-col-here', 'insert-col-here'),
       action('删除列', 'delete-col-here', 'delete-col-here'),
       action('插入单元格', 'insert-cells', 'insert-cells'), action('删除单元格', 'delete-cells', 'delete-cells'),
-      action('全部清除', 'clear-all', 'clear-all'), action('清除格式', 'clear-formats', 'clear-formats'),
-      action('清除内容', 'clear-contents', 'clear-contents'),
     ] },
     { title: '编辑', actions: [
       action('查找', 'find', 'find'),
@@ -610,7 +608,7 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   after?: RibbonCommand
   icon: string
   detail: string
-  choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
+  choices: ReadonlyArray<{ command?: RibbonCommand; label: string; summary?: 'below' | 'right' }>
 }> = [
   { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
   {
@@ -675,6 +673,16 @@ const RIBBON_COMMAND_MENUS: ReadonlyArray<{
       { command: 'fill-left', label: '向左填充' },
       { command: 'fill-series-open', label: '序列…' },
       { command: 'flash-fill', label: '快速填充' },
+    ],
+  },
+  {
+    tab: 'Home', id: 'clear-selection', label: '清除', group: '编辑', icon: '⌫', detail: '清除',
+    choices: [
+      { command: 'clear-all', label: '全部清除' },
+      { command: 'clear-formats', label: '清除格式' },
+      { command: 'clear-contents', label: '清除内容' },
+      { label: '清除批注和注释' },
+      { label: '清除超链接' },
     ],
   },
   {
@@ -1627,11 +1635,16 @@ export function mountWorkbookRibbon(
         select.dataset.ribbonControl = menu.id
         select.setAttribute('aria-label', menu.label)
         select.title = menu.detail
-        select.append(new Option(menu.label, ''), ...menu.choices.map(({ command, label }) => new Option(label, command)))
+        select.append(new Option(menu.label, ''), ...menu.choices.map(({ command, label }) => {
+          const option = new Option(label, command ?? label)
+          option.disabled = !command
+          if (!command) option.title = '尚未接入选区回写'
+          return option
+        }))
         select.addEventListener('change', () => {
           const choice = menu.choices.find(({ command }) => command === select.value)
           select.value = ''
-          if (choice && !select.disabled) onCommand(choice.command)
+          if (choice?.command && !select.disabled) onCommand(choice.command)
         })
         wrapper.append(icon, select)
         const after = menu.after && section.querySelector('[data-ribbon-command="' + menu.after + '"]')

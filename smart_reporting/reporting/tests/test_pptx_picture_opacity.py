@@ -6,6 +6,9 @@ from zipfile import ZipFile
 
 import pytest
 from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.dml import MSO_LINE_DASH_STYLE
+from pptx.util import Pt
 
 from smart_reporting.report_editor.native_office import _pptx_arguments, inspect_office, patch_office
 from smart_reporting.reporting.tests.test_pptx_crop_arrange import _crop, _png, _presentation, _target
@@ -84,3 +87,38 @@ def test_native_picture_rotation_and_flip_preserve_center_and_media():
     assert [shape.rotation for shape in Presentation(BytesIO(edited)).slides[0].shapes if shape.name != target_name] == [
         shape.rotation for shape in Presentation(BytesIO(content)).slides[0].shapes if shape.name != target_name
     ]
+
+
+def test_native_picture_outline_preserves_existing_dash_and_media():
+    content, _ = _presentation()
+    target_name = _target(content)['name']
+
+    def picture(presentation, name=target_name):
+        return next(shape for shape in presentation.slides[0].shapes if shape.name == name)
+
+    source = Presentation(BytesIO(content))
+    original = picture(source)
+    original.line.color.rgb = RGBColor.from_string('C01A46')
+    original.line.dash_style = MSO_LINE_DASH_STYLE.DASH
+    original.line.width = Pt(1)
+    fixture = BytesIO()
+    source.save(fixture)
+    content = fixture.getvalue()
+
+    def apply(data, **style):
+        return patch_office('pptx', data, [{'kind': 'editSlides', 'shapeStyles': [
+            {'slideIndex': 0, 'elementId': _target(data)['id'], **style},
+        ]}])
+
+    updated = apply(content, stroke={'color': '#123456', 'widthPt': 2.25})
+    result = Presentation(BytesIO(updated))
+    edited = picture(result)
+    assert str(edited.line.color.rgb) == '123456'
+    assert edited.line.width == Pt(2.25)
+    assert edited.line.dash_style == MSO_LINE_DASH_STYLE.DASH
+    assert edited.image.blob == original.image.blob
+    assert picture(result, '共享媒体保留')._element.xpath('./p:spPr/a:ln') == []
+    cleared = picture(Presentation(BytesIO(apply(updated, stroke=None))))
+    assert cleared._element.xpath('./p:spPr/a:ln/a:noFill')
+    with pytest.raises(ValueError):
+        apply(content, fill='#123456')

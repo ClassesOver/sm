@@ -598,7 +598,7 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
       addAction('向左旋转', () => append({ kind: 'rotatePage', pageId: target.pageId, delta: 270 }))
       addAction('向右旋转', () => append({ kind: 'rotatePage', pageId: target.pageId, delta: 90 }))
       addAction('删除页面', async () => { draft.setOperations(deletePdfPage(model.pages, draft.operations, target.pageId)); await refresh() }, visiblePages.length <= 1)
-      addAction('提取页面', () => { activeId = target.pageId; updateControls(); extraction.open(pdfFileCurrentPage()) }, pageExtractionUnavailable() !== null)
+      addAction('提取页面', () => { activeId = target.pageId; updateControls(); extraction.extractPage(pdfFileCurrentPage()) }, pageExtractionUnavailable() !== null)
     }
     addAction('插入 PDF', () => {
       if (afterPageId !== null) activeId = afterPageId

@@ -74,7 +74,7 @@ import { captureSlidesBrush, planSlidesBrushApply, type BrushSource } from './sl
 import { validateSlidesClipboardDraft, captureSlidesClipboard, planSlidesClipboardPaste } from './slides-native-clipboard'
 import { validateSlidesLinkDraft, openSlidesLink } from './slides-native-link'
 
-type DeckElement = { model3d?:ModelSource; mediaKind?:'video'|'audio'; id: string; type: string; name: string; text: string; editable: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureTransform?: PictureTransform; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
+type DeckElement = { model3d?:ModelSource; mediaKind?:'video'|'audio'; id: string; type: string; name: string; text: string; editable: boolean; pictureOutlineEditable?: boolean; pictureOpacityEditable?: boolean; pictureOpacityReason?: string | null; pictureOpacity?: number; clipboardEditable?: boolean; clipboardReason?: string | null; linkEditable?: boolean; linkReason?: string | null; elementLink?: {kind:'url';url:string;tooltip?:string}|{kind:'slide';slideIndex:number;tooltip?:string}|{kind:'action';action:string;tooltip?:string}|null; brushSource?: BrushSource; groupEditable?: boolean; groupReason?: string | null; ungroupEditable?: boolean; ungroupReason?: string | null; arrangeEditable?: boolean; orderEditable?: boolean; pictureCropEditable?: boolean; pictureCropReason?: string | null; srcRect?: CropRect | null; pictureTransform?: PictureTransform; pictureReplaceable?: boolean; pictureReplaceReason?: string | null; pictureSha256?: string | null; pictureSize?: number | null; chartEditSafe?: boolean; chartEditReason?: string | null; chartPointColors?: (string | null)[][] | null; chartSeriesColors?: (string | null)[] | null; chartStyle?: NativeChartStyle | null; chartColorSchemes?: ChartColorScheme[] | null; chartGapWidthPct?: number | null; chartKind?: NativeChartKind | null; chartCategories?: string[] | null; chartSeries?: { name: string; values: number[] }[] | null; findReplaceEditable?: boolean; tableCells?: (string | null)[][]; tableStructureEditable?: boolean; tableCellShadingEditable?: boolean; tableCellShadingReason?: string | null; tablePresetEditable?: boolean; tablePresetReason?: string | null; tableStyleName?: string | null; tableStyleFlags?: SlidesTableFlags; deletable?: boolean; geometry?: { x: number; y: number; width: number; height: number }; paragraphAlignments?: (ParagraphFormatting['align'] | null)[]; paragraphFormatting?: ParagraphSourceFormatting[]; paragraphLists?: ParagraphList[]; textStyle?: { fontSizePt?: number | null; fontFamily?: string | null; color?: string | null; bold?: boolean | null; italic?: boolean | null; underline?: boolean | null; strike?: boolean | null } }
 type Animation = SourceAnimation
 type DeckLayout = { path: string; name: string; layoutType: string; placeholders: { type: string; idx: string; hint: string }[] }
 type HeaderFooterSetting = { footer: string | null; slideNum: boolean; date: string | null; dateAuto: boolean }
@@ -627,6 +627,19 @@ function opacityReason(): string | null {
   if (!pictureOpacities.some(item => item.slideIndex === selectedSlide && item.elementId === element.id) && pictureOpacities.length >= 50) return '待保存的图片透明度修改已达 50 项，请先保存'
   return null
 }
+function pictureOutlineEnabled(element: DeckElement | undefined) {
+  return element?.type === 'picture' && element.pictureOutlineEditable === true
+}
+function currentPictureOutline(elementId: string): NonNullable<ShapeStyleEdit['stroke']> {
+  const pending = shapeStyleEdits.get(editKey(selectedSlide, elementId))
+  if (pending) return pending.stroke ? { ...pending.stroke } : { color: '#000000', widthPt: 1 }
+  const node = renderTree?.slides.find(slide => slide.slideIndex === selectedSlide)?.nodes.find(item => item.sourceId === elementId)
+  const sourceStroke = node?.type === 'picture' ? node.stroke : undefined
+  return {
+    color: sourceStroke && /^#[a-f\d]{6}$/i.test(sourceStroke.color) ? sourceStroke.color : '#000000',
+    widthPt: sourceStroke?.widthPt && sourceStroke.widthPt >= 0.01 && sourceStroke.widthPt <= 100 ? sourceStroke.widthPt : 1,
+  }
+}
 function slideHasPendingEdits(slideIndex: number, ignoreNewSlideSources = false) {
   return backgroundImageReuseEdits.some(item=>item.slideIndices.includes(slideIndex)) || backgroundImageEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundGradientEdits.some(item => item.slideIndices.includes(slideIndex)) || backgroundResetEdits.has(slideIndex) || backgroundGraphicsEdits.has(slideIndex) || pictureOpacities.some(item => item.slideIndex === slideIndex) || notesEdits.has(slideIndex) || [...edits.values(), ...textFormattingEdits.values(), ...paragraphFormattingEdits, ...animationEdits, ...textBoxEdits, ...deletions.values(), ...imageEdits].some(item => item.slideIndex === slideIndex) || animationSequences.has(slideIndex) || elementOrders.has(slideIndex) || pendingGroup(slideIndex) || linkEdits.some(item=>item.slideIndex===slideIndex) || clipboardPastes.some(item=>item.slideIndex===slideIndex||item.sourceSlideIndex===slideIndex)
     || commentPane.hasDraft(slideIndex) || commentEdits.some(edit => edit.slideIndex === slideIndex) || hiddenSlideEdits.has(slideIndex) || transitionEdits.has(slideIndex) || layoutEdits.has(slideIndex) || backgroundEdits.has(slideIndex) || resetLayouts.has(slideIndex) || shapeEdits.some(item => item.slideIndex === slideIndex) || tableEdits.some(item => item.slideIndex === slideIndex) || [...shapeStyleEdits.values(), ...shapeKindEdits.values(), ...sectionEdits, ...tableCellEdits.values(), ...tableStyleEdits.values(), ...tableStructureEdits.values(), ...chartEdits, ...smartArtEdits, ...mediaInsertions, ...nativeImages, ...pictureReplacements, ...pictureCrops, ...nativeChartEdits].some(item => item.slideIndex === slideIndex)
@@ -1076,10 +1089,17 @@ function renderCanvas() {
   const ordered=blocks.filter(block=>rank.has(block[0]!.sourceId)).sort((a,b)=>rank.get(a[0]!.sourceId)!-rank.get(b[0]!.sourceId)!)
   let orderedIndex=0
   const projectedNodes=[...prefix,...blocks.flatMap(block=>rank.has(block[0]!.sourceId)?ordered[orderedIndex++]!:block)]
+  const outlinedNodes = projectedNodes.map(node => {
+    const stroke = shapeStyleEdits.get(editKey(selectedSlide, node.sourceId))?.stroke
+    if (node.type !== 'picture' || stroke === undefined) return node
+    return { ...node, stroke: stroke === null ? undefined : {
+      ...node.stroke, color: stroke.color, widthPt: stroke.widthPt, widthPx: stroke.widthPt * 4 / 3, gradient: undefined,
+    } }
+  })
   renderMediaControls(source)
   modelControls?.update()
   canvas.update({
-    slide: {...slide,nodes:projectedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
+    slide: {...slide,nodes:outlinedNodes.map(node=>{const crop=pictureCrops.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const faded=pictureOpacities.find(item=>item.slideIndex===selectedSlide&&item.elementId===node.sourceId);const base=faded&&node.type==='picture'?{...node,opacity:faded.opacity}:node;return crop&&base.type==='picture'?{...base,srcRect:crop.srcRect??undefined,box:{...base.box,x:crop.geometry.x,y:crop.geometry.y,w:crop.geometry.width,h:crop.geometry.height}}:base})}, selectedId: selectedElement, selectedIds:[...selectedObjects],
     selectableIds: new Set(locked()?[]:slideAt(selectedSlide).elements.filter(item=>!deletions.has(editKey(selectedSlide,item.id))).map(item=>item.id)),
     editableIds: new Set(locked() || pendingGroup(selectedSlide) ? [] : slideAt(selectedSlide).elements.filter(item => (item.editable || item.arrangeEditable) && !deletions.has(editKey(selectedSlide, item.id))).map(item => item.id)),
     edits: [...edits.values()].filter(item => item.slideIndex === selectedSlide),
@@ -2049,7 +2069,8 @@ function restoreNativeDraft(candidate?: NativeOperation[], validateOnly = false)
   const restoredStyles = changes.shapeStyles ?? []
   const hex = (value: unknown) => typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
   if (!Array.isArray(restoredStyles) || restoredStyles.length > 500 || restoredStyles.some(item => !item || !Number.isInteger(item.slideIndex) || item.slideIndex < 0 || item.slideIndex >= deck.slides.length || restoredDeleted.includes(item.slideIndex)
-    || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId && ['text', 'shape'].includes(element.type))
+    || !deck.slides[item.slideIndex]!.elements.some(element => element.id === item.elementId &&
+      (['text', 'shape'].includes(element.type) || (item.fill === undefined && pictureOutlineEnabled(element))))
     || Object.keys(item).some(key => !['slideIndex', 'elementId', 'fill', 'stroke'].includes(key)) || (item.fill === undefined && item.stroke === undefined)
     || (item.fill !== undefined && item.fill !== 'none' && !hex(item.fill)) || (item.stroke !== undefined && item.stroke !== null && (!hex(item.stroke.color) || !(item.stroke.widthPt > 0 && item.stroke.widthPt <= 100))))) throw new Error('草稿中的形状样式无效；原草稿已保留')
   const restoredSmartArts = changes.smartArts ?? []
@@ -2454,6 +2475,11 @@ function renderInspector() {
   nativeRibbon?.setValue('background', backgroundColor.value)
   { const picture = currentElement(), pending = picture ? pictureOpacities.find(item => item.slideIndex === selectedSlide && item.elementId === picture.id) : undefined
     nativeRibbon?.setValue('pictureOpacity', picture?.type === 'picture' ? String(Math.round((1 - (pending?.opacity ?? picture.pictureOpacity ?? 1)) * 100)) : '') }
+  if (selectedElement) {
+    const stroke = currentPictureOutline(selectedElement)
+    nativeRibbon?.setValue('pictureOutlineColor', stroke.color)
+    nativeRibbon?.setValue('pictureOutlineWidth', String(stroke.widthPt))
+  }
   nativeRibbon?.setValue('animationEffect', animationEffect.value)
   nativeRibbon?.setValue('animationTrigger', animationTrigger.value)
   nativeRibbon?.setValue('animationDuration', animationDuration.value)
@@ -2520,6 +2546,8 @@ function renderInspector() {
     ['removeBackground',!cutoutReason(),cutoutReason()??''],
     ['cropPicture',!cropReason(),cropReason()??''],
     ['pictureOpacity', !opacityReason(), opacityReason() ?? '图片透明度（0–100%）：0 为不透明'],
+    ...(['pictureOutlineColor', 'pictureOutlineWidth', 'pictureNoOutline'].map(command =>
+      [command, selectedObjects.size === 1 && pictureOutlineEnabled(element) && !pendingGroup(selectedSlide), '请选择支持轮廓编辑的来源图片'] as const)),
     ...(['rotatePictureRight', 'rotatePictureLeft', 'flipPictureH', 'flipPictureV'].map(command =>
       [command, selectedObjects.size === 1 && !!element?.pictureTransform && !pendingGroup(selectedSlide), '请选择支持旋转或翻转的来源图片'] as const)),
     ['replacePicture',selectedObjects.size===1&&!element?.mediaKind&&element?.pictureReplaceable===true&&!pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id),pictureCrops.some(item=>item.slideIndex===selectedSlide&&item.elementId===element?.id)?'请先保存或撤回此图片裁切':element?.pictureReplaceReason??'请选择已核验身份的来源图片'],
@@ -2759,6 +2787,31 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       case 'flipPictureV':
         transformSelectedPicture(command)
         return
+      case 'pictureOutlineColor':
+      case 'pictureOutlineWidth':
+      case 'pictureNoOutline': {
+        const target = currentElement()
+        if (!target || !pictureOutlineEnabled(target) || selectedObjects.size !== 1 || pendingGroup(selectedSlide)) return
+        const key = editKey(selectedSlide, target.id)
+        if (deletions.has(key) || (!shapeStyleEdits.has(key) && shapeStyleEdits.size >= 500)) return
+        const stroke = currentPictureOutline(target.id)
+        if (command === 'pictureOutlineColor') {
+          if (typeof value !== 'string' || !/^#[a-f\d]{6}$/i.test(value)) return
+          stroke.color = value.toUpperCase()
+        } else if (command === 'pictureOutlineWidth') {
+          const width = Number(value)
+          if (!Number.isFinite(width) || width < 0.01 || width > 100) return
+          stroke.widthPt = width
+        }
+        shapeStyleEdits.set(key, { slideIndex: selectedSlide, elementId: target.id, stroke: command === 'pictureNoOutline' ? null : stroke })
+        renderStructurePending()
+        markDirty()
+        if (command === 'pictureNoOutline') {
+          nativeRibbon?.setValue('pictureOutlineColor', '#000000')
+          nativeRibbon?.setValue('pictureOutlineWidth', '1')
+        }
+        return
+      }
       case 'pictureOpacity': {
         // 固定源 onPictureOpacity：控件输入的是透明度百分比，写回不透明度（1 − 透明度）。
         const target = currentElement(), reason = opacityReason()

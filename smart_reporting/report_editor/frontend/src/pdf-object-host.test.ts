@@ -466,7 +466,8 @@ it('thumbnail context menu edits its stable page identity and inserts blank page
  view.dispose()
 })
 it('works on a pending blank page from its thumbnail context menu', async () => {
- const flush=vi.fn(async()=>undefined)
+ let completeSave!: () => void
+ const flush=vi.fn(() => new Promise<undefined>(resolve => {completeSave=()=>resolve(undefined)}))
  const f=await fixture({flushForFileOperation:flush});await f.create()
  f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.insertBlank"]')!.click()
  await vi.waitFor(()=>expect(f.root.querySelector('.pdf-thumbnail[data-page-id^="blank:"]')).not.toBeNull())
@@ -482,8 +483,8 @@ it('works on a pending blank page from its thumbnail context menu', async () => 
  const extract=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="提取页面"]')!
  await vi.waitFor(()=>expect(extract.open).toBe(true))
  expect(extract.querySelector('input')?.value).toBe('2')
- expect(flush).not.toHaveBeenCalled()
- extract.close()
+ expect(flush).toHaveBeenCalledOnce()
+ extract.close(); completeSave()
  choose('向左旋转')
  await vi.waitFor(()=>expect(f.draft.operations).toContainEqual({kind:'rotatePage',pageId:first,delta:270}))
  await vi.waitFor(()=>expect(f.root.querySelector('.pdf-thumbnail[data-page-id="'+first+'"]')).not.toBeNull())
@@ -496,6 +497,28 @@ it('works on a pending blank page from its thumbnail context menu', async () => 
  expect(f.draft.operations.some(op=>op.pageId===first || op.kind==='deletePage')).toBe(false)
  f.draft.undo()
  expect(f.draft.operations).toContainEqual({kind:'rotatePage',pageId:first,delta:270})
+})
+it('extracts the thumbnail page without a second click and retains the result link', async () => {
+ const f=await fixture({exportPages:3})
+ const extractPages=vi.fn(async ():Promise<NativeSaveResponse> => ({
+  documentId:'child',revision:1,parentRevision:null,revisionRegistered:true,
+  artifacts:{pdf:{downloadUrl:'/reviews/single-page.pdf'}},
+  validation:{ok:false,issues:[{code:'review',message:'待复核'}]},
+ }))
+ Object.assign(f.api,{extractPages});await f.create()
+ f.root.querySelector<HTMLButtonElement>('[data-pdf-ribbon-tab="page"]')!.click()
+ f.root.querySelector<HTMLButtonElement>('[data-source-command-id="genoffice.pdf.page.extract"]')!.click()
+ const dialog=f.root.querySelector<HTMLDialogElement>('dialog[aria-label="提取页面"]')!
+ await vi.waitFor(()=>expect(dialog.open).toBe(true))
+ expect(extractPages).not.toHaveBeenCalled();dialog.close()
+ const thumbnail=f.root.querySelectorAll<HTMLButtonElement>('.pdf-thumbnail')[1]!
+ thumbnail.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:25,clientY:35}))
+ const command=[...f.root.querySelectorAll<HTMLButtonElement>('[data-pdf-thumbnail-menu] button')].find(button=>button.textContent==='提取页面')!
+ command.click()
+ await vi.waitFor(()=>expect(dialog.querySelector('a')?.getAttribute('href')).toBe('/reviews/single-page.pdf'))
+ expect(extractPages).toHaveBeenCalledOnce()
+ expect(extractPages).toHaveBeenCalledWith(expect.objectContaining({expectedSha256:sourceSha256,pages:[2]}))
+ expect(dialog.textContent).toContain('待复核')
 })
 it('signature dialog imports a normalized image and starts image placement',async()=>{
  const close=vi.fn(),drawImage=vi.fn(),f=await fixture();await f.create()

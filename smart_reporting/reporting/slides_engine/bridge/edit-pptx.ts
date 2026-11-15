@@ -27,8 +27,14 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import shapePresets from './shape-presets.json' with { type: 'json' }
 import { updateConnectorsForMoved, isConnectorXml, addChart, addElement, addImageMediaAndRel, addPicture, addSection, addSmartArt, addTable, applyHeaderFooter, editTableCellText, editTableStyle, editTableStructure, ensureTableStylePart, TABLE_STYLE_PRESETS, getSections, readHeaderFooter, applyThemeToArchive, deleteElement, elementSpid, getSlideAdvanceTime, getSlideAnimations, getSlideHidden, getSlideTransition, deleteSlide, duplicateSlide, setElementFill, setShapePresetGeometry, strokePatchToModel, insertBlankSlide, insertSlideWithLayout, resetSlideLayout, listMasterParts, listSlideLayouts, moveSlide, openPptx, remapDeckColors, savePptx, setElementFont, setElementParagraphFormat, setSlideAdvanceTime, setSlideAnimations, setSlideHidden, setSlideLayout, setSlideSize, setSlideTransition, type TableElement, type SlideAnimation, type SlideTransitionKind, type ThemeSpec } from '@genoffice/pptx-engine'
+import type { SlideElement } from '@genoffice/pptx-engine'
 import { applyEditParagraphs } from '../packages/pptx-ops/src/edit-text.ts'
 import { auditDeck } from '../packages/pipelines/src/slides/audit-deck.ts'
+
+function canEditPictureOutline(element: SlideElement) {
+  return element.type === 'picture' && !!element.mediaRef && !element.media &&
+    !element.model3d && /<p:spPr(?:\s|>)/.test(element.anchor.originalXml)
+}
 
 type TextEdit = {
   slideIndex: number
@@ -395,6 +401,7 @@ if (request.action === 'inspect') {
         type: element.type,
         ...(element.type==='picture'&&element.model3d?{model3d:readModelSources(opened,slideIndex).find(item=>item.sourceId===element.id)}:{}),
         ...(element.type === 'picture' && element.media ? { mediaKind: element.media.kind } : {}),
+        ...(element.type === 'picture' ? { pictureOutlineEditable: canEditPictureOutline(element) } : {}),
         name: element.name ?? '',
         text: textOf(element),
         ...(element.type === 'table' ? { tableStructureEditable: structureSafe(element), ...tableStyleState(element), ...cellShadingState(element,slide.path) } : {}),
@@ -961,11 +968,18 @@ if (request.action === 'inspect') {
   for (const style of request.shapeStyles ?? []) {
     const slide = originalSlides[style.slideIndex]!
     const element = slide.elements.find(candidate => candidate.id === style.elementId)
-    if (!element || (element.type !== 'text' && element.type !== 'shape')) throw new Error('shape_style_target_invalid')
+    if (!element || (element.type !== 'text' && element.type !== 'shape' &&
+        !(style.fill === undefined && canEditPictureOutline(element)))) {
+      throw new Error('shape_style_target_invalid')
+    }
     if (style.fill !== undefined && !setElementFill(opened, slide, style.elementId, style.fill)) throw new Error('shape_fill_failed')
     if (style.stroke !== undefined) {
       const target = element as typeof element & { stroke?: unknown; dirtyStroke?: boolean }
-      target.stroke = style.stroke ? strokePatchToModel({ color: style.stroke.color.toUpperCase(), widthEmu: Math.round(style.stroke.widthPt * 12700) }) : undefined
+      const patch = style.stroke ? strokePatchToModel({
+        color: style.stroke.color.toUpperCase(), widthEmu: Math.round(style.stroke.widthPt * 12700),
+        ...(element.type === 'picture' && element.stroke?.dash ? { dash: element.stroke.dash } : {}),
+      }) : undefined
+      target.stroke = patch
       target.dirtyStroke = true
     }
   }

@@ -167,3 +167,14 @@ it('does not start extraction if the dialog closes during source preparation', a
   await new Promise(resolve => setTimeout(resolve, 0))
   expect(f.extract).not.toHaveBeenCalled()
 })
+
+it('submits a thumbnail page immediately while the standard range entry waits for input', async () => {
+ const f=fixture()
+ f.view.open()
+ expect(f.extract).not.toHaveBeenCalled()
+ f.dialog.close()
+ f.view.extractPage(3)
+ expect(f.dialog.open).toBe(true)
+ expect(f.extract).toHaveBeenCalledWith(expect.objectContaining({pages:[3]}))
+ await vi.waitFor(()=>expect(f.root.querySelector('a')?.getAttribute('href')).toBe('/reports/v1/download/verified/pdf'))
+})

@@ -137,8 +137,7 @@ const tableRibbonGroups: Record<string, [string, TableRibbonCommand[]][]> = {
     ]],
     ['单元格大小', [
       command('table-row-height', '行高'), command('table-column-width', '列宽'),
-      command('table-autofit-contents', '根据内容自动调整'), command('table-autofit-window', '根据窗口自动调整'),
-      command('table-autofit-fixed', '固定列宽'), command('table-distribute-rows', '平均分布各行'),
+      command('table-autofit-menu', '自动调整'), command('table-distribute-rows', '平均分布各行'),
       command('table-distribute-columns', '平均分布各列'),
     ]],
     ['对齐方式', [
@@ -531,21 +530,23 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       }
       const group = document.createElement('section')
       group.className = 'ribbon-group docx-ribbon-group'
+      if (id === 'tableLayout' && groupLabel === '单元格大小') group.classList.add('table-tool-group')
       group.setAttribute('aria-label', groupLabel)
       const items = document.createElement('div')
       items.className = 'ribbon-group-items'
       for (const item of commands) {
         const { id: actionId, label } = item
-        if (id === 'tableLayout' && (actionId === 'table-select-menu' || actionId === 'table-delete-menu')) {
+        if (id === 'tableLayout' && (actionId === 'table-select-menu' || actionId === 'table-delete-menu' || actionId === 'table-autofit-menu')) {
           const selecting = actionId === 'table-select-menu'
-          const menu = createDocxTableLayoutMenu(selecting ? 'select' : 'delete', tableCommands ? action => {
+          const kind = selecting ? 'select' : actionId === 'table-delete-menu' ? 'delete' : 'autofit'
+          const menu = createDocxTableLayoutMenu(kind, tableCommands ? action => {
             if (selecting) editor.view.focus()
             tableCommands.run(action)
           } : undefined, action => {
             if (!tableCommands) return tableUnavailable
             if (!selecting && (!editable || !editor.isEditable)) return '当前文档不可编辑或正在保存'
             return tableCommands.reason(action)
-          })
+          }, tableCommands?.active)
           tableLayoutMenus.push(menu)
           items.append(menu.root)
           continue

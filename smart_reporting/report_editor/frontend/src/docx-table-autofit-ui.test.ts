@@ -41,10 +41,18 @@ it('来源只读、锁、新表、同表文字/结构混编明确拒绝，格网
  f.editor.commands.insertContent('changed');expect(f.commands.reason('table-autofit-fixed')).toMatch(/先保存|同表/)
  expect(()=>projectDocxAutoFit(f.baseline.content![1],{...f.anchor,autoFitCells:[]},[{mode:'contents'}],f.editor.schema)).toThrow(/网格/)
 })
-it('Ribbon三入口启用并反映模式，AutoFit后行高/列宽/标题/增删互斥',()=>{
+it('Ribbon 自动调整菜单写回模式，AutoFit 后行高/列宽/标题/增删互斥',()=>{
  const f=setup();f.select();const ribbon=createDocxRibbon(f.editor,true,undefined,undefined,undefined,[f.anchor],f.commands);document.body.append(ribbon);ribbon.querySelector<HTMLButtonElement>('[data-tab-id="tableLayout"]')!.click()
- for(const mode of ['contents','window','fixed']){const button=ribbon.querySelector<HTMLButtonElement>(`[data-action="table-autofit-${mode}"]`)!;expect(button.disabled).toBe(false);expect(button.getAttribute('aria-pressed')).toBe(String(mode==='fixed'))}
- f.commands.run('table-autofit-contents');for(const action of ['table-column-width','table-row-height','table-repeat-header-rows','table-insert-row-before'])expect(f.commands.reason(action)).toMatch(/自动调整|AutoFit|先保存/)
+ const trigger=ribbon.querySelector<HTMLButtonElement>('[data-action="table-autofit-menu"]')!;trigger.click()
+ for(const mode of ['contents','window','fixed']){const button=ribbon.querySelector<HTMLButtonElement>(`[data-action="table-autofit-${mode}"]`)!;expect(button.disabled).toBe(false);expect(button.getAttribute('aria-checked')).toBe(String(mode==='fixed'))}
+ ribbon.querySelector<HTMLButtonElement>('[data-action="table-autofit-contents"]')!.click()
+ expect(f.live().attrs!.nativeTableAutoFit).toEqual({steps:[{mode:'contents'}]})
+ expect(trigger.querySelector('small')?.textContent).toContain('内容')
+ for(const action of ['table-column-width','table-row-height','table-repeat-header-rows','table-insert-row-before'])expect(f.commands.reason(action)).toMatch(/自动调整|AutoFit|先保存/)
+ f.editor.setEditable(false)
+ f.editor.view.dispatch(f.editor.state.tr.setMeta('table-autofit-readonly',true))
+ expect(trigger.disabled).toBe(true)
+ expect(trigger.querySelector('small')?.textContent).toContain('内容')
 })
 
 it('真实collector/replay保留全部有序模式，草稿不得覆盖并拒绝同表文字',()=>{

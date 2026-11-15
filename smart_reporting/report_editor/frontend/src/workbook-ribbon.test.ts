@@ -615,16 +615,30 @@ it('dispatches the GenOffice Sort menu and keeps the filter controls in source o
 it('dispatches clear formats/all through the official selection commands and refuses without the wiring', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
-  document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
-  const clearAll = document.querySelector<HTMLButtonElement>('[data-ribbon-command="clear-all"]')!
-  const clearFormats = document.querySelector<HTMLButtonElement>('[data-ribbon-command="clear-formats"]')!
-  expect(clearAll.textContent).toBe('全部清除')
-  expect(clearFormats.textContent).toBe('清除格式')
-  expect(clearAll.disabled).toBe(false)
-  expect(clearFormats.disabled).toBe(false)
-  clearFormats.click(); clearAll.click()
-  expect(onCommand.mock.calls.map(([command]) => command)).toEqual(['clear-formats', 'clear-all'])
+  let protectedSheet = false
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    rotation: () => 0, editable: () => true,
+    protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
+  })
+  const clear = document.querySelector<HTMLSelectElement>('[data-ribbon-control="clear-selection"]')!
+  expect(clear).not.toBeNull()
+  expect(clear.closest('label')?.previousElementSibling?.querySelector('[data-ribbon-control="fill-menu"]')).not.toBeNull()
+  expect(Array.from(clear.options, option => [option.text, option.disabled])).toEqual([
+    ['清除', false], ['全部清除', false], ['清除格式', false], ['清除内容', false],
+    ['清除批注和注释', true], ['清除超链接', true],
+  ])
+  for (const id of ['clear-all', 'clear-formats', 'clear-contents']) {
+    clear.value = id
+    clear.dispatchEvent(new Event('change'))
+    expect(onCommand).toHaveBeenLastCalledWith(id)
+    expect(clear.value).toBe('')
+  }
+  clear.selectedIndex = 4
+  clear.dispatchEvent(new Event('change'))
+  expect(onCommand).toHaveBeenCalledTimes(3)
+  protectedSheet = true; ribbon.refreshState()
+  expect(clear.disabled).toBe(true)
+  ribbon.dispose()
 
   const range = { getRow: () => 0, getColumn: () => 0, getHeight: () => 2, getWidth: () => 1 }
   const workbook = { getActiveSheet: () => ({ getSelection: () => ({ getActiveRange: () => range }) }) } as unknown as Parameters<typeof applyWorkbookRibbonCommand>[1]
@@ -728,7 +742,6 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
     editable: () => true, rotation: () => 0,
     protection: () => ({ sheet: { protected: protectedSheet }, workbook: { locked: false } }),
   })
-  const getLabel = (id: string) => document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)?.textContent
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
     .map(button => [button.dataset.ribbonCommand!, button.textContent ?? '']))
   expect(labels.get('valign:top')).toBe('顶端对齐')
@@ -756,17 +769,15 @@ it('renders source-localized Home Alignment and Cells actions with their fixed c
   expect(labels.get('delete-row-here')).toBe('删除行')
   expect(labels.get('insert-col-here')).toBe('插入列')
   expect(labels.get('delete-col-here')).toBe('删除列')
-  expect(labels.get('clear-contents')).toBe('清除内容')
-  for (const id of ['valign:top', 'align:center', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells']) {
+  for (const id of ['valign:top', 'align:center', 'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'insert-cells', 'delete-cells', 'format-cells']) {
     const button = document.querySelector<HTMLButtonElement>(`[data-ribbon-command="${id}"]`)!
     expect(button.disabled, id).toBe(false)
     button.click()
   }
   expect(onCommand.mock.calls.map(([command]) => command)).toEqual([
     'merge:center', 'merge:across', 'merge:cells', 'merge:unmerge', 'valign:top', 'align:center',
-    'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'clear-contents', 'insert-cells', 'delete-cells', 'format-cells',
+    'insert-row-here', 'delete-row-here', 'insert-col-here', 'delete-col-here', 'insert-cells', 'delete-cells', 'format-cells',
   ])
-  expect(getLabel('clear-contents')).toBe('清除内容')
   protectedSheet = true; ribbon.refreshState()
   expect(merge.disabled).toBe(true)
   ribbon.dispose()

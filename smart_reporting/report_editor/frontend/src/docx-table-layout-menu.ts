@@ -1,11 +1,19 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { DocxTableCommands } from './docx-tables'
-import { IconCaret, IconColDelete, IconDeleteCells, IconRowDelete, IconSelectCells, IconTableDelete } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { TABLE_AUTO_FIT_OPTIONS } from './docx-table-properties-source'
+import { IconAutoFit, IconCaret, IconColDelete, IconDeleteCells, IconRowDelete, IconSelectCells, IconTableDelete } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import { zh } from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/ribbon/zh'
 import { installPopoverDismiss } from './vendor/genoffice-docs/packages/ui/src/popover-dismiss'
 
-// GenOffice Ribbon.tsx TABLE_SELECT_ITEMS and the adjacent Table Layout Delete menu.
+// Keep the web ribbon's Chinese labels for the three upstream modes.
+const autoFitLabels = {
+  ribbonAutoFitContents: '根据内容自动调整',
+  ribbonAutoFitWindow: '根据窗口自动调整',
+  ribbonFixedColumnWidth: '固定列宽',
+}
+
+// GenOffice Ribbon.tsx Table Layout menus.
 const menus = {
   select: {
     label: zh.ribbonSelect, icon: IconSelectCells, className: 'table-command-row table-command-row-caret',
@@ -25,12 +33,17 @@ const menus = {
       ['table-delete', zh.ribbonDeleteTable, IconTableDelete],
     ],
   },
+  autofit: {
+    label: '自动调整', icon: IconAutoFit, className: 'table-command-button table-autofit-button',
+    items: TABLE_AUTO_FIT_OPTIONS.map(([mode, label]) => [`table-autofit-${mode}`, autoFitLabels[label], IconAutoFit] as const),
+  },
 } as const
 
 export function createDocxTableLayoutMenu(
   type: keyof typeof menus,
   run: DocxTableCommands['run'] | undefined,
   reason: DocxTableCommands['reason'],
+  active?: DocxTableCommands['active'],
 ) {
   const definition = menus[type]
   const root = document.createElement('div'), trigger = document.createElement('button'), panel = document.createElement('div')
@@ -44,6 +57,14 @@ export function createDocxTableLayoutMenu(
     button.append(caption)
   }
   iconButton(trigger, definition.label, definition.icon)
+  const currentMode = document.createElement('small')
+  if (type === 'autofit') {
+    const caption = trigger.querySelector('span')!
+    const copy = document.createElement('span')
+    copy.className = 'table-command-copy'
+    caption.replaceWith(copy)
+    copy.append(caption, currentMode)
+  }
   trigger.insertAdjacentHTML('beforeend', renderToStaticMarkup(createElement(IconCaret, { size: 12 })))
   trigger.className = definition.className
   trigger.dataset.action = `table-${type}-menu`
@@ -67,7 +88,13 @@ export function createDocxTableLayoutMenu(
     iconButton(button, label, icon)
     button.dataset.action = action
     button.dataset.sourceAction = action
-    button.setAttribute('role', 'menuitem')
+    button.setAttribute('role', type === 'autofit' ? 'menuitemradio' : 'menuitem')
+    if (type === 'autofit') {
+      const marker = document.createElement('span')
+      marker.className = 'table-menu-state'
+      marker.setAttribute('aria-hidden', 'true')
+      button.append(marker)
+    }
     button.tabIndex = -1
     button.onclick = () => { if (panel.hidden) return; close(); if (!reason(action)) run?.(action) }
     panel.append(button)
@@ -81,12 +108,21 @@ export function createDocxTableLayoutMenu(
     else button.removeAttribute('aria-description')
   }
   const refresh = () => {
+    let selectedLabel: string | undefined
     const reasons = items.map(({ button, action, label }) => {
       const unavailable = reason(action)
       update(button, label, unavailable)
+      if (type === 'autofit') {
+        const selected = active?.(action) ?? false
+        button.setAttribute('aria-checked', String(selected))
+        button.classList.toggle('active', selected)
+        if (selected) selectedLabel = label
+      }
       return unavailable
     })
+    if (type === 'autofit') currentMode.textContent = selectedLabel ?? autoFitLabels.ribbonFixedColumnWidth
     update(trigger, definition.label, reasons.every(Boolean) ? reasons[0] ?? null : null)
+    if (type === 'autofit' && !trigger.disabled) trigger.setAttribute('aria-description', currentMode.textContent ?? '')
     if (trigger.disabled) close()
   }
   const available = () => items.map(({ button }) => button).filter(button => !button.disabled)
@@ -97,7 +133,9 @@ export function createDocxTableLayoutMenu(
     trigger.setAttribute('aria-expanded', 'true')
     dismiss = installPopoverDismiss(close, { inside: () => [root] })
     const buttons = available()
-    buttons[last ? buttons.length - 1 : 0]?.focus({ preventScroll: true })
+    const selected = buttons.find(button => button.getAttribute('aria-checked') === 'true')
+    const focusTarget = last ? buttons.at(-1) : selected ?? buttons[0]
+    focusTarget?.focus({ preventScroll: true })
   }
   root.onmousedown = event => event.preventDefault()
   trigger.onclick = () => { if (panel.hidden) open(); else close() }
