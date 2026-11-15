@@ -136,3 +136,8 @@ async def test_base_app_mounts_explicit_document_candidate_gateway():
             status = await client.get(path + "/preview-task")
             assert status.status_code == 200
             assert status.json()["accepted"] is False
+            # A valid connector identity must still be bound to the requested channel.
+            unrelated = await client.get(
+                "/reports/v1/channels/channel-b/document-tasks/preview-task",
+            )
+            assert unrelated.status_code == 403
