@@ -469,8 +469,6 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
       action('清除内容', 'clear-contents', 'clear-contents'),
     ] },
     { title: '编辑', actions: [
-      ...(['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'] as const).map((fn, index) =>
-        action(['自动求和', '平均值', '计数值', '最大值', '最小值'][index]!, `autofn:${fn}`, `autofn:${fn}`)),
       action('排序', 'sort-custom-open', 'sort-custom-open'), action('查找', 'find', 'find'),
       action('替换', 'replace', 'replace'), action('定位', 'goto-open', 'goto-open'),
     ] },
@@ -503,8 +501,6 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
   Formulas: [
     { title: '函数库', actions: [
       action('插入函数', 'insert-function-open', 'insert-function-open'),
-      ...(['SUM', 'AVERAGE', 'COUNT', 'MAX', 'MIN'] as const).map((fn, index) =>
-        action(['自动求和', '平均值', '计数', '最大值', '最小值'][index]!, `autofn:${fn}`, `autofn:${fn}`)),
       action('最近使用的函数', 'insert-function-open:All', 'insert-function-open:All'),
       action('财务', 'insert-function-open:Financial', 'insert-function-open:Financial'), action('逻辑', 'insert-function-open:Logical', 'insert-function-open:Logical'),
       action('文本', 'insert-function-open:Text', 'insert-function-open:Text'), action('日期和时间', 'insert-function-open:Date & Time', 'insert-function-open:Date & Time'),
@@ -598,16 +594,31 @@ const COMMAND_GLYPHS: Record<string, string> = {
   find: '🔍', replace: '⇄', 'pivot-open': '▥', 'pivot-edit': '▦', 'format-as-table': '▦', 'insert-chart:column': '📊',
 }
 
-const DATA_COMMAND_MENUS: ReadonlyArray<{
+const AUTOSUM_MENU = {
+  id: 'autosum', label: '自动求和', icon: 'Σ', detail: '自动求和 — 插入到选区下方',
+  choices: [
+    { command: 'autofn:SUM', label: '求和' },
+    { command: 'autofn:AVERAGE', label: '平均值' },
+    { command: 'autofn:COUNT', label: '计数' },
+    { command: 'autofn:MAX', label: '最大值' },
+    { command: 'autofn:MIN', label: '最小值' },
+  ],
+} as const
+
+const RIBBON_COMMAND_MENUS: ReadonlyArray<{
   id: string
   label: string
+  tab: RibbonTab
   group: string
+  after?: RibbonCommand
   icon: string
   detail: string
   choices: ReadonlyArray<{ command: RibbonCommand; label: string; summary?: 'below' | 'right' }>
 }> = [
+  { ...AUTOSUM_MENU, tab: 'Home', group: '编辑' },
+  { ...AUTOSUM_MENU, tab: 'Formulas', group: '函数库', after: 'insert-function-open' },
   {
-    id: 'sort', label: '排序', group: '排序和筛选', icon: '⇅', detail: '对所选内容排序',
+    tab: 'Data', id: 'sort', label: '排序', group: '排序和筛选', icon: '⇅', detail: '对所选内容排序',
     choices: [
       { command: 'sort:asc', label: '升序' },
       { command: 'sort:desc', label: '降序' },
@@ -615,7 +626,7 @@ const DATA_COMMAND_MENUS: ReadonlyArray<{
     ],
   },
   {
-    id: 'text-to-columns', label: '分列', group: '数据工具', icon: '⇶', detail: '拆分单列文本（需完整加载的工作簿）',
+    tab: 'Data', id: 'text-to-columns', label: '分列', group: '数据工具', icon: '⇶', detail: '拆分单列文本（需完整加载的工作簿）',
     choices: [
       { command: 'text-to-columns:2', label: '按逗号拆分' },
       { command: 'text-to-columns:4', label: '按分号拆分' },
@@ -624,14 +635,14 @@ const DATA_COMMAND_MENUS: ReadonlyArray<{
     ],
   },
   {
-    id: 'what-if-analysis', label: '模拟分析', group: '预测', icon: '❔', detail: '对目标值反解输入',
+    tab: 'Data', id: 'what-if-analysis', label: '模拟分析', group: '预测', icon: '❔', detail: '对目标值反解输入',
     choices: [
       { command: 'goal-seek-open', label: '单变量求解' },
       { command: 'data-table-open', label: '数据表' },
     ],
   },
   {
-    id: 'outline-group', label: '组合', group: '分级显示', icon: '⊟', detail: '将所选行或列组合为分级显示',
+    tab: 'Data', id: 'outline-group', label: '组合', group: '分级显示', icon: '⊟', detail: '将所选行或列组合为分级显示',
     choices: [
       { command: 'outline-group:rows', label: '组合行' },
       { command: 'outline-group:cols', label: '组合列' },
@@ -642,7 +653,7 @@ const DATA_COMMAND_MENUS: ReadonlyArray<{
     ],
   },
   {
-    id: 'outline-ungroup', label: '取消组合', group: '分级显示', icon: '⊞', detail: '从选区移除一个分级层级',
+    tab: 'Data', id: 'outline-ungroup', label: '取消组合', group: '分级显示', icon: '⊞', detail: '从选区移除一个分级层级',
     choices: [
       { command: 'outline-ungroup:rows', label: '取消组合行' },
       { command: 'outline-ungroup:cols', label: '取消组合列' },
@@ -953,7 +964,8 @@ export function mountWorkbookRibbon(
     }
     const rotation = view.rotation(), editable = view.editable(), reason = view.unavailableReason?.()
     const format = view.format?.(), selected = view.hasSelection?.() ?? rotation !== undefined
-    for (const menu of DATA_COMMAND_MENUS) {
+    for (const menu of RIBBON_COMMAND_MENUS) {
+      if (menu.tab !== active) continue
       const select = body.querySelector<HTMLSelectElement>('[data-ribbon-control="' + menu.id + '"]')
       if (!select) continue
       const disabledReason = !editable ? '当前工作簿不可编辑或正在保存' : !selected ? '请先选择单元格或区域' : view.protection?.().sheet.protected ? PROTECTED_SHEET_REASON : undefined
@@ -1480,30 +1492,6 @@ export function mountWorkbookRibbon(
         })
         section.append(select)
       }
-      if (active === 'Data') {
-        for (const menu of DATA_COMMAND_MENUS) {
-          if (menu.group !== group.title) continue
-          const wrapper = document.createElement('label')
-          wrapper.className = 'workbook-ribbon-chart-menu'
-          const icon = document.createElement('span')
-          icon.className = 'workbook-ribbon-icon'
-          icon.setAttribute('aria-hidden', 'true')
-          icon.innerHTML = workbookCommandIcon('', menu.icon) ?? ''
-          const select = document.createElement('select')
-          select.className = 'workbook-ribbon-select'
-          select.dataset.ribbonControl = menu.id
-          select.setAttribute('aria-label', menu.label)
-          select.title = menu.detail
-          select.append(new Option(menu.label, ''), ...menu.choices.map(({ command, label }) => new Option(label, command)))
-          select.addEventListener('change', () => {
-            const choice = menu.choices.find(({ command }) => command === select.value)
-            select.value = ''
-            if (choice && !select.disabled) onCommand(choice.command)
-          })
-          wrapper.append(icon, select)
-          section.append(wrapper)
-        }
-      }
       if (active === 'View' && group.title === '窗口') {
         const wrapper = document.createElement('label')
         wrapper.className = 'workbook-ribbon-chart-menu'
@@ -1576,6 +1564,30 @@ export function mountWorkbookRibbon(
           button.addEventListener('click', event => { if (!button.disabled && !captureError) { if (item.command === 'format:custom-open') onCommand(item.command, target); else if (item.command === 'format-painter') onCommand(event.detail >= 2 ? 'format-painter:dblclick' : 'format-painter'); else onCommand(item.command!) } })
         }
         section.append(button)
+      }
+      for (const menu of RIBBON_COMMAND_MENUS) {
+        if (menu.tab !== active || menu.group !== group.title) continue
+        const wrapper = document.createElement('label')
+        wrapper.className = 'workbook-ribbon-chart-menu'
+        const icon = document.createElement('span')
+        icon.className = 'workbook-ribbon-icon'
+        icon.setAttribute('aria-hidden', 'true')
+        icon.innerHTML = workbookCommandIcon('', menu.icon) ?? ''
+        const select = document.createElement('select')
+        select.className = 'workbook-ribbon-select'
+        select.dataset.ribbonControl = menu.id
+        select.setAttribute('aria-label', menu.label)
+        select.title = menu.detail
+        select.append(new Option(menu.label, ''), ...menu.choices.map(({ command, label }) => new Option(label, command)))
+        select.addEventListener('change', () => {
+          const choice = menu.choices.find(({ command }) => command === select.value)
+          select.value = ''
+          if (choice && !select.disabled) onCommand(choice.command)
+        })
+        wrapper.append(icon, select)
+        const after = menu.after && section.querySelector('[data-ribbon-command="' + menu.after + '"]')
+        if (after) after.after(wrapper)
+        else section.insertBefore(wrapper, section.querySelector('button[data-ribbon-command]'))
       }
       sections.push(section)
     }

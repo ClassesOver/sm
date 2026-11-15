@@ -307,10 +307,16 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
   const increaseDecimal = document.querySelector<HTMLButtonElement>('[data-ribbon-command="decimal-inc"]')!
   expect(increaseDecimal.disabled).toBe(false)
   increaseDecimal.click()
-  document.querySelector<HTMLButtonElement>('[data-ribbon-command="autofn:SUM"]')!.click()
-  expect([...document.querySelectorAll('[data-ribbon-command^="autofn:"]')].map(button => button.textContent)).toEqual([
-    '自动求和', '平均值', '计数值', '最大值', '最小值',
+  const autoSum = document.querySelector<HTMLSelectElement>('[data-ribbon-control="autosum"]')!
+  expect(autoSum).not.toBeNull()
+  expect(autoSum.disabled).toBe(false)
+  expect(Array.from(autoSum.options, option => [option.value, option.text])).toEqual([
+    ['', '自动求和'], ['autofn:SUM', '求和'], ['autofn:AVERAGE', '平均值'],
+    ['autofn:COUNT', '计数'], ['autofn:MAX', '最大值'], ['autofn:MIN', '最小值'],
   ])
+  autoSum.value = 'autofn:SUM'
+  autoSum.dispatchEvent(new Event('change'))
+  expect(autoSum.value).toBe('')
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Insert"]')!.click()
 
   expect(onCommand.mock.calls).toEqual([['bold'], ['font-family:Calibri'], ['decimal-inc'], ['autofn:SUM']])
@@ -324,7 +330,9 @@ it('renders the GenOffice ribbon tabs and dispatches supported workbook commands
   const symbol = document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-symbol"]')!
   expect(symbol.dataset.unavailableReason).toBeUndefined()
   symbol.click(); expect(onCommand).toHaveBeenLastCalledWith('insert-symbol')
-  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-equation"]')!.dataset.unavailableReason).toContain('公式')
+  const equation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="insert-equation"]')!
+  expect(equation.dataset.unavailableReason).toBeUndefined()
+  equation.click(); expect(onCommand).toHaveBeenLastCalledWith('insert-equation')
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Home"]')!.click()
   const rotation = document.querySelector<HTMLButtonElement>('[data-ribbon-command="rotate:45"]')!
   expect(rotation.disabled).toBe(false)
@@ -699,22 +707,36 @@ it('wires Find and Replace to the registered Univer dialogs', () => {
 it('renders the GenOffice Formulas Function Library with localized categories and safe states', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand)
+  let editable = true
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+    editable: () => editable, rotation: () => 0,
+  })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Formulas"]')!.click()
   const expected = new Map([
     ['insert-function-open', '插入函数'], ['insert-function-open:All', '最近使用的函数'],
     ['insert-function-open:Financial', '财务'], ['insert-function-open:Logical', '逻辑'],
     ['insert-function-open:Text', '文本'], ['insert-function-open:Date & Time', '日期和时间'],
     ['insert-function-open:Lookup', '查找与引用'], ['insert-function-open:Math', '数学和三角函数'],
-    ['autofn:SUM', '自动求和'], ['autofn:AVERAGE', '平均值'], ['autofn:COUNT', '计数'],
-    ['autofn:MAX', '最大值'], ['autofn:MIN', '最小值'],
   ])
   for (const [id, label] of expected) {
     const button = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
       .find(candidate => candidate.dataset.ribbonCommand === id)
     expect(button?.querySelector('span:not(.workbook-ribbon-icon)')?.textContent ?? button?.textContent, id).toBe(label)
   }
-  expect(document.querySelector<HTMLButtonElement>('[data-ribbon-command="autofn:SUM"]')?.disabled).toBe(false)
+  const autoSum = document.querySelector<HTMLSelectElement>('[data-ribbon-control="autosum"]')!
+  expect(autoSum).not.toBeNull()
+  expect(autoSum.title).toBe('自动求和 — 插入到选区下方')
+  const library = autoSum.closest('.workbook-ribbon-group')!
+  const controls = Array.from(library.querySelectorAll<HTMLElement>('[data-ribbon-command], [data-ribbon-control]'))
+  expect(controls.slice(0, 3).map(control => control.dataset.ribbonCommand ?? control.dataset.ribbonControl))
+    .toEqual(['insert-function-open', 'autosum', 'insert-function-open:All'])
+  expect(autoSum.disabled).toBe(false)
+  for (const option of Array.from(autoSum.options).slice(1)) {
+    autoSum.value = option.value
+    autoSum.dispatchEvent(new Event('change'))
+    expect(onCommand).toHaveBeenLastCalledWith(option.value)
+    expect(autoSum.value).toBe('')
+  }
   for (const id of [...expected.keys()].filter(id => id.startsWith('insert-function-open'))) {
     const button = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
       .find(candidate => candidate.dataset.ribbonCommand === id)
@@ -722,6 +744,9 @@ it('renders the GenOffice Formulas Function Library with localized categories an
     button?.click()
     expect(onCommand).toHaveBeenLastCalledWith(id)
   }
+  editable = false; ribbon.refreshState()
+  expect(autoSum.disabled).toBe(true)
+  ribbon.dispose()
 })
 
 it('renders the GenOffice Review Comments and Notes commands with note-specific unavailable reasons', () => {

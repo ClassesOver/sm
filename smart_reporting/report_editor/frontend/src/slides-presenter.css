@@ -1,0 +1,380 @@
+/* GenOffice PresenterView layout and ink layer, inside the existing show dialog. */
+.slides-show .presenter {
+  --slides-show-line-10: rgb(255 255 255 / 10%);
+  --slides-show-ink-85: rgb(255 255 255 / 85%);
+  --slides-show-fill-12: rgb(255 255 255 / 12%);
+  --slides-pv-exit-hover: rgb(211 47 47 / 60%);
+  --slides-show-fill-14: rgb(255 255 255 / 14%);
+  --slides-show-fill-8: rgb(255 255 255 / 8%);
+  --slides-show-line-18: rgb(255 255 255 / 18%);
+  --slides-show-fill-18: rgb(255 255 255 / 18%);
+  --slides-pv-accent: #d75342;
+  --slides-show-line-25: rgb(255 255 255 / 25%);
+  --slides-show-fill-20: rgb(255 255 255 / 20%);
+  --slides-pv-ink: #e8e8e8;
+  --slides-show-ink-55: rgb(255 255 255 / 55%);
+  --slides-show-ink-45: rgb(255 255 255 / 45%);
+  --slides-show-ink-88: rgb(255 255 255 / 88%);
+}
+.presenter {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  background: var(--slides-show-black);
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+.presenter .pv-top {
+  height: 44px;
+  flex: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--slides-show-line-10);
+}
+
+.presenter .pv-top-btn {
+  background: none;
+  color: var(--slides-show-ink-85);
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.presenter .pv-top-btn:hover:not(:disabled) {
+  background: var(--slides-show-fill-12);
+}
+
+.presenter .pv-top-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.presenter .pv-top-exit:hover {
+  background: var(--slides-pv-exit-hover);
+}
+
+.presenter .pv-top-spacer {
+  flex: 1;
+}
+
+.presenter .pv-top-hint {
+  font-size: 12px;
+  color: var(--slides-show-ink-40);
+}
+
+.presenter .pv-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.presenter .pv-left {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.presenter .pv-timer-row {
+  height: 40px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px;
+}
+
+.presenter .pv-timer {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--slides-show-ink);
+}
+
+.presenter .pv-clock {
+  font-size: 22px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--slides-show-ink-85);
+}
+
+.presenter .pv-mini-btn {
+  background: none;
+  color: var(--slides-show-ink-75);
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  min-width: 28px;
+  padding: 5px 6px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.presenter .pv-mini-btn:hover {
+  background: var(--slides-show-fill-14);
+}
+
+.presenter .pv-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  cursor: default;
+}
+
+.presenter .pv-stagebox {
+  position: relative;
+  line-height: 0;
+}
+
+.presenter .pv-stagebox.pv-tool-pen {
+  cursor: crosshair;
+}
+
+.presenter .pv-stagebox.pv-tool-laser {
+  cursor: none;
+}
+
+.presenter .pv-black,
+.presenter .pv-white {
+  position: absolute;
+  inset: 0;
+  background: var(--slides-show-black);
+}
+
+.presenter .pv-white {
+  background: var(--slides-show-white);
+}
+
+.presenter .pv-end {
+  color: var(--slides-show-ink-75);
+  font-size: 15px;
+  letter-spacing: 0.05em;
+  line-height: 1.5;
+}
+
+.presenter .pv-bottomrow {
+  height: 56px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+}
+
+.presenter .pv-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.presenter .pv-tool-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--slides-show-fill-8);
+  border: 1px solid var(--slides-show-line-18);
+  color: var(--slides-show-ink-85);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.presenter .pv-tool-btn:hover:not(:disabled) {
+  background: var(--slides-show-fill-18);
+}
+
+.presenter .pv-tool-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.presenter .pv-tool-btn.pv-tool-on {
+  background: var(--slides-pv-accent);
+  border-color: var(--slides-pv-accent);
+  color: var(--slides-show-ink);
+}
+
+.presenter .pv-nav {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.presenter .pv-round {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--slides-show-fill-8);
+  border: 1px solid var(--slides-show-line-25);
+  color: var(--slides-show-ink);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 3px;
+}
+
+.presenter .pv-round:hover:not(:disabled) {
+  background: var(--slides-show-fill-20);
+}
+
+.presenter .pv-round:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.presenter .pv-nav-mid {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 130px;
+}
+
+.presenter .pv-nav-label {
+  font-size: 13px;
+  color: var(--slides-show-ink-85);
+  font-variant-numeric: tabular-nums;
+}
+
+.presenter .pv-progress {
+  width: 130px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--slides-show-fill-18);
+  overflow: hidden;
+}
+
+.presenter .pv-progress > div {
+  height: 100%;
+  background: var(--slides-pv-accent);
+  border-radius: 2px;
+}
+
+.presenter .pv-side {
+  width: 340px;
+  flex: none;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border-left: 1px solid var(--slides-show-line-10);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  color: var(--slides-pv-ink);
+}
+
+.presenter .pv-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--slides-show-ink-55);
+  margin: 6px 0 6px;
+}
+
+.presenter .pv-next {
+  line-height: 0;
+  border: 1px solid var(--slides-show-line-18);
+  border-radius: 3px;
+  overflow: hidden;
+  align-self: flex-start;
+}
+
+.presenter .pv-next-none {
+  line-height: 1.4;
+  font-size: 12px;
+  color: var(--slides-show-ink-45);
+  padding: 18px 12px;
+}
+
+.presenter .pv-notes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 2px;
+  line-height: 1.6;
+  color: var(--slides-show-ink-88);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.presenter .pv-notes-size {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--slides-show-line-10);
+  margin-top: 8px;
+}
+
+.presenter .pv-film {
+  height: 118px;
+  flex: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-top: 1px solid var(--slides-show-line-10);
+}
+
+.presenter .pv-film-item {
+  flex: none;
+  line-height: 0;
+  border: 2px solid transparent;
+  border-radius: 3px;
+  overflow: hidden;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.presenter .pv-film-item:hover {
+  opacity: 1;
+}
+
+.presenter .pv-film-item.pv-film-cur {
+  border-color: var(--slides-pv-accent);
+  opacity: 1;
+}
+
+.slides-show .ink-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+.slides-show .ink-laser {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    var(--slides-laser-core) 0%,
+    var(--slides-laser-mid) 55%,
+    var(--slides-laser-edge) 75%
+  );
+  box-shadow: var(--slides-laser-glow);
+  pointer-events: none;
+}
+
+.slides-show-controls[hidden], .slides-show-note[hidden] {
+  display: none;
+}

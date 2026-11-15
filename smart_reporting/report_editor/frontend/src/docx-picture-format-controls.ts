@@ -3,7 +3,7 @@ import {NodeSelection} from '@tiptap/pm/state'
 import {closeHistory} from '@tiptap/pm/history'
 import {projectDocxPictureFormat,pictureSizeForSide,resetPictureDimensions,type PictureFormatAnchor,type PictureFormatPatch} from './docx-picture-format'
 import {zh} from './vendor/genoffice-docs/apps/docs/src/renderer/i18n/app/zh'
-export type DocxPictureFormatAction='rotateRight'|'rotateLeft'|'flipH'|'flipV'|'size'|'wrap'|'align'|'resetSize'|'position'
+export type DocxPictureFormatAction='rotateRight'|'rotateLeft'|'flipH'|'flipV'|'size'|'wrap'|'alignLeft'|'alignCenter'|'alignRight'|'resetSize'|'position'
 // GenOffice ContextMenu.tsx WRAP_OPTIONS, shared by the Layout and Picture Format ribbons.
 const wrapOptions=[
  [null,zh.appWrapInline],['square-left',zh.appWrapSquareLeft],['square-right',zh.appWrapSquareRight],
@@ -20,6 +20,10 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
   return anchor?{node:s.node,pos:s.from,anchor}:null
  }
  const reason=()=>locked()??(!editor.isEditable?'当前文档不可编辑':null)??(selected()?.node.attrs.imageReplace?'图片替换与格式修改需分别保存':null)??(selected()?.anchor.imageFormatEditable?null:'请选择支持原生格式保存的整块图片')
+ const alignment=():PictureFormatPatch['align']=>{
+  const picture=selected()
+  return picture?picture.node.attrs.imageAlign??'left':null
+ }
  const closeArrangeMenu=()=>{
   const menu=arrangeMenu
   if(!menu)return
@@ -126,6 +130,10 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    }
    if(action==='rotateRight'||action==='rotateLeft'){apply({rotDeg:((Number(target.node.attrs.imageRotDeg)||0)+(action==='rotateRight'?90:270))%360});return}
    if(action==='flipH'||action==='flipV'){apply({[action]:!target.node.attrs[action==='flipH'?'imageFlipH':'imageFlipV']});return}
+   if(action==='alignLeft'||action==='alignCenter'||action==='alignRight'){
+    apply({align:action==='alignLeft'?null:action==='alignCenter'?'center':'right'})
+    return
+   }
    if(action==='resetSize'){
     const image=new Image();image.onload=()=>{try{apply(resetPictureDimensions(image.naturalWidth,image.naturalHeight,contentWidth()))}catch(error){reportError(error)}};image.onerror=()=>reportError(new Error('图片自然尺寸无法读取'));image.src=String(target.node.attrs.imageDataUrl);return
    }
@@ -137,15 +145,11 @@ export function createDocxPictureFormatControls(editor:Editor,anchors:PictureFor
    const ratio=Number(target.node.attrs.imageWidthPx)/Number(target.node.attrs.imageHeightPx)
    width.onchange=()=>{if(lock.checked)height.value=String(Math.max(1,Math.round(Number(width.value)/ratio)))}
    height.onchange=()=>{if(lock.checked)width.value=String(Math.max(1,Math.round(Number(height.value)*ratio)))}
-   const select=(label:string,options:readonly (readonly [string,string])[],value:string)=>{const row=document.createElement('label'),field=document.createElement('select');row.textContent=label;for(const [key,name] of options){const option=document.createElement('option');option.value=key;option.textContent=name;field.append(option)}field.value=value;row.append(field);form.append(row);return field}
-   const align=select('对齐',[['left','左对齐'],['center','居中'],['right','右对齐']],String(target.node.attrs.imageAlign??'left'))
    const submit=document.createElement('button');submit.type='submit';submit.textContent='应用';const cancel=document.createElement('button');cancel.type='button';cancel.textContent='取消';cancel.onclick=close;form.append(submit,cancel)
    // Only the requested group is written: size and alignment changes preserve source anchor geometry.
-   form.onsubmit=e=>{e.preventDefault();try{if(action==='size')apply(pictureSizeForSide(Number(width.value),Number(height.value),'w',Number(width.value),false));else apply({align:align.value as PictureFormatPatch['align']})}catch(error){reportError(error)}}
-   const visible:(HTMLInputElement|HTMLSelectElement)[]=action==='size'?[width,height,lock]:[align]
-   for(const field of [width,height,lock,align])field.closest('label')!.hidden=!visible.includes(field)
-   modal.append(form);host.append(modal);(action==='size'?width:align).focus()
+   form.onsubmit=e=>{e.preventDefault();try{apply(pictureSizeForSide(Number(width.value),Number(height.value),'w',Number(width.value),false))}catch(error){reportError(error)}}
+   modal.append(form);host.append(modal);width.focus()
   }catch(error){reportError(error)}
  }
- return {reason,open,closeArrangeMenu,dispose(){active=false;close()}}
+ return {reason,alignment,open,closeArrangeMenu,dispose(){active=false;close()}}
 }

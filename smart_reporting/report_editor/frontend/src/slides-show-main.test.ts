@@ -17,9 +17,9 @@ beforeEach(() => {
 })
 afterEach(() => { views.splice(0).forEach(v => v.dispose()); document.body.replaceChildren(); vi.unstubAllGlobals(); show.open.mockClear() })
 
-it.each(['startShow', 'startShowCurrent', 'rehearse'])('%s读取完整草稿动画/转场和隐藏页，起点按来源语义处理，不保存或改草稿', async command => {
+it.each(['startShow', 'startShowCurrent', 'rehearse', 'presenter'])('%s读取完整草稿动画/转场和隐藏页，起点按来源语义处理，不保存或改草稿', async command => {
   const source = { revision: 1, sha256: 'a'.repeat(64), size: { cx: 9144000, cy: 5143500 }, slides: [0, 1, 2].map(index => ({ slideIndex: index, hidden: index === 0,
-    transition: 'none', transitionEditSafe: true, animations: index === 0 ? [{ spid: 2, elementId: 'a', effect: 'fade', trigger: 'onClick', durationMs: 400, delayMs: 0 }] : [],
+    notesText: 'notes ' + index, transition: 'none', transitionEditSafe: true, animations: index === 0 ? [{ spid: 2, elementId: 'a', effect: 'fade', trigger: 'onClick', durationMs: 400, delayMs: 0 }] : [],
     elements: [{ id: 'a', name: '矩形', type: 'shape', text: '', editable: true }] })) }
   const tree = { slides: source.slides.map(s => ({ slideIndex: s.slideIndex, hidden: s.hidden, widthPx: 960, heightPx: 540, background: { kind: 'solid', color: '#fff' }, nodes: [{ id: 'a', sourceId: 'a', type: 'shape', box: { x: 0, y: 0, w: 200, h: 50 } }] })) }
   const draft = new NativeDraft({ documentId: 'show-core', revision: 1, sourceSha256: source.sha256, scope: { database: 'fixture', companyId: 'c', userId: 'u', threadId: 't' } }, { getItem: () => null, setItem() {}, removeItem() {} })
@@ -40,6 +40,7 @@ it.each(['startShow', 'startShowCurrent', 'rehearse'])('%s读取完整草稿动�
   expect(sent.operations).toEqual(JSON.parse(before)); expect(sent.expectedSha256).toBe(source.sha256)
   expect(request.mock.calls.some(([path]) => path === 'save')).toBe(false)
   expect(JSON.stringify(draft.operations)).toBe(before); expect(JSON.stringify(source)).toBe(original)
+  if (command === 'presenter') expect(options.presenterNotes).toEqual(['notes 0', 'notes 1', 'notes 2'])
   if (command !== 'rehearse') return
   expect(options.onRehearseDone).toEqual(expect.any(Function))
   options.onClose(2)

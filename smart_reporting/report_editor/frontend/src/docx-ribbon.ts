@@ -32,7 +32,8 @@ import { TABLE_ACTIONS, TABLE_SELECTION_ACTIONS, type DocxTableCommands } from '
 import { createRoot } from 'react-dom/client'
 import { createElement } from 'react'
 import { flushSync } from 'react-dom'
-import { IconComments, IconComment, IconTrash, IconToc, IconRefresh } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { IconAlignLeft, IconAlignCenter, IconAlignRight, IconComments, IconComment, IconTrash, IconToc, IconRefresh } from './vendor/genoffice-docs/apps/docs/src/renderer/components/icons'
 import type { Editor } from '@tiptap/core'
 import { NodeSelection } from '@tiptap/pm/state'
 import { closeHistory } from '@tiptap/pm/history'
@@ -460,6 +461,20 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
     button.onclick = () => controls.open(action)
     return button
   }
+  const syncPictureFormatButtons = (root: HTMLElement) => {
+    const controls = tools?.pictureFormat
+    if (!controls) return
+    const reason = controls.reason(), alignment = controls.alignment()
+    for (const button of root.querySelectorAll<HTMLButtonElement>('[data-picture-format-action]')) {
+      button.disabled = reason !== null
+      button.title = reason ?? button.getAttribute('aria-label') ?? button.textContent ?? ''
+      if (button.dataset.pictureAlign) {
+        const pressed = button.dataset.pictureAlign === alignment
+        button.classList.toggle('active', pressed)
+        button.setAttribute('aria-pressed', String(pressed))
+      }
+    }
+  }
   const renderPending = (id: string) => {
     body.replaceChildren()
     cellBorderControls = undefined
@@ -726,8 +741,34 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
         if(id==='review'&&label==='保护文档'&&tools?.protect){command.textContent=label;command.dataset.action='review-protect';command.addEventListener('click',tools.protect);items.append(command);continue}
         if(id==='review' && label==='比较' && reviewCommands?.compare){command.textContent=label;command.dataset.action='review-compare';command.addEventListener('click',reviewCommands.compare);items.append(command);continue}
         const pictureFormat = tools?.pictureFormat
+        if (id === 'pictureFormat' && label === '对齐' && pictureFormat) {
+          // GenOffice Ribbon.tsx Picture Format Arrange puts these options directly in the ribbon.
+          const row = document.createElement('div')
+          row.className = 'table-tool-row'
+          row.setAttribute('role', 'group')
+          row.setAttribute('aria-label', label)
+          for (const [value, action, name, icon] of [
+            ['left', 'alignLeft', '左对齐', IconAlignLeft],
+            ['center', 'alignCenter', '居中', IconAlignCenter],
+            ['right', 'alignRight', '右对齐', IconAlignRight],
+          ] as const) {
+            const button = document.createElement('button')
+            button.type = 'button'
+            button.className = 'table-tool-button'
+            button.dataset.pictureAlign = value
+            button.dataset.pictureFormatAction = action
+            button.dataset.action = 'picture-format-align-' + value
+            button.setAttribute('aria-label', name)
+            button.innerHTML = renderToStaticMarkup(createElement(icon))
+            button.onmousedown = event => event.preventDefault()
+            button.onclick = () => pictureFormat.open(action)
+            row.append(button)
+          }
+          items.append(row)
+          continue
+        }
         const arrangeAction = label === '位置' ? 'position' : label === '环绕文字' ? 'wrap' : undefined
-        const pictureActions = { '对齐': 'align', '旋转': 'rotateRight', '向左旋转': 'rotateLeft', '水平翻转': 'flipH', '垂直翻转': 'flipV', '高度': 'size', '宽度': 'size', '重置大小': 'resetSize' } as const
+        const pictureActions = { '旋转': 'rotateRight', '向左旋转': 'rotateLeft', '水平翻转': 'flipH', '垂直翻转': 'flipV', '高度': 'size', '宽度': 'size', '重置大小': 'resetSize' } as const
         const pictureAction = id === 'pictureFormat'
           ? arrangeAction ?? pictureActions[label as keyof typeof pictureActions]
           : id === 'layout' && groupLabel === '排列' ? arrangeAction : undefined
@@ -858,6 +899,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
       }
     }
     fillDocxCommandIcons(content)
+    syncPictureFormatButtons(content)
     body.append(content)
     if (id === 'review') { refreshReviewCommands(); refreshCommentNavigation() }
   }
@@ -1246,7 +1288,7 @@ export function createDocxRibbon(editor: Editor, editable: boolean, onPagination
   const refreshSelection = () => {
     if(tools?.files)for(const button of body.querySelectorAll<HTMLButtonElement>('[data-file-action]')){const kind=button.dataset.fileAction as 'new'|'save-as'|'save',reason=kind==='save'?tools.files.saveReason():tools.files.reason(kind);button.disabled=reason!==null;button.title=reason??(kind==='save-as'?'将当前已保存修订另存为独立文档':button.textContent??'')}
 
-    if(tools?.pictureFormat){const reason=tools.pictureFormat.reason();for(const button of body.querySelectorAll<HTMLButtonElement>('[data-picture-format-action]')){button.disabled=reason!==null;button.title=reason??button.textContent??''}}
+    syncPictureFormatButtons(body)
     refreshView()
     if (active === 'review') refreshReviewCommands()
     if (active === 'review') refreshCommentNavigation()

@@ -39,7 +39,7 @@ export function slidesShowSnapshot(slides: RenderSlide[], pages: ModelSlide[]): 
     if (!allowed) { warnings.add('不支持或无效的来源链接不执行；文件中的链接保留。'); return [] }
     return [{ sourceId: element.id, target: target as LinkTargetOp }]
   }))
-  warnings.add('屏幕录制、演讲者视图和文字内链接尚未验收。')
+  warnings.add('屏幕录制和文字内链接尚未验收。')
   const advanceTimes = pages.map(({ advanceMs }) => typeof advanceMs === 'number' && Number.isInteger(advanceMs)
     && advanceMs >= 0 && advanceMs <= 4294967295 ? advanceMs : null)
   return { animations, transitions, advanceTimes, shapeKeys, links, warnings: [...warnings] }

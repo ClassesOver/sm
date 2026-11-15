@@ -39,7 +39,7 @@ it.each([false,true])('routes Layout Arrange through existing picture controls w
   const open = vi.fn()
   let unavailable: string | null = '请选择图片'
   const section = withSection ? { settings: {} as NonNullable<Parameters<typeof createDocxRibbon>[4]>['settings'], onChange: vi.fn() } : undefined
-  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => null, closeArrangeMenu: vi.fn(), dispose: vi.fn() } }, section)
   try {
     f.tab('layout').click()
     const arrange = () => f.ribbon.querySelector('section[aria-label="排列"]')!
@@ -52,6 +52,28 @@ it.each([false,true])('routes Layout Arrange through existing picture controls w
     action('position').click()
     action('wrap').click()
     expect(open.mock.calls).toEqual([['position', action('position')], ['wrap', action('wrap')]])
+  } finally { f.editor.destroy() }
+})
+
+it('renders source Picture Format alignment as three immediate pressed buttons', () => {
+  const open = vi.fn()
+  let alignment: 'left' | 'center' | 'right' = 'left'
+  let unavailable: string | null = null
+  const f = setupTabNavigation({ pictureFormat: { open, reason: () => unavailable, alignment: () => alignment, closeArrangeMenu: vi.fn(), dispose: vi.fn() } })
+  try {
+    f.editor.commands.setNodeSelection(f.editor.state.doc.child(0).nodeSize)
+    f.tab('pictureFormat').click()
+    const buttons = Array.from(f.ribbon.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="对齐"] button'))
+    expect(buttons.map(button => button.getAttribute('aria-label'))).toEqual(['左对齐', '居中', '右对齐'])
+    expect(buttons.map(button => button.getAttribute('aria-pressed'))).toEqual(['true', 'false', 'false'])
+    buttons[1].click()
+    buttons[2].click()
+    expect(open.mock.calls).toEqual([['alignCenter'], ['alignRight']])
+    alignment = 'right'
+    unavailable = '当前文档不可编辑'
+    f.editor.view.dispatch(f.editor.state.tr.setMeta('picture-align-refresh',true))
+    expect(buttons.map(button => button.getAttribute('aria-pressed'))).toEqual(['false', 'false', 'true'])
+    expect(buttons.every(button => button.disabled && button.title === unavailable)).toBe(true)
   } finally { f.editor.destroy() }
 })
 

@@ -1509,11 +1509,11 @@ function confirmRehearsal(times: {slideIndex: number; ms: number}[], current: ()
   showSlidesSettingsDialog(dialog)
 }
 
-async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow, rehearse = false) {
+async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow, mode?: 'rehearse' | 'presenter') {
   if (!nativeDraft || disposed || saving || mutationPending || showOpening || showOverlay || rehearsalDialog) return
+  const rehearse = mode === 'rehearse'
   if (rehearse && newSlides.length) { statusMessage.textContent = '请先保存新建页面，再开始排练计时。'; return }
-  if (rehearse && !flushSlideOutputInputs('请先确认或取消当前编辑，再排练计时。')) return
-  if (cropOverlay || structureDialog || order.some(index=>commentPane.hasDraft(index))) { statusMessage.textContent='请先确认或取消当前编辑，再打开放映'; return }
+  if (!flushSlideOutputInputs('请先确认或取消当前编辑，再打开放映')) return
   const sourceSha=deck.sha256, slideIndex=selectedSlide, snapshot=JSON.stringify(nativeDraft.operations)
   const requestedPosition=fromCurrent?order.indexOf(slideIndex):0
   showOpening=true
@@ -1539,7 +1539,8 @@ async function startSlidesShow(fromCurrent: boolean, customShow?:CustomShow, reh
         ? [{ slideIndex: sourceOrder[index]!, ms: sec * 1000 }] : []),
       () => !locked() && !mutationPending && deck.sha256 === sourceSha && JSON.stringify(nativeDraft.operations) === snapshot,
     ) : undefined
-    showOverlay=openSlidesShow(root,{slides:tree.slides,mediaSources:tree.slides.map(slide=>(slide as RenderSlide & {mediaSources?:SlideMediaSource[];modelSources?:ModelSource[]}).mediaSources??[]),startIndex:customOrder?.[0]??startIndex,customOrder,...playback,onRehearseDone,onClose:(lastIndex)=>{
+    showOverlay=openSlidesShow(root,{slides:tree.slides,mediaSources:tree.slides.map(slide=>(slide as RenderSlide & {mediaSources?:SlideMediaSource[];modelSources?:ModelSource[]}).mediaSources??[]),startIndex:customOrder?.[0]??startIndex,customOrder,...playback,onRehearseDone,
+      presenterNotes: mode === 'presenter' ? preview.model.slides.map(slide => slide.notesText ?? '') : undefined, onClose:(lastIndex)=>{
       showOverlay=undefined
       if(!disposed){const id=order[lastIndex??startIndex];root.querySelector<HTMLButtonElement>('.slide-open[data-slide-index="'+id+'"]')?.click();statusMessage.textContent='放映已结束；草稿未改动'}
     }})
@@ -2586,7 +2587,8 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
       openExportImagesDialog(command === 'exportImages' ? 'png' : 'jpg')
       return
     }
-    if (command === 'rehearse') { stopBrush(); void startSlidesShow(false, undefined, true); return }
+    if (command === 'rehearse') { stopBrush(); void startSlidesShow(false, undefined, 'rehearse'); return }
+    if (command === 'presenter') { stopBrush(); void startSlidesShow(false, undefined, 'presenter'); return }
     if (command === 'startShow' || command === 'startShowCurrent') { stopBrush(); void startSlidesShow(command === 'startShowCurrent'); return }
     if (command === 'animationPreview') { stopBrush(); void startAnimationPreview(); return }
     if (command === 'groupObjects' || command === 'ungroupObjects') { changeGroup(command === 'ungroupObjects'); return }

@@ -4,11 +4,13 @@ import { createRoot } from 'react-dom/client'
 import type { RenderSlide } from '@genoffice/pptx-render'
 import type { AnimationItem } from './vendor/genoffice/animation-types'
 import type { LinkTargetOp, ShapeKey, TransitionKind } from './vendor/genoffice/renderer/show-types'
+import { PresenterView } from './vendor/genoffice/renderer/PresenterView'
 import { SlideShowView, type ShowViewState } from './vendor/genoffice/renderer/SlideShowView'
 import { INITIAL_SHOW_KEYS, reduceShowKey } from './vendor/genoffice/renderer/show-keys'
 import { installFocusTrap } from './focus-trap'
 import { finishRehearse, formatClock, startRehearse, switchRehearsePage } from './vendor/genoffice/renderer/slideshow-utils'
 import './slides-show.css'
+import './slides-presenter.css'
 
 /** 完整渲染快照按草稿顺序排列；隐藏页交由固定源computePlayOrder处理，startIndex按该完整数组。 */
 export type SlidesShowOptions = {
@@ -18,6 +20,7 @@ export type SlidesShowOptions = {
   shapeKeys?: ShapeKey[][]; links?: Array<Array<{ sourceId: string; target: LinkTargetOp }>>; warnings?: string[];
   advanceTimes?: (number | null)[];
   onRehearseDone?: (seconds: number[]) => void;
+  presenterNotes?: string[];
   onClose: (lastIndex?: number) => void;
 }
 
@@ -33,12 +36,18 @@ export function openSlidesShow(host: HTMLElement, options: SlidesShowOptions): {
   const next = document.createElement('button'); next.type = 'button'; next.textContent = '下一步'; next.setAttribute('aria-label', '下一页')
   const exit = document.createElement('button'); exit.type = 'button'; exit.textContent = '退出放映'; exit.setAttribute('aria-label', '退出放映')
   const counter = document.createElement('span'); counter.setAttribute('aria-label', '放映页码'); counter.setAttribute('aria-live', 'polite'); counter.textContent = '0 / 0'
-  const note = document.createElement('p'); note.className = 'slides-show-note'; note.textContent = options.warnings?.join('；') || '方向键/空格分步 · B/W 黑白屏 · 数字+Enter跳页 · 右键菜单 · Esc退出；屏幕录制及演讲者视图未验收'
+  const note = document.createElement('p'); note.className = 'slides-show-note'; note.textContent = options.warnings?.join('；') || '方向键/空格分步 · B/W 黑白屏 · 数字+Enter跳页 · 右键菜单 · Esc退出'
   toolbar.append(previous, counter, next, exit); dialog.append(stageHost, toolbar, note); host.append(dialog)
   const root = createRoot(stageHost), releaseFocus = installFocusTrap(dialog)
   let images = new Map<string, HTMLImageElement>(), disposed = false, enteredFullscreen = false
-  const startAt = Math.min(Math.max(0, Number.isInteger(options.startIndex) ? options.startIndex! : 0), Math.max(0, slides.length - 1))
+  let presenter = options.presenterNotes !== undefined
+  let startAt = Math.min(Math.max(0, Number.isInteger(options.startIndex) ? options.startIndex! : 0), Math.max(0, slides.length - 1))
   let lastIndex = startAt
+  const updateMode = () => {
+    dialog.setAttribute('aria-label', presenter ? '演示者视图' : '幻灯片放映')
+    toolbar.hidden = note.hidden = presenter
+  }
+  updateMode()
   let rehearsal = options.onRehearseDone ? startRehearse(slides.length, startAt, Date.now()) : undefined
   const timer = rehearsal ? document.createElement('span') : undefined
   const refreshTimer = () => {
@@ -65,6 +74,16 @@ export function openSlidesShow(host: HTMLElement, options: SlidesShowOptions): {
   const render = () => {
     if (disposed) return
     if (!slides.length) { previous.disabled = next.disabled = true; root.render(<p>没有可放映页面</p>); return }
+    if (presenter) {
+      root.render(<PresenterView slides={slides} images={images} startAt={startAt} animations={animations}
+        notes={options.presenterNotes ?? []} mediaSources={options.mediaSources}
+        onExit={index => { lastIndex = index; dispose() }}
+        onUseSlideShow={index => {
+          presenter = false; startAt = lastIndex = index
+          updateMode(); render(); dialog.focus()
+        }} />)
+      return
+    }
     root.render(<SlideShowView slides={slides} images={images} startAt={startAt} customOrder={options.customOrder} animations={animations} transitions={transitions}
       advanceTimes={rehearsal ? undefined : options.advanceTimes} mediaSources={options.mediaSources} shapeKeys={shapeKeys} links={links} onState={onState} viewport={{ w: stageHost.clientWidth || Math.max(1, window.innerWidth - 32), h: stageHost.clientHeight || Math.max(1, window.innerHeight - 120) }}
       onExit={index => { lastIndex = index; dispose() }} />)

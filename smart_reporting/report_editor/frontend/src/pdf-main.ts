@@ -1167,8 +1167,8 @@ export async function createPdfEditorView(shell: EditorShell, { api, context: re
   const convertPptx=button('转换为演示文稿',()=>officeConversion.open());sourceCommand(convertPptx,'home.convert.toPowerPoint')
   const exportTextButtons:HTMLButtonElement[]=[]
   for(const[format,label,id]of [['markdown','转换为 Markdown','home.convert.toMarkdown'],['html','转换为 HTML','home.convert.toHtml']]as const){const control=button(label,()=>textExport.open(format));sourceCommand(control,id);exportTextButtons.push(control)}
-  const exportPng=button('导出图像 PNG',()=>imageExport.open('png'));sourceCommand(exportPng,'home.convert.exportImagesPng')
-  const exportJpg=button('导出图像 JPG',()=>imageExport.open('jpeg'));sourceCommand(exportJpg,'home.convert.exportImagesJpg')
+  const exportPng=button('导出图像 PNG',()=>imageExport.open('png', 'all'));sourceCommand(exportPng,'home.convert.exportImagesPng')
+  const exportJpg=button('导出图像 JPG',()=>imageExport.open('jpeg', 'all'));sourceCommand(exportJpg,'home.convert.exportImagesJpg')
   commandGroup = ribbon.group('annotate','Signature & Protection')
   const protectButton = button('保护 PDF', () => protection.open())
   sourceCommand(protectButton,'annotate.protection.protect')
