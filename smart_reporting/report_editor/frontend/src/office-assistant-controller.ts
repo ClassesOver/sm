@@ -21,7 +21,14 @@ export class OfficeAssistantController<Input, Job> {
   private pendingCancel: { generation: number; promise: Promise<void> } | undefined
   constructor(private readonly transport: OfficeTaskTransport<Input, Job>) {}
   get signal() { return this.abort.signal }
-  async run(input: Input, requestId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
+  run(input: Input, requestId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
+    return this.track(signal => this.transport.start(input, signal), requestId, onStart)
+  }
+  follow(taskId: string, onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
+    return this.track(signal => this.transport.status(taskId, signal), '', onStart)
+  }
+  private async track(load: (signal: AbortSignal) => Promise<Job>, requestId: string,
+    onStart?: (job: Job, signal: AbortSignal) => void): Promise<Job | undefined> {
     if (this.busy || this.accepting) throw new Error('office_task_busy')
     const previousRequest = this.requestId, previousTask = this.taskId
     if (previousRequest || previousTask) void this.cleanup(previousRequest, previousTask).catch(() => {})
@@ -31,10 +38,10 @@ export class OfficeAssistantController<Input, Job> {
     const signal = this.abort.signal
     this.requestId = requestId; this.taskId = ''; this.busy = true
     try {
-      let job = await this.transport.start(input, signal)
+      let job = await load(signal)
       if (turn !== this.generation) {
         // An aborted HTTP request may still have created a server-side task.
-        await (this.transport.cancel?.(this.transport.id(job)) ?? this.transport.cancelRequest?.(requestId))
+        if (requestId) await (this.transport.cancel?.(this.transport.id(job)) ?? this.transport.cancelRequest?.(requestId))
         return undefined
       }
       this.taskId = this.transport.id(job)

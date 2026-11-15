@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import secrets
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
@@ -102,6 +102,7 @@ class _NativeAIJob:
     client_request_id: str = ""
     request_sha256: str | None = None
     word_task_reference: Any = field(default=None, repr=False)
+    authorization_check: Callable[[], Awaitable[bool]] | None = field(default=None, repr=False)
 
 
 def _invalid(code: str, message: str) -> ReportingError:
@@ -216,6 +217,7 @@ class NativeAIService:
         selection: list[dict[str, str]],
         client_request_id: str | None = None,
         server_session_reference: str | None = None,
+        authorization_check: Callable[[], Awaitable[bool]] | None = None,
     ) -> dict[str, Any]:
         if self._closed:
             raise _invalid("native_ai_closed", "AI 候选服务已关闭。")
@@ -318,6 +320,7 @@ class NativeAIService:
             client_request_id=request_id or "",
             request_sha256=fingerprint,
             word_task_reference=word_reference,
+            authorization_check=authorization_check,
         )
         self._jobs[job.edit_id] = job
         if request_id:
@@ -560,6 +563,7 @@ class NativeAIService:
         prompt: str,
     ) -> None:
         try:
+            await self._require_job_authorization(job)
             await job.event_log.emit("phase", label="正在生成候选")
             if job.word_task_reference is not None:
                 planned = await asyncio.wait_for(
@@ -613,6 +617,9 @@ class NativeAIService:
                     session_reference=job.word_task_reference.word_input.binding.server_session_reference, base=base)
                 if restored.model_dump(mode='json') != planned.model_dump(mode='json'):
                     raise _invalid('native_ai_snapshot_changed', 'Word 候选回执已变化。')
+            if job.status != "running":
+                return
+            await self._require_job_authorization(job)
             if job.status != "running":
                 return
             job.proposal = {
@@ -678,7 +685,13 @@ class NativeAIService:
             or job.created_at < datetime.now(UTC) - timedelta(hours=1)
         ):
             raise _invalid("native_ai_job_missing", "AI 候选任务不存在或已过期。")
+        await self._require_job_authorization(job)
         return job, context
+
+    @staticmethod
+    async def _require_job_authorization(job: _NativeAIJob) -> None:
+        if job.authorization_check is not None and not await job.authorization_check():
+            raise _invalid("native_permission_denied", "频道编辑授权已撤销。")
 
     async def wait_edit_status(
         self, session: ReportEditorSession, edit_id: str, *, wait_ms: int = 20000
@@ -694,6 +707,7 @@ class NativeAIService:
                 current = asyncio.current_task()
                 if (current is not None and current.cancelling()) or not job.task.cancelled():
                     raise
+        await self._require_job_authorization(job)
         return self._serialize(job)
 
     async def accept_edit(
@@ -736,6 +750,9 @@ class NativeAIService:
                 raise _invalid('native_ai_not_ready', 'Word 候选已失效。')
             if trusted.engine_operations() != job.proposal['operations']:
                 raise _invalid('native_ai_not_ready', 'Word 候选已失效。')
+        await self._require_job_authorization(job)
+        if job.status != 'succeeded' or job.proposal is None or self._closed:
+            raise _invalid('native_ai_not_ready', 'AI 候选已失效。')
         job.accepted = True
         logger.bind(
             format=context.format, document_id=context.document_id, revision=context.revision,

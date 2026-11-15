@@ -2,6 +2,30 @@ import { it, expect, vi } from 'vitest'
 import { bindNativeAI } from './native-ai'
 import { NativeDraft } from './native-draft'
 
+it('在现有编辑面板接续频道任务并等待显式采纳', async () => {
+  const draft = new NativeDraft({documentId:'channel-word',revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
+  const operations = [{kind:'replaceParagraph',blockId:'p1',text:'频道候选'}]
+  const api = {
+    aiStart: vi.fn(),
+    aiStatus: vi.fn().mockResolvedValueOnce({editId:'channel-task',status:'running'})
+      .mockResolvedValueOnce({editId:'channel-task',status:'succeeded',snapshotSha256:'snapshot',proposal:{summary:'候选已核验',operations}}),
+    aiAccept: vi.fn().mockResolvedValue({operations}),
+  }
+  const root = document.createElement('div')
+  const binding = bindNativeAI(root,{api:api as never,draft,format:'docx',view:{refresh:vi.fn()},onDraftChange:vi.fn()})
+  binding.open()
+  await binding.followWordTask('channel-task')
+  expect(api.aiStatus).toHaveBeenCalledTimes(2)
+  expect(api.aiStart).not.toHaveBeenCalled()
+  expect(api.aiAccept).not.toHaveBeenCalled()
+  expect(root.querySelector('details:has(pre)')?.open).toBe(true)
+  expect(root.textContent).toContain('频道候选')
+  expect(draft.operations).toEqual([])
+  root.querySelector<HTMLButtonElement>('[data-ai=accept]')!.click()
+  await vi.waitFor(() => expect(draft.operations).toEqual(operations))
+  binding.dispose()
+})
+
 it.each(['cancel', 'selection', 'dispose'])('启动回执未返回时通过请求身份取消：%s', async action => {
   const draft = new NativeDraft({documentId:'early-cancel-'+action,revision:1,sourceSha256:'a'.repeat(64),scope:{database:'d',companyId:'c',userId:'u',threadId:'t'}},sessionStorage)
   const api = {aiStart:vi.fn((_payload, signal: AbortSignal) => new Promise((_resolve, reject) => {
