@@ -438,13 +438,16 @@ async def test_legacy_chart_template_recovers_only_exact_registered_projection(t
     await service.aclose()
 
 
-async def _await_edit(service: ChartAIEditService, context, chart_id: str, edit_id: str) -> dict:
-    for _ in range(400):
-        status = service.edit_status(context, chart_id, edit_id)
-        if status["status"] in {"succeeded", "failed", "cancelled"}:
-            return status
-        await asyncio.sleep(0.02)
-    raise AssertionError("改图任务未在预期时间内结束")
+async def _await_edit(service: ChartAIEditService, context, chart_id: str, edit_id: str, *, timeout=8.0) -> dict:
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                status = service.edit_status(context, chart_id, edit_id)
+                if status["status"] in {"succeeded", "failed", "cancelled"}:
+                    return status
+                await asyncio.sleep(0.02)
+    except TimeoutError as error:
+        raise AssertionError("改图任务未在预期时间内结束") from error
 
 
 @pytest.mark.anyio

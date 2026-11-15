@@ -1160,6 +1160,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
     from smart_reporting.reporting.workflow.runtime.phase_models import ChartDataBinding
 
     native = scenario == "native_revision_reedit"
+    edit_timeout = 60.0 if native else 8.0
     if native and fault is not None:
         pytest.skip("原故障契约已覆盖；此新增场景只核验真实CodeMode续改")
     revision_scenarios = {"revision_reedit", "revision_grow", "revision_single", "native_revision_reedit"}
@@ -1276,7 +1277,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
                 baseImagePath=base.path, expectedSha256=base.sha256,
             ))
         from smart_reporting.reporting.tests.test_report_editor_chart_ai import _await_edit
-        status = await _await_edit(service, context, "chart_001", started["editId"])
+        status = await _await_edit(service, context, "chart_001", started["editId"], timeout=edit_timeout)
         assert status["status"] == "succeeded", status
         if native:
             assert status["planningRoute"] == "direct"
@@ -1474,7 +1475,7 @@ async def test_export_revision_registers_l2_chart_edit_plot_data(
             instruction=f"保持全部数据，调整配色并改为每页{target_page_size}条", previousEditId=baseline.edit_id,
             baseImagePath=base.path, expectedSha256=base.sha256,
         ))
-    status = await _await_edit(service, committed, "chart_001", started["editId"])
+    status = await _await_edit(service, committed, "chart_001", started["editId"], timeout=edit_timeout)
     assert status["status"] == "succeeded", status
     if native:
         assert status["planningRoute"] == "direct" and len(status["deterministicImageChecks"]) == 2
