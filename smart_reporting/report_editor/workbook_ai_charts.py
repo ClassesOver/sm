@@ -149,6 +149,26 @@ def _validate_format(record: dict[str, Any]) -> None:
         raise ValueError('workbook_ai_chart_format_invalid')
 
 
+def _chart_owners(model: dict[str, Any]) -> dict[str, list[str]]:
+    owners: dict[str, list[str]] = {}
+    for sheet in model.get('sheets', []):
+        for chart in sheet.get('charts', []):
+            path = chart.get('chartPath')
+            if isinstance(path, str):
+                owners.setdefault(path, []).append(sheet['name'])
+    return owners
+
+
+def translate_chart_deletion(model: dict[str, Any], operation: dict[str, Any]) -> dict[str, Any]:
+    path = operation.get('visualId')
+    if set(operation) != {'op', 'visualId'} or not isinstance(path, str) or not 1 <= len(path) <= 300:
+        raise ValueError('workbook_ai_chart_target_invalid')
+    owners = _chart_owners(model).get(path, [])
+    if len(owners) != 1:
+        raise ValueError('workbook_ai_chart_target_invalid')
+    return {'kind': 'applyChartDeletions', 'deletions': [{'chartPath': path, 'sheetName': owners[0]}]}
+
+
 def validate_chart_candidates(model: dict[str, Any], operations: list[dict[str, Any]]) -> None:
     """Validate before any candidate preview, including non-tool planners.
 
@@ -159,12 +179,7 @@ def validate_chart_candidates(model: dict[str, Any], operations: list[dict[str, 
     if (any(operation['kind'] == 'applyChartSource' for operation in operations)
             and any(operation['kind'] in {'applySheetEdits', 'applyRowColumnOps', 'applyCellShift'} for operation in operations)):
         raise ValueError('workbook_ai_chart_structure_batch_invalid')
-    owners: dict[str, list[str]] = {}
-    for sheet in model.get('sheets', []):
-        for chart in sheet.get('charts', []):
-            path = chart.get('chartPath')
-            if isinstance(path, str):
-                owners.setdefault(path, []).append(sheet['name'])
+    owners = _chart_owners(model)
     deleted: set[str] = set()
     for operation in operations:
         kind = operation['kind']

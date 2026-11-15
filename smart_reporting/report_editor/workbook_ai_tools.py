@@ -18,7 +18,7 @@ from openpyxl.formula import Tokenizer
 from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_boundaries
 
 from .workbook_ai import WorkbookAIProposal
-from .workbook_ai_charts import validate_chart_candidates
+from .workbook_ai_charts import translate_chart_deletion, validate_chart_candidates
 from .workbook_search import find_cell_indexes
 
 
@@ -328,6 +328,7 @@ class WorkbookAIToolkit(Toolkit):
                 '迷你图新增使用源 DSL {op:add_sparkline,sheetId,type:line|column|stacked,dataRange,targetCell?,color?}。'
                 '每行至少两列，每行一个迷你图，最多取前200行。默认放在来源右侧，也可从同表的单格 targetCell 向下排列。'
                 'color 使用 #RRGGBB；stacked 表示盈亏图。'
+                '删除工作簿图表使用源 DSL {op:delete_visual,visualId}，visualId 填 read_sheet_features 返回的唯一 chartPath。'
             )
         return {guide: catalog[guide] for guide in guides}
 
@@ -349,6 +350,8 @@ class WorkbookAIToolkit(Toolkit):
             return {'kind': operation['kind'], **arguments}
         if op in {'add_chart', 'edit_chart'}:
             return {'kind': 'applyChartSource', 'operation': deepcopy(operation)}
+        if op == 'delete_visual':
+            return translate_chart_deletion(self._model, operation)
         if op == 'add_sparkline':
             sheet_id = operation.get('sheetId')
             if not isinstance(sheet_id, str) or not sheet_id:

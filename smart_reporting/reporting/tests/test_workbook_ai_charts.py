@@ -37,6 +37,10 @@ def deletion(sheet='Sheet'):
     return {'kind': 'applyChartDeletions', 'arguments': {'deletions': [{'sheetName': sheet, 'chartPath': PATH}]}}
 
 
+def delete_visual(path=PATH):
+    return {'op': 'delete_visual', 'visualId': path}
+
+
 def chart_model():
     return {'sheets': [{'name': 'Sheet', 'cells': {}, 'charts': [
         {'chartPath': PATH, 'title': 'Same', 'kind': 'column'},
@@ -71,6 +75,9 @@ async def test_chart_candidate_requires_explicit_acceptance(operation):
     (edit(title='New', ignoredField=True), chart_model()),
     ({'kind': 'applyChartEdits', 'arguments': {'edits': []}}, chart_model()),
     (edit(title='New'), {'sheets': chart_model()['sheets'] * 2}),
+    (delete_visual('xl/charts/missing.xml'), chart_model()),
+    (delete_visual(), {'sheets': chart_model()['sheets'] * 2}),
+    ({**delete_visual(), 'sheetName': 'Sheet'}, chart_model()),
 ])
 async def test_untrusted_or_unsupported_chart_candidate_never_reaches_preview(operation, model):
     from unittest.mock import AsyncMock
@@ -84,7 +91,7 @@ async def test_untrusted_or_unsupported_chart_candidate_never_reaches_preview(op
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('operation', [edit(title='New'), deletion(), {
+@pytest.mark.parametrize('operation', [edit(title='New'), deletion(), delete_visual(), {
     'op': 'add_sparkline', 'sheetId': 'Sheet', 'type': 'line', 'dataRange': 'A1:B2',
 }])
 async def test_cell_range_authorization_neither_reads_nor_modifies_charts(operation):
@@ -129,7 +136,7 @@ async def test_source_sparklines_write_native_row_references(target, destination
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize('following', [deletion(), edit(title='Deleted target')])
+@pytest.mark.parametrize('following', [deletion(), delete_visual(), edit(title='Deleted target')])
 async def test_deleted_chart_cannot_be_targeted_again_in_one_candidate(following):
     from unittest.mock import AsyncMock
 
@@ -212,7 +219,7 @@ async def test_real_agno_chart_candidate_preserves_other_chart_and_manual_draft(
 
     operation = {
         'edit': edit(title='Updated', legend='bottom', chartType='bar'),
-        'delete': deletion(),
+        'delete': delete_visual(),
         'sparkline': {'op': 'add_sparkline', 'sheetId': 'Sheet', 'type': 'line', 'dataRange': 'B2:C3'},
     }[mode]
     model = ScriptedModel(id='scripted', responses=[

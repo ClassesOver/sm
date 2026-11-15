@@ -36,6 +36,8 @@
 
 柱形迷你图浏览器验收使用 `WORKBOOK_AI_CHARTS_SPARKLINE=1` 运行 `frontend/smoke/workbook-ai-charts-smoke.mjs`。Edge 经实际 HTTP、Agno 工具与 XLSX 写入器完成采纳、撤销重做、草稿恢复及修订 4→5 的下载重开。画布在采纳、草稿恢复、下载重开三处均为 B8 和 B9 各绘制两根格内柱。独立回读确认 x14 引用与颜色、两张原图、源数据和手工加粗。验收仍返回 `native_source_review_pending`，实际文件照常签发。验收使用 ScriptedModel 与内存修订仓储，证据位于 Windows `%TEMP%/genoffice-ai-sparkline-edge`。
 
+XLSX 图表删除也接受源 DSL `delete_visual(visualId)`。目标使用冻结草稿中的唯一 `chartPath`，所属工作表由草稿解析。与原生图表删除共用候选及保存链路，尚未覆盖形状和图片的 `visualId`。
+
 ## PDF
 
 源：`apps/pdf/src/renderer/ai/tools.ts`。本地主要为 `native_pdf_ai.py`、`native_pdf_review_ai.py`、`native_pdf_form_ai.py` 及对应任务服务。
