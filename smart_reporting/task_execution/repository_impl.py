@@ -1246,11 +1246,23 @@ class TaskExecutionRepository(NativeWordTaskRepositoryMixin):
     async def create_native_workbook_task(
         self, scope: TaskExecutionScope, instruction: str, request_sha256: str,
     ) -> TaskSnapshot:
-        if (scope.executor_id != "native-workbook-ai"
-                or re.fullmatch(r"native-workbook-ai:[0-9a-f]{32,64}", scope.external_run_id) is None
+        return await self._create_native_candidate_task(scope, instruction, request_sha256, "native-workbook-ai")
+
+    async def create_native_slides_task(
+        self, scope: TaskExecutionScope, instruction: str, request_sha256: str,
+    ) -> TaskSnapshot:
+        return await self._create_native_candidate_task(scope, instruction, request_sha256, "native-slides-ai")
+
+    async def _create_native_candidate_task(
+        self, scope: TaskExecutionScope, instruction: str, request_sha256: str, executor_id: str,
+    ) -> TaskSnapshot:
+        if (scope.executor_id != executor_id
+                or re.fullmatch(rf"{executor_id}:[0-9a-f]{{32,64}}", scope.external_run_id) is None
                 or not isinstance(request_sha256, str)
                 or re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None):
-            raise TaskExecutionRepositoryError("native_workbook_input_invalid", "XLSX 任务输入无效。")
+            raise TaskExecutionRepositoryError("native_workbook_input_invalid", "Office 候选任务输入无效。")
+        # Excel introduced these columns. Both editors use the same receipt storage,
+        # while all reads and transitions remain bound to the full task scope.
         return await self.create_task_with_initial_attempt(
             scope, instruction, _native_workbook_request_sha256=request_sha256,
         )
