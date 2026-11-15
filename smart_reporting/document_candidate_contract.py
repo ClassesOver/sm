@@ -5,10 +5,10 @@ The host must resolve the document and revision from an authenticated grant.
 """
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
-import json
 from typing import Any, Protocol
 
 
