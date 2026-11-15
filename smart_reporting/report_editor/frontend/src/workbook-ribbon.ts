@@ -1386,9 +1386,8 @@ export function mountWorkbookRibbon(
       if (freezeHere) freezeHere.disabled = !selected
       if (freezeMenu.disabled && freezeMenu.getAttribute('aria-expanded') === 'true') closeLargeViewMenu?.()
     }
-    const notes = body.querySelector<HTMLSelectElement>('[data-ribbon-control="notes"]')
-    if (notes) for (const option of Array.from(notes.options).slice(1)) {
-      const reason = view.noteReason?.(option.value) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
+    for (const option of body.querySelectorAll<HTMLButtonElement>('[data-ribbon-control="notes"] ~ [role="listbox"] [data-menu-command]')) {
+      const reason = view.noteReason?.(option.dataset.menuCommand!) ?? (view.noteReason ? undefined : '注释来源尚未就绪')
       option.disabled = !!reason
       option.title = reason ?? ''
     }
@@ -1617,21 +1616,10 @@ export function mountWorkbookRibbon(
         wrapper.append(icon, select); section.append(wrapper)
       }
       if (active === 'Review' && group.title === '注释') {
-        const wrapper = document.createElement('label')
-        wrapper.className = 'workbook-ribbon-chart-menu'
-        const icon = document.createElement('span'); icon.className = 'workbook-ribbon-icon'
-        icon.setAttribute('aria-hidden', 'true'); icon.innerHTML = workbookCommandIcon('', '🗒') ?? ''
-        const select = document.createElement('select')
-        select.className = 'workbook-ribbon-select'; select.dataset.ribbonControl = 'notes'
-        select.setAttribute('aria-label', '注释')
-        select.setAttribute('aria-description', '在所选位置添加或编辑')
-        select.append(new Option('注释', ''), ...noteMenuChoices.map(([id, label]) => new Option(label, id)))
-        select.addEventListener('change', () => {
-          const choice = select.selectedOptions[0]
-          select.value = ''
-          if (choice?.value && !choice.disabled) onCommand(choice.value as RibbonCommand)
-        })
-        wrapper.append(icon, select); section.append(wrapper)
+        const { wrapper, trigger } = largeRibbonMenu('注释', '', '在所选位置添加或编辑', noteMenuChoices, '🗒')
+        trigger.dataset.ribbonControl = 'notes'
+        trigger.setAttribute('aria-description', '在所选位置添加或编辑')
+        section.append(wrapper)
       }
       if (group.title === 'AI 助手') {
         section.classList.add('office-ai-group')

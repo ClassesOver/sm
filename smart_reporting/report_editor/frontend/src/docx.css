@@ -435,3 +435,8 @@
   .docx-navigation-layout.show-table-gridlines .doc-table td,
   .docx-navigation-layout.show-table-gridlines .doc-table th { outline: 1px dashed var(--office-border-strong); outline-offset: -1px; }
 }
+.docx-native .ai-queue-anchor { text-decoration: underline dashed var(--color-focus); text-underline-offset: 3px; }
+.docx-anchored-queue { border: 1px solid var(--color-border); padding: 8px; border-radius: var(--radius-sm); }
+.docx-anchored-queue p { margin: 0 0 6px; color: var(--color-text-muted); }
+.docx-anchored-queue ol { margin: 4px 0; padding-left: 18px; }
+.docx-anchored-queue li > input { width: 100%; box-sizing: border-box; }

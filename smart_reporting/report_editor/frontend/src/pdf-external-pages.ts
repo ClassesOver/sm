@@ -39,15 +39,32 @@ export function bindPdfExternalPagesDialog(options:{
   dialog.addEventListener('close',()=>{generation++});close.addEventListener('click',()=>dialog.close())
   file.addEventListener('change',()=>{cached=undefined;links.replaceChildren();message.textContent=''})
   apply.addEventListener('click',()=>{void submit()})
-  async function submit(){
+  pages.addEventListener('keydown',event=>{
+    if(action!=='replace'||event.key!=='Enter'||event.defaultPrevented||event.isComposing||event.keyCode===229)return
+    event.preventDefault()
+    void submit(true)
+  })
+  pages.addEventListener('input',()=>{
+    if(!pages.hasAttribute('aria-invalid'))return
+    pages.removeAttribute('aria-invalid')
+    message.textContent=''
+  })
+  async function submit(pickFile=false){
     if(disposed||busy||!dialog.open)return
     const blocked=options.unavailable();if(blocked){message.textContent=blocked;return}
-    const picked=file.files?.[0];if(!picked||picked.size<1||picked.size>MAX_BYTES){message.textContent='请选择 1 字节至 6 MiB 的 PDF 文件';return}
     let position:{afterPage:number}|{pages:number[]}
     try{
       if(action==='insert'){const value=Number(after.value);if(!/^\d+$/.test(after.value)||!Number.isSafeInteger(value)||value<0||value>options.pageCount())throw Error('插入页码超出父 PDF 范围');position={afterPage:value}}
       else position={pages:parsePdfExtractPages(pages.value,options.pageCount())}
-    }catch(error){message.textContent=error instanceof Error?error.message:String(error);return}
+    }catch(error){
+      message.textContent=error instanceof Error?error.message:String(error)
+      if(action==='replace'){pages.setAttribute('aria-invalid','true');pages.focus()}
+      return
+    }
+    pages.removeAttribute('aria-invalid')
+    const picked=file.files?.[0]
+    if(!picked&&pickFile){file.click();return}
+    if(!picked||picked.size<1||picked.size>MAX_BYTES){message.textContent='请选择 1 字节至 6 MiB 的 PDF 文件';return}
     const token=generation,chosenAction=action
     busy=true;enable(false);links.replaceChildren();message.textContent='正在校验上传文件并生成新修订…'
     try{
@@ -74,7 +91,9 @@ export function bindPdfExternalPagesDialog(options:{
       action=next;generation++;enable(true);title.textContent=next==='insert'?'插入外部 PDF 页面':'替换为外部 PDF 页面'
       afterLabel.hidden=next!=='insert';pagesLabel.hidden=next!=='replace';after.max=String(options.pageCount());after.value=String(insertAfterPage??options.currentPage());pages.value=String(options.currentPage())
       if(cached)show(cached);else{message.textContent='';links.replaceChildren()}
+      pages.removeAttribute('aria-invalid')
       dialog.showModal()
+      if(next==='replace')pages.focus()
     },
     dispose(){if(disposed)return;disposed=true;generation++;dialog.remove()},
   }

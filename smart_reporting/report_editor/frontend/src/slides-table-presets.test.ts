@@ -33,7 +33,9 @@ async function open(draft = new NativeDraft(identity, store()), source = model()
   return { shell, draft, view, api }
 }
 const control = (root: ParentNode, command: string) => root.querySelector<HTMLSelectElement | HTMLButtonElement>(`[data-command="${command}"]`)!
-const selectValue = (root: ParentNode, command: string, value: string) => { const field = control(root,command) as HTMLSelectElement; field.value = value; field.dispatchEvent(new Event('change',{bubbles:true})) }
+const shadingSwatch = (root: ParentNode, value: string) => root.querySelector<HTMLButtonElement>(`[data-table-shading-color="${value}"]`)!
+const chooseShading = (root: ParentNode, value: string) => shadingSwatch(root, value).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+const activeShading = (root: ParentNode) => root.querySelector<HTMLButtonElement>('[data-table-shading-color][aria-pressed="true"]')?.dataset.tableShadingColor ?? ''
 const presetCard = (root: ParentNode, name: string) => root.querySelector<HTMLButtonElement>(`[data-table-style-preset="${name}"]`)!
 const choosePreset = (root: ParentNode, name: string) => presetCard(root, name).dispatchEvent(new MouseEvent('click', { bubbles: true }))
 const patch = (draft: NativeDraft) => (draft.operations[0] as unknown as { tableStyles: Record<string, unknown>[] }).tableStyles[0]
@@ -62,17 +64,17 @@ it('reads original flags independently of gallery name and leaves ambiguous sour
 })
 it('uses canonical preset then explicit overrides while choosing another preset clears prior direct formatting and ordinary flags',async()=>{
  const {shell,draft,view}=await open()
- selectValue(shell.editor,'tableShading','#FFF2CC');control(shell.editor,'tableAllBorders').click();control(shell.editor,'tableFirstRow').click()
+ chooseShading(shell.editor,'#FFF2CC');control(shell.editor,'tableAllBorders').click();control(shell.editor,'tableFirstRow').click()
  control(shell.editor,'tableRtl').click()
  expect(patch(draft)).toMatchObject({shadingColor:'#FFF2CC',borderPreset:'all',firstRow:true,rtl:false})
  choosePreset(shell.editor,'zebraBlue')
  expect(patch(draft)).toEqual({slideIndex:0,elementId:'tbl_1',styleName:'zebraBlue',rtl:false})
  expect(selected(shell.editor,'tableFirstRow')).toBe('true');expect(selected(shell.editor,'tableBandRow')).toBe('true');expect(selected(shell.editor,'tableRtl')).toBe('false')
- control(shell.editor,'tableFirstRow').click();control(shell.editor,'tableBandRow').click();selectValue(shell.editor,'tableShading','#D6E4F0')
+ control(shell.editor,'tableFirstRow').click();control(shell.editor,'tableBandRow').click();chooseShading(shell.editor,'#D6E4F0')
  expect(patch(draft)).toEqual({slideIndex:0,elementId:'tbl_1',styleName:'zebraBlue',rtl:false,firstRow:false,bandRow:false,shadingColor:'#D6E4F0'})
  choosePreset(shell.editor,'headerOrange')
  expect(patch(draft)).toEqual({slideIndex:0,elementId:'tbl_1',styleName:'headerOrange',rtl:false})
- expect((control(shell.editor,'tableShading') as HTMLSelectElement).value).toBe('')
+ expect(activeShading(shell.editor)).toBe('')
  view.dispose()
 })
 it('preserves source-scoped gallery/flag overrides through history and restored draft',async()=>{

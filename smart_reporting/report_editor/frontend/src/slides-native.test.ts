@@ -865,8 +865,7 @@ it('stages table shading and borders with text edits, history and exact source r
   const store=draftStore(),draft=new NativeDraft(draftIdentity,store)
   const api={preview:vi.fn(async()=>({model})),renderTree:vi.fn(async()=>({slides:[]}))}
   let {shell,view}=await openDraft(draft,api)
-  const shading=shell.editor.querySelector<HTMLSelectElement>('[data-command="tableShading"]')!
-  shading.value='#FFF2CC';shading.dispatchEvent(new Event('change',{bubbles:true}))
+  shell.editor.querySelector<HTMLButtonElement>('[data-table-shading-color="#FFF2CC"]')!.click()
   shell.editor.querySelector<HTMLButtonElement>('[data-command="tableAllBorders"]')!.click()
   expect(draft.operations[0]).toMatchObject({tableStyles:[{slideIndex:0,elementId:'tbl_1',shadingColor:'#FFF2CC',borderPreset:'all'}]})
   shell.editor.querySelector<HTMLButtonElement>('[data-source-action="onUndo"]')!.click()
@@ -875,7 +874,7 @@ it('stages table shading and borders with text edits, history and exact source r
   view.dispose()
   const recovered=new NativeDraft(draftIdentity,store)
   ;({shell,view}=await openDraft(recovered,api))
-  expect(shell.editor.querySelector<HTMLSelectElement>('[data-command="tableShading"]')!.value).toBe('#FFF2CC')
+  expect(shell.editor.querySelector('[data-table-shading-color="#FFF2CC"]')!.getAttribute('aria-pressed')).toBe('true')
   expect((recovered.operations[0] as any).tableStyles[0].borderPreset).toBe('all')
   view.dispose()
 })

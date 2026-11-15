@@ -1,4 +1,5 @@
 import { mountOfficeReadQueue } from './office-read-queue'
+import { mountDocxEditQueue, type DocxEditQueue } from './docx-edit-queue'
 import { OfficeAssistantController } from './office-assistant-controller'
 import { missingNativeAITask, reconnectNativeAITask, temporaryConnectionFailure } from './native-ai-recovery'
 import type { createNativeApi, NativeAIJob, NativeAISelection, NativeAIReviewSelection, NativeAINoteSelection } from './native-api'
@@ -9,6 +10,7 @@ import { bindOfficeAssistantPanel } from './office-assistant-panel'
 /** 候选只在显式采纳后进入当前草稿，仍须用户保存为独立修订。 */
 export function bindNativeAI(container: HTMLElement, options: {
   api: ReturnType<typeof createNativeApi>; draft: NativeDraft; format?: 'docx' | 'pdf'
+  wordEditQueue?: DocxEditQueue
   view: { refresh(): Promise<void>; flushPendingEdits?(): void }; onDraftChange(): void
   locked?(): boolean; onStateChange?(): void
 }) {
@@ -57,6 +59,7 @@ export function bindNativeAI(container: HTMLElement, options: {
   // Report-channel handoffs must preserve the trusted draft scope.
   let presetScope: 'selection' | 'document' | undefined, presetStale=false
   let activeRequestId: string | undefined
+  let editQueue: ReturnType<typeof mountDocxEditQueue> | undefined
   const selectionIdentity = () => JSON.stringify([options.draft.identity.sourceSha256, selection])
   const currentWordTarget = () => JSON.stringify([selectionIdentity(), options.draft.operations])
   const pendingWordCandidate = () => !!queue && job?.status === 'succeeded' && job.accepted !== true
@@ -64,6 +67,7 @@ export function bindNativeAI(container: HTMLElement, options: {
   function update() {
     start.disabled = !editable() || busy || accepting || pendingWordCandidate() || !selection.length || presetStale
     queue?.setBusy(busy || accepting || pendingWordCandidate())
+    editQueue?.setBlocked(!editable() || busy || accepting || pendingWordCandidate())
     accept.disabled = !editable() || busy || accepting || presetStale || job?.status !== 'succeeded' || job.accepted === true
     cancel.disabled = disposed || !job && !busy
     options.onStateChange?.()
@@ -207,6 +211,24 @@ export function bindNativeAI(container: HTMLElement, options: {
     clearCandidate(); panel.hidden = true; status.textContent = '建议已取消'; update()
   }
   body.onclick=()=>{clearCandidate();presetScope=undefined;presetStale=false;reviewMode=false;noteBeforeText=undefined;body.hidden=true;selection=structuredClone(documentSelection);input.value='';status.textContent='已切换到正文选区，请输入修改要求';update()}
+  if (options.format === 'docx' && options.wordEditQueue) {
+    editQueue = mountDocxEditQueue(options.wordEditQueue, input, status, resolve => {
+      if (!editable() || busy || accepting || pendingWordCandidate()) return
+      options.view.flushPendingEdits?.()
+      if (!editable() || busy || accepting || pendingWordCandidate()) return
+      const batch = resolve()
+      if (!batch.targets.length) return
+      presetScope = undefined
+      presetStale = false
+      reviewMode = true
+      noteBeforeText = undefined
+      body.hidden = false
+      selection = structuredClone(batch.targets)
+      void generate(batch.instruction)
+      return batch
+    })
+    input.before(editQueue.element)
+  }
   update()
   return {
     update,
@@ -286,6 +308,6 @@ export function bindNativeAI(container: HTMLElement, options: {
       }
       selection = structuredClone(value); update()
     },
-    dispose() { if(disposed)return;panelView?.dispose();clearCandidate();disposed = true;queue?.dispose();progress.stop();panel.remove() },
+    dispose() { if(disposed)return;panelView?.dispose();clearCandidate();disposed = true;editQueue?.dispose();queue?.dispose();progress.stop();panel.remove() },
   }
 }

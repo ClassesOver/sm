@@ -1168,22 +1168,31 @@ it('dispatches the source translation language from an editable selected range',
 it('offers GenOffice Notes commands in source order and dispatches only enabled choices', () => {
   document.body.innerHTML = '<main></main>'
   const onCommand = vi.fn()
-  mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
+  const ribbon = mountWorkbookRibbon(document.querySelector('main')!, onCommand, {
     editable: () => false, rotation: () => undefined, hasSelection: () => true,
     noteReason: id => ['note-insert-picture', 'notes-convert'].includes(id) ? '当前工作簿不可编辑' : undefined,
   })
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
-  const notes = document.querySelector<HTMLSelectElement>('select[aria-label="注释"]')!
-  expect(Array.from(notes.options).slice(1).map(item => [item.value, item.textContent])).toEqual([
+  const notes = document.querySelector<HTMLButtonElement>('[data-ribbon-control="notes"]')!
+  notes.click()
+  const menu = document.getElementById(notes.getAttribute('aria-controls')!)!
+  const items = [...menu.querySelectorAll<HTMLButtonElement>('[data-menu-command]')]
+  expect(items.map(item => [item.dataset.menuCommand, item.textContent])).toEqual([
     ['note-open', '新建注释'], ['note-insert-picture', '插入图片'],
     ['note-show-toggle', '显示/隐藏注释'], ['note-show-all', '显示所有注释'],
     ['notes-convert', '转换为注释'], ['note-pictures-pane-toggle', '批注图片'],
   ])
-  for (const command of ['note-insert-picture', 'notes-convert', 'note-show-all', 'note-pictures-pane-toggle']) {
-    notes.value = command
-    notes.dispatchEvent(new Event('change'))
-    expect(notes.value).toBe('')
-  }
+  expect(document.activeElement).toBe(items[0])
+  items[0]!.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))
+  expect(document.activeElement).toBe(items[2])
+  expect(items[1]!.disabled).toBe(true)
+  expect(items[4]!.disabled).toBe(true)
+  items[1]!.click()
+  items[3]!.click()
+  expect(document.activeElement).toBe(notes)
+  notes.click()
+  items[5]!.click()
+  ribbon.dispose()
   expect(onCommand.mock.calls).toEqual([['note-show-all'], ['note-pictures-pane-toggle']])
 })
 

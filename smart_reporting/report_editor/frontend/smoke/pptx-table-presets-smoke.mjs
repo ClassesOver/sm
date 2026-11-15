@@ -135,7 +135,7 @@ try {
   await style('zebraBlue').click()
   await rtl.click()
   if (await page.locator('[data-command="tableShadingWholeTable"]').isEnabled()) await page.locator('[data-command="tableShadingWholeTable"]').click()
-  await page.locator('[data-command="tableShading"]').selectOption('#FFF2CC')
+  await page.locator('[data-table-shading-color="#FFF2CC"]').click()
   await style('headerOrange').click()
   assert.deepEqual((await readDraft())[0].tableStyles,[{slideIndex:0,elementId:target.id,styleName:'headerOrange',rtl:true}])
   await style('zebraBlue').click()

@@ -2760,7 +2760,7 @@ function renderInspector() {
 
   const structureButton=root.querySelector<HTMLButtonElement>('[data-command="tableStructure"]')
   if(structureButton){const reason=tableStructureReason(element);structureButton.disabled=!!reason;structureButton.title=reason??'增删来源表格行列'}
-  for(const id of ['tableShading','tableAllBorders','tableNoBorders']) {const control=root.querySelector<HTMLInputElement>(`[data-command="${id}"]`);if(control) { const atLimit=!!element && !tableStyleEdits.has(editKey(selectedSlide,element.id)) && tableStyleEdits.size>=500; control.disabled=locked() || tableStructureEdits.get(selectedSlide)?.elementId===element?.id || atLimit; if(atLimit) control.title='表格样式修改已达到 500 项，请先保存'; else if(control.title==='表格样式修改已达到 500 项，请先保存') control.title='' }}
+  for(const id of ['tableAllBorders','tableNoBorders']) {const control=root.querySelector<HTMLInputElement>(`[data-command="${id}"]`);if(control) { const atLimit=!!element && !tableStyleEdits.has(editKey(selectedSlide,element.id)) && tableStyleEdits.size>=500; control.disabled=locked() || tableStructureEdits.get(selectedSlide)?.elementId===element?.id || atLimit; if(atLimit) control.title='表格样式修改已达到 500 项，请先保存'; else if(control.title==='表格样式修改已达到 500 项，请先保存') control.title='' }}
   const tablePatch = element ? tableStyleEdits.get(editKey(selectedSlide,element.id)) : undefined
   const tablePreset = SLIDES_TABLE_PRESETS.find(item => item.name === tablePatch?.styleName)
   const presetReason = tablePresetReason(element)
@@ -2786,14 +2786,13 @@ function updateTableShadingControls(element = currentElement()) {
   const selectedCell = shadingCellFor(element)
   const targetLabel = tableCellEditor.querySelector<HTMLElement>('[data-table-shading-target]')
   if (targetLabel) targetLabel.textContent = selectedCell ? `底纹目标：第 ${selectedCell.row + 1} 行 ${selectedCell.col + 1} 列` : '底纹目标：整表'
-  const palette = root.querySelector<HTMLSelectElement>('[data-command="tableShading"]')
   const whole = root.querySelector<HTMLButtonElement>('[data-command="tableShadingWholeTable"]')
   const commonReason = selectedObjects.size>1 || locked() || isNewSlide(selectedSlide) || element?.type !== 'table' || deletions.has(editKey(selectedSlide,element.id)) || tableStructureEdits.get(selectedSlide)?.elementId === element.id
   const reason = element && !tableStyleEdits.has(editKey(selectedSlide,element.id)) && tableStyleEdits.size >= 500 ? '表格样式修改已达到 500 项，请先保存' : selectedCell && element?.tableCellShadingEditable !== true ? element?.tableCellShadingReason || '此来源表格暂不支持安全单格底纹' : ''
-  if (palette) { palette.disabled = !!commonReason || !!reason; palette.title = reason || (selectedCell ? `只修改第 ${selectedCell.row + 1} 行 ${selectedCell.col + 1} 列底纹` : '修改整表底纹，并清除此前的单格底纹覆盖') }
   if (whole) { whole.disabled = !!commonReason || !selectedCell; whole.title = '将底纹作用目标改回整表；不修改草稿' }
   const patch = element ? tableStyleEdits.get(editKey(selectedSlide,element.id)) : undefined
-  nativeRibbon?.setValue('tableShading', selectedCell ? patch?.cellShadings?.find(cell => cell.row === selectedCell.row && cell.col === selectedCell.col)?.shadingColor ?? '' : patch?.shadingColor ?? '')
+  const color = selectedCell ? patch?.cellShadings?.find(cell => cell.row === selectedCell.row && cell.col === selectedCell.col)?.shadingColor : patch?.shadingColor
+  nativeRibbon?.setTableShadingState(color ?? '', !!selectedCell, !commonReason && !reason, reason || (selectedCell ? `只修改第 ${selectedCell.row + 1} 行 ${selectedCell.col + 1} 列底纹` : '修改整表底纹，并清除此前的单格底纹覆盖'))
 }
 
 function tablePresetReason(element = currentElement()): string | null {
@@ -3108,7 +3107,9 @@ if (native) nativeRibbon = createSlidesNativeRibbon(root, {
             delete patch.cellShadings
           }
         } else patch.borderPreset=command === 'tableAllBorders' ? 'all' : 'none'
-        tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview(); break
+        tableStyleEdits.set(key,patch); renderStructurePending(); markDirty(); refreshCanvasPreview()
+        if (command === 'tableShading') { updateTableShadingControls(target); return }
+        break
       }
       case 'shapeStylePreset':
       case 'shapeFill':

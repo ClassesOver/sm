@@ -88,7 +88,7 @@ export async function startNativeEditor() {
   shell.statusLabel.textContent = response.editingEnabled ? '文档已载入' : '在线编辑暂未开放，可下载原件'
   session = bindNativeSession(shell, { api, draft, format: context.format, view, editingEnabled: response.editingEnabled })
   if (response.aiEnabled && response.editingEnabled && (context.format === 'docx' || response.pdfTextEnabled)) {
-    ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, onDraftChange: () => session?.update(), locked: () => ('mutationLocked' in view&&view.mutationLocked===true) || draft.operations.some(operation=>operation.kind==='setDocumentProtection') })
+    ai = bindNativeAI(shell.editor.parentElement ?? root, { api, draft, view, format: context.format, wordEditQueue: 'wordEditQueue' in view ? view.wordEditQueue : undefined, onDraftChange: () => session?.update(), locked: () => ('mutationLocked' in view&&view.mutationLocked===true) || draft.operations.some(operation=>operation.kind==='setDocumentProtection') })
   }
   if (context.format === 'docx' && response.wordReadAIEnabled) {
     wordReader = bindNativeWordAssistant(shell.editor.parentElement ?? root, {
