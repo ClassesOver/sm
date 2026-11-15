@@ -656,8 +656,8 @@ it('renders the GenOffice Formulas Function Library with localized categories an
 it('renders the GenOffice Review Comments and Notes commands with note-specific unavailable reasons', () => {
   document.body.innerHTML = '<main></main>'
   const reasons: Record<string, string> = {
-    'note-open': '批注状态不可用', 'note-delete': '批注状态不可用',
-    'note-prev': '批注集合不可用', 'note-next': '批注集合不可用', 'note-show-toggle': '批注可见状态不可用',
+    'comment-new': '批注状态不可用', 'comment-delete': '批注状态不可用',
+    'comment-prev': '批注集合不可用', 'comment-next': '批注集合不可用', 'comments-pane-toggle': '批注可见状态不可用',
   }
   const ribbon = mountWorkbookRibbon(document.querySelector('main')!, vi.fn(), {
     rotation: () => undefined, editable: () => true, hasSelection: () => true,
@@ -666,9 +666,9 @@ it('renders the GenOffice Review Comments and Notes commands with note-specific 
   ribbon.refreshState?.()
   document.querySelector<HTMLButtonElement>('[data-ribbon-tab="Review"]')!.click()
   const expected = [
-    ['note-open', '新建/编辑批注', '批注状态不可用'], ['note-delete', '删除', '批注状态不可用'],
-    ['note-prev', '上一条', '批注集合不可用'], ['note-next', '下一条', '批注集合不可用'],
-    ['note-show-toggle', '显示批注', '批注可见状态不可用'],
+    ['comment-new', '新建批注', '批注状态不可用'], ['comment-delete', '删除', '批注状态不可用'],
+    ['comment-prev', '上一条', '批注集合不可用'], ['comment-next', '下一条', '批注集合不可用'],
+    ['comments-pane-toggle', '显示批注', '批注可见状态不可用'],
   ]
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]
   for (const [id, label, reason] of expected) {
@@ -678,7 +678,7 @@ it('renders the GenOffice Review Comments and Notes commands with note-specific 
     expect(button?.title, id).toContain(reason)
     expect(button?.getAttribute('aria-description'), id).toContain(reason)
   }
-  expect(buttons.filter(button => button.dataset.ribbonCommand === 'note-open')).toHaveLength(1)
+  expect(buttons.filter(button => button.dataset.ribbonCommand === 'note-open')).toHaveLength(0)
 })
 
 it('matches the GenOffice Review source groups, command ids, and safe disabled states', () => {
@@ -693,7 +693,7 @@ it('matches the GenOffice Review source groups, command ids, and safe disabled s
     .map(button => button.dataset.ribbonCommand))
   expect(idsByGroup).toEqual([
     ['workbook-statistics'], ['translate'],
-    ['note-open', 'note-delete', 'note-prev', 'note-next', 'note-show-toggle'],
+    ['comment-new', 'comment-delete', 'comment-prev', 'comment-next', 'comments-pane-toggle'],
     [], ['sheet-protect', 'workbook-protect', 'allow-edit-ranges-open'],
   ])
   const labels = new Map([...document.querySelectorAll<HTMLButtonElement>('[data-ribbon-command]')]

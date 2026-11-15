@@ -5,7 +5,7 @@ import {drawingPositionToTransform} from '@univerjs/sheets-drawing'
 import {IDrawingManagerService,getDrawingShapeKeyByDrawingSearch} from '@univerjs/drawing'
 import {createWorkbookPictures,controlledWorkbookPicture,installWorkbookPictures} from './workbook-pictures'
 import {readWorkbookPictures,pictureSourceIdentity} from '@sheets-web/xlsx-engine/pictures'
-import {mountWorkbookThreads} from './workbook-threaded-comments-host'
+import { mountWorkbookThreads, type ThreadRibbonCommand } from './workbook-threaded-comments-host'
 import type {ThreadActor} from './workbook-threaded-comments'
 import { createWorkbookExternalLinks, type ExternalLinksSnapshot } from './workbook-external-links'
 import { externalLinksContext, calculateExternalUpdates, evaluateExternalFormula, withExternalFormulaCaches, installExternalFormulaCaches, type ExternalLinksContext } from './workbook-external-links-host'
@@ -2044,6 +2044,12 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
         }, (error: unknown) => { feedback.textContent = (error as Error).message })
         return
       }
+      if (command === 'comment-new' || command === 'comment-delete' || command === 'comment-prev' ||
+          command === 'comment-next' || command === 'comments-pane-toggle') {
+        if (loading || saving || disposed) return
+        try { threadsView?.run(command) } catch (error) { feedback.textContent = (error as Error).message }
+        return
+      }
       const readingNote = ['note-open', 'note-prev', 'note-next', 'note-show-toggle', 'note-show-all', 'note-pictures-pane-toggle'].includes(command)
       // 定位只移动选区（固定源只读安全）：保存中/已保存/只读亦可用。
       if (command === 'goto-open') {
@@ -2643,6 +2649,10 @@ export async function createWorkbookEditorView(shell: EditorShell, options: Work
       },
       noteReason: command => {
         try {
+          if (command.startsWith('comment-') || command === 'comments-pane-toggle') {
+            if (!threadsView || loading || saving || disposed) return '批注侧栏尚未就绪'
+            return threadsView.reason(command as ThreadRibbonCommand)
+          }
           if (command === 'notes-convert') {
             if (!editable()) return '当前工作簿不可编辑'
             const activeSheet = noteWorkbook()?.getActiveSheet()

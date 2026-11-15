@@ -151,6 +151,11 @@ type RibbonCommand =
   | 'note-insert-picture'
   | 'note-pictures-pane-toggle'
   | 'notes-convert'
+  | 'comment-new'
+  | 'comment-delete'
+  | 'comment-prev'
+  | 'comment-next'
+  | 'comments-pane-toggle'
   | 'freeze-panes'
   | 'zoom-in'
   | 'zoom-out'
@@ -551,9 +556,9 @@ const groups: Record<RibbonTab, RibbonGroup[]> = {
     { title: '校对', actions: [action('工作簿统计信息', 'workbook-statistics', 'workbook-statistics')] },
     { title: '语言', actions: [action('翻译', 'translate')] },
     { title: '批注', actions: [
-      action('新建/编辑批注', 'note-open', 'note-open'), action('删除', 'note-delete', 'note-delete'),
-      action('上一条', 'note-prev', 'note-prev'), action('下一条', 'note-next', 'note-next'),
-      action('显示批注', 'note-show-toggle', 'note-show-toggle'),
+      action('新建批注', 'comment-new', 'comment-new'), action('删除', 'comment-delete', 'comment-delete'),
+      action('上一条', 'comment-prev', 'comment-prev'), action('下一条', 'comment-next', 'comment-next'),
+      action('显示批注', 'comments-pane-toggle', 'comments-pane-toggle'),
     ] },
     { title: '注释', actions: [] },
     { title: '保护', actions: [
@@ -991,6 +996,11 @@ export function mountWorkbookRibbon(
       if (id.startsWith('note-')) {
         const noteReason = view.noteReason?.(id) ?? (!view.noteReason ? '批注来源尚未完成身份读取' : undefined)
         if (noteReason) { button.disabled = true; button.title = noteReason }
+      }
+      if (id.startsWith('comment-') || id === 'comments-pane-toggle') {
+        const reason = view.noteReason?.(id) ?? (view.noteReason ? undefined : '批注来源尚未就绪')
+        button.disabled = !!reason
+        button.title = reason ?? button.getAttribute('aria-label') ?? ''
       }
       if (format) {
         const property = ({ bold: 'bold', italic: 'italic', underline: 'underline', 'underline:double': 'doubleUnderline', strike: 'strikethrough' } as const)[id as 'bold']

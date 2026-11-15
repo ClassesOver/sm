@@ -27,6 +27,7 @@ const glyphs: Record<string,string> = {
   'insert-chart:bar':'▮▬', 'insert-chart:line':'📈', 'insert-chart:area':'◪', 'insert-chart:pie':'◔', 'insert-chart:scatter':'∴', 'insert-chart:radar':'✳', 'insert-chart:doughnut':'◍', 'insert-chart:combo':'𝄜', 'recommended-charts-open':'📊',
   'sparkline:edit':'📈', 'sparkline:line':'📈', 'sparkline:column':'▮▬', 'sparkline:stacked':'▮▬', 'sparkline:delete':'🗑',
   'slicer-open':'▽', 'timeline-open':'🕘', 'link-open':'🔗', 'note-open':'🗨', 'note-delete':'🗑', 'note-prev':'←', 'note-next':'→', 'note-show-toggle':'🗨',
+  'comment-new':'🗨', 'comment-delete':'🗑', 'comment-prev':'←', 'comment-next':'→', 'comments-pane-toggle':'🗨',
   'theme-effects':'✦', background:'🖼', 'print-scale-open':'⤢', 'toggle-gridlines':'▦', 'print-gridlines':'▦', 'toggle-headings':'▤', 'print-headings':'▤',
   'name-manager-open':'🏷', 'define-name':'🏷', 'trace-precedents':'⇠', 'trace-dependents':'⇢', 'remove-arrows':'✕', 'toggle-show-formulas':'∑', 'error-checking':'⚠', 'watch-window':'👓', 'external-links-panel':'🔗', 'calculate-now':'🧮', 'calculate-sheet':'🧮',
   'refresh-all':'⟳', 'merge-workbooks':'⧉', 'remove-duplicates-open':'⊘', 'dv-open':'✓', 'flash-fill':'⚡', 'data-table-open':'▦', 'goal-seek-open':'⌖', 'consolidate-open':'⇶', 'subtotal-open':'∑',
